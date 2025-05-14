@@ -2,15 +2,16 @@
 // Created by Administrator on 2025/5/14.
 //
 
-#ifndef BAAS_CPP_MODULE_AUTO_FIGHT_YOLO_YOLO_D_H_
-#define BAAS_CPP_MODULE_AUTO_FIGHT_YOLO_YOLO_D_H_
+#ifndef BAAS_YOLO_YOLO_D_H_
+#define BAAS_YOLO_YOLO_D_H_
 
 #include <string>
 #include <vector>
+#include <filesystem>
 
-#include <opencv2/opencv.hpp>
+#include "opencv2/opencv.hpp"
 
-#include <core_defines.h>
+#include "core_defines.h"
 
 BAAS_NAMESPACE_BEGIN
 
@@ -25,16 +26,11 @@ enum model_type
 
 struct yolo_d
 {
-    std::string modelPath;
+    std::filesystem::path model_path, yaml_path;
     model_type modelType = YOLO_DETECT_V8;
-    std::vector<int> imgSize = { 640, 640 };
-    float rectConfidenceThreshold = 0.6;
-    float iouThreshold = 0.5;
-    int	keyPointsNum = 2;//Note:kpt number for pose
-    bool cudaEnable = false;
 
-    int logSeverityLevel = 3;
-    int intraOpNumThreads = 1;
+    std::pair<int, int> img_size = {640, 640 };
+    float rect_threshold = 0.6;
 
     // ---------------
     int gpu_id = -1;
@@ -43,7 +39,8 @@ struct yolo_d
 
 };
 
-struct yolo_res
+
+struct yolo_single_res
 {
     int classId;
     float confidence;
@@ -51,6 +48,17 @@ struct yolo_res
     std::vector<cv::Point2f> keyPoints;
 };
 
+struct yolo_run_time_info {
+    double pre_t;
+    double infer_t;
+    double post_t;
+};
+
+struct yolo_res
+{
+    std::vector<yolo_single_res> results;
+    yolo_run_time_info time_info;
+};
 BAAS_NAMESPACE_END
 
-#endif //BAAS_CPP_MODULE_AUTO_FIGHT_YOLO_YOLO_D_H_
+#endif //BAAS_YOLO_YOLO_D_H_
