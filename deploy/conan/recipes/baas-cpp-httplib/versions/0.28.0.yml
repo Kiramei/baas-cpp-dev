@@ -1,0 +1,5 @@
+sources:
+  0.28.0:
+    url: https://raw.githubusercontent.com/yhirose/cpp-httplib/v0.28.0/httplib.h
+    sha256: 9e5cafaa227dad5c10e837990a736cecaff03258f50d37067cedeee1dba5d344
+    target_path: include/httplib.h
