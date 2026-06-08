@@ -8,7 +8,7 @@ from conan.tools.files import collect_libs, get
 
 class BAASOpenCVConan(ConanFile):
     name = "baas-opencv"
-    version = "4.9.0"
+    version = "4.13.0"
     license = "Apache-2.0"
     package_type = "shared-library"
     settings = "os", "arch", "compiler", "build_type"

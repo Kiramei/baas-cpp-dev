@@ -5,6 +5,6 @@ user.baas.dependencies:cpp_httplib_version=0.18.0
 user.baas.dependencies:spdlog_version=1.15.3
 user.baas.dependencies:simdutf_version=6.2.0
 user.baas.dependencies:benchmark_version=1.9.1
-user.baas.dependencies:opencv_version=4.9.0
+user.baas.dependencies:opencv_version=4.13.0
 user.baas.dependencies:ffmpeg_version=6.1-abi60
 user.baas.dependencies:onnxruntime_version=1.22.0
