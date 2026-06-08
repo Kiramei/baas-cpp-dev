@@ -1,0 +1,15 @@
+sources:
+  "6.1-abi60":
+    prebuilt:
+      url: "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2025-08-31-13-00/ffmpeg-n6.1.3-win64-lgpl-shared-6.1.zip"
+      sha256: "b5af042081d2f7887c18894801e1d91ccb6d565ebcea0d32c0070869f5f611cc"
+      archive_type: "zip"
+      strip_prefix: "ffmpeg-n6.1.3-win64-lgpl-shared-6.1"
+staging:
+  copy:
+    - from: "include"
+      to: "include"
+    - from: "lib/*.lib"
+      to: "lib"
+    - from: "bin/*.dll"
+      to: "bin"
