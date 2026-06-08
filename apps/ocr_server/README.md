@@ -50,20 +50,25 @@
    - Architectures : arm64-v8a, x86_64, armeabi-v7a, x86
 
 4. build command
-You need to replace -DANDROID_NDK_PATH and -DCMAKE_MAKE_PROGRAM with your own path.
+Use the Conan Android profile for the target ABI. The NDK path is supplied
+through Conan conf and must point at your local NDK.
 ```shell
-cmake -G "Ninja" ^
-      -B cmake-build-Android_NDK ^
-      -DANDROID_NDK_PATH="D:\AndroidSDK\ndk\29.0.14206865" ^
-      -DANDROID_ABI="arm64-v8a" ^
-      -DANDROID_PLATFORM=android-26 ^
-      -DBUILD_BAAS_OCR=ON ^
-      -DBAAS_OCR_ANDROID_BUILD=ON ^
-      -DCMAKE_BUILD_TYPE=Release ^
-      -DCMAKE_MAKE_PROGRAM="D:\AndroidSDK\cmake\3.22.1\bin\ninja.exe" ^
-      -DANDROID_STL=c++_shared
+python deploy/conan/scripts/manage_recipes.py export
+
+conan install deploy/conan ^
+      -of build/conan/android-clang-release-ocr-arm64-v8a ^
+      -pr:h=deploy/conan/profiles/android-clang-arm64-v8a-release ^
+      -pr:h=deploy/conan/profiles/dependency-versions-default ^
+      -c:h tools.android:ndk_path="D:\AndroidSDK\ndk\29.0.14206865" ^
+      -o onnxruntime_use_cuda=False ^
+      -o use_ffmpeg=False ^
+      -o use_benchmark=False ^
+      --build=missing ^
+      --no-remote
+
+cmake --preset conan-android-clang-release-ocr-arm64-v8a
 ```
 
 ```shell
-cmake --build cmake-build-Android_NDK --target BAAS_ocr_server -j 30
+cmake --build --preset conan-android-clang-release-ocr-arm64-v8a
 ```
