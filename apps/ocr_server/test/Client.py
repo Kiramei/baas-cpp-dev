@@ -58,9 +58,19 @@ class BaasOcrClient:
     def kill_existing_server():
         try:
             if sys.platform == "linux" or sys.platform == "darwin":
-                subprocess.run(["pkill", "-9", BaasOcrClient.executable_name])
+                subprocess.run(
+                    ["pkill", "-9", BaasOcrClient.executable_name],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    check=False
+                )
             elif sys.platform == "win32":
-                subprocess.run(["taskkill", "/f", "/im", BaasOcrClient.executable_name], check=True)
+                subprocess.run(
+                    ["taskkill", "/f", "/t", "/im", BaasOcrClient.executable_name],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    check=False
+                )
         except Exception:
             pass
 
@@ -111,9 +121,74 @@ class BaasOcrClient:
         url = self.config.base_url + "/disable_thread_pool"
         return requests.post(url)
 
-    def start_server(self):
-        if self.server_process is not None:
+    def _close_server_stdin(self):
+        if self.server_process is None or self.server_process.stdin is None:
             return
+        try:
+            self.server_process.stdin.close()
+        except (BrokenPipeError, OSError, ValueError):
+            pass
+
+    def _clear_finished_process(self):
+        if self.server_process is None:
+            return
+        if self.server_process.poll() is None:
+            return
+        self._close_server_stdin()
+        self.server_process = None
+
+    def _wait_until_server_stopped(self, timeout=10):
+        end_time = time.time() + timeout
+        while time.time() < end_time:
+            if not self.is_server_running(timeout=0.2):
+                return True
+            time.sleep(0.1)
+        return not self.is_server_running(timeout=0.2)
+
+    def _kill_server_process_tree(self):
+        if self.server_process is None:
+            return
+        pid = self.server_process.pid
+        try:
+            if sys.platform == "win32":
+                subprocess.run(
+                    ["taskkill", "/f", "/t", "/pid", str(pid)],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    check=False
+                )
+            else:
+                try:
+                    process = psutil.Process(pid)
+                    for child in process.children(recursive=True):
+                        try:
+                            child.kill()
+                        except psutil.Error:
+                            pass
+                    try:
+                        process.kill()
+                    except psutil.Error:
+                        pass
+                except psutil.Error:
+                    pass
+        finally:
+            try:
+                self.server_process.wait(timeout=5)
+            except (subprocess.TimeoutExpired, OSError):
+                pass
+            self._close_server_stdin()
+            self.server_process = None
+
+    def start_server(self):
+        self._clear_finished_process()
+        if self.server_process is not None:
+            if self.is_server_running(timeout=1):
+                return
+            self._kill_server_process_tree()
+        if not self._wait_until_server_stopped():
+            self.kill_existing_server()
+            if not self._wait_until_server_stopped():
+                raise RuntimeError("OCR server port is still in use.")
         # chmod +x BAAS_ocr_server
         if sys.platform == "linux":
             subprocess.run(["chmod", "+x", self.exe_path])
@@ -126,23 +201,50 @@ class BaasOcrClient:
             text=True
         )
         # wait for server start
-        for _ in range(0, 30):
-            try:
-                requests.get(self.config.base_url)
+        for _ in range(0, 150):
+            if self.server_process.poll() is not None:
                 break
-            except requests.exceptions.ConnectionError:
+            try:
+                requests.get(self.config.base_url, timeout=1)
+                return
+            except requests.exceptions.RequestException:
                 time.sleep(0.1)
+        return_code = self.server_process.poll()
+        self._kill_server_process_tree()
+        raise RuntimeError(f"Fail to start server. return_code={return_code}")
 
     def stop_server(self):
-        self.server_process.stdin.write("exit\n")
-        self.server_process.stdin.flush()
-        return_code = self.server_process.wait(10)
+        if self.server_process is None:
+            return
+        self._clear_finished_process()
+        if self.server_process is None:
+            if not self._wait_until_server_stopped():
+                self.kill_existing_server()
+                if not self._wait_until_server_stopped():
+                    raise RuntimeError("Fail to stop server.")
+            return
+        try:
+            self.server_process.stdin.write("exit\n")
+            self.server_process.stdin.flush()
+        except (BrokenPipeError, OSError, ValueError):
+            pass
+        try:
+            return_code = self.server_process.wait(10)
+        except subprocess.TimeoutExpired:
+            self._kill_server_process_tree()
+            if not self._wait_until_server_stopped():
+                raise RuntimeError("Fail to stop server.")
+            return
         if return_code != 0:
+            self._close_server_stdin()
+            self.server_process = None
             raise RuntimeError("Fail to stop server.")
-        self.server_process.stdin.close()
-        if not client.is_stopped():
-            raise RuntimeError("Fail to stop server.")
+        self._close_server_stdin()
         self.server_process = None
+        if not self._wait_until_server_stopped():
+            self.kill_existing_server()
+        if not self._wait_until_server_stopped():
+            raise RuntimeError("Fail to stop server.")
 
     def init_model(self, language: list[str], gpu_id=-1, num_thread=4, EnableCpuMemoryArena=False):
         url = self.config.base_url + "/init_model"
@@ -280,16 +382,13 @@ class BaasOcrClient:
         try:
             with socket.create_connection((self.config.host, self.config.port), timeout) as s:
                 return True
-        except ConnectionRefusedError:
+        except OSError:
             return False
 
     def is_stopped(self):
-        try:
-            process = psutil.Process(self.server_process.pid)
-            process.status()
-            return False
-        except psutil.NoSuchProcess:
+        if self.server_process is None:
             return True
+        return self.server_process.poll() is not None
 
 
 class SharedMemory:
