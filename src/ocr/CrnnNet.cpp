@@ -104,6 +104,9 @@ void CrnnNet::initModel(
     keys.emplace_back("#");
     if (in) {
         while (getline(in, line)) {
+            if (!line.empty() && line.back() == '\r') {
+                line.pop_back();
+            }
             keys.push_back(line);
             if (character2Index.find(line) != character2Index.end()) {
                 BAASGlobalLogger->BAASError("keys.txt has duplicate keys");
