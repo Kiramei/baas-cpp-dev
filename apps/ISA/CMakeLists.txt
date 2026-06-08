@@ -49,7 +49,6 @@ if (MSVC)
     add_compile_options("$<$<CXX_COMPILER_ID:MSVC>:/utf-8>")
     add_compile_options("$<$<C_COMPILER_ID:MSVC>:/MP>")
     add_compile_options(/W0)
-    set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} /O2 /Ob2 /DNDEBUG")
 endif()
 
 option(USE_CUDA "Use CUDA" OFF)
@@ -83,20 +82,8 @@ target_compile_definitions(
         BENCHMARK_STATIC_DEFINE
 )
 
-baas_require_opencv_target()
-baas_require_onnxruntime_target()
-baas_require_ffmpeg_target()
-baas_require_lz4_target()
-baas_require_cuda_target()
-baas_require_nlohmann_json_target()
-baas_require_httplib_target()
-baas_require_spdlog_target()
-baas_require_simdutf_target()
-baas_try_enable_benchmark(BAAS_BENCHMARK_AVAILABLE)
-
-get_property(_onnxruntime_provider GLOBAL PROPERTY BAAS_DEPENDENCY_onnxruntime_PROVIDER)
-if(NOT _onnxruntime_provider STREQUAL "cuda")
-    message(FATAL_ERROR "ISA requires ONNXRuntime provider 'cuda' in BAAS dependency index. Run: python -m deploy.bootstrap_dependency --dependency onnxruntime --provider cuda --build-type ${BAAS_DEPENDENCY_BUILD_TYPE}")
+if(NOT TARGET BAAS::ONNXRuntimeCUDAProvider)
+    message(FATAL_ERROR "ISA requires conan install with -o \"&:onnxruntime_use_cuda=True\"")
 endif()
 
 set(
@@ -119,10 +106,10 @@ if(TARGET BAAS::ONNXRuntimeCUDAProvider)
     list(APPEND LIB_RAW BAAS::ONNXRuntimeCUDAProvider)
 endif()
 
-if(BAAS_BENCHMARK_AVAILABLE)
+if(TARGET BAAS::benchmark AND TARGET BAAS::benchmark_main)
     list(APPEND LIB_RAW BAAS::benchmark BAAS::benchmark_main)
 else()
-    message(FATAL_ERROR "BAAS::benchmark package was not found. Run: python -m deploy.bootstrap_dependency --dependency benchmark --build-type ${BAAS_DEPENDENCY_BUILD_TYPE}")
+    message(FATAL_ERROR "BAAS::benchmark package was not found. Run conan install with -o \"&:use_benchmark=True\"")
 endif()
 
 message(STATUS "LIB RAW :")
@@ -135,4 +122,14 @@ target_link_libraries(
         ${LIB_RAW}
 )
 
-baas_copy_runtime_dependencies(ISA)
+baas_copy_conan_runtime_dependencies(
+        ISA
+        PACKAGES
+        baas-opencv
+        baas-onnxruntime
+        baas-ffmpeg
+        baas-lz4
+        baas-spdlog
+        baas-simdutf
+        baas-benchmark
+)

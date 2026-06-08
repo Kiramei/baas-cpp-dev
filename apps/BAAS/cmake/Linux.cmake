@@ -1,42 +1,33 @@
 BAAS_sub_title_LOG("BAAS_APP Linux Configure")
 
-target_link_directories(
-        BAAS_APP
-        PRIVATE
-        ${BAAS_DEFAULT_SEARCH_DLL_PATH}
-)
-
-SET(
-        DLL_COMMON
-        libonnxruntime.so.1
-)
-
-if (CMAKE_BUILD_TYPE STREQUAL "Debug")
-    message(FATAL_ERROR "Please use Release in Linux")
-elseif(CMAKE_BUILD_TYPE STREQUAL "Release")
-    SET(
-            DLL_RELEASE
-            libopencv_world.so.409
-    )
-endif ()
+if(BAAS_APP_USE_CUDA)
+    message(FATAL_ERROR "Linux BAAS_APP Conan build currently supports ONNX Runtime CPU only")
+endif()
 
 set(
-        DLL_RAW
-        ${DLL_COMMON}
-        ${DLL_RELEASE}
+        LIB_RAW
+        BAAS_ipc
+        BAAS::OpenCV
+        BAAS::ONNXRuntime
+        BAAS::FFmpeg
+        BAAS::LZ4
+        BAAS::nlohmann_json
+        BAAS::httplib
+        BAAS::spdlog
+        BAAS::simdutf
 )
 
+if(TARGET BAAS::benchmark AND TARGET BAAS::benchmark_main)
+    list(APPEND LIB_RAW BAAS::benchmark BAAS::benchmark_main)
+else()
+    message(FATAL_ERROR "BAAS::benchmark package was not found. Run conan install with -o \"&:use_benchmark=True\"")
+endif()
+
 LOG_LINE()
-message(STATUS "DLL RAW :")
-foreach (DLL ${DLL_RAW})
-    message(STATUS "${DLL}")
+message(STATUS "Conan LIB RAW :")
+foreach (LIB ${LIB_RAW})
+    message(STATUS "${LIB}")
 endforeach ()
-
-foreach (dll ${DLL_RAW})
-    set(FULL_PATH ${BAAS_PROJECT_PATH}/dll/${TARGET_OS_NAME}/${dll})
-    file(COPY ${FULL_PATH} DESTINATION ${CMAKE_BINARY_DIR}/bin)
-endforeach ()
-
 
 set_target_properties(
         BAAS_APP
@@ -45,13 +36,23 @@ set_target_properties(
         BUILD_RPATH "\$ORIGIN"
 )
 
-set(
-        CMAKE_BUILD_RPATH_USE_ORIGIN
-        TRUE
-)
+set(CMAKE_BUILD_RPATH_USE_ORIGIN TRUE)
 
 target_link_libraries(
         BAAS_APP
         PRIVATE
-        ${DLL_RAW}
+        ${LIB_RAW}
+)
+
+baas_copy_conan_runtime_dependencies(
+        BAAS_APP
+        DESTINATION "${CMAKE_BINARY_DIR}/bin"
+        PACKAGES
+        baas-opencv
+        baas-onnxruntime
+        baas-ffmpeg
+        baas-lz4
+        baas-spdlog
+        baas-simdutf
+        baas-benchmark
 )

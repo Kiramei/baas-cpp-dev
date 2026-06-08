@@ -6,13 +6,6 @@ if(BAAS_OCR_SERVER_USE_CUDA)
     )
 endif()
 
-baas_require_opencv_target()
-baas_require_onnxruntime_target()
-baas_require_nlohmann_json_target()
-baas_require_httplib_target()
-baas_require_spdlog_target()
-baas_require_simdutf_target()
-
 set(
         LIB_RAW
         BAAS_ipc
@@ -27,15 +20,11 @@ set(
 )
 
 if(BAAS_OCR_SERVER_USE_CUDA)
-    get_property(_onnxruntime_provider GLOBAL PROPERTY BAAS_DEPENDENCY_onnxruntime_PROVIDER)
-    if(NOT _onnxruntime_provider STREQUAL "cuda")
-        message(FATAL_ERROR "BAAS_OCR_SERVER_USE_CUDA requires ONNXRuntime provider 'cuda' in BAAS dependency index. Run: python -m deploy.bootstrap_dependency --dependency onnxruntime --provider cuda --build-type ${BAAS_DEPENDENCY_BUILD_TYPE}")
+    if(NOT TARGET BAAS::ONNXRuntimeCUDAProvider)
+        message(FATAL_ERROR "BAAS_OCR_SERVER_USE_CUDA requires conan install with -o \"&:onnxruntime_use_cuda=True\"")
     endif()
-    baas_require_cuda_target()
     list(APPEND LIB_RAW BAAS::CUDA)
-    if(TARGET BAAS::ONNXRuntimeCUDAProvider)
-        list(APPEND LIB_RAW BAAS::ONNXRuntimeCUDAProvider)
-    endif()
+    list(APPEND LIB_RAW BAAS::ONNXRuntimeCUDAProvider)
 endif()
 
 message(STATUS "LIB RAW :")
@@ -49,4 +38,11 @@ target_link_libraries(
         ${LIB_RAW}
 )
 
-baas_copy_runtime_dependencies(BAAS_ocr_server)
+baas_copy_conan_runtime_dependencies(
+        BAAS_ocr_server
+        PACKAGES
+        baas-opencv
+        baas-onnxruntime
+        baas-spdlog
+        baas-simdutf
+)

@@ -86,6 +86,23 @@ endfunction()
 
 function(copy_android_libcxx_shared DEST_DIR)
     BAAS_sub_title_LOG("Copy libc++_shared.so from NDK")
+    if(NOT DEFINED ANDROID_NDK_PATH OR ANDROID_NDK_PATH STREQUAL "")
+        if(DEFINED CMAKE_ANDROID_NDK AND NOT CMAKE_ANDROID_NDK STREQUAL "")
+            set(ANDROID_NDK_PATH "${CMAKE_ANDROID_NDK}")
+        elseif(DEFINED ENV{ANDROID_NDK_HOME})
+            set(ANDROID_NDK_PATH "$ENV{ANDROID_NDK_HOME}")
+        elseif(DEFINED ENV{ANDROID_NDK_ROOT})
+            set(ANDROID_NDK_PATH "$ENV{ANDROID_NDK_ROOT}")
+        elseif(DEFINED ENV{ANDROID_NDK_LATEST_HOME})
+            set(ANDROID_NDK_PATH "$ENV{ANDROID_NDK_LATEST_HOME}")
+        else()
+            message(FATAL_ERROR
+                    "For Android libc++ runtime copy, set one of: "
+                    "ANDROID_NDK_PATH, CMAKE_ANDROID_NDK, ANDROID_NDK_HOME, "
+                    "ANDROID_NDK_ROOT, or ANDROID_NDK_LATEST_HOME.")
+        endif()
+    endif()
+
     if (ANDROID_ABI STREQUAL "armeabi-v7a")
         set(ANDROID_TRIPLE arm-linux-androideabi)
     elseif (ANDROID_ABI STREQUAL "arm64-v8a")

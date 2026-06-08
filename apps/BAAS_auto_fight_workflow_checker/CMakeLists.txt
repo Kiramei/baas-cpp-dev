@@ -8,7 +8,6 @@ if (MSVC)
     add_compile_options("$<$<CXX_COMPILER_ID:MSVC>:/utf-8>")
     add_compile_options("$<$<C_COMPILER_ID:MSVC>:/MP>")
     add_compile_options(/W0)
-    set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} /O2 /Ob2 /DNDEBUG")
 endif()
 
 #set(
@@ -82,7 +81,15 @@ target_include_directories (
         PRIVATE
         ${BAAS_APP_BAAS_CPP_DIR}/include
         ${CMAKE_CURRENT_LIST_DIR}/include
-        ${BAAS_PROJECT_PATH}/external
         ${BAAS_PROJECT_PATH}/include
         ${CMAKE_BINARY_DIR}
+)
+
+target_link_libraries(
+        BAAS_workflow_checker
+        PRIVATE
+        BAAS::OpenCV
+        BAAS::nlohmann_json
+        BAAS::spdlog
+        BAAS::simdutf
 )

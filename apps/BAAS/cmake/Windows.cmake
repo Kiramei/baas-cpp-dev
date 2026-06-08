@@ -8,16 +8,6 @@ if(BAAS_APP_USE_CUDA)
     )
 endif()
 
-baas_require_opencv_target()
-baas_require_onnxruntime_target()
-baas_require_ffmpeg_target()
-baas_require_lz4_target()
-baas_require_nlohmann_json_target()
-baas_require_httplib_target()
-baas_require_spdlog_target()
-baas_require_simdutf_target()
-baas_try_enable_benchmark(BAAS_BENCHMARK_AVAILABLE)
-
 set(
         LIB_RAW
         BAAS_ipc
@@ -34,21 +24,17 @@ set(
 )
 
 if(BAAS_APP_USE_CUDA)
-    get_property(_onnxruntime_provider GLOBAL PROPERTY BAAS_DEPENDENCY_onnxruntime_PROVIDER)
-    if(NOT _onnxruntime_provider STREQUAL "cuda")
-        message(FATAL_ERROR "BAAS_APP_USE_CUDA requires ONNXRuntime provider 'cuda' in BAAS dependency index. Run: python -m deploy.bootstrap_dependency --dependency onnxruntime --provider cuda --build-type ${BAAS_DEPENDENCY_BUILD_TYPE}")
+    if(NOT TARGET BAAS::ONNXRuntimeCUDAProvider)
+        message(FATAL_ERROR "BAAS_APP_USE_CUDA requires conan install with -o \"&:onnxruntime_use_cuda=True\"")
     endif()
-    baas_require_cuda_target()
     list(APPEND LIB_RAW BAAS::CUDA)
-    if(TARGET BAAS::ONNXRuntimeCUDAProvider)
-        list(APPEND LIB_RAW BAAS::ONNXRuntimeCUDAProvider)
-    endif()
+    list(APPEND LIB_RAW BAAS::ONNXRuntimeCUDAProvider)
 endif()
 
-if(BAAS_BENCHMARK_AVAILABLE)
+if(TARGET BAAS::benchmark AND TARGET BAAS::benchmark_main)
     list(APPEND LIB_RAW BAAS::benchmark BAAS::benchmark_main)
 else()
-    message(FATAL_ERROR "BAAS::benchmark package was not found. Run: python -m deploy.bootstrap_dependency --dependency benchmark --build-type ${BAAS_DEPENDENCY_BUILD_TYPE}")
+    message(FATAL_ERROR "BAAS::benchmark package was not found. Run conan install with -o \"&:use_benchmark=True\"")
 endif()
 
 message(STATUS "LIB RAW :")
@@ -61,7 +47,17 @@ target_link_libraries(
         ${LIB_RAW}
 )
 
-baas_copy_runtime_dependencies(BAAS_APP)
+baas_copy_conan_runtime_dependencies(
+        BAAS_APP
+        PACKAGES
+        baas-opencv
+        baas-onnxruntime
+        baas-ffmpeg
+        baas-lz4
+        baas-spdlog
+        baas-simdutf
+        baas-benchmark
+)
 
 set(ICON_RESOURCE "${BAAS_APP_BAAS_CPP_DIR}/src/rc/logo.ico")
 set(RES_FILE "${BAAS_APP_BAAS_CPP_DIR}/src/rc/app.rc")

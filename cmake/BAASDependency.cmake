@@ -1,10 +1,6 @@
 include_guard(GLOBAL)
 
-include("${CMAKE_CURRENT_LIST_DIR}/dependency/DependencyOptions.cmake")
-if(EXISTS "${BAAS_DEPENDENCY_INDEX}")
-    include("${BAAS_DEPENDENCY_INDEX}")
-endif()
-include("${CMAKE_CURRENT_LIST_DIR}/dependency/RuntimeCopy.cmake")
+include("${CMAKE_CURRENT_LIST_DIR}/BAASConanRuntime.cmake")
 
 function(baas_request_dependencies)
     get_property(_requested GLOBAL PROPERTY BAAS_REQUESTED_DEPENDENCIES)
@@ -32,6 +28,7 @@ function(baas_request_dependencies)
         list(APPEND _requested "${_arg}")
         set(_last_dependency "${_arg}")
     endforeach()
+
     if(_provider_dependency)
         message(FATAL_ERROR "baas_request_dependencies missing provider value for dependency '${_provider_dependency}'")
     endif()
@@ -41,114 +38,101 @@ function(baas_request_dependencies)
     set_property(GLOBAL PROPERTY BAAS_REQUESTED_DEPENDENCIES "${_requested}")
 endfunction()
 
-function(baas_request_dependency dependency_name)
-    baas_request_dependencies("${dependency_name}" ${ARGN})
+function(_baas_conan_generator_dir out_var)
+    set(_candidates "")
+    if(DEFINED CMAKE_TOOLCHAIN_FILE AND NOT CMAKE_TOOLCHAIN_FILE STREQUAL "")
+        get_filename_component(_toolchain_dir "${CMAKE_TOOLCHAIN_FILE}" DIRECTORY)
+        list(APPEND _candidates "${_toolchain_dir}")
+    endif()
+    foreach(_prefix IN LISTS CMAKE_PREFIX_PATH)
+        list(APPEND _candidates "${_prefix}")
+    endforeach()
+    list(APPEND _candidates "${CMAKE_BINARY_DIR}/generators")
+
+    foreach(_candidate IN LISTS _candidates)
+        if(EXISTS "${_candidate}/conan_toolchain.cmake" OR EXISTS "${_candidate}/baas-lz4-config.cmake")
+            set(${out_var} "${_candidate}" PARENT_SCOPE)
+            return()
+        endif()
+    endforeach()
+    set(${out_var} "" PARENT_SCOPE)
 endfunction()
 
-function(baas_bootstrap_requested_dependencies)
+function(_baas_require_conan_generators)
+    _baas_conan_generator_dir(_generator_dir)
+    if(NOT _generator_dir)
+        message(FATAL_ERROR
+                "BAAS dependencies are provided by Conan. Run conan install before CMake configure.\n"
+                "Example:\n"
+                "  python deploy/conan/scripts/manage_recipes.py export\n"
+                "  conan install deploy/conan -of build/conan/windows-msvc-release -pr:h=deploy/conan/profiles/windows-msvc-release -pr:h=deploy/conan/profiles/dependency-versions-default --build=missing --no-remote\n"
+                "Then configure with -DCMAKE_TOOLCHAIN_FILE=build/conan/windows-msvc-release/generators/conan_toolchain.cmake")
+    endif()
+    list(PREPEND CMAKE_PREFIX_PATH "${_generator_dir}")
+    set(CMAKE_PREFIX_PATH "${CMAKE_PREFIX_PATH}" PARENT_SCOPE)
+endfunction()
+
+function(_baas_find_requested_package dependency)
+    if(dependency STREQUAL "opencv" OR dependency STREQUAL "opencv_dnn")
+        find_package(baas-opencv CONFIG REQUIRED)
+        if(dependency STREQUAL "opencv_dnn" AND NOT TARGET BAAS::OpenCVDnn)
+            if(TARGET BAAS::OpenCV)
+                add_library(BAAS::OpenCVDnn INTERFACE IMPORTED GLOBAL)
+                target_link_libraries(BAAS::OpenCVDnn INTERFACE BAAS::OpenCV)
+            endif()
+        endif()
+        if(dependency STREQUAL "opencv_dnn" AND NOT TARGET BAAS::OpenCVDnn)
+            message(FATAL_ERROR "opencv_dnn requires conan install with -o \"&:use_opencv_dnn=True\"")
+        endif()
+    elseif(dependency STREQUAL "onnxruntime")
+        find_package(baas-onnxruntime CONFIG REQUIRED)
+        get_property(_provider GLOBAL PROPERTY "BAAS_REQUESTED_DEPENDENCY_PROVIDER_onnxruntime")
+        if(_provider STREQUAL "cuda" AND NOT TARGET BAAS::ONNXRuntimeCUDAProvider)
+            message(FATAL_ERROR "onnxruntime PROVIDER cuda requires conan install with -o \"&:onnxruntime_use_cuda=True\"")
+        endif()
+    elseif(dependency STREQUAL "ffmpeg")
+        find_package(baas-ffmpeg CONFIG REQUIRED)
+    elseif(dependency STREQUAL "lz4")
+        find_package(baas-lz4 CONFIG REQUIRED)
+    elseif(dependency STREQUAL "nlohmann_json")
+        find_package(baas-nlohmann-json CONFIG REQUIRED)
+    elseif(dependency STREQUAL "cpp_httplib")
+        find_package(baas-cpp-httplib CONFIG REQUIRED)
+    elseif(dependency STREQUAL "spdlog")
+        find_package(baas-spdlog CONFIG REQUIRED)
+    elseif(dependency STREQUAL "simdutf")
+        find_package(baas-simdutf CONFIG REQUIRED)
+    elseif(dependency STREQUAL "benchmark")
+        find_package(baas-benchmark CONFIG REQUIRED)
+    elseif(dependency STREQUAL "cuda")
+        find_package(CUDAToolkit 12.2 REQUIRED)
+        if(NOT TARGET BAAS::CUDAHeaders)
+            add_library(BAAS::CUDAHeaders INTERFACE IMPORTED GLOBAL)
+            set_target_properties(BAAS::CUDAHeaders PROPERTIES INTERFACE_INCLUDE_DIRECTORIES "${CUDAToolkit_INCLUDE_DIRS}")
+        endif()
+        if(NOT TARGET BAAS::CUDA)
+            add_library(BAAS::CUDA INTERFACE IMPORTED GLOBAL)
+            set_target_properties(BAAS::CUDA PROPERTIES INTERFACE_INCLUDE_DIRECTORIES "${CUDAToolkit_INCLUDE_DIRS}")
+            if(TARGET CUDA::cudart)
+                target_link_libraries(BAAS::CUDA INTERFACE CUDA::cudart)
+            elseif(TARGET CUDA::cudart_static)
+                target_link_libraries(BAAS::CUDA INTERFACE CUDA::cudart_static)
+            endif()
+        endif()
+    else()
+        message(FATAL_ERROR "Unknown BAAS Conan dependency: ${dependency}")
+    endif()
+endfunction()
+
+function(baas_load_requested_dependencies)
     get_property(_requested GLOBAL PROPERTY BAAS_REQUESTED_DEPENDENCIES)
     if(NOT _requested)
         return()
     endif()
     list(REMOVE_DUPLICATES _requested)
 
-    if(DEFINED BAAS_PYTHON_EXECUTABLE AND NOT BAAS_PYTHON_EXECUTABLE STREQUAL "")
-        set(_python_executable "${BAAS_PYTHON_EXECUTABLE}")
-    else()
-        find_package(Python3 COMPONENTS Interpreter REQUIRED)
-        set(_python_executable "${Python3_EXECUTABLE}")
-    endif()
-
-    list(JOIN _requested "," _dependencies_arg)
-    set(_bootstrap_args
-            -m deploy.bootstrap_dependency
-            --dependencies "${_dependencies_arg}"
-            --build-type "${BAAS_DEPENDENCY_BUILD_TYPE}"
-            --cmake-manifest "${BAAS_DEPENDENCY_INDEX}"
-    )
-
-    if(DEFINED TARGET_OS_NAME AND NOT TARGET_OS_NAME STREQUAL "")
-        list(APPEND _bootstrap_args --platform "${TARGET_OS_NAME}")
-    endif()
-
-    if(DEFINED ANDROID_ABI AND NOT ANDROID_ABI STREQUAL "")
-        list(APPEND _bootstrap_args --android-abi "${ANDROID_ABI}")
-    elseif(DEFINED CMAKE_SYSTEM_PROCESSOR AND NOT CMAKE_SYSTEM_PROCESSOR STREQUAL "")
-        list(APPEND _bootstrap_args --arch "${CMAKE_SYSTEM_PROCESSOR}")
-    endif()
-
-    if(DEFINED CMAKE_CXX_COMPILER_ID AND NOT CMAKE_CXX_COMPILER_ID STREQUAL "")
-        list(APPEND _bootstrap_args --compiler-id "${CMAKE_CXX_COMPILER_ID}")
-    endif()
-    if(DEFINED CMAKE_CXX_COMPILER_VERSION AND NOT CMAKE_CXX_COMPILER_VERSION STREQUAL "")
-        list(APPEND _bootstrap_args --compiler-version "${CMAKE_CXX_COMPILER_VERSION}")
-    endif()
-    if(DEFINED CMAKE_TOOLCHAIN_FILE AND NOT CMAKE_TOOLCHAIN_FILE STREQUAL "")
-        list(APPEND _bootstrap_args --toolchain-file "${CMAKE_TOOLCHAIN_FILE}")
-    endif()
-
-    set(_provider_overrides "")
+    _baas_require_conan_generators()
     foreach(_dependency IN LISTS _requested)
-        get_property(_provider GLOBAL PROPERTY "BAAS_REQUESTED_DEPENDENCY_PROVIDER_${_dependency}")
-        if(_provider)
-            list(APPEND _provider_overrides "${_dependency}=${_provider}")
-        endif()
-    endforeach()
-    if(_provider_overrides)
-        list(JOIN _provider_overrides "," _provider_overrides_arg)
-        list(APPEND _bootstrap_args --provider-overrides "${_provider_overrides_arg}")
-    endif()
-
-    message(STATUS "Bootstrapping BAAS dependencies: ${_dependencies_arg}")
-    execute_process(
-            COMMAND "${_python_executable}" ${_bootstrap_args}
-            WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
-            RESULT_VARIABLE _bootstrap_result
-            OUTPUT_VARIABLE _bootstrap_stdout
-            ERROR_VARIABLE _bootstrap_stderr
-            ECHO_OUTPUT_VARIABLE
-            ECHO_ERROR_VARIABLE
-    )
-    if(NOT _bootstrap_result EQUAL 0)
-        string(REPLACE ";" " " _bootstrap_command "${_python_executable};${_bootstrap_args}")
-        message(FATAL_ERROR
-                "BAAS dependency bootstrap failed.\n"
-                "Command: ${_bootstrap_command}\n"
-                "Logs: ${CMAKE_SOURCE_DIR}/output/log/dependency\n"
-                "stdout:\n${_bootstrap_stdout}\n"
-                "stderr:\n${_bootstrap_stderr}")
-    endif()
-
-    get_property(_previous_bootstrapped_dependencies GLOBAL PROPERTY BAAS_BOOTSTRAPPED_DEPENDENCIES)
-    foreach(_dependency IN LISTS _previous_bootstrapped_dependencies)
-        set_property(GLOBAL PROPERTY "BAAS_DEPENDENCY_${_dependency}_VERSION" "")
-        set_property(GLOBAL PROPERTY "BAAS_DEPENDENCY_${_dependency}_PROVIDER" "")
-        set_property(GLOBAL PROPERTY "BAAS_DEPENDENCY_${_dependency}_READY" "")
-        set_property(GLOBAL PROPERTY "BAAS_DEPENDENCY_${_dependency}_CONFIG" "")
-        set_property(GLOBAL PROPERTY "BAAS_DEPENDENCY_${_dependency}_PACKAGE_DIR" "")
-    endforeach()
-    if(EXISTS "${BAAS_DEPENDENCY_INDEX}")
-        include("${BAAS_DEPENDENCY_INDEX}")
-    endif()
-    foreach(_dependency IN LISTS _requested)
-        get_property(_ready GLOBAL PROPERTY "BAAS_DEPENDENCY_${_dependency}_READY")
-        if(NOT _ready)
-            message(FATAL_ERROR
-                    "Dependency '${_dependency}' is not ready after BAAS dependency bootstrap.\n"
-                    "Manifest: ${BAAS_DEPENDENCY_INDEX}\n"
-                    "Run:\n"
-                    "  python -m deploy.bootstrap_dependency --dependency ${_dependency} --build-type ${BAAS_DEPENDENCY_BUILD_TYPE}")
-        endif()
+        _baas_find_requested_package("${_dependency}")
     endforeach()
 endfunction()
-
-include("${CMAKE_CURRENT_LIST_DIR}/dependency/OpenCV.cmake")
-include("${CMAKE_CURRENT_LIST_DIR}/dependency/ONNXRuntime.cmake")
-include("${CMAKE_CURRENT_LIST_DIR}/dependency/FFmpeg.cmake")
-include("${CMAKE_CURRENT_LIST_DIR}/dependency/LZ4.cmake")
-include("${CMAKE_CURRENT_LIST_DIR}/dependency/Benchmark.cmake")
-include("${CMAKE_CURRENT_LIST_DIR}/dependency/NlohmannJson.cmake")
-include("${CMAKE_CURRENT_LIST_DIR}/dependency/CppHttplib.cmake")
-include("${CMAKE_CURRENT_LIST_DIR}/dependency/Spdlog.cmake")
-include("${CMAKE_CURRENT_LIST_DIR}/dependency/Simdutf.cmake")
-include("${CMAKE_CURRENT_LIST_DIR}/dependency/CUDAToolkit.cmake")

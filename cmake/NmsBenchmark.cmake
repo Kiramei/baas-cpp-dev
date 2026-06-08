@@ -4,12 +4,13 @@ if(NOT BUILD_BAAS_NMS_BENCHMARK)
     return()
 endif()
 
-baas_try_enable_benchmark(BAAS_NMS_BENCHMARK_AVAILABLE)
-if(NOT BAAS_NMS_BENCHMARK_AVAILABLE)
-    message(FATAL_ERROR "BAAS::benchmark package was not found. Run: python -m deploy.bootstrap_dependency --dependency benchmark --build-type ${BAAS_DEPENDENCY_BUILD_TYPE}")
+if(NOT TARGET BAAS::benchmark)
+    message(FATAL_ERROR "BAAS::benchmark package was not found. Run conan install with -o \"&:use_benchmark=True\"")
 endif()
 
-baas_require_opencv_dnn_target()
+if(NOT TARGET BAAS::OpenCVDnn)
+    message(FATAL_ERROR "BAAS::OpenCVDnn package was not found. Run conan install with -o \"&:use_opencv_dnn=True\"")
+endif()
 
 add_executable(
         baas_nms_benchmark

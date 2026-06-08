@@ -28,8 +28,6 @@ if(NOT DEFINED TARGET_OS_NAME)
 endif()
 
 BAAS_sub_title_LOG("Target OS : ${TARGET_OS_NAME}")
-set(BAAS_DEFAULT_SEARCH_LIB_PATH "${CMAKE_CURRENT_LIST_DIR}/lib/${TARGET_OS_NAME}")
-set(BAAS_DEFAULT_SEARCH_DLL_PATH "${CMAKE_CURRENT_LIST_DIR}/dll/${TARGET_OS_NAME}")
 include("${CMAKE_CURRENT_LIST_DIR}/cmake/BAASDependency.cmake")
 
 if(TARGET_OS_NAME STREQUAL "Android")
@@ -135,7 +133,11 @@ if(BUILD_BAAS_OCR)
     endif()
 endif()
 
-baas_bootstrap_requested_dependencies()
+if(BUILD_BAAS_AW_CHECKER)
+    baas_request_dependencies(opencv nlohmann_json spdlog simdutf)
+endif()
+
+baas_load_requested_dependencies()
 
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
@@ -156,7 +158,9 @@ file(
         ${CMAKE_CURRENT_LIST_DIR}/src/*.cpp
 )
 
-list(REMOVE_ITEM BAAS_CORE_SOURCES "${CMAKE_CURRENT_LIST_DIR}/src/simdutf.cpp")
+if(TARGET_OS_NAME STREQUAL "Windows")
+    list(REMOVE_ITEM BAAS_CORE_SOURCES "${CMAKE_CURRENT_LIST_DIR}/src/simdutf.cpp")
+endif()
 
 include("${CMAKE_CURRENT_LIST_DIR}/cmake/NmsBenchmark.cmake")
 

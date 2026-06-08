@@ -1,59 +1,51 @@
-target_link_directories(
-        BAAS_ocr_server
-        PRIVATE
-        ${BAAS_DEFAULT_SEARCH_DLL_PATH}
-)
-
-SET(
-        DLL_COMMON
-        libonnxruntime.dylib
-)
-
-if (CMAKE_BUILD_TYPE STREQUAL "Debug")
-    message(FATAL_ERROR "Please use Release in MacOS")
-elseif(CMAKE_BUILD_TYPE STREQUAL "Release")
-    SET(
-            DLL_RELEASE
-            libopencv_world.409.dylib
-    )
-endif ()
-
-if (BAAS_OCR_SERVER_USE_CUDA)
-    message(STATUS "CUDA is not available in MacOS.")
-endif ()
+if(BAAS_OCR_SERVER_USE_CUDA)
+    message(FATAL_ERROR "CUDA is not available in MacOS.")
+endif()
 
 set(
-        DLL_RAW
-        ${DLL_COMMON}
-        ${DLL_RELEASE}
+        LIB_RAW
+        BAAS_ipc
+        BAAS::OpenCV
+        BAAS::ONNXRuntime
+        BAAS::nlohmann_json
+        BAAS::httplib
+        BAAS::spdlog
+        BAAS::simdutf
 )
+
 LOG_LINE()
-message(STATUS "DLL RAW :")
-foreach (DLL ${DLL_RAW})
-    message(STATUS "${DLL}")
+message(STATUS "Conan LIB RAW :")
+foreach (LIB ${LIB_RAW})
+    message(STATUS "${LIB}")
 endforeach ()
 
-set(
-    DLL_MOVE
-    ${DLL_RAW}
-    libonnxruntime.1.22.0.dylib
-    libopencv_world.4.9.0.dylib
-)
-
-foreach (dll ${DLL_MOVE})
-    set(FULL_PATH ${BAAS_PROJECT_PATH}/dll/${TARGET_OS_NAME}/${dll})
-    file(COPY ${FULL_PATH} DESTINATION ${CMAKE_BINARY_DIR}/bin)
-endforeach ()
-
-add_custom_command(
-    TARGET BAAS_ocr_server 
-    POST_BUILD
-    COMMAND install_name_tool -delete_rpath ${BAAS_PROJECT_PATH}/dll/MacOS $<TARGET_FILE:BAAS_ocr_server>
-    COMMAND install_name_tool -add_rpath @executable_path $<TARGET_FILE:BAAS_ocr_server>
-    COMMENT "Updating rpath for BAAS_ocr_server"
+set_target_properties(
+        BAAS_ocr_server
+        PROPERTIES
+        INSTALL_RPATH "@executable_path"
+        BUILD_RPATH "@executable_path"
 )
 
 target_link_libraries(
         BAAS_ocr_server
-        ${DLL_RAW}
+        PRIVATE
+        ${LIB_RAW}
+)
+
+add_custom_command(
+        TARGET BAAS_ocr_server
+        POST_BUILD
+        COMMAND /bin/sh -c "install_name_tool -add_rpath @executable_path \"$<TARGET_FILE:BAAS_ocr_server>\" 2>/dev/null || true"
+        COMMENT "Updating rpath for BAAS_ocr_server"
+        VERBATIM
+)
+
+baas_copy_conan_runtime_dependencies(
+        BAAS_ocr_server
+        DESTINATION "${CMAKE_BINARY_DIR}/bin"
+        PACKAGES
+        baas-opencv
+        baas-onnxruntime
+        baas-spdlog
+        baas-simdutf
 )

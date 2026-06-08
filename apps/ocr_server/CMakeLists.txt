@@ -29,7 +29,6 @@ if (MSVC)
     add_compile_options("$<$<CXX_COMPILER_ID:MSVC>:/utf-8>")
     add_compile_options("$<$<C_COMPILER_ID:MSVC>:/MP>")
     add_compile_options(/W0)
-    set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} /O2 /Ob2 /DNDEBUG")
 endif()
 
 file(
@@ -58,14 +57,8 @@ if(NOT ${TARGET_OS_NAME} STREQUAL "Android")
             ${BAAS_OCR_SERVER_CORE_SOURCES}
     )
 else()
-    set(CMAKE_CXX_FLAGS_RELEASE
-            "-O3 -DNDEBUG -ffunction-sections -fdata-sections"
-    )
-
-    set(CMAKE_SHARED_LINKER_FLAGS
-            "-Wl,--gc-sections -Wl,--strip-all"
-    )
-
+    set(CMAKE_C_LINK_OPTIONS_IPO "-fuse-ld=lld")
+    set(CMAKE_CXX_LINK_OPTIONS_IPO "-fuse-ld=lld")
     set(CMAKE_INTERPROCEDURAL_OPTIMIZATION TRUE)
 
     add_library(
