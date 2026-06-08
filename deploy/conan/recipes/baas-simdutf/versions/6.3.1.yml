@@ -1,0 +1,13 @@
+sources:
+  6.3.1:
+    url: https://github.com/simdutf/simdutf/archive/refs/tags/v6.3.1.tar.gz
+    sha256: 7a36c37db8f6dd36e03b1e894075c15f54dac6d0fe45026090eb56b941fcadca
+    archive_type: tar.gz
+    strip_prefix: simdutf-6.3.1
+build:
+  cmake_options:
+    BUILD_SHARED_LIBS: 'ON'
+    SIMDUTF_TESTS: 'OFF'
+    SIMDUTF_TOOLS: 'OFF'
+    SIMDUTF_BENCHMARKS: 'OFF'
+    CMAKE_DEBUG_POSTFIX: _d

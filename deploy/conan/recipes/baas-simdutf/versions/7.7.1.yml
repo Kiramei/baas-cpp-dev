@@ -1,0 +1,13 @@
+sources:
+  7.7.1:
+    url: https://github.com/simdutf/simdutf/archive/refs/tags/v7.7.1.tar.gz
+    sha256: 3b119d55c47196f6310f5b7b300563e6f2789b7de352536809438a3de1eb4432
+    archive_type: tar.gz
+    strip_prefix: simdutf-7.7.1
+build:
+  cmake_options:
+    BUILD_SHARED_LIBS: 'ON'
+    SIMDUTF_TESTS: 'OFF'
+    SIMDUTF_TOOLS: 'OFF'
+    SIMDUTF_BENCHMARKS: 'OFF'
+    CMAKE_DEBUG_POSTFIX: _d
