@@ -112,7 +112,7 @@ void BAASOCR::get_text_boxes(
 {
     auto res = ocr_map.find(language);
     if (res == ocr_map.end()) {
-        BAASGlobalLogger->BAASError("OCR for" + language + " not init");
+        BAASGlobalLogger->BAASError("OCR for " + language + " not init");
         return;
     }
     res->second->get_text_boxes(img, result);
@@ -129,7 +129,7 @@ void BAASOCR::ocr(
 {
     auto res = ocr_map.find(language);
     if (res == ocr_map.end()) {
-        if (logger != nullptr) logger->BAASError("OCR for" + language + " not init");
+        if (logger != nullptr) logger->BAASError("OCR for " + language + " not init");
         return;
     }
     std::vector<std::string> unique_candidates;

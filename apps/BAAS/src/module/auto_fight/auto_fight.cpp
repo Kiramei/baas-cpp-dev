@@ -797,7 +797,6 @@ bool AutoFight::_state_start_trans_cond_j_loop()
         }
 
         // screenshot update
-//        update_screenshot();
         baas->i_update_screenshot_array();
         baas->reset_all_feature();
 
@@ -805,6 +804,7 @@ bool AutoFight::_state_start_trans_cond_j_loop()
         if (!d_auto_f.d_updaters[0]->at_fight_page()) continue;
 
         // data update with condition judgement
+        // conditions recursively set d_updater_flag to decide which data to be updated in this cycle
         _state_set_d_update_flags();
 
         d_wait_to_update_idx.clear();
@@ -822,10 +822,8 @@ bool AutoFight::_state_start_trans_cond_j_loop()
         for (auto idx : d_wait_to_update_idx) {
             d_updater_queue.push(idx);
         }
-
-        // wait d_updater_thread_count = 0
-//        if(d_updater_running_thread_count > 0) _wait_d_update_running_thread_end();
-//        assert(d_updater_running_thread_count == 0);
+        
+        // at this line, running thread count may not be 0
         // submit updaters into thread pool
         for (int i = 0; i < d_wait_to_update_idx.size(); ++i) {
             if (d_updater_running_thread_count >= d_update_max_thread) {
@@ -851,7 +849,7 @@ bool AutoFight::_state_start_trans_cond_j_loop()
             });
         }
 
-        // whenever a this round updater finished, do condition judgement
+        // all the updaters submitted, whenever a this round updater finished, do condition judgement
         int start_running_t, initial_t_count = d_updater_running_thread_count;
         for (int i = 1; i <= initial_t_count; ++i) {
             std::unique_lock<std::mutex> d_update_thread_lock(d_update_thread_mutex);
