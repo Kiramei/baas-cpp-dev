@@ -1,0 +1,14 @@
+[settings]
+os=Windows
+arch=x86_64
+compiler=msvc
+compiler.version=194
+compiler.runtime=dynamic
+compiler.runtime_type=Release
+build_type=Release
+
+[conf]
+tools.cmake.cmaketoolchain:generator=Ninja
+tools.build:cflags=["/O2","/Ob2","/DNDEBUG","/Gy","/Gw"]
+tools.build:cxxflags=["/O2","/Ob2","/DNDEBUG","/Gy","/Gw","/Zc:inline"]
+tools.build:sharedlinkflags=["/INCREMENTAL:NO","/OPT:REF","/OPT:ICF"]

@@ -1,0 +1,13 @@
+[settings]
+os=Android
+os.api_level=26
+arch=armv8
+compiler=clang
+compiler.version=21
+compiler.libcxx=c++_shared
+compiler.cppstd=20
+build_type=Release
+
+[conf]
+tools.cmake.cmaketoolchain:generator=Ninja
+tools.cmake.cmaketoolchain:extra_variables={"CMAKE_C_FLAGS_RELEASE":"-O3 -DNDEBUG -g0 -ffunction-sections -fdata-sections","CMAKE_CXX_FLAGS_RELEASE":"-O3 -DNDEBUG -g0 -ffunction-sections -fdata-sections","CMAKE_SHARED_LINKER_FLAGS_RELEASE":"-Wl,--gc-sections -Wl,--strip-all"}
