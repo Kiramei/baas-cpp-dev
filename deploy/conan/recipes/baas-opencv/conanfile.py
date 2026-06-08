@@ -6,7 +6,7 @@ from conan.tools.cmake import CMake, CMakeToolchain, cmake_layout
 from conan.tools.files import collect_libs, get
 
 
-class BaasOpenCvConan(ConanFile):
+class BAASOpenCVConan(ConanFile):
     name = "baas-opencv"
     version = "4.9.0"
     license = "Apache-2.0"
@@ -25,11 +25,7 @@ class BaasOpenCvConan(ConanFile):
     def generate(self):
         tc = CMakeToolchain(self)
         for key, value in self._cmake_options().items():
-            if key in {"CMAKE_BUILD_TYPE", "CMAKE_INSTALL_PREFIX"}:
-                continue
-            if key.startswith("CMAKE_") and key.endswith("_RELEASE") and str(self.settings.compiler) != "msvc":
-                continue
-            tc.variables[key] = str(value).replace("${cmake_config}", str(self.settings.build_type))
+            tc.variables[key] = str(value)
         tc.generate()
 
     def build(self):
