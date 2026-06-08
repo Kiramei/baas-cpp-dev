@@ -1,0 +1,14 @@
+sources:
+  1.9.5:
+    source_archive:
+      url: https://github.com/google/benchmark/archive/refs/tags/v1.9.5.tar.gz
+      sha256: 9631341c82bac4a288bef951f8b26b41f69021794184ece969f8473977eaa340
+      archive_type: tar.gz
+      strip_prefix: benchmark-1.9.5
+build:
+  cmake_options:
+    BUILD_SHARED_LIBS: 'ON'
+    BENCHMARK_ENABLE_TESTING: 'OFF'
+    BENCHMARK_ENABLE_GTEST_TESTS: 'OFF'
+    BENCHMARK_ENABLE_INSTALL: 'ON'
+    CMAKE_DEBUG_POSTFIX: _d
