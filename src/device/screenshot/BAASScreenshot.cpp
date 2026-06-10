@@ -5,7 +5,6 @@
 #include "device/screenshot/BAASScreenshot.h"
 
 #include "config/BAASStaticConfig.h"
-#include "device/screenshot/AscreenCap.h"
 #include "device/screenshot/AdbScreenshot.h"
 #include "device/screenshot/ScrcpyScreenshot.h"
 #ifdef _WIN32
@@ -19,7 +18,6 @@ BAAS_NAMESPACE_BEGIN
 const set<string> BAASScreenshot::available_methods = {
          "scrcpy"
         ,"adb"
-        ,"ascreencap"
 #ifdef _WIN32
         ,"nemu"
         ,"ldopengl"
@@ -119,10 +117,7 @@ void BAASScreenshot::set_screenshot_method(
 
     logger->BAASInfo("Screenshot method : [ " + method + " ]");
     screenshot_method = method;
-    if (method == "ascreencap") {
-        screenshot_instance = new AScreenCap(connection);
-    }
-    else if (method == "scrcpy") {
+    if (method == "scrcpy") {
         screenshot_instance = new ScrcpyScreenshot(connection);
     }
     else if (method == "adb") {

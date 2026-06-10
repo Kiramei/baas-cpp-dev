@@ -1,4 +1,4 @@
-# BAAS_Cpp 
+# BAAS_Cpp
 ## BAAS_Cpp是一个安卓自动化脚本框架
 
 1. 这是对[blue_archive_auto_script](https://github.com/pur1fying/blue_archive_auto_script)的C++重构 , 目的是实现一个功能齐全的自动化脚本框架,简化开发流程
@@ -11,13 +11,13 @@
 
 ### 模拟器控制 (大部分灵感来自[Alas](https://github.com/LmeSzinc/AzurLaneAutoScript/tree/master/module/device) 是对python代码的C++翻译)
 
-#### 模拟器截图方式: nemu_ipc, ascreencap, adb, scrcpy(有损)   
+#### 模拟器截图方式: nemu_ipc, adb, scrcpy(有损)
 
 对应代码 include/device/screenshot
 
-TODO: adb_nc, droidcast, ascreencap_nc
+TODO: adb_nc, droidcast
 
-#### 模拟器控制方式: adb, scrcpy, nemu 
+#### 模拟器控制方式: adb, scrcpy, nemu
 
 对应代码 include/device/control
 
@@ -65,7 +65,7 @@ Open Source Code used:
 9. [scrcpy](https://github.com/Genymobile/scrcpy)
     - device screenshot and control
 10. [lz4](https://github.com/lz4/lz4)
-    - ascreencap screenshot decod
+    - compression library dependency
 11. [thread-pool](https://github.com/mtrebi/thread-pool)
     - thread pool
 

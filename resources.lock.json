@@ -114,32 +114,6 @@
         ]
       }
     },
-    "ascreencap": {
-      "version": "TODO_CONFIRM",
-      "provider": "external_asset",
-      "url": "TODO_CONFIRM_UPSTREAM_OR_ASSET_URL",
-      "sha256": "TODO_LOCK_SHA256",
-      "fingerprint_inputs": [
-        "version",
-        "provider",
-        "sha256",
-        "platform",
-        "arch",
-        "android_abi"
-      ],
-      "outputs": {
-        "runtime": [
-          "Android_5.x-7.x/${android_abi}/ascreencap",
-          "Android_8.x/${android_abi}/ascreencap",
-          "Android_9.x/${android_abi}/ascreencap"
-        ]
-      },
-      "validation": {
-        "required_outputs": [
-          "runtime"
-        ]
-      }
-    },
     "ocr_models": {
       "version": "TODO_CONFIRM",
       "provider": "download",

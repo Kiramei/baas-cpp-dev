@@ -35,10 +35,6 @@ extern std::string scrcpyJarName;
 
 extern std::filesystem::path BAAS_OUTPUT_DIR;
 
-extern std::filesystem::path ASCREENCAP_BIN_DIR;
-
-extern std::filesystem::path ASCREENCAP_REMOTE_DIR;
-
 extern std::filesystem::path DEVELOPER_PROJECT_DIR;
 
 extern std::string CURRENT_TIME_STRING;

@@ -36,10 +36,6 @@ std::string scrcpyJarName;
 
 std::filesystem::path BAAS_OUTPUT_DIR;
 
-std::filesystem::path ASCREENCAP_BIN_DIR;
-
-std::filesystem::path ASCREENCAP_REMOTE_DIR;
-
 std::filesystem::path DEVELOPER_PROJECT_DIR;
 
 std::string CURRENT_TIME_STRING;
@@ -76,9 +72,6 @@ void init_path(const filesystem::path res_dir) {
     scrcpyJarName = "scrcpy-server.jar";
     scrcpyJarPath = BAAS_RESOURCE_DIR / "bin" / "scrcpy" / scrcpyJarName;
     scrcpyJar_REMOTE_DIR = "/data/local/tmp/" + scrcpyJarName;
-
-    ASCREENCAP_BIN_DIR = BAAS_RESOURCE_DIR / "bin" / "ascreencap";
-    ASCREENCAP_REMOTE_DIR = "/data/local/tmp/ascreencap";
 }
 
 BAAS_NAMESPACE_END
