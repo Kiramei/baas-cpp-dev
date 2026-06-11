@@ -59,9 +59,10 @@ file(
         ${CMAKE_CURRENT_LIST_DIR}/resource/auto_fight_workflow
         DESTINATION ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/resource
 )
+baas_fetch_resources(yolo_models)
 file(
         COPY
-        ${CMAKE_CURRENT_LIST_DIR}/resource/yolo_models
+        ${BAAS_FETCHED_RESOURCE_ROOT}/yolo_models
         DESTINATION ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/resource
 )
 

@@ -72,7 +72,7 @@ function(set_ADB_BINARY)
     set(ADB_BINARY "")
 
     foreach(adb_file IN LISTS ADB_FILES)
-        set(FULL_PATH ${BAAS_PROJECT_PATH}/resource/bin/${TARGET_OS_NAME}/platform-tools/${adb_file})
+        set(FULL_PATH ${BAAS_FETCHED_RESOURCE_ROOT}/bin/${TARGET_OS_NAME}/platform-tools/${adb_file})
         if(EXISTS ${FULL_PATH})
             message(STATUS "Found ADB binary: ${FULL_PATH}")
             list(APPEND ADB_BINARY ${FULL_PATH})

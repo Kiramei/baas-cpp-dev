@@ -1,40 +1,17 @@
 {
   "schema": 1,
   "lock_type": "baas-cpp-resources",
-  "paths": {
-    "downloads": "${BAAS_DOWNLOADS_ROOT}",
-    "package": "${BAAS_ASSETS_ROOT}/${name}/${version}/${provider}"
-  },
-  "state": {
-    "file": "${BAAS_WORKSPACE_ROOT}/state.json"
-  },
-  "variant_model": {
-    "fingerprint_inputs": [
-      "name",
-      "version",
-      "provider",
-      "sha256",
-      "platform",
-      "arch",
-      "android_abi"
-    ]
-  },
   "resources": {
     "scrcpy_server": {
-      "version": "TODO_CONFIRM",
-      "provider": "release",
-      "url": "TODO_LOCK_RELEASE_ASSET_URL",
-      "sha256": "TODO_LOCK_SHA256",
-      "fingerprint_inputs": [
-        "version",
-        "provider",
-        "sha256",
-        "platform",
-        "arch"
-      ],
+      "version": "2.4",
+      "provider": "github_release",
+      "type": "file",
+      "url": "https://github.com/pur1fying/BAAS_resource/releases/download/scrcpy-server-v2.4/scrcpy-server.jar",
+      "sha256": "93c272b7438605c055e127f7444064ed78fa9ca49f81156777fd201e79ce7ba3",
+      "target_dir": "bin/scrcpy",
       "outputs": {
         "runtime": [
-          "scrcpy-server.jar"
+          "bin/scrcpy/scrcpy-server.jar"
         ]
       },
       "validation": {
@@ -44,22 +21,17 @@
       }
     },
     "platform_tools_windows": {
-      "version": "TODO_CONFIRM",
-      "provider": "android_sdk",
-      "url": "TODO_LOCK_PLATFORM_TOOLS_WINDOWS_URL",
-      "sha256": "TODO_LOCK_SHA256",
-      "fingerprint_inputs": [
-        "version",
-        "provider",
-        "sha256",
-        "platform",
-        "arch"
-      ],
+      "version": "36.0.0-13206524",
+      "provider": "github_release",
+      "type": "archive",
+      "url": "https://github.com/pur1fying/BAAS_resource/releases/download/adb-platform-tools-v36.0.0-13206524/adb-platform-tools-windows-v36.0.0-13206524.zip",
+      "sha256": "312d1710b39dd99f7296968e5a74113f1c3154af6365c72f3fa67531de1ceb5a",
+      "target_dir": "bin/Windows",
       "outputs": {
         "runtime": [
-          "platform-tools/adb.exe",
-          "platform-tools/AdbWinApi.dll",
-          "platform-tools/AdbWinUsbApi.dll"
+          "bin/Windows/platform-tools/adb.exe",
+          "bin/Windows/platform-tools/AdbWinApi.dll",
+          "bin/Windows/platform-tools/AdbWinUsbApi.dll"
         ]
       },
       "validation": {
@@ -69,20 +41,15 @@
       }
     },
     "platform_tools_macos": {
-      "version": "TODO_CONFIRM",
-      "provider": "android_sdk",
-      "url": "TODO_LOCK_PLATFORM_TOOLS_MACOS_URL",
-      "sha256": "TODO_LOCK_SHA256",
-      "fingerprint_inputs": [
-        "version",
-        "provider",
-        "sha256",
-        "platform",
-        "arch"
-      ],
+      "version": "36.0.0-13206524",
+      "provider": "github_release",
+      "type": "archive",
+      "url": "https://github.com/pur1fying/BAAS_resource/releases/download/adb-platform-tools-v36.0.0-13206524/adb-platform-tools-macos-v36.0.0-13206524.zip",
+      "sha256": "fedebe0e75bfb998660c925f83d256d6f8d5e61d549611dcaa11795d784dd46e",
+      "target_dir": "bin/MacOS",
       "outputs": {
         "runtime": [
-          "platform-tools/adb"
+          "bin/MacOS/platform-tools/adb"
         ]
       },
       "validation": {
@@ -92,20 +59,15 @@
       }
     },
     "platform_tools_linux": {
-      "version": "TODO_CONFIRM",
-      "provider": "android_sdk",
-      "url": "TODO_LOCK_PLATFORM_TOOLS_LINUX_URL",
-      "sha256": "TODO_LOCK_SHA256",
-      "fingerprint_inputs": [
-        "version",
-        "provider",
-        "sha256",
-        "platform",
-        "arch"
-      ],
+      "version": "36.0.0-13206524",
+      "provider": "github_release",
+      "type": "archive",
+      "url": "https://github.com/pur1fying/BAAS_resource/releases/download/adb-platform-tools-v36.0.0-13206524/adb-platform-tools-linux-v36.0.0-13206524.zip",
+      "sha256": "cdbb11a634d026a6f0acba42eab0c3f5b91b740f9ed69682de40fb54d6abba24",
+      "target_dir": "bin/Linux",
       "outputs": {
         "runtime": [
-          "platform-tools/adb"
+          "bin/Linux/platform-tools/adb"
         ]
       },
       "validation": {
@@ -115,17 +77,40 @@
       }
     },
     "ocr_models": {
-      "version": "TODO_CONFIRM",
-      "provider": "download",
-      "url": "TODO_LOCK_OCR_MODELS_ASSET_URL",
-      "sha256": "TODO_LOCK_SHA256",
-      "fingerprint_inputs": [
-        "version",
-        "provider",
-        "sha256"
-      ],
+      "version": "1.0.0",
+      "provider": "github_release",
+      "type": "archive",
+      "url": "https://github.com/pur1fying/BAAS_resource/releases/download/ocr_models-v1.0.0/ocr_models-v1.0.0.zip",
+      "sha256": "a76777222e83b3ca2bfb793a2634f5b69b1123dcf770d797391eac04c3cca1a5",
+      "target_dir": "ocr_models",
       "outputs": {
-        "runtime": []
+        "runtime": [
+          "ocr_models/ch_ppocr_mobile_v2.0_cls_infer.onnx",
+          "ocr_models/ch_PP-OCRv3_det_infer.onnx",
+          "ocr_models/ch_PP-OCRv3_rec_infer.onnx",
+          "ocr_models/ch_PP-OCRv4_det_infer.onnx",
+          "ocr_models/configs.txt",
+          "ocr_models/dict_chinese.txt",
+          "ocr_models/dict_chinese_cht.txt",
+          "ocr_models/dict_cyrillic.txt",
+          "ocr_models/dict_en.txt",
+          "ocr_models/dict_japan.txt",
+          "ocr_models/dict_korean.txt",
+          "ocr_models/ppocr_keys_v1.txt",
+          "ocr_models/rec_ch_PP-OCRv4_infer.onnx",
+          "ocr_models/rec_chinese_cht_PP-OCRv3_infer.onnx",
+          "ocr_models/rec_cyrillic_PP-OCRv3_infer.onnx",
+          "ocr_models/rec_en_PP-OCRv3_infer.onnx",
+          "ocr_models/rec_japan_PP-OCRv3_infer.onnx",
+          "ocr_models/rec_korean_PP-OCRv3_infer.onnx",
+          "ocr_models/test_images/en-us.png",
+          "ocr_models/test_images/ja-jp.png",
+          "ocr_models/test_images/ko-kr.png",
+          "ocr_models/test_images/ru-ru.png",
+          "ocr_models/test_images/zh-cn.png",
+          "ocr_models/test_images/zh-cn_v3.png",
+          "ocr_models/test_images/zh-tw.png"
+        ]
       },
       "validation": {
         "required_outputs": [
@@ -134,17 +119,18 @@
       }
     },
     "yolo_models": {
-      "version": "TODO_CONFIRM",
-      "provider": "download",
-      "url": "TODO_LOCK_YOLO_MODELS_ASSET_URL",
-      "sha256": "TODO_LOCK_SHA256",
-      "fingerprint_inputs": [
-        "version",
-        "provider",
-        "sha256"
-      ],
+      "version": "1.0.0",
+      "provider": "github_release",
+      "type": "archive",
+      "url": "https://github.com/pur1fying/BAAS_resource/releases/download/yolo_models-v1.0.0/yolo_models-v1.0.0.zip",
+      "sha256": "a68cfa9c053ebc92c7003cd6d6d23c49723a987bdd58f016d4b7993b2c13eff6",
+      "target_dir": "yolo_models",
       "outputs": {
-        "runtime": []
+        "runtime": [
+          "yolo_models/best.onnx",
+          "yolo_models/best_fp16.onnx",
+          "yolo_models/data.yaml"
+        ]
       },
       "validation": {
         "required_outputs": [

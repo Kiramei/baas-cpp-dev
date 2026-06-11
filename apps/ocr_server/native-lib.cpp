@@ -32,7 +32,7 @@ Java_com_example_myapplication_MainActivity_testONNXInit(JNIEnv* env, jobject, j
         std::vector<std::string> lang;
         lang.push_back("zh-cn");
         baas::baas_ocr->init(lang);
-        cv::Mat img = cv::imread(baas::BAAS_PROJECT_DIR.string() + "/resource/ocr_models/test_images/1.jpg");
+        cv::Mat img = cv::imread((baas::BAAS_OCR_MODEL_DIR / "test_images" / "1.jpg").string());
 
         baas::OcrResult out;
         auto t1 = std::chrono::high_resolution_clock::now();

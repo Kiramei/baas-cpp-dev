@@ -6,6 +6,7 @@ get_filename_component(BAAS_PROJECT_PATH "${CMAKE_CURRENT_LIST_DIR}" ABSOLUTE)
 
 include("${CMAKE_CURRENT_LIST_DIR}/cmake/utils.cmake")
 include("${CMAKE_CURRENT_LIST_DIR}/cmake/platform.cmake")
+include("${CMAKE_CURRENT_LIST_DIR}/cmake/BAASResources.cmake")
 
 BAAS_hr_LOG("PROJECT BAAS")
 
@@ -215,6 +216,13 @@ add_library(
 )
 
 if (ADB_BINARY_RESOURCE_REQUIRED)
+    if (${TARGET_OS_NAME} STREQUAL "Windows")
+        baas_fetch_resources(platform_tools_windows)
+    elseif (${TARGET_OS_NAME} STREQUAL "MacOS")
+        baas_fetch_resources(platform_tools_macos)
+    elseif (${TARGET_OS_NAME} STREQUAL "Linux")
+        baas_fetch_resources(platform_tools_linux)
+    endif()
     set_ADB_BINARY()
     file(
             COPY
@@ -248,17 +256,19 @@ if (STATIC_CONFIG_RESOURCE_REQUIRED)
 endif ()
 
 if (BIN_RESOURCE_REQUIRED)
+    baas_fetch_resources(scrcpy_server)
     file(
             COPY
-            ${CMAKE_CURRENT_LIST_DIR}/resource/bin
+            ${BAAS_FETCHED_RESOURCE_ROOT}/bin
             DESTINATION ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/resource
     )
 endif ()
 
 if (OCR_MODEL_RESOURCE_REQUIRED)
+    baas_fetch_resources(ocr_models)
     file(
             COPY
-            ${CMAKE_CURRENT_LIST_DIR}/resource/ocr_models
+            ${BAAS_FETCHED_RESOURCE_ROOT}/ocr_models
             DESTINATION ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/resource
     )
 endif ()

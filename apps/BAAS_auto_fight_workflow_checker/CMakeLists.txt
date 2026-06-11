@@ -47,10 +47,11 @@ add_executable(
 #
 #add_dependencies(BAAS_workflow_checker embed_data)
 
+baas_fetch_resources(yolo_models)
 file(
         COPY
         ${BAAS_APP_BAAS_CPP_DIR}/resource/image/CN/zh-cn/image_info/skill_active.json
-        ${BAAS_APP_BAAS_CPP_DIR}/resource/yolo_models/data.yaml
+        ${BAAS_FETCHED_RESOURCE_ROOT}/yolo_models/data.yaml
         DESTINATION
         ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}
 )
