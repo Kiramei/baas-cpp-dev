@@ -20,9 +20,11 @@ configure_file(
 option(BAAS_OCR_SERVER_USE_CUDA      "Ocr Server Use CUDA"       OFF)
 option(BAAS_OCR_SERVER_ANDROID_BUILD "Build Android Application" OFF)
 
-set(OCR_MODEL_RESOURCE_REQUIRED     ON PARENT_SCOPE)
-set(STATIC_CONFIG_RESOURCE_REQUIRED ON PARENT_SCOPE)
-set(GLOBAL_CONFIG_RESOURCE_REQUIRED ON PARENT_SCOPE)
+baas_require_runtime_resources(
+        global_config
+        static_config
+        ocr_models
+)
 
 if (MSVC)
     add_compile_options("$<$<C_COMPILER_ID:MSVC>:/utf-8>")

@@ -12,36 +12,21 @@ configure_file(
         ${CMAKE_BINARY_DIR}/ISA_version.h
 )
 
-set(BIN_RESOURCE_REQUIRED               ON PARENT_SCOPE)
-set(ADB_BINARY_RESOURCE_REQUIRED        ON PARENT_SCOPE)
-set(OCR_MODEL_RESOURCE_REQUIRED         ON PARENT_SCOPE)
-set(STATIC_CONFIG_RESOURCE_REQUIRED     ON PARENT_SCOPE)
-set(GLOBAL_CONFIG_RESOURCE_REQUIRED     ON PARENT_SCOPE)
+baas_require_runtime_resources(
+        global_config
+        static_config
+        adb
+        scrcpy_server
+        ocr_models
+)
 
-file(
-        GLOB
-        USER_CONFIG_FILES
-        ${CMAKE_CURRENT_LIST_DIR}/resource/config/*.json
-)
-file(
-        COPY
-        ${USER_CONFIG_FILES}
-        DESTINATION ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/resource
-)
-file(
-        COPY
-        ${CMAKE_CURRENT_LIST_DIR}/resource/image
-        DESTINATION ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/resource
-)
-file(
-        COPY
-        ${CMAKE_CURRENT_LIST_DIR}/resource/feature
-        DESTINATION ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/resource
-)
-file(
-        COPY
-        ${CMAKE_CURRENT_LIST_DIR}/resource/procedure
-        DESTINATION ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/resource
+baas_copy_local_runtime_resources(
+        BASE_DIR "${CMAKE_CURRENT_LIST_DIR}/resource"
+        ITEMS
+        config
+        image
+        feature
+        procedure
 )
 
 if (MSVC)

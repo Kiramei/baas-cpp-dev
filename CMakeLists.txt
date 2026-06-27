@@ -87,16 +87,6 @@ check_app_options(
         BUILD_BAAS_AW_CHECKER
 )
 
-set(BIN_RESOURCE_REQUIRED OFF)
-set(ADB_BINARY_RESOURCE_REQUIRED OFF)
-set(OCR_MODEL_RESOURCE_REQUIRED OFF)
-set(USER_CONFIG_RESOURCE_REQUIRED OFF)
-set(STATIC_CONFIG_RESOURCE_REQUIRED OFF)
-set(GLOBAL_CONFIG_RESOURCE_REQUIRED OFF)
-set(BAAS_FEATURE_RESOURCE_REQUIRED OFF)
-set(BAAS_PROCEDURE_RESOURCE_REQUIRED OFF)
-set(BAAS_IMAGE_RESOURCE_REQUIRED OFF)
-
 if(BUILD_BAAS_NMS_BENCHMARK)
     baas_request_dependencies(benchmark opencv_dnn)
 endif()
@@ -163,25 +153,6 @@ endif()
 
 include("${CMAKE_CURRENT_LIST_DIR}/cmake/NmsBenchmark.cmake")
 
-file(
-        GLOB
-        GLOBAL_CONFIG_FILE
-        ${CMAKE_CURRENT_LIST_DIR}/resource/global_setting.json
-)
-
-file(
-        GLOB
-        STATIC_CONFIG_FILE
-        ${CMAKE_CURRENT_LIST_DIR}/resource/static.json
-)
-
-file(
-        COPY
-        ${CONFIG_FILES}
-        ${SCRCPY_SERVER}
-        DESTINATION ${CMAKE_BINARY_DIR}/resource
-)
-
 set(BAAS_APP_BAAS_CPP_DIR  "${CMAKE_CURRENT_LIST_DIR}/apps/BAAS")
 set(BAAS_APP_ISA_DIR       "${CMAKE_CURRENT_LIST_DIR}/apps/ISA")
 set(BAAS_OCR_SERVER_DIR    "${CMAKE_CURRENT_LIST_DIR}/apps/ocr_server")
@@ -213,60 +184,4 @@ add_library(
         ${BAAS_PROJECT_PATH}/src/BAASExternalIPC.cpp
 )
 
-if (ADB_BINARY_RESOURCE_REQUIRED)
-    if (${TARGET_OS_NAME} STREQUAL "Windows")
-        baas_fetch_resources(platform_tools_windows)
-    elseif (${TARGET_OS_NAME} STREQUAL "MacOS")
-        baas_fetch_resources(platform_tools_macos)
-    elseif (${TARGET_OS_NAME} STREQUAL "Linux")
-        baas_fetch_resources(platform_tools_linux)
-    endif()
-    set_ADB_BINARY()
-    file(
-            COPY
-            ${ADB_BINARY}
-            DESTINATION ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}
-    )
-endif ()
-
-if (GLOBAL_CONFIG_RESOURCE_REQUIRED)
-    file(
-            COPY
-            ${GLOBAL_CONFIG_FILE}
-            DESTINATION ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/resource
-    )
-endif ()
-
-if (USER_CONFIG_RESOURCE_REQUIRED)
-    file(
-            COPY
-            ${USER_CONFIG_FILE}
-            DESTINATION ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/resource
-    )
-endif ()
-
-if (STATIC_CONFIG_RESOURCE_REQUIRED)
-    file(
-            COPY
-            ${STATIC_CONFIG_FILE}
-            DESTINATION ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/resource
-    )
-endif ()
-
-if (BIN_RESOURCE_REQUIRED)
-    baas_fetch_resources(scrcpy_server)
-    file(
-            COPY
-            ${BAAS_FETCHED_RESOURCE_ROOT}/bin
-            DESTINATION ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/resource
-    )
-endif ()
-
-if (OCR_MODEL_RESOURCE_REQUIRED)
-    baas_fetch_resources(ocr_models)
-    file(
-            COPY
-            ${BAAS_FETCHED_RESOURCE_ROOT}/ocr_models
-            DESTINATION ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/resource
-    )
-endif ()
+baas_install_required_runtime_resources()
