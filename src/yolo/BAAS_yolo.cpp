@@ -15,15 +15,6 @@
 #include <type_traits>
 #include <vector>
 
-#ifdef __CUDA__
-#include <cuda_fp16.h>
-namespace Ort
-{
-    template<>
-    struct TypeToTensorType<half> { static constexpr ONNXTensorElementDataType type = ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT16; };
-}
-#endif // __CUDA__
-
 #include <opencv2/imgproc.hpp>
 
 #include "BAASExceptions.h"
@@ -106,7 +97,7 @@ void BAAS_Yolo_v8::run_session(const cv::Mat& In, yolo_res& Out, NMS_option nms_
 
         case YOLO_DETECT_V8_HALF: {
 #ifdef __CUDA__
-            half* blob = (half*)blob_ptr;
+            auto* blob = (Ort::Float16_t*)blob_ptr;
             blob_from_image(processed_img, blob);
             _tensor_process(blob, Out, nms_op);
             break;
@@ -181,7 +172,7 @@ void BAAS_Yolo_v8::init_model(const yolo_d& d)
         }
         case YOLO_DETECT_V8_HALF: {
 #ifdef __CUDA__
-            blob_ptr = new half[tensor_size];
+            blob_ptr = new Ort::Float16_t[tensor_size];
             break;
 #endif // __CUDA__
         }
@@ -219,10 +210,10 @@ void BAAS_Yolo_v8::warm_up()
         }
         case YOLO_DETECT_V8_HALF: {
 #ifdef __CUDA__
-            half* blob =  (half*) blob_ptr;
+            auto* blob =  (Ort::Float16_t*) blob_ptr;
             blob_from_image(processedImg, blob);
             Ort::Value input_tensor =
-                    Ort::Value::CreateTensor<half>(
+                    Ort::Value::CreateTensor<Ort::Float16_t>(
                             memory_info,
                             blob,
                             tensor_size,

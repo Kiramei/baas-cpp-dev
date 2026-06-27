@@ -97,7 +97,6 @@ set(
         BAAS::httplib
         BAAS::spdlog
         BAAS::simdutf
-        BAAS::CUDA
         ws2_32
         shlwapi
 )

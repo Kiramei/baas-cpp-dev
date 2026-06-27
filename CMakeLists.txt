@@ -106,7 +106,6 @@ if(BUILD_APP_BAAS)
     if(BAAS_APP_USE_CUDA)
         baas_request_dependencies(
                 onnxruntime PROVIDER cuda
-                cuda
         )
     else()
         baas_request_dependencies(onnxruntime)
@@ -117,7 +116,6 @@ if(BUILD_APP_ISA)
     baas_request_dependencies(opencv ffmpeg lz4 nlohmann_json cpp_httplib spdlog simdutf benchmark)
     baas_request_dependencies(
             onnxruntime PROVIDER cuda
-            cuda
     )
 endif()
 
@@ -127,7 +125,6 @@ if(BUILD_BAAS_OCR)
     if(BAAS_OCR_SERVER_USE_CUDA)
         baas_request_dependencies(
                 onnxruntime PROVIDER cuda
-                cuda
         )
     else()
         baas_request_dependencies(onnxruntime)

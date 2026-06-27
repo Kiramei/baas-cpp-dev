@@ -23,7 +23,6 @@ if(BAAS_OCR_SERVER_USE_CUDA)
     if(NOT TARGET BAAS::ONNXRuntimeCUDAProvider)
         message(FATAL_ERROR "BAAS_OCR_SERVER_USE_CUDA requires conan install with -o \"&:onnxruntime_use_cuda=True\"")
     endif()
-    list(APPEND LIB_RAW BAAS::CUDA)
     list(APPEND LIB_RAW BAAS::ONNXRuntimeCUDAProvider)
 endif()
 
