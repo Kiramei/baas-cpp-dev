@@ -13,24 +13,46 @@ function(detect_target_platform OUTPUT_VAR)
 endfunction()
 
 
-function(Android_NDK_check)
-    if(NOT DEFINED CMAKE_TOOLCHAIN_FILE)
-        if(DEFINED ANDROID_NDK_PATH)
-            set(CMAKE_TOOLCHAIN_FILE "${ANDROID_NDK_PATH}/build/cmake/android.toolchain.cmake" CACHE STRING "")
-        elseif(DEFINED ENV{ANDROID_NDK_HOME})
-            set(ANDROID_NDK_PATH "$ENV{ANDROID_NDK_HOME}" CACHE PATH "")
-            set(CMAKE_TOOLCHAIN_FILE "${ANDROID_NDK_PATH}/build/cmake/android.toolchain.cmake" CACHE STRING "")
-        elseif(DEFINED ENV{ANDROID_NDK_ROOT})
-            set(ANDROID_NDK_PATH "$ENV{ANDROID_NDK_ROOT}" CACHE PATH "")
-            set(CMAKE_TOOLCHAIN_FILE "${ANDROID_NDK_PATH}/build/cmake/android.toolchain.cmake" CACHE STRING "")
-        elseif(DEFINED ENV{ANDROID_NDK_LATEST_HOME})
-            set(ANDROID_NDK_PATH "$ENV{ANDROID_NDK_LATEST_HOME}" CACHE PATH "")
-            set(CMAKE_TOOLCHAIN_FILE "${ANDROID_NDK_PATH}/build/cmake/android.toolchain.cmake" CACHE STRING "")
-        else()
-            message(FATAL_ERROR
-                    "For Android compilation, set one of: "
-                    "CMAKE_TOOLCHAIN_FILE, ANDROID_NDK_PATH, "
-                    "ANDROID_NDK_HOME, ANDROID_NDK_ROOT, or ANDROID_NDK_LATEST_HOME.")
+function(baas_setup_android_ndk)
+    set(_ndk_path "")
+
+    if(DEFINED ANDROID_NDK_PATH AND NOT ANDROID_NDK_PATH STREQUAL "")
+        set(_ndk_path "${ANDROID_NDK_PATH}")
+    elseif(DEFINED CMAKE_ANDROID_NDK AND NOT CMAKE_ANDROID_NDK STREQUAL "")
+        set(_ndk_path "${CMAKE_ANDROID_NDK}")
+    elseif(DEFINED ENV{ANDROID_NDK_HOME})
+        set(_ndk_path "$ENV{ANDROID_NDK_HOME}")
+    elseif(DEFINED ENV{ANDROID_NDK_ROOT})
+        set(_ndk_path "$ENV{ANDROID_NDK_ROOT}")
+    elseif(DEFINED ENV{ANDROID_NDK_LATEST_HOME})
+        set(_ndk_path "$ENV{ANDROID_NDK_LATEST_HOME}")
+    elseif(DEFINED CMAKE_TOOLCHAIN_FILE AND NOT CMAKE_TOOLCHAIN_FILE STREQUAL "")
+        get_filename_component(_toolchain_dir "${CMAKE_TOOLCHAIN_FILE}" DIRECTORY)
+        if(_toolchain_dir MATCHES "[/\\\\]build[/\\\\]cmake$")
+            get_filename_component(_ndk_build_dir "${_toolchain_dir}" DIRECTORY)
+            get_filename_component(_ndk_path "${_ndk_build_dir}" DIRECTORY)
         endif()
+    endif()
+
+    if(_ndk_path STREQUAL "")
+        message(FATAL_ERROR
+                "For Android compilation, set one of: "
+                "ANDROID_NDK_PATH, CMAKE_ANDROID_NDK, ANDROID_NDK_HOME, "
+                "ANDROID_NDK_ROOT, or ANDROID_NDK_LATEST_HOME.")
+    endif()
+
+    file(TO_CMAKE_PATH "${_ndk_path}" _ndk_path)
+    if(NOT EXISTS "${_ndk_path}")
+        message(FATAL_ERROR "Android NDK path does not exist: ${_ndk_path}")
+    endif()
+
+    set(ANDROID_NDK_PATH "${_ndk_path}" CACHE PATH "Android NDK path" FORCE)
+
+    if(NOT DEFINED CMAKE_TOOLCHAIN_FILE OR CMAKE_TOOLCHAIN_FILE STREQUAL "")
+        set(_android_toolchain "${ANDROID_NDK_PATH}/build/cmake/android.toolchain.cmake")
+        if(NOT EXISTS "${_android_toolchain}")
+            message(FATAL_ERROR "Android NDK CMake toolchain not found: ${_android_toolchain}")
+        endif()
+        set(CMAKE_TOOLCHAIN_FILE "${_android_toolchain}" CACHE FILEPATH "Android CMake toolchain" FORCE)
     endif()
 endfunction()

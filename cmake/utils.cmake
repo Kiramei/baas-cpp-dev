@@ -87,20 +87,7 @@ endfunction()
 function(copy_android_libcxx_shared DEST_DIR)
     BAAS_sub_title_LOG("Copy libc++_shared.so from NDK")
     if(NOT DEFINED ANDROID_NDK_PATH OR ANDROID_NDK_PATH STREQUAL "")
-        if(DEFINED CMAKE_ANDROID_NDK AND NOT CMAKE_ANDROID_NDK STREQUAL "")
-            set(ANDROID_NDK_PATH "${CMAKE_ANDROID_NDK}")
-        elseif(DEFINED ENV{ANDROID_NDK_HOME})
-            set(ANDROID_NDK_PATH "$ENV{ANDROID_NDK_HOME}")
-        elseif(DEFINED ENV{ANDROID_NDK_ROOT})
-            set(ANDROID_NDK_PATH "$ENV{ANDROID_NDK_ROOT}")
-        elseif(DEFINED ENV{ANDROID_NDK_LATEST_HOME})
-            set(ANDROID_NDK_PATH "$ENV{ANDROID_NDK_LATEST_HOME}")
-        else()
-            message(FATAL_ERROR
-                    "For Android libc++ runtime copy, set one of: "
-                    "ANDROID_NDK_PATH, CMAKE_ANDROID_NDK, ANDROID_NDK_HOME, "
-                    "ANDROID_NDK_ROOT, or ANDROID_NDK_LATEST_HOME.")
-        endif()
+        message(FATAL_ERROR "ANDROID_NDK_PATH is not set. Call baas_setup_android_ndk() once before Android targets are configured.")
     endif()
 
     if (ANDROID_ABI STREQUAL "armeabi-v7a")
@@ -112,7 +99,7 @@ function(copy_android_libcxx_shared DEST_DIR)
     elseif (ANDROID_ABI STREQUAL "x86_64")
         set(ANDROID_TRIPLE x86_64-linux-android)
     else()
-        message(FATAL_ERROR "NDK Unsupported Android ABI: ${ABI}")
+        message(FATAL_ERROR "NDK Unsupported Android ABI: ${ANDROID_ABI}")
     endif()
 
     if (CMAKE_HOST_SYSTEM_NAME STREQUAL "Windows")
@@ -127,11 +114,11 @@ function(copy_android_libcxx_shared DEST_DIR)
 
     set(
             LIBCXX_PATH
-            ${ANDROID_NDK_PATH}/toolchains/llvm/prebuilt/${NDK_HOST}/sysroot/usr/lib/${ANDROID_TRIPLE}/libc++_shared.so
+            "${ANDROID_NDK_PATH}/toolchains/llvm/prebuilt/${NDK_HOST}/sysroot/usr/lib/${ANDROID_TRIPLE}/libc++_shared.so"
     )
-    if (NOT EXISTS ${LIBCXX_PATH})
+    if (NOT EXISTS "${LIBCXX_PATH}")
         message(FATAL_ERROR "libc++_shared.so not found: ${LIBCXX_PATH}")
     endif()
     message(STATUS "Lib found at : ${LIBCXX_PATH}")
-    file(COPY ${LIBCXX_PATH} DESTINATION ${DEST_DIR})
+    file(COPY "${LIBCXX_PATH}" DESTINATION "${DEST_DIR}")
 endfunction()
