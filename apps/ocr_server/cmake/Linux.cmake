@@ -13,12 +13,6 @@ set(
         BAAS::simdutf
 )
 
-LOG_LINE()
-message(STATUS "Conan LIB RAW :")
-foreach (LIB ${LIB_RAW})
-    message(STATUS "${LIB}")
-endforeach ()
-
 set_target_properties(
         BAAS_ocr_server
         PROPERTIES
@@ -28,15 +22,11 @@ set_target_properties(
 
 set(CMAKE_BUILD_RPATH_USE_ORIGIN TRUE)
 
-target_link_libraries(
+baas_link_runtime_target(
         BAAS_ocr_server
-        PRIVATE
-        ${LIB_RAW}
-)
-
-baas_copy_conan_runtime_dependencies(
-        BAAS_ocr_server
+        SCOPE PRIVATE
         DESTINATION "${CMAKE_BINARY_DIR}/bin"
+        LIBRARIES ${LIB_RAW}
         PACKAGES
         baas-opencv
         baas-onnxruntime

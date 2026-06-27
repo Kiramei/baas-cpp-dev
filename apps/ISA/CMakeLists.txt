@@ -82,10 +82,6 @@ target_compile_definitions(
         BENCHMARK_STATIC_DEFINE
 )
 
-if(NOT TARGET BAAS::ONNXRuntimeCUDAProvider)
-    message(FATAL_ERROR "ISA requires conan install with -o \"&:onnxruntime_use_cuda=True\"")
-endif()
-
 set(
         LIB_RAW
         BAAS_ipc
@@ -101,28 +97,17 @@ set(
         shlwapi
 )
 
-if(TARGET BAAS::ONNXRuntimeCUDAProvider)
-    list(APPEND LIB_RAW BAAS::ONNXRuntimeCUDAProvider)
-endif()
-
-if(TARGET BAAS::benchmark AND TARGET BAAS::benchmark_main)
-    list(APPEND LIB_RAW BAAS::benchmark BAAS::benchmark_main)
-else()
-    message(FATAL_ERROR "BAAS::benchmark package was not found. Run conan install with -o \"&:use_benchmark=True\"")
-endif()
-
-message(STATUS "LIB RAW :")
-foreach (LIB ${LIB_RAW})
-    message(STATUS "${LIB}")
-endforeach ()
-
-target_link_libraries(
-        ISA
-        ${LIB_RAW}
+baas_append_onnxruntime_cuda_provider(
+        LIB_RAW
+        "ISA requires conan install with -o \"&:onnxruntime_use_cuda=True\""
 )
 
-baas_copy_conan_runtime_dependencies(
+baas_append_benchmark_libraries(LIB_RAW)
+
+baas_link_runtime_target(
         ISA
+        SCOPE PRIVATE
+        LIBRARIES ${LIB_RAW}
         PACKAGES
         baas-opencv
         baas-onnxruntime

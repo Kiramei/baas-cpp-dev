@@ -17,17 +17,7 @@ set(
         BAAS::simdutf
 )
 
-if(TARGET BAAS::benchmark AND TARGET BAAS::benchmark_main)
-    list(APPEND LIB_RAW BAAS::benchmark BAAS::benchmark_main)
-else()
-    message(FATAL_ERROR "BAAS::benchmark package was not found. Run conan install with -o \"&:use_benchmark=True\"")
-endif()
-
-LOG_LINE()
-message(STATUS "Conan LIB RAW :")
-foreach (LIB ${LIB_RAW})
-    message(STATUS "${LIB}")
-endforeach ()
+baas_append_benchmark_libraries(LIB_RAW)
 
 set_target_properties(
         BAAS_APP
@@ -38,15 +28,11 @@ set_target_properties(
 
 set(CMAKE_BUILD_RPATH_USE_ORIGIN TRUE)
 
-target_link_libraries(
+baas_link_runtime_target(
         BAAS_APP
-        PRIVATE
-        ${LIB_RAW}
-)
-
-baas_copy_conan_runtime_dependencies(
-        BAAS_APP
+        SCOPE PRIVATE
         DESTINATION "${CMAKE_BINARY_DIR}/bin"
+        LIBRARIES ${LIB_RAW}
         PACKAGES
         baas-opencv
         baas-onnxruntime

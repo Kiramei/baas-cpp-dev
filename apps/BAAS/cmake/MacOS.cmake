@@ -17,17 +17,7 @@ set(
         BAAS::simdutf
 )
 
-if(TARGET BAAS::benchmark AND TARGET BAAS::benchmark_main)
-    list(APPEND LIB_RAW BAAS::benchmark BAAS::benchmark_main)
-else()
-    message(FATAL_ERROR "BAAS::benchmark package was not found. Run conan install with -o \"&:use_benchmark=True\"")
-endif()
-
-LOG_LINE()
-message(STATUS "Conan LIB RAW :")
-foreach (LIB ${LIB_RAW})
-    message(STATUS "${LIB}")
-endforeach ()
+baas_append_benchmark_libraries(LIB_RAW)
 
 set_target_properties(
         BAAS_APP
@@ -36,23 +26,11 @@ set_target_properties(
         BUILD_RPATH "@executable_path"
 )
 
-target_link_libraries(
+baas_link_runtime_target(
         BAAS_APP
-        PRIVATE
-        ${LIB_RAW}
-)
-
-add_custom_command(
-        TARGET BAAS_APP
-        POST_BUILD
-        COMMAND /bin/sh -c "install_name_tool -add_rpath @executable_path \"$<TARGET_FILE:BAAS_APP>\" 2>/dev/null || true"
-        COMMENT "Updating rpath for BAAS_APP"
-        VERBATIM
-)
-
-baas_copy_conan_runtime_dependencies(
-        BAAS_APP
+        SCOPE PRIVATE
         DESTINATION "${CMAKE_BINARY_DIR}/bin"
+        LIBRARIES ${LIB_RAW}
         PACKAGES
         baas-opencv
         baas-onnxruntime
@@ -61,4 +39,12 @@ baas_copy_conan_runtime_dependencies(
         baas-spdlog
         baas-simdutf
         baas-benchmark
+)
+
+add_custom_command(
+        TARGET BAAS_APP
+        POST_BUILD
+        COMMAND /bin/sh -c "install_name_tool -add_rpath @executable_path \"$<TARGET_FILE:BAAS_APP>\" 2>/dev/null || true"
+        COMMENT "Updating rpath for BAAS_APP"
+        VERBATIM
 )

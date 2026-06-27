@@ -24,30 +24,18 @@ set(
 )
 
 if(BAAS_APP_USE_CUDA)
-    if(NOT TARGET BAAS::ONNXRuntimeCUDAProvider)
-        message(FATAL_ERROR "BAAS_APP_USE_CUDA requires conan install with -o \"&:onnxruntime_use_cuda=True\"")
-    endif()
-    list(APPEND LIB_RAW BAAS::ONNXRuntimeCUDAProvider)
+    baas_append_onnxruntime_cuda_provider(
+            LIB_RAW
+            "BAAS_APP_USE_CUDA requires conan install with -o \"&:onnxruntime_use_cuda=True\""
+    )
 endif()
 
-if(TARGET BAAS::benchmark AND TARGET BAAS::benchmark_main)
-    list(APPEND LIB_RAW BAAS::benchmark BAAS::benchmark_main)
-else()
-    message(FATAL_ERROR "BAAS::benchmark package was not found. Run conan install with -o \"&:use_benchmark=True\"")
-endif()
+baas_append_benchmark_libraries(LIB_RAW)
 
-message(STATUS "LIB RAW :")
-foreach (LIB ${LIB_RAW})
-    message(STATUS "${LIB}")
-endforeach ()
-
-target_link_libraries(
+baas_link_runtime_target(
         BAAS_APP
-        ${LIB_RAW}
-)
-
-baas_copy_conan_runtime_dependencies(
-        BAAS_APP
+        SCOPE PRIVATE
+        LIBRARIES ${LIB_RAW}
         PACKAGES
         baas-opencv
         baas-onnxruntime

@@ -24,21 +24,11 @@ set(
         BAAS::simdutf
 )
 
-LOG_LINE()
-message(STATUS "Conan LIB RAW :")
-foreach (LIB ${LIB_RAW})
-    message(STATUS "${LIB}")
-endforeach ()
-
-target_link_libraries(
+baas_link_runtime_target(
         BAAS_ocr_server
-        PRIVATE
-        ${LIB_RAW}
-)
-
-baas_copy_conan_runtime_dependencies(
-        BAAS_ocr_server
+        SCOPE PRIVATE
         DESTINATION "${BAAS_OCR_LIBRARY_OUTPUT_DIRECTORY}"
+        LIBRARIES ${LIB_RAW}
         PACKAGES
         baas-opencv
         baas-onnxruntime

@@ -20,25 +20,16 @@ set(
 )
 
 if(BAAS_OCR_SERVER_USE_CUDA)
-    if(NOT TARGET BAAS::ONNXRuntimeCUDAProvider)
-        message(FATAL_ERROR "BAAS_OCR_SERVER_USE_CUDA requires conan install with -o \"&:onnxruntime_use_cuda=True\"")
-    endif()
-    list(APPEND LIB_RAW BAAS::ONNXRuntimeCUDAProvider)
+    baas_append_onnxruntime_cuda_provider(
+            LIB_RAW
+            "BAAS_OCR_SERVER_USE_CUDA requires conan install with -o \"&:onnxruntime_use_cuda=True\""
+    )
 endif()
 
-message(STATUS "LIB RAW :")
-foreach (LIB ${LIB_RAW})
-    message(STATUS "${LIB}")
-endforeach ()
-LOG_LINE()
-
-target_link_libraries(
+baas_link_runtime_target(
         BAAS_ocr_server
-        ${LIB_RAW}
-)
-
-baas_copy_conan_runtime_dependencies(
-        BAAS_ocr_server
+        SCOPE PRIVATE
+        LIBRARIES ${LIB_RAW}
         PACKAGES
         baas-opencv
         baas-onnxruntime

@@ -30,6 +30,7 @@ endif()
 
 BAAS_sub_title_LOG("Target OS : ${TARGET_OS_NAME}")
 include("${CMAKE_CURRENT_LIST_DIR}/cmake/BAASDependency.cmake")
+include("${CMAKE_CURRENT_LIST_DIR}/cmake/BAASTarget.cmake")
 
 if(TARGET_OS_NAME STREQUAL "Android")
     baas_setup_android_ndk()
