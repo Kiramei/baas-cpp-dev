@@ -8,7 +8,7 @@ BAAS_hr_LOG("APP ISA")
 project(ISA VERSION 1.0.0)
 
 configure_file(
-        ${CMAKE_CURRENT_LIST_DIR}/version.h.in
+        ${CMAKE_CURRENT_LIST_DIR}/cmake/version.h.in
         ${CMAKE_BINARY_DIR}/ISA_version.h
 )
 

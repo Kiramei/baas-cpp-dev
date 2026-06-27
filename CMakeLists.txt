@@ -52,12 +52,12 @@ get_git_info(GIT_COMMIT_DATE   git log -1 --format=%cd --date=iso)
 string(TIMESTAMP BUILD_TIME "%Y-%m-%d %H:%M:%S (UTC)" UTC)
 
 configure_file(
-        version.h.in
+        ${CMAKE_CURRENT_LIST_DIR}/cmake/version.h.in
         BAAS_version.h
 )
 
 configure_file(
-        version.txt.in
+        ${CMAKE_CURRENT_LIST_DIR}/cmake/version.txt.in
         BAAS_version.txt
 )
 
