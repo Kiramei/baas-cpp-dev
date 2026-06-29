@@ -6,7 +6,7 @@ import unittest
 import cv2
 
 from Client import client
-from utils import count_files, logger
+from utils import count_files, logger, ocr_test_image_dir, ocr_test_image_path
 
 
 class TestOcrForSingleLine(unittest.TestCase):
@@ -60,7 +60,7 @@ class TestOcrForSingleLine(unittest.TestCase):
         shared_memory_ret_text_list = []
         local_file_ret_text_list = []
 
-        test_image_path = os.path.join(os.path.dirname(__file__), "test_images", "ocr_for_single_line")
+        test_image_path = ocr_test_image_dir("ocr_for_single_line")
         # pass method post file
         logger.sub_title("PASS METHOD : POST FILE")
         for model in models:
@@ -154,13 +154,7 @@ class TestOcrForSingleLine(unittest.TestCase):
     def test_ocr_for_single_line_bad_request(self):
         logger.hr("Test OCR for single line bad request.")
         client.init_model("en-us", -1, 4, False)
-        test_image_path = os.path.join(
-            os.path.dirname(__file__),
-            "test_images",
-            "ocr_for_single_line",
-            "en-us",
-            "0.png"
-        )
+        test_image_path = ocr_test_image_path("ocr_for_single_line", "en-us", "0.png")
         img = cv2.imread(test_image_path)
         shm_name = "test"
         ret = client.create_shared_memory(shm_name, 1280 * 720 * 3)

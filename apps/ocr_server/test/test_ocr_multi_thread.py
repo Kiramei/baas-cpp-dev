@@ -7,7 +7,7 @@ import unittest
 import threading
 from utils import logger
 from Client import client
-from utils import count_files
+from utils import count_files, ocr_test_image_dir
 
 
 class TestOcr(unittest.TestCase):
@@ -49,7 +49,7 @@ class TestOcr(unittest.TestCase):
         image_cnt = 10
 
         language = "ja-jp"
-        test_image_path = os.path.join(os.path.dirname(__file__), "test_images", "ocr", language)
+        test_image_path = ocr_test_image_dir("ocr", language)
         folder_image_count = count_files(test_image_path)
 
         # prepare share memory

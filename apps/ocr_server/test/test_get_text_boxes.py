@@ -3,7 +3,7 @@ import os
 import cv2
 import unittest
 from Client import client
-from utils import count_files, logger
+from utils import count_files, logger, ocr_test_image_dir, ocr_test_image_path
 
 
 class TestGetTextBoxes(unittest.TestCase):
@@ -36,7 +36,7 @@ class TestGetTextBoxes(unittest.TestCase):
         post_file_ret_box_count_list = []
         local_file_ret_box_count_list = []
 
-        test_image_path = os.path.join(os.path.dirname(__file__), "test_images", "ocr")
+        test_image_path = ocr_test_image_dir("ocr")
         # pass method shared memory
         logger.sub_title("PASS METHOD : SHARED MEMORY")
         ret = client.create_shared_memory("test", 1280 * 720 * 3)
@@ -121,13 +121,7 @@ class TestGetTextBoxes(unittest.TestCase):
     def test_get_text_boxes_bad_request(self):
         logger.hr("Test Get Text Boxes Bad Request.")
         client.init_model(["en-us"], -1, 4, False)
-        test_image_path = os.path.join(
-            os.path.dirname(__file__),
-            "test_images",
-            "ocr",
-            "en-us",
-            "0.png"
-        )
+        test_image_path = ocr_test_image_path("ocr", "en-us", "0.png")
         img = cv2.imread(test_image_path)
         shm_name = "test"
         client.create_shared_memory(shm_name, 1280 * 720 * 3)

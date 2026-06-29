@@ -118,6 +118,28 @@
         ]
       }
     },
+    "ocr_test_images": {
+      "version": "1.0.0",
+      "provider": "github_release",
+      "type": "archive",
+      "url": "https://github.com/pur1fying/BAAS_resource/releases/download/ocr-test-images-v1.0.0/ocr_test_images-v1.0.0.zip",
+      "sha256": "4e6763f0ebf12d3592b3b926e35f76aca4d2ea6458902b3500c1a6ea46ee3149",
+      "target_dir": "test_images",
+      "strip_prefix": "test_images",
+      "outputs": {
+        "runtime": [
+          "test_images/ocr/en-us/0.png",
+          "test_images/ocr/ja-jp/12.png",
+          "test_images/ocr_for_single_line/en-us/0.png",
+          "test_images/ocr_for_single_line/zh-tw/3.png"
+        ]
+      },
+      "validation": {
+        "required_outputs": [
+          "runtime"
+        ]
+      }
+    },
     "yolo_models": {
       "version": "1.0.0",
       "provider": "github_release",

@@ -100,14 +100,40 @@ def clean_dir(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
 
 
-def safe_extract_zip(archive: Path, target: Path) -> None:
+def normalize_archive_name(name: str) -> str:
+    return name.replace("\\", "/").lstrip("/")
+
+
+def safe_extract_zip_normalized(archive: Path, target: Path, strip_prefix: str = "") -> None:
     target_resolved = target.resolve()
+    prefix = normalize_archive_name(strip_prefix).strip("/")
+
     with zipfile.ZipFile(archive) as zip_file:
         for member in zip_file.infolist():
-            member_target = (target / member.filename).resolve()
+            normalized = normalize_archive_name(member.filename)
+            if not normalized or normalized.endswith("/"):
+                continue
+
+            if prefix:
+                if normalized == prefix:
+                    continue
+                if not normalized.startswith(prefix + "/"):
+                    raise RuntimeError(f"Archive member does not start with {prefix}: {member.filename}")
+                normalized = normalized[len(prefix) + 1 :]
+                if not normalized:
+                    continue
+
+            relative_parts = [part for part in normalized.split("/") if part]
+            if any(part == ".." for part in relative_parts):
+                raise RuntimeError(f"Unsafe archive member path: {member.filename}")
+
+            member_target = target.joinpath(*relative_parts).resolve()
             if not str(member_target).startswith(str(target_resolved) + os.sep) and member_target != target_resolved:
                 raise RuntimeError(f"Unsafe archive member path: {member.filename}")
-        zip_file.extractall(target)
+
+            member_target.parent.mkdir(parents=True, exist_ok=True)
+            with zip_file.open(member) as source, member_target.open("wb") as destination:
+                shutil.copyfileobj(source, destination)
 
 
 def copy_file(source: Path, target_dir: Path) -> None:
@@ -149,7 +175,11 @@ def fetch_resource(name: str, resource: dict[str, Any], output_root: Path, downl
         copy_file(archive, target_dir)
     elif resource_type == "archive":
         clean_dir(target_dir)
-        safe_extract_zip(archive, target_dir)
+        strip_prefix = str(resource.get("strip_prefix", ""))
+        if strip_prefix:
+            safe_extract_zip_normalized(archive, target_dir, strip_prefix)
+        else:
+            safe_extract_zip_normalized(archive, target_dir)
     else:
         raise RuntimeError(f"Unsupported resource type for {name}: {resource_type}")
 

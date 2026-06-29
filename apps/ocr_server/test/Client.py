@@ -459,11 +459,13 @@ class OcrInternalError(Exception):
 client = BaasOcrClient()
 
 if __name__ == "__main__":
+    from utils import ocr_test_image_path
+
     client.start_server()
     client.enable_thread_pool(4)
     client.init_model(["en-us"], gpu_id=-1, num_thread=4)
     # test ocr
-    image = cv2.imread("apps/ocr_server/test/test_images/ocr/ja-jp/1.png")
+    image = cv2.imread(ocr_test_image_path("ocr", "ja-jp", "1.png"))
     ret = client.get_text_boxes("en-us", image, pass_method=1)
     print(ret.status_code)
     j = json.loads(ret.text)

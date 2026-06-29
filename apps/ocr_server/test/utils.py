@@ -1,5 +1,21 @@
-import os
 import logging
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+
+TEST_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+DEFAULT_TEST_RESOURCE_ROOT = TEST_DIR
+DEFAULT_RESOURCE_DOWNLOAD_ROOT = PROJECT_ROOT / "build" / "baas-resource-downloads"
+
+REQUIRED_TEST_IMAGES = [
+    Path("ocr/en-us/0.png"),
+    Path("ocr/ja-jp/12.png"),
+    Path("ocr_for_single_line/en-us/0.png"),
+    Path("ocr_for_single_line/zh-tw/3.png"),
+]
 
 
 class TestLogger:
@@ -55,6 +71,47 @@ class TestLogger:
 
 def count_files(directory):
     return len([f for f in os.listdir(directory) if os.path.isfile(os.path.join(directory, f))])
+
+
+def _test_images_exist(root):
+    return all((root / relative).is_file() for relative in REQUIRED_TEST_IMAGES)
+
+
+def ensure_ocr_test_images():
+    output_root = Path(os.environ.get("BAAS_OCR_TEST_RESOURCE_ROOT", DEFAULT_TEST_RESOURCE_ROOT))
+    image_root = output_root / "test_images"
+    if _test_images_exist(image_root):
+        return image_root
+
+    fetch_script = PROJECT_ROOT / "scripts" / "fetch_resources.py"
+    lock_file = PROJECT_ROOT / "resources.lock.json"
+    download_root = Path(os.environ.get("BAAS_RESOURCE_DOWNLOAD_ROOT", DEFAULT_RESOURCE_DOWNLOAD_ROOT))
+
+    command = [
+        sys.executable,
+        str(fetch_script),
+        "--lock",
+        str(lock_file),
+        "--output-root",
+        str(output_root),
+        "--download-root",
+        str(download_root),
+        "--resource",
+        "ocr_test_images",
+    ]
+    subprocess.run(command, cwd=PROJECT_ROOT, check=True)
+
+    if not _test_images_exist(image_root):
+        raise RuntimeError(f"OCR test images are missing after fetch: {image_root}")
+    return image_root
+
+
+def ocr_test_image_dir(*parts):
+    return str(ensure_ocr_test_images().joinpath(*parts))
+
+
+def ocr_test_image_path(*parts):
+    return str(ensure_ocr_test_images().joinpath(*parts))
 
 
 logger = TestLogger()

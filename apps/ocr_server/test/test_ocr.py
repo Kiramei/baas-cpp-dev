@@ -5,7 +5,7 @@ import random
 import unittest
 from utils import logger
 from Client import client
-from utils import count_files
+from utils import count_files, ocr_test_image_dir, ocr_test_image_path
 
 
 class TestOcr(unittest.TestCase):
@@ -37,7 +37,7 @@ class TestOcr(unittest.TestCase):
         shared_memory_ret_text_list = []
         local_file_ret_text_list = []
 
-        test_image_path = os.path.join(os.path.dirname(__file__), "test_images", "ocr")
+        test_image_path = ocr_test_image_dir("ocr")
         # pass method shared memory
         logger.sub_title("PASS METHOD : SHARED MEMORY")
         ret = client.create_shared_memory("test", 1280 * 720 * 3)
@@ -125,13 +125,7 @@ class TestOcr(unittest.TestCase):
     def test_ocr_bad_request(self):
         logger.hr("Test OCR Bad Request.")
         client.init_model("en-us", -1, 4, False)
-        test_image_path = os.path.join(
-            os.path.dirname(__file__),
-            "test_images",
-            "ocr",
-            "en-us",
-            "0.png"
-        )
+        test_image_path = ocr_test_image_path("ocr", "en-us", "0.png")
         img = cv2.imread(test_image_path)
         shm_name = "test"
         client.create_shared_memory(shm_name, 1280 * 720 * 3)
