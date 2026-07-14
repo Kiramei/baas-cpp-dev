@@ -119,6 +119,11 @@ Python fallback is needed for migrated representative workflows.
 
 ## Phase 4 — Service backend and Tauri integration
 
+- [x] Freeze deterministic v1 canonical JSON, crypto-derivation, control
+  envelope, and BPIP golden vectors; keep the nondeterministic secret-stream
+  header/ciphertext gate explicit.
+- [x] Implement the byte-exact BPIP v1 encoder and incremental decoder with
+  fragmentation, coalescing, sticky errors, and the 64 MiB preallocation gate.
 - [ ] Define a versioned service protocol from the observed Tauri contract.
 - [ ] Implement `cpp-httplib` routing, validation, JSON errors, health/version,
   graceful shutdown, and bounded concurrency.
@@ -132,6 +137,11 @@ Python fallback is needed for migrated representative workflows.
 - [ ] Run Windows desktop end-to-end integration with `baas-tauri`.
 
 Exit evidence: contract suite and Tauri end-to-end workflows pass under load.
+
+Verified foundation evidence: commit `fec6db0` adds production-anchored service
+vectors (14/14 Python tests), and commit `8b1ff52` adds the standalone C++ BPIP
+framing library. Coordinator-run MSVC Debug and Release reviews each passed 30
+repeated framing runs; the integrated four-target Debug suite passed 20 repeats.
 
 ## Phase 5 — Script and resource migration
 
