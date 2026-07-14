@@ -454,20 +454,31 @@ declaration or expression as required by ERR-015.
 
 `SourceLocation.h`, `Diagnostic.h`, lexer/parser diagnostics, source-spanned AST
 nodes, catch binding analysis, `PAR014`, the `SEM009` cleanup-control validator,
-and `ValueHeap` Error cells are implemented foundations. The current
-`ErrorMetadata` stores only code, message,
-optional span, and traced details; it does not yet satisfy ERR-003 stack,
-source-reference, cause, suppressed, context, immutability API, or envelope
-requirements.
+and `ValueHeap` Error cells are implemented foundations. `LanguageErrorCode`
+contains the complete ERR-004 inventory and is the sole source of code spelling
+and catchability. `ErrorMetadata` and `allocate_error` implement context-local,
+identity-bearing, read-only-after-publication heap records for origin,
+`SourceReference`, bounded stack frames, cause, ordered suppressed Errors,
+JSON-safe details, allowlisted context, and explicit truncation metadata. All
+retained `Value` edges are same-heap validated and traced. Construction applies
+the ERR-008 message/stack/suppressed/detail defaults, rejects duplicate,
+wrong-kind, stale, cross-heap, self/obvious-cycle edges, and rejects a cause
+chain already beyond `max_error_cause_depth`; VM Error builders remain
+responsible for preserving nearest causes while deriving a bounded replacement.
+`derive_error` copies a published primary into a new identity instead of
+mutating it. `BAAS_script_structured_error_heap_tests` verifies these heap-only
+contracts, including GC and allocation accounting.
 
-The repository does not yet implement VM execution, Error construction/member
-access, throw/catch unwinding, defer registration/execution, stack
-capture, terminal-error propagation, host ABI guards, domain mappings, or error
-or public diagnostic-envelope serialization. Those MUST remain pending in Phase
-2 until executable conformance evidence exists. Completing this normative Phase
-1 specification MUST NOT be described as implementing structured exceptions,
-the VM, module loading, cancellation/task semantics, the general conformance
-corpus, or Phase 1 as a whole.
+The repository does not yet implement VM execution, script-visible Error member
+access, throw/catch unwinding, defer registration/execution, live VM stack
+capture, terminal-error propagation, host ABI guards/translators, domain
+mappings, cause-chain normalization, or Error/public diagnostic-envelope
+serialization. In particular, the heap snapshot is not an ERR-003 serialized
+envelope. Those MUST remain pending in Phase 2 until executable conformance
+evidence exists. Completing this normative Phase 1 specification MUST NOT be
+described as implementing structured exceptions, the VM, module loading,
+cancellation/task semantics, the general conformance corpus, or Phase 1 as a
+whole.
 
 ## Machine-checked evidence
 
@@ -475,5 +486,6 @@ corpus, or Phase 1 as a whole.
 and MUST verify ERR-001 through ERR-020, exact Error fields and stable language
 codes, source/diagnostic anchors, stack/cause/truncation rules, the complete
 RT001–RT023 translation table, parser/AST/semantic foundations, tagged static
-fixtures and CTest wiring, explicit missing implementation, the single ROADMAP
+fixtures and CTest wiring, structured Error heap/API/test anchors, explicit
+missing VM/translator/serialization implementation, the single ROADMAP
 checkbox, and Foundation CI path wiring.

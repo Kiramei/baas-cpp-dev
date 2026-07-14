@@ -6,31 +6,31 @@ LanguageErrorDescriptor translate_runtime_error_code(const RuntimeErrorCode code
 {
     using enum RuntimeErrorCode;
     switch (code) {
-        case TypeMismatch: return {"TypeMismatch", true};
+        case TypeMismatch: return {LanguageErrorCode::TypeMismatch};
         case CrossHeapReference:
         case StaleReference:
         case CellKindMismatch:
-        case HeapTornDown: return {"InternalInvariant", false};
+        case HeapTornDown: return {LanguageErrorCode::InternalInvariant};
         case MemoryLimitExceeded:
         case CellLimitExceeded:
         case SingleAllocationExceeded:
         case StringLimitExceeded:
         case ExternalMemoryLimitExceeded:
-        case CollectionWorkLimitExceeded: return {"MemoryLimitExceeded", false};
-        case InvalidUtf8: return {"InvalidUtf8", true};
-        case JsonCycle: return {"JsonCycle", true};
-        case JsonNonFinite: return {"JsonNonFinite", true};
-        case JsonUnsupported: return {"JsonUnsupported", true};
-        case IndexOutOfRange: return {"IndexOutOfRange", true};
-        case ReleaseQueueLimitExceeded: return {"CleanupLimitExceeded", false};
+        case CollectionWorkLimitExceeded: return {LanguageErrorCode::MemoryLimitExceeded};
+        case InvalidUtf8: return {LanguageErrorCode::InvalidUtf8};
+        case JsonCycle: return {LanguageErrorCode::JsonCycle};
+        case JsonNonFinite: return {LanguageErrorCode::JsonNonFinite};
+        case JsonUnsupported: return {LanguageErrorCode::JsonUnsupported};
+        case IndexOutOfRange: return {LanguageErrorCode::IndexOutOfRange};
+        case ReleaseQueueLimitExceeded: return {LanguageErrorCode::CleanupLimitExceeded};
         case JsonDepthLimitExceeded:
         case JsonNodeLimitExceeded:
         case JsonStringLimitExceeded:
         case JsonByteLimitExceeded:
-        case JsonWorkLimitExceeded: return {"JsonLimitExceeded", true};
-        case JsonDuplicateKey: return {"JsonDuplicateKey", true};
+        case JsonWorkLimitExceeded: return {LanguageErrorCode::JsonLimitExceeded};
+        case JsonDuplicateKey: return {LanguageErrorCode::JsonDuplicateKey};
     }
-    return {"InternalInvariant", false};
+    return {LanguageErrorCode::InternalInvariant};
 }
 
 }  // namespace baas::script::runtime

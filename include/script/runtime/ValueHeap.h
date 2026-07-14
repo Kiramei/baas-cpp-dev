@@ -105,11 +105,126 @@ struct ModuleMetadata {
     std::vector<std::pair<std::string, Value>> exports;
 };
 
+enum class LanguageErrorCode {
+    ThrownValue,
+    TypeMismatch,
+    ArgumentInvalid,
+    NameNotFound,
+    UninitializedBinding,
+    NotCallable,
+    CallArityMismatch,
+    CallArgumentDuplicate,
+    CallArgumentUnknown,
+    TaskCycle,
+    IndexOutOfRange,
+    NumericOverflow,
+    DivisionByZero,
+    InvalidUtf8,
+    JsonCycle,
+    JsonNonFinite,
+    JsonUnsupported,
+    JsonDuplicateKey,
+    JsonLimitExceeded,
+    ImportSpecifierInvalid,
+    ImportCycle,
+    ImportDepthLimit,
+    ModuleInitializationFailed,
+    ModuleMemberMissing,
+    CapabilityDenied,
+    HostValidationFailed,
+    HostUnavailable,
+    DeviceDisconnected,
+    PackageMismatch,
+    OcrModelUnavailable,
+    ResourceMissing,
+    Timeout,
+    HostInternal,
+    Cancelled,
+    HumanTakeover,
+    DeadlineExceeded,
+    InstructionLimitExceeded,
+    MemoryLimitExceeded,
+    StackLimitExceeded,
+    CleanupLimitExceeded,
+    TaskLimitExceeded,
+    InternalInvariant,
+};
+
+[[nodiscard]] std::string_view language_error_code_name(LanguageErrorCode code) noexcept;
+[[nodiscard]] bool language_error_code_catchable(LanguageErrorCode code) noexcept;
+[[nodiscard]] std::optional<LanguageErrorCode> language_error_code_from_name(
+    std::string_view name) noexcept;
+
+enum class ErrorOrigin { Script, Runtime, Host };
+enum class ErrorFrameKind { Script, Host };
+enum class ErrorFramePhase { Body, ModuleInit, Cleanup, Host };
+
+struct SourceReference {
+    std::string snapshot_id;
+    std::string module;
+    SourceSpan span;
+
+    friend bool operator==(const SourceReference&, const SourceReference&) = default;
+};
+
+struct ErrorStackFrame {
+    ErrorFrameKind kind{ErrorFrameKind::Script};
+    std::string module;
+    std::string function;
+    ErrorFramePhase phase{ErrorFramePhase::Body};
+    std::optional<SourceReference> call_source;
+    std::optional<SourceReference> definition_source;
+    std::optional<SourceReference> defer_source;
+
+    friend bool operator==(const ErrorStackFrame&, const ErrorStackFrame&) = default;
+};
+
+struct ErrorContext {
+    std::optional<std::string> task_id;
+    std::optional<std::string> session_id;
+    std::optional<std::string> package_id;
+    std::optional<std::string> snapshot_id;
+    std::optional<std::string> language_version;
+    std::optional<std::string> correlation_id;
+
+    friend bool operator==(const ErrorContext&, const ErrorContext&) = default;
+};
+
+struct ErrorTruncation {
+    std::size_t stack_frames{};
+    std::size_t cause_errors{};
+    std::size_t suppressed_errors{};
+    std::size_t message_bytes{};
+    std::size_t detail_bytes{};
+    bool details_replaced{false};
+    bool fallback{false};
+
+    friend bool operator==(const ErrorTruncation&, const ErrorTruncation&) = default;
+};
+
 struct ErrorMetadata {
-    std::string code;
+    LanguageErrorCode code{LanguageErrorCode::HostInternal};
     std::string message;
-    std::optional<SourceSpan> span;
-    std::vector<Value> details;
+    ErrorOrigin origin{ErrorOrigin::Script};
+    std::optional<SourceReference> source;
+    std::vector<ErrorStackFrame> stack;
+    std::optional<Value> cause;
+    std::vector<Value> suppressed;
+    std::vector<std::pair<std::string, Value>> details;
+    ErrorContext context;
+    ErrorTruncation truncated;
+
+    [[nodiscard]] std::string_view code_name() const noexcept {
+        return language_error_code_name(code);
+    }
+    [[nodiscard]] bool catchable() const noexcept {
+        return language_error_code_catchable(code);
+    }
+};
+
+struct ErrorDerivation {
+    std::optional<Value> cause;
+    std::vector<Value> suppressed;
 };
 
 enum class TaskState { Pending, Running, Succeeded, Failed, Cancelled };
@@ -142,6 +257,12 @@ struct HeapLimits {
     std::size_t soft_collect_threshold{48U * 1024U * 1024U};
     std::size_t max_collection_work{2'000'000};
     std::size_t max_pending_release_records{1'000'000};
+    std::size_t max_error_stack_frames{128};
+    std::size_t max_error_innermost_frames{96};
+    std::size_t max_error_cause_depth{16};
+    std::size_t max_error_suppressed{16};
+    std::size_t max_error_message_bytes{4096};
+    std::size_t max_error_detail_bytes{65536};
 };
 
 struct HeapStats {
@@ -193,6 +314,9 @@ public:
     [[nodiscard]] Value allocate_function(FunctionMetadata metadata);
     [[nodiscard]] Value allocate_module(ModuleMetadata metadata);
     [[nodiscard]] Value allocate_error(ErrorMetadata metadata);
+    // Copies a published Error and returns a new immutable identity with the
+    // requested causal additions. The original cell is never mutated.
+    [[nodiscard]] Value derive_error(HeapRef primary, ErrorDerivation additions);
     [[nodiscard]] Value allocate_task(TaskMetadata metadata);
     [[nodiscard]] Value allocate_host_handle(HostHandleMetadata metadata);
 

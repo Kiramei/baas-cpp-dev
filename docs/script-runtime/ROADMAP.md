@@ -148,9 +148,13 @@ pending.
   namespaces, initialization/cache, and native registration remain pending.
 - [~] Implement structured exceptions, stack traces, cancellation, and limits.
   The total allocation-free RT001-RT023 language-code/catchability mapping is
-  implemented, and semantic analysis enforces ERR-015 cleanup-body restrictions
-  with `SEM009`; Error envelopes, stack capture, VM unwinding, executor/host
-  translation, cancellation propagation, and execution limits remain pending.
+  implemented from the stable `LanguageErrorCode` table, semantic analysis
+  enforces ERR-015 cleanup-body restrictions with `SEM009`, and `ValueHeap`
+  publishes immutable, budgeted Error records with source/frame/cause/
+  suppressed/detail/context edges and GC tests. Script-visible Error members,
+  VM stack capture/unwinding, cause-chain normalization, executor/host
+  translation, Error envelope serialization, cancellation propagation, and
+  execution limits remain pending.
 - [x] Implement the bounded cooperative executor, queue backpressure, task
   handles, cancellation requests, and drain/cancel-pending shutdown.
 - [ ] Integrate language-level task/future primitives with the VM and executor.

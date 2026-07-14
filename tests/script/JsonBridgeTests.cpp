@@ -165,7 +165,8 @@ void test_cycles_nonfinite_and_identity_values()
     std::vector<Value> identities;
     identities.push_back(heap.allocate_function({1, {}}));
     identities.push_back(heap.allocate_module({"module", {}}));
-    identities.push_back(heap.allocate_error({"E", "error", std::nullopt, {}}));
+    identities.push_back(heap.allocate_error(
+        {LanguageErrorCode::HostInternal, "error", ErrorOrigin::Runtime}));
     identities.push_back(heap.allocate_task({2, TaskState::Pending, {}}));
     identities.push_back(heap.allocate_host_handle({3, 4, 0, false}));
     for (const auto identity : identities) {

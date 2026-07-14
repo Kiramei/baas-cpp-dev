@@ -47,9 +47,9 @@ int main()
 {
     for (const auto& item : expected) {
         const auto actual = runtime::translate_runtime_error_code(item.runtime_code);
-        if (actual.code != item.language_code || actual.catchable != item.catchable) {
+        if (actual.name() != item.language_code || actual.catchable() != item.catchable) {
             std::cerr << "FAIL: " << runtime::runtime_error_code_name(item.runtime_code)
-                      << " mapped to " << actual.code << '\n';
+                      << " mapped to " << actual.name() << '\n';
             return EXIT_FAILURE;
         }
     }

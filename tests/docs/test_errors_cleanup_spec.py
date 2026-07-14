@@ -26,6 +26,7 @@ ERROR_TRANSLATION_HEADER_PATH = ROOT / "include" / "script" / "runtime" / "Error
 ERROR_TRANSLATION_SOURCE_PATH = ROOT / "src" / "script" / "runtime" / "ErrorTranslation.cpp"
 PARSER_TEST_PATH = ROOT / "tests" / "script" / "ParserTests.cpp"
 SEMANTIC_TEST_PATH = ROOT / "tests" / "script" / "SemanticAnalyzerTests.cpp"
+STRUCTURED_ERROR_TEST_PATH = ROOT / "tests" / "script" / "StructuredErrorHeapTests.cpp"
 VALID_FIXTURE_PATH = ROOT / "tests" / "script" / "fixtures" / "errors_cleanup_valid.baas"
 INVALID_FIXTURE_PATH = ROOT / "tests" / "script" / "fixtures" / "errors_cleanup_invalid.baas"
 SEMANTIC_INVALID_FIXTURE_PATH = (
@@ -181,6 +182,7 @@ class ErrorsAndCleanupSpecificationTests(unittest.TestCase):
         cls.error_translation_source = read(ERROR_TRANSLATION_SOURCE_PATH)
         cls.parser_tests = read(PARSER_TEST_PATH)
         cls.semantic_tests = read(SEMANTIC_TEST_PATH)
+        cls.structured_error_tests = read(STRUCTURED_ERROR_TEST_PATH)
         cls.valid_fixture = read(VALID_FIXTURE_PATH)
         cls.invalid_fixture = read(INVALID_FIXTURE_PATH)
         cls.semantic_invalid_fixture = read(SEMANTIC_INVALID_FIXTURE_PATH)
@@ -327,15 +329,57 @@ class ErrorsAndCleanupSpecificationTests(unittest.TestCase):
             self.assertIn(f"| `{exception}` | `{script_code}` |", self.spec)
         self.assertIn("translate_runtime_error_code", self.error_translation_header)
         for _, script_code in documented:
-            self.assertIn(f'{{"{script_code}",', self.error_translation_source)
+            self.assertIn(
+                f"LanguageErrorCode::{script_code}",
+                self.error_translation_source,
+            )
 
-    def test_current_error_cell_is_foundation_not_false_completion(self) -> None:
+    def test_structured_error_heap_is_complete_within_its_foundation_boundary(self) -> None:
+        enum_match = re.search(
+            r"enum class LanguageErrorCode \{(?P<body>.*?)\};",
+            self.value_header,
+            re.DOTALL,
+        )
+        self.assertIsNotNone(enum_match)
+        implemented_codes = tuple(re.findall(r"^\s+([A-Z][A-Za-z0-9]+),$", enum_match.group("body"), re.MULTILINE))
+        self.assertEqual(
+            implemented_codes,
+            tuple(code for code, _ in EXPECTED_LANGUAGE_ERRORS),
+        )
         for anchor in (
-            "struct ErrorMetadata", "std::string code;", "std::string message;",
-            "std::optional<SourceSpan> span;", "std::vector<Value> details;",
+            "language_error_code_catchable(LanguageErrorCode code)",
+            "struct SourceReference", "struct ErrorStackFrame",
+            "struct ErrorContext", "struct ErrorTruncation", "struct ErrorMetadata",
+            "LanguageErrorCode code{LanguageErrorCode::HostInternal};",
+            "ErrorOrigin origin{ErrorOrigin::Script};",
+            "std::optional<SourceReference> source;",
+            "std::vector<ErrorStackFrame> stack;", "std::optional<Value> cause;",
+            "std::vector<Value> suppressed;",
+            "std::vector<std::pair<std::string, Value>> details;",
             "allocate_error(ErrorMetadata metadata)",
+            "derive_error(HeapRef primary, ErrorDerivation additions)",
+            "max_error_stack_frames{128}", "max_error_cause_depth{16}",
+            "max_error_suppressed{16}", "max_error_message_bytes{4096}",
+            "max_error_detail_bytes{65536}",
         ):
             self.assertIn(anchor, self.value_header)
+        for anchor in (
+            "validate_error_graph", "cause_depth", "truncate_utf8",
+            "metadata.truncated.stack_frames", "metadata.truncated.suppressed_errors",
+            "metadata.truncated.details_replaced", "visit_children",
+        ):
+            self.assertIn(anchor, self.value_source)
+        for test_name in (
+            "test_stable_codes_and_derived_catchability",
+            "test_complete_metadata_and_read_only_snapshot",
+            "test_deterministic_truncation_and_cause_budget",
+            "test_cross_heap_invalid_edges_and_obvious_cycles",
+            "test_gc_edges_identity_and_immutable_derivation",
+            "test_dynamic_error_metadata_is_heap_budgeted",
+        ):
+            self.assertIn(test_name, self.structured_error_tests)
+        self.assertIn("BAAS_script_structured_error_heap_tests", self.cmake)
+        self.assertIn("BAAS_script_structured_error_heap_tests", self.workflow)
         for path in (
             ROOT / "include" / "script" / "runtime" / "Vm.h",
             ROOT / "include" / "script" / "runtime" / "StructuredError.h",
@@ -344,7 +388,9 @@ class ErrorsAndCleanupSpecificationTests(unittest.TestCase):
             self.assertFalse(path.exists(), f"update pending boundary for new implementation: {path}")
         self.assertIn("does not yet implement VM execution", self.spec)
         self.assertIn("- [~] Implement structured exceptions, stack traces, cancellation, and limits.", self.roadmap)
-        self.assertIn("Error envelopes, stack capture, VM unwinding", self.roadmap)
+        self.assertIn("VM stack capture/unwinding", self.roadmap)
+        self.assertIn("Error envelope serialization", self.roadmap)
+        self.assertIn("the heap snapshot is not an ERR-003 serialized\nenvelope", self.spec)
 
     def test_static_conformance_fixtures_and_ctest_wiring(self) -> None:
         valid_example = re.search(

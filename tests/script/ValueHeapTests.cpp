@@ -60,8 +60,10 @@ void test_primitives_and_every_cell_kind()
     const auto map = heap.allocate_map({{"first", list}, {"second", Value(true)}});
     const auto function = heap.allocate_function({7, {map}});
     const auto module = heap.allocate_module({"demo", {{"run", function}}});
-    const auto error = heap.allocate_error({"DemoError", "failed", std::nullopt, {module}});
-    const auto task = heap.allocate_task({9, TaskState::Pending, {error}});
+    ErrorMetadata error_metadata{LanguageErrorCode::HostInternal, "failed", ErrorOrigin::Runtime};
+    error_metadata.details.push_back({"payload", map});
+    const auto error = heap.allocate_error(std::move(error_metadata));
+    const auto task = heap.allocate_task({9, TaskState::Pending, {error, module}});
     const auto host = heap.allocate_host_handle({11, 101, 123, false});
 
     check(heap.kind(string) == ValueKind::String && heap.string_copy(string.as_heap_ref()) == "文本",
@@ -75,7 +77,8 @@ void test_primitives_and_every_cell_kind()
           "function cell should preserve opaque id and captures");
     check(heap.kind(module) == ValueKind::Module && heap.module_metadata(module.as_heap_ref()).name == "demo",
           "module namespace kind must be present");
-    check(heap.kind(error) == ValueKind::Error && heap.error_metadata(error.as_heap_ref()).code == "DemoError",
+    check(heap.kind(error) == ValueKind::Error &&
+              heap.error_metadata(error.as_heap_ref()).code == LanguageErrorCode::HostInternal,
           "structured error kind must be present");
     check(heap.kind(task) == ValueKind::Task && heap.task_metadata(task.as_heap_ref()).task_id == 9,
           "task state kind must be present");

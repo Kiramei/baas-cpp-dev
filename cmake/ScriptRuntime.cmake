@@ -94,6 +94,18 @@ if(BUILD_SCRIPT_TESTS)
     set_tests_properties(BAAS_script_value_heap_tests PROPERTIES TIMEOUT 60)
 
     add_executable(
+            BAAS_script_structured_error_heap_tests
+            "${BAAS_PROJECT_PATH}/tests/script/StructuredErrorHeapTests.cpp"
+    )
+    target_compile_features(BAAS_script_structured_error_heap_tests PRIVATE cxx_std_20)
+    target_link_libraries(BAAS_script_structured_error_heap_tests PRIVATE BAAS_script_runtime)
+    add_test(
+            NAME BAAS_script_structured_error_heap_tests
+            COMMAND BAAS_script_structured_error_heap_tests
+    )
+    set_tests_properties(BAAS_script_structured_error_heap_tests PROPERTIES TIMEOUT 60)
+
+    add_executable(
             BAAS_script_environment_tests
             "${BAAS_PROJECT_PATH}/tests/script/EnvironmentTests.cpp"
     )

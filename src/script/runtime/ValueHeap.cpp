@@ -1,6 +1,7 @@
 #include "script/runtime/ValueHeap.h"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cmath>
 #include <limits>
@@ -14,6 +15,57 @@ namespace {
 // This counter allocates opaque identities only; it owns no heap/cell/runtime
 // state and does not couple collection or budgets between contexts.
 std::atomic<std::uint64_t> next_heap_identity{1};
+
+struct ErrorCodeDescriptor {
+    LanguageErrorCode code;
+    std::string_view name;
+    bool catchable;
+};
+
+constexpr std::array error_code_descriptors{
+    ErrorCodeDescriptor{LanguageErrorCode::ThrownValue, "ThrownValue", true},
+    ErrorCodeDescriptor{LanguageErrorCode::TypeMismatch, "TypeMismatch", true},
+    ErrorCodeDescriptor{LanguageErrorCode::ArgumentInvalid, "ArgumentInvalid", true},
+    ErrorCodeDescriptor{LanguageErrorCode::NameNotFound, "NameNotFound", true},
+    ErrorCodeDescriptor{LanguageErrorCode::UninitializedBinding, "UninitializedBinding", true},
+    ErrorCodeDescriptor{LanguageErrorCode::NotCallable, "NotCallable", true},
+    ErrorCodeDescriptor{LanguageErrorCode::CallArityMismatch, "CallArityMismatch", true},
+    ErrorCodeDescriptor{LanguageErrorCode::CallArgumentDuplicate, "CallArgumentDuplicate", true},
+    ErrorCodeDescriptor{LanguageErrorCode::CallArgumentUnknown, "CallArgumentUnknown", true},
+    ErrorCodeDescriptor{LanguageErrorCode::TaskCycle, "TaskCycle", true},
+    ErrorCodeDescriptor{LanguageErrorCode::IndexOutOfRange, "IndexOutOfRange", true},
+    ErrorCodeDescriptor{LanguageErrorCode::NumericOverflow, "NumericOverflow", true},
+    ErrorCodeDescriptor{LanguageErrorCode::DivisionByZero, "DivisionByZero", true},
+    ErrorCodeDescriptor{LanguageErrorCode::InvalidUtf8, "InvalidUtf8", true},
+    ErrorCodeDescriptor{LanguageErrorCode::JsonCycle, "JsonCycle", true},
+    ErrorCodeDescriptor{LanguageErrorCode::JsonNonFinite, "JsonNonFinite", true},
+    ErrorCodeDescriptor{LanguageErrorCode::JsonUnsupported, "JsonUnsupported", true},
+    ErrorCodeDescriptor{LanguageErrorCode::JsonDuplicateKey, "JsonDuplicateKey", true},
+    ErrorCodeDescriptor{LanguageErrorCode::JsonLimitExceeded, "JsonLimitExceeded", true},
+    ErrorCodeDescriptor{LanguageErrorCode::ImportSpecifierInvalid, "ImportSpecifierInvalid", true},
+    ErrorCodeDescriptor{LanguageErrorCode::ImportCycle, "ImportCycle", true},
+    ErrorCodeDescriptor{LanguageErrorCode::ImportDepthLimit, "ImportDepthLimit", true},
+    ErrorCodeDescriptor{LanguageErrorCode::ModuleInitializationFailed, "ModuleInitializationFailed", true},
+    ErrorCodeDescriptor{LanguageErrorCode::ModuleMemberMissing, "ModuleMemberMissing", true},
+    ErrorCodeDescriptor{LanguageErrorCode::CapabilityDenied, "CapabilityDenied", true},
+    ErrorCodeDescriptor{LanguageErrorCode::HostValidationFailed, "HostValidationFailed", true},
+    ErrorCodeDescriptor{LanguageErrorCode::HostUnavailable, "HostUnavailable", true},
+    ErrorCodeDescriptor{LanguageErrorCode::DeviceDisconnected, "DeviceDisconnected", true},
+    ErrorCodeDescriptor{LanguageErrorCode::PackageMismatch, "PackageMismatch", true},
+    ErrorCodeDescriptor{LanguageErrorCode::OcrModelUnavailable, "OcrModelUnavailable", true},
+    ErrorCodeDescriptor{LanguageErrorCode::ResourceMissing, "ResourceMissing", true},
+    ErrorCodeDescriptor{LanguageErrorCode::Timeout, "Timeout", true},
+    ErrorCodeDescriptor{LanguageErrorCode::HostInternal, "HostInternal", true},
+    ErrorCodeDescriptor{LanguageErrorCode::Cancelled, "Cancelled", false},
+    ErrorCodeDescriptor{LanguageErrorCode::HumanTakeover, "HumanTakeover", false},
+    ErrorCodeDescriptor{LanguageErrorCode::DeadlineExceeded, "DeadlineExceeded", false},
+    ErrorCodeDescriptor{LanguageErrorCode::InstructionLimitExceeded, "InstructionLimitExceeded", false},
+    ErrorCodeDescriptor{LanguageErrorCode::MemoryLimitExceeded, "MemoryLimitExceeded", false},
+    ErrorCodeDescriptor{LanguageErrorCode::StackLimitExceeded, "StackLimitExceeded", false},
+    ErrorCodeDescriptor{LanguageErrorCode::CleanupLimitExceeded, "CleanupLimitExceeded", false},
+    ErrorCodeDescriptor{LanguageErrorCode::TaskLimitExceeded, "TaskLimitExceeded", false},
+    ErrorCodeDescriptor{LanguageErrorCode::InternalInvariant, "InternalInvariant", false},
+};
 
 [[nodiscard]] std::uint64_t allocate_heap_identity()
 {
@@ -73,6 +125,14 @@ struct Charge {
     return true;
 }
 
+void saturating_add(std::size_t& destination, const std::size_t value) noexcept
+{
+    if (value > std::numeric_limits<std::size_t>::max() - destination)
+        destination = std::numeric_limits<std::size_t>::max();
+    else
+        destination += value;
+}
+
 void charged_add(std::size_t& destination, const std::size_t value)
 {
     std::size_t result{};
@@ -80,6 +140,19 @@ void charged_add(std::size_t& destination, const std::size_t value)
         throw RuntimeError(RuntimeErrorCode::MemoryLimitExceeded, "heap accounting overflow");
     }
     destination = result;
+}
+
+void add_source_charge(Charge& charge, const SourceReference& source)
+{
+    charged_add(charge.bytes, source.snapshot_id.capacity());
+    charged_add(charge.strings, source.snapshot_id.capacity());
+    charged_add(charge.bytes, source.module.capacity());
+    charged_add(charge.strings, source.module.capacity());
+}
+
+void add_optional_source_charge(Charge& charge, const std::optional<SourceReference>& source)
+{
+    if (source) add_source_charge(charge, *source);
 }
 
 [[nodiscard]] std::size_t vector_bytes(const std::size_t capacity, const std::size_t item_size)
@@ -116,9 +189,35 @@ void charged_add(std::size_t& destination, const std::size_t value)
                                                     sizeof(std::pair<std::string, Value>)));
             for (const auto& [key, ignored] : cell.metadata.exports) { (void)ignored; add_string(key); }
         } else if constexpr (std::is_same_v<T, ErrorCell>) {
-            add_string(cell.metadata.code);
             add_string(cell.metadata.message);
-            charged_add(charge.bytes, vector_bytes(cell.metadata.details.capacity(), sizeof(Value)));
+            add_optional_source_charge(charge, cell.metadata.source);
+            charged_add(charge.bytes,
+                        vector_bytes(cell.metadata.stack.capacity(), sizeof(ErrorStackFrame)));
+            for (const auto& frame : cell.metadata.stack) {
+                add_string(frame.module);
+                add_string(frame.function);
+                add_optional_source_charge(charge, frame.call_source);
+                add_optional_source_charge(charge, frame.definition_source);
+                add_optional_source_charge(charge, frame.defer_source);
+            }
+            charged_add(charge.bytes,
+                        vector_bytes(cell.metadata.suppressed.capacity(), sizeof(Value)));
+            charged_add(charge.bytes,
+                        vector_bytes(cell.metadata.details.capacity(),
+                                     sizeof(std::pair<std::string, Value>)));
+            for (const auto& [key, ignored] : cell.metadata.details) {
+                (void)ignored;
+                add_string(key);
+            }
+            const auto add_context = [&](const std::optional<std::string>& value) {
+                if (value) add_string(*value);
+            };
+            add_context(cell.metadata.context.task_id);
+            add_context(cell.metadata.context.session_id);
+            add_context(cell.metadata.context.package_id);
+            add_context(cell.metadata.context.snapshot_id);
+            add_context(cell.metadata.context.language_version);
+            add_context(cell.metadata.context.correlation_id);
         } else if constexpr (std::is_same_v<T, TaskCell>) {
             charged_add(charge.bytes, vector_bytes(cell.metadata.retained_values.capacity(), sizeof(Value)));
         } else if constexpr (std::is_same_v<T, HostCell>) {
@@ -168,6 +267,110 @@ void charged_add(std::size_t& destination, const std::size_t value)
     return true;
 }
 
+void truncate_utf8(std::string& text, const std::size_t limit,
+                   std::size_t& omitted_bytes)
+{
+    if (text.size() <= limit) return;
+    auto end = limit;
+    while (end > 0 &&
+           (static_cast<unsigned char>(text[end]) & 0xc0U) == 0x80U) --end;
+    const auto original = text.size();
+    text.resize(end);
+    saturating_add(omitted_bytes, original - end);
+}
+
+void compact_string(std::string& text)
+{
+    std::string compact{text};
+    text.swap(compact);
+}
+
+[[nodiscard]] bool is_canonical_module_id(const std::string_view module) noexcept
+{
+    if (module.empty() || module.front() == '/' || module.back() == '/' ||
+        module.find('\\') != std::string_view::npos ||
+        module.find(':') != std::string_view::npos ||
+        module.find('\0') != std::string_view::npos) return false;
+    std::size_t start = 0;
+    while (start < module.size()) {
+        const auto slash = module.find('/', start);
+        const auto part = module.substr(start, slash == std::string_view::npos ?
+                                               module.size() - start : slash - start);
+        if (part.empty() || part == "." || part == "..") return false;
+        if (slash == std::string_view::npos) return part.find('.') == std::string_view::npos;
+        start = slash + 1;
+    }
+    return false;
+}
+
+void validate_source_reference(const SourceReference& source)
+{
+    if (!is_valid_utf8(source.snapshot_id) || !is_valid_utf8(source.module)) {
+        throw RuntimeError(RuntimeErrorCode::InvalidUtf8,
+                           "error source reference is not valid UTF-8");
+    }
+    if (source.snapshot_id.empty() || source.snapshot_id.find('/') != std::string::npos ||
+        source.snapshot_id.find('\\') != std::string::npos ||
+        source.snapshot_id.find('\0') != std::string::npos ||
+        !is_canonical_module_id(source.module)) {
+        throw RuntimeError(RuntimeErrorCode::TypeMismatch,
+                           "error source reference is not canonical");
+    }
+    const auto& begin = source.span.begin;
+    const auto& end = source.span.end;
+    if (begin.line == 0 || begin.column == 0 || end.line == 0 || end.column == 0 ||
+        begin.byte_offset > end.byte_offset || begin.line > end.line ||
+        (begin.line == end.line && begin.column > end.column)) {
+        throw RuntimeError(RuntimeErrorCode::TypeMismatch,
+                           "error source span is not ordered");
+    }
+}
+
+void validate_optional_source(const std::optional<SourceReference>& source)
+{
+    if (source) validate_source_reference(*source);
+}
+
+void validate_error_frame(const ErrorStackFrame& frame)
+{
+    if (!is_valid_utf8(frame.module) || !is_valid_utf8(frame.function)) {
+        throw RuntimeError(RuntimeErrorCode::InvalidUtf8,
+                           "error stack frame is not valid UTF-8");
+    }
+    if (!is_canonical_module_id(frame.module) || frame.function.empty()) {
+        throw RuntimeError(RuntimeErrorCode::TypeMismatch,
+                           "error stack frame identity is not canonical");
+    }
+    validate_optional_source(frame.call_source);
+    validate_optional_source(frame.definition_source);
+    validate_optional_source(frame.defer_source);
+    if (frame.kind == ErrorFrameKind::Host && frame.definition_source) {
+        throw RuntimeError(RuntimeErrorCode::TypeMismatch,
+                           "host error frame cannot carry a definition source");
+    }
+    if (frame.phase != ErrorFramePhase::Cleanup && frame.defer_source) {
+        throw RuntimeError(RuntimeErrorCode::TypeMismatch,
+                           "non-cleanup error frame cannot carry a defer source");
+    }
+    if (frame.phase == ErrorFramePhase::Cleanup && !frame.defer_source) {
+        throw RuntimeError(RuntimeErrorCode::TypeMismatch,
+                           "cleanup error frame requires a defer source");
+    }
+    if ((frame.kind == ErrorFrameKind::Host) !=
+        (frame.phase == ErrorFramePhase::Host)) {
+        throw RuntimeError(RuntimeErrorCode::TypeMismatch,
+                           "error frame kind and phase disagree");
+    }
+}
+
+void validate_optional_context_string(const std::optional<std::string>& value)
+{
+    if (value && !is_valid_utf8(*value)) {
+        throw RuntimeError(RuntimeErrorCode::InvalidUtf8,
+                           "error context is not valid UTF-8");
+    }
+}
+
 template <typename Function>
 void visit_children(const CellData& data, Function&& function)
 {
@@ -182,7 +385,9 @@ void visit_children(const CellData& data, Function&& function)
         } else if constexpr (std::is_same_v<T, ModuleCell>) {
             for (const auto& entry : cell.metadata.exports) function(entry.second);
         } else if constexpr (std::is_same_v<T, ErrorCell>) {
-            for (const auto value : cell.metadata.details) function(value);
+            if (cell.metadata.cause) function(*cell.metadata.cause);
+            for (const auto value : cell.metadata.suppressed) function(value);
+            for (const auto& detail : cell.metadata.details) function(detail.second);
         } else if constexpr (std::is_same_v<T, TaskCell>) {
             for (const auto value : cell.metadata.retained_values) function(value);
         }
@@ -195,6 +400,28 @@ void visit_children(const CellData& data, Function&& function)
 }
 
 }  // namespace
+
+std::string_view language_error_code_name(const LanguageErrorCode code) noexcept
+{
+    const auto index = static_cast<std::size_t>(code);
+    return index < error_code_descriptors.size() ? error_code_descriptors[index].name :
+                                                   "InternalInvariant";
+}
+
+bool language_error_code_catchable(const LanguageErrorCode code) noexcept
+{
+    const auto index = static_cast<std::size_t>(code);
+    return index < error_code_descriptors.size() && error_code_descriptors[index].catchable;
+}
+
+std::optional<LanguageErrorCode> language_error_code_from_name(
+    const std::string_view name) noexcept
+{
+    const auto found = std::find_if(error_code_descriptors.begin(), error_code_descriptors.end(),
+                                    [&](const auto& item) { return item.name == name; });
+    if (found == error_code_descriptors.end()) return std::nullopt;
+    return found->code;
+}
 
 struct Heap::Impl {
     struct Slot {
@@ -256,6 +483,149 @@ struct Heap::Impl {
     void validate_edges(const CellData& data) const
     {
         visit_children(data, [&](const Value value) { validate_edge(value); });
+    }
+
+    void validate_error_graph(const Value root) const
+    {
+        struct Frame { Value value; bool exit; };
+        std::vector<Frame> work{{root, false}};
+        std::unordered_set<std::uint32_t> active;
+        std::unordered_set<std::uint32_t> complete;
+        std::size_t visited = 0;
+        while (!work.empty()) {
+            const auto frame = work.back();
+            work.pop_back();
+            validate_edge(frame.value);
+            const auto reference = frame.value.as_heap_ref();
+            const auto& cell = expected(reference, ValueKind::Error);
+            if (frame.exit) {
+                active.erase(reference.slot);
+                complete.insert(reference.slot);
+                continue;
+            }
+            if (complete.contains(reference.slot)) continue;
+            if (visited >= limits.max_collection_work) {
+                throw RuntimeError(RuntimeErrorCode::CollectionWorkLimitExceeded,
+                                   "structured Error graph validation work limit exceeded");
+            }
+            ++visited;
+            if (!active.insert(reference.slot).second) {
+                throw RuntimeError(RuntimeErrorCode::CellKindMismatch,
+                                   "cyclic structured Error graph");
+            }
+            work.push_back({frame.value, true});
+            const auto& metadata = std::get<ErrorCell>(cell.data).metadata;
+            for (auto iterator = metadata.suppressed.rbegin();
+                 iterator != metadata.suppressed.rend(); ++iterator) {
+                work.push_back({*iterator, false});
+            }
+            if (metadata.cause) work.push_back({*metadata.cause, false});
+        }
+    }
+
+    [[nodiscard]] std::size_t cause_depth(const Value root) const
+    {
+        std::unordered_set<std::uint32_t> visited;
+        auto current = std::optional<Value>{root};
+        std::size_t depth = 0;
+        while (current) {
+            validate_edge(*current);
+            const auto reference = current->as_heap_ref();
+            if (!visited.insert(reference.slot).second) {
+                throw RuntimeError(RuntimeErrorCode::CellKindMismatch,
+                                   "cyclic structured Error cause chain");
+            }
+            const auto& metadata = std::get<ErrorCell>(
+                expected(reference, ValueKind::Error).data).metadata;
+            if (depth == std::numeric_limits<std::size_t>::max()) {
+                throw RuntimeError(RuntimeErrorCode::MemoryLimitExceeded,
+                                   "structured Error cause depth overflow");
+            }
+            ++depth;
+            current = metadata.cause;
+        }
+        return depth;
+    }
+
+    [[nodiscard]] std::size_t detail_value_bytes(const Value root) const
+    {
+        struct Frame { Value value; bool exit; };
+        std::vector<Frame> work{{root, false}};
+        std::unordered_set<std::uint32_t> active;
+        std::size_t bytes = 0;
+        std::size_t visited = 0;
+        while (!work.empty()) {
+            if (visited >= limits.max_collection_work) {
+                throw RuntimeError(RuntimeErrorCode::JsonWorkLimitExceeded,
+                                   "structured Error detail work limit exceeded");
+            }
+            const auto frame = work.back();
+            work.pop_back();
+            const auto value = frame.value;
+            if (frame.exit) {
+                active.erase(value.as_heap_ref().slot);
+                continue;
+            }
+            ++visited;
+            switch (value.inline_kind() == ValueKind::HeapReference ?
+                        data_kind(dereference(value.as_heap_ref()).data) : value.inline_kind()) {
+                case ValueKind::Null: charged_add(bytes, 4); break;
+                case ValueKind::Boolean: charged_add(bytes, 5); break;
+                case ValueKind::Integer:
+                case ValueKind::Float: charged_add(bytes, 24); break;
+                case ValueKind::String: {
+                    const auto& text = std::get<StringCell>(
+                        expected(value.as_heap_ref(), ValueKind::String).data).value;
+                    charged_add(bytes, text.size());
+                    break;
+                }
+                case ValueKind::List: {
+                    const auto reference = value.as_heap_ref();
+                    if (!active.insert(reference.slot).second) {
+                        throw RuntimeError(RuntimeErrorCode::JsonCycle,
+                                           "cyclic structured Error detail");
+                    }
+                    const auto& values = std::get<ListCell>(
+                        expected(reference, ValueKind::List).data).values;
+                    if (values.size() > limits.max_collection_work - visited ||
+                        work.size() > limits.max_collection_work - visited - values.size()) {
+                        throw RuntimeError(RuntimeErrorCode::JsonWorkLimitExceeded,
+                                           "structured Error detail work limit exceeded");
+                    }
+                    charged_add(bytes, 2 + values.size());
+                    work.push_back({value, true});
+                    for (auto iterator = values.rbegin(); iterator != values.rend(); ++iterator) {
+                        work.push_back({*iterator, false});
+                    }
+                    break;
+                }
+                case ValueKind::OrderedMap: {
+                    const auto reference = value.as_heap_ref();
+                    if (!active.insert(reference.slot).second) {
+                        throw RuntimeError(RuntimeErrorCode::JsonCycle,
+                                           "cyclic structured Error detail");
+                    }
+                    const auto& entries = std::get<MapCell>(
+                        expected(reference, ValueKind::OrderedMap).data).entries;
+                    if (entries.size() > limits.max_collection_work - visited ||
+                        work.size() > limits.max_collection_work - visited - entries.size()) {
+                        throw RuntimeError(RuntimeErrorCode::JsonWorkLimitExceeded,
+                                           "structured Error detail work limit exceeded");
+                    }
+                    charged_add(bytes, 2 + entries.size());
+                    work.push_back({value, true});
+                    for (auto iterator = entries.rbegin(); iterator != entries.rend(); ++iterator) {
+                        charged_add(bytes, iterator->first.size());
+                        work.push_back({iterator->second, false});
+                    }
+                    break;
+                }
+                default:
+                    throw RuntimeError(RuntimeErrorCode::JsonUnsupported,
+                                       "structured Error detail is not JSON-safe");
+            }
+        }
+        return bytes;
     }
 
     void preflight(const Charge charge, const std::size_t allocation_size, const bool add_cell)
@@ -581,10 +951,152 @@ Value Heap::allocate_module(ModuleMetadata metadata)
 }
 Value Heap::allocate_error(ErrorMetadata metadata)
 {
-    if (!is_valid_utf8(metadata.code) || !is_valid_utf8(metadata.message))
-        throw RuntimeError(RuntimeErrorCode::InvalidUtf8, "error metadata is not valid UTF-8");
-    auto roots = root_scope(); for (const auto value : metadata.details) roots.add(value);
-    return impl_->allocate(ErrorCell{std::move(metadata)});
+    try {
+        if (static_cast<std::size_t>(metadata.code) >= error_code_descriptors.size()) {
+            throw RuntimeError(RuntimeErrorCode::CellKindMismatch,
+                               "unknown stable language Error code");
+        }
+        if (!is_valid_utf8(metadata.message)) {
+            throw RuntimeError(RuntimeErrorCode::InvalidUtf8,
+                               "error message is not valid UTF-8");
+        }
+        truncate_utf8(metadata.message, impl_->limits.max_error_message_bytes,
+                      metadata.truncated.message_bytes);
+        compact_string(metadata.message);
+        validate_optional_source(metadata.source);
+
+        if (metadata.stack.size() > impl_->limits.max_error_stack_frames) {
+            const auto omitted = metadata.stack.size() - impl_->limits.max_error_stack_frames;
+            const auto inner = std::min(impl_->limits.max_error_innermost_frames,
+                                        impl_->limits.max_error_stack_frames);
+            const auto outer = impl_->limits.max_error_stack_frames - inner;
+            std::vector<ErrorStackFrame> bounded;
+            bounded.reserve(impl_->limits.max_error_stack_frames);
+            bounded.insert(bounded.end(), metadata.stack.begin(), metadata.stack.begin() + inner);
+            if (outer != 0) {
+                bounded.insert(bounded.end(), metadata.stack.end() - outer, metadata.stack.end());
+            }
+            metadata.stack.swap(bounded);
+            saturating_add(metadata.truncated.stack_frames, omitted);
+        }
+        for (const auto& frame : metadata.stack) validate_error_frame(frame);
+
+        if (metadata.cause) {
+            impl_->validate_error_graph(*metadata.cause);
+            const auto depth = impl_->cause_depth(*metadata.cause);
+            if (depth > impl_->limits.max_error_cause_depth) {
+                throw RuntimeError(RuntimeErrorCode::CellKindMismatch,
+                                   "structured Error cause depth exceeds construction limit");
+            }
+        }
+
+        std::vector<Value> accepted_suppressed;
+        accepted_suppressed.reserve(std::min(metadata.suppressed.size(),
+                                             impl_->limits.max_error_suppressed));
+        for (const auto value : metadata.suppressed) {
+            if (accepted_suppressed.size() < impl_->limits.max_error_suppressed) {
+                impl_->validate_error_graph(value);
+                if ((metadata.cause && value == *metadata.cause) ||
+                    std::find(accepted_suppressed.begin(), accepted_suppressed.end(), value) !=
+                        accepted_suppressed.end()) {
+                    throw RuntimeError(RuntimeErrorCode::CellKindMismatch,
+                                       "duplicate causal Error edge");
+                }
+                accepted_suppressed.push_back(value);
+            }
+        }
+        if (metadata.suppressed.size() > accepted_suppressed.size()) {
+            saturating_add(metadata.truncated.suppressed_errors,
+                           metadata.suppressed.size() - accepted_suppressed.size());
+        }
+        metadata.suppressed.swap(accepted_suppressed);
+
+        std::size_t detail_bytes = 0;
+        std::vector<std::string_view> detail_keys;
+        detail_keys.reserve(metadata.details.size());
+        for (const auto& [key, value] : metadata.details) {
+            if (!is_valid_utf8(key)) {
+                throw RuntimeError(RuntimeErrorCode::InvalidUtf8,
+                                   "error detail key is not valid UTF-8");
+            }
+            if (std::find(detail_keys.begin(), detail_keys.end(), key) != detail_keys.end()) {
+                throw RuntimeError(RuntimeErrorCode::JsonDuplicateKey,
+                                   "duplicate structured Error detail key");
+            }
+            detail_keys.emplace_back(key);
+            charged_add(detail_bytes, key.size());
+            charged_add(detail_bytes, impl_->detail_value_bytes(value));
+        }
+
+        const auto validate_context = [&](std::optional<std::string>& value) {
+            validate_optional_context_string(value);
+            if (value) charged_add(detail_bytes, value->size());
+        };
+        validate_context(metadata.context.task_id);
+        validate_context(metadata.context.session_id);
+        validate_context(metadata.context.package_id);
+        validate_context(metadata.context.snapshot_id);
+        validate_context(metadata.context.language_version);
+        validate_context(metadata.context.correlation_id);
+
+        if (detail_bytes > impl_->limits.max_error_detail_bytes) {
+            metadata.truncated.details_replaced = metadata.truncated.details_replaced ||
+                                                  !metadata.details.empty();
+            std::vector<std::pair<std::string, Value>>{}.swap(metadata.details);
+            auto remaining = impl_->limits.max_error_detail_bytes;
+            const auto bound_context = [&](std::optional<std::string>& value) {
+                if (!value) return;
+                std::size_t ignored{};
+                truncate_utf8(*value, remaining, ignored);
+                compact_string(*value);
+                remaining -= value->size();
+            };
+            bound_context(metadata.context.task_id);
+            bound_context(metadata.context.session_id);
+            bound_context(metadata.context.package_id);
+            bound_context(metadata.context.snapshot_id);
+            bound_context(metadata.context.language_version);
+            bound_context(metadata.context.correlation_id);
+            const auto preserved_context = impl_->limits.max_error_detail_bytes - remaining;
+            saturating_add(metadata.truncated.detail_bytes,
+                           detail_bytes - preserved_context);
+        }
+        auto roots = root_scope();
+        if (metadata.cause) roots.add(*metadata.cause);
+        for (const auto value : metadata.suppressed) roots.add(value);
+        for (const auto& detail : metadata.details) roots.add(detail.second);
+        return impl_->allocate(ErrorCell{std::move(metadata)});
+    } catch (const std::bad_alloc&) {
+        throw RuntimeError(RuntimeErrorCode::MemoryLimitExceeded,
+                           "structured Error construction allocation failed");
+    }
+}
+
+Value Heap::derive_error(const HeapRef primary, ErrorDerivation additions)
+{
+    try {
+        const auto primary_value = Value(primary);
+        if ((additions.cause && *additions.cause == primary_value) ||
+            std::find(additions.suppressed.begin(), additions.suppressed.end(), primary_value) !=
+                additions.suppressed.end()) {
+            throw RuntimeError(RuntimeErrorCode::CellKindMismatch,
+                               "derived Error cannot reference its primary as cause or suppressed");
+        }
+        auto metadata = error_metadata(primary);
+        if (additions.cause) {
+            if (metadata.cause) {
+                throw RuntimeError(RuntimeErrorCode::CellKindMismatch,
+                                   "derived Error cannot replace an existing cause");
+            }
+            metadata.cause = *additions.cause;
+        }
+        metadata.suppressed.insert(metadata.suppressed.end(), additions.suppressed.begin(),
+                                   additions.suppressed.end());
+        return allocate_error(std::move(metadata));
+    } catch (const std::bad_alloc&) {
+        throw RuntimeError(RuntimeErrorCode::MemoryLimitExceeded,
+                           "structured Error derivation allocation failed");
+    }
 }
 Value Heap::allocate_task(TaskMetadata metadata)
 {
@@ -612,7 +1124,15 @@ std::optional<Value> Heap::map_get(const HeapRef reference, const std::string_vi
 }
 FunctionMetadata Heap::function_metadata(const HeapRef reference) const { return std::get<FunctionCell>(impl_->expected(reference, ValueKind::Function).data).metadata; }
 ModuleMetadata Heap::module_metadata(const HeapRef reference) const { return std::get<ModuleCell>(impl_->expected(reference, ValueKind::Module).data).metadata; }
-ErrorMetadata Heap::error_metadata(const HeapRef reference) const { return std::get<ErrorCell>(impl_->expected(reference, ValueKind::Error).data).metadata; }
+ErrorMetadata Heap::error_metadata(const HeapRef reference) const
+{
+    try {
+        return std::get<ErrorCell>(impl_->expected(reference, ValueKind::Error).data).metadata;
+    } catch (const std::bad_alloc&) {
+        throw RuntimeError(RuntimeErrorCode::MemoryLimitExceeded,
+                           "structured Error snapshot allocation failed");
+    }
+}
 TaskMetadata Heap::task_metadata(const HeapRef reference) const { return std::get<TaskCell>(impl_->expected(reference, ValueKind::Task).data).metadata; }
 HostHandleMetadata Heap::host_handle_metadata(const HeapRef reference) const { return std::get<HostCell>(impl_->expected(reference, ValueKind::HostHandle).data).metadata; }
 
