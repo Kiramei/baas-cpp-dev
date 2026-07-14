@@ -1,8 +1,12 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
+#include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
+#include <variant>
 #include <vector>
 
 namespace baas::service::router {
@@ -38,6 +42,52 @@ struct ServiceInfo {
     std::string version;
 };
 
+struct HealthValue;
+using HealthArray = std::vector<HealthValue>;
+using HealthObject = std::vector<std::pair<std::string, HealthValue>>;
+
+enum class HealthValueKind { null, boolean, integer, floating, string, array, object };
+
+// JSON-safe value used only for the public /health statuses snapshot. Objects
+// are canonicalized by key before serialization, and duplicate keys are
+// rejected rather than silently overwritten.
+struct HealthValue {
+    using Storage = std::variant<std::monostate, bool, std::int64_t, double,
+                                 std::string, HealthArray, HealthObject>;
+
+    HealthValue() noexcept = default;
+    explicit HealthValue(bool value) : storage(value) {}
+    explicit HealthValue(std::int64_t value) : storage(value) {}
+    explicit HealthValue(double value) : storage(value) {}
+    explicit HealthValue(std::string value) : storage(std::move(value)) {}
+    explicit HealthValue(const char* value) : storage(std::string(value)) {}
+    explicit HealthValue(HealthArray value) : storage(std::move(value)) {}
+    explicit HealthValue(HealthObject value) : storage(std::move(value)) {}
+
+    [[nodiscard]] HealthValueKind kind() const noexcept;
+
+    Storage storage;
+};
+
+struct HealthAuthSnapshot {
+    bool initialized = false;
+    std::uint64_t pwd_epoch = 0;
+    std::string server_sign_public_key;
+};
+
+struct HealthSnapshot {
+    HealthObject statuses;
+    HealthAuthSnapshot auth;
+};
+
+class HealthSnapshotProvider {
+public:
+    virtual ~HealthSnapshotProvider() = default;
+    // Called synchronously from Router::handle(). A provider used by a shared
+    // Router must be thread-safe and must outlive that Router and all requests.
+    [[nodiscard]] virtual HealthSnapshot health_snapshot() const = 0;
+};
+
 enum class ShutdownDecision {
     accepted,
     rejected,
@@ -57,11 +107,34 @@ public:
         ShutdownIntent* shutdown_intent = nullptr
     );
 
+    [[nodiscard]] static Router with_health_snapshot(
+        ServiceInfo service,
+        HealthSnapshot health,
+        SizeBudget budget = {},
+        ShutdownIntent* shutdown_intent = nullptr
+    );
+
+    [[nodiscard]] static Router with_health_provider(
+        ServiceInfo service,
+        HealthSnapshotProvider& health_provider,
+        SizeBudget budget = {},
+        ShutdownIntent* shutdown_intent = nullptr
+    );
+
     [[nodiscard]] Response handle(const Request& request) const;
     [[nodiscard]] const SizeBudget& budget() const noexcept;
 
 private:
+    Router(
+        ServiceInfo service,
+        SizeBudget budget,
+        ShutdownIntent* shutdown_intent,
+        std::optional<HealthSnapshot> health_snapshot,
+        HealthSnapshotProvider* health_provider
+    );
+
     [[nodiscard]] Response route(const Request& request) const;
+    [[nodiscard]] Response health() const;
     [[nodiscard]] Response finish(Response response) const;
     [[nodiscard]] static Response json_response(int status, std::string body);
     [[nodiscard]] static Response error(int status, std::string_view code, std::string_view message);
@@ -69,6 +142,8 @@ private:
     ServiceInfo service_;
     SizeBudget budget_;
     ShutdownIntent* shutdown_intent_;
+    std::optional<HealthSnapshot> health_snapshot_;
+    HealthSnapshotProvider* health_provider_;
 };
 
 }  // namespace baas::service::router

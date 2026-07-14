@@ -228,12 +228,18 @@ Exit evidence: contract suite and Tauri end-to-end workflows pass under load.
 Transport-independent routing foundation: `BAAS_service_router` now provides
 dependency-free, in-memory routing on the frozen unversioned `/health` path,
 exact method/path matching, bounded request/response bodies, uniform JSON-safe
-errors, and foundation-only `/version`/`/shutdown` extensions. The production
-`/health` status/auth payload and remaining required v1 routes are still
-missing. It opens no listener and performs no shutdown.
+errors, and foundation-only `/version`/`/shutdown` extensions. `/health` now
+serializes explicitly injected static or dynamic `statuses` and
+`auth.initialized`/`pwd_epoch`/`server_sign_public_key` snapshots with stable
+ordering, UTF-8/JSON validation, provider-failure containment, and bounded
+output. Missing injection returns 503 instead of fabricating readiness. A real
+service host has not yet wired runtime/auth owners into that provider, and the
+remaining required v1 routes are still missing. It opens no listener and
+performs no shutdown.
 `SERVICE_ROUTER_CORE.md` records the boundary and tests; the `cpp-httplib`
 adapter, authentication, bounded concurrency, real graceful shutdown, and
-Tauri integration remain required, so the broader checklist item stays open.
+shared Python/Tauri contract and lifecycle integration remain required, so the
+broader checklist item stays open.
 
 Optional HTTP adapter foundation: `BAAS_service_http` now requests
 `BAAS::httplib` only when explicitly enabled, maps cpp-httplib method/path/body

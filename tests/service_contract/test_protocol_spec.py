@@ -107,7 +107,10 @@ class ServiceProtocolSpecTests(unittest.TestCase):
         self.assertIn('health_path = "/health"', self.router_source)
         self.assertNotIn('health_path = "/api/v1/health"', self.router_source)
         self.assertIn("HTTP v1 paths are intentionally unversioned", self.spec)
-        self.assertIn("not yet payload-compatible", self.router_core_spec)
+        self.assertIn("body now follows the observed Python field shape", self.router_core_spec)
+        self.assertIn("with_health_snapshot()", self.router_core_spec)
+        self.assertIn("with_health_provider()", self.router_core_spec)
+        self.assertIn("does not derive readiness", self.router_core_spec)
         for field in ("statuses", "auth.initialized", "auth.pwd_epoch", "auth.server_sign_public_key"):
             self.assertIn(field, self.router_core_spec)
 

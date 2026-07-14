@@ -1,5 +1,6 @@
 #include "service/router/Router.h"
 
+#include <cmath>
 #include <cstdlib>
 #include <iostream>
 #include <stdexcept>
@@ -49,14 +50,45 @@ private:
     service_router::ShutdownDecision decision_;
 };
 
+[[nodiscard]] service_router::HealthSnapshot health_snapshot(
+    const bool initialized = false,
+    const std::uint64_t epoch = 7,
+    std::string public_key = "c2VydmVyLWtleQ=="
+)
+{
+    using service_router::HealthArray;
+    using service_router::HealthObject;
+    using service_router::HealthValue;
+    return {
+        {
+            {"zeta", HealthValue{HealthObject{
+                {"waiting_tasks", HealthValue{HealthArray{
+                    HealthValue{"lesson"}, HealthValue{"shop"},
+                }}},
+                {"running", HealthValue{true}},
+                {"exit_code", HealthValue{}},
+            }}},
+            {"alpha", HealthValue{HealthObject{
+                {"timestamp", HealthValue{std::int64_t{1'725'000'000'123}}},
+                {"current_task", HealthValue{"daily"}},
+                {"progress", HealthValue{0.5}},
+            }}},
+        },
+        {initialized, epoch, std::move(public_key)},
+    };
+}
+
 void test_health_and_version_routes()
 {
-    const service_router::Router router{{"BAAS Service", "1.2.3"}};
+    const auto router = service_router::Router::with_health_snapshot(
+        {"BAAS Service", "1.2.3"}, health_snapshot()
+    );
 
     const auto health = router.handle({"GET", "/health", {}});
     check(health.status == 200, "health must return 200");
-    check(health.body == R"({"api_version":1,"ok":true,"status":"healthy"})",
-          "health response must be stable versioned JSON");
+    check(health.body
+              == R"({"ok":true,"statuses":{"alpha":{"current_task":"daily","progress":0.5,"timestamp":1725000000123},"zeta":{"exit_code":null,"running":true,"waiting_tasks":["lesson","shop"]}},"auth":{"initialized":false,"pwd_epoch":7,"server_sign_public_key":"c2VydmVyLWtleQ=="}})",
+          "health response must match the frozen Python v1 field shape deterministically");
     check(header(health, "Content-Type") == "application/json; charset=utf-8",
           "health must be JSON UTF-8");
 
@@ -65,6 +97,145 @@ void test_health_and_version_routes()
     check(version.body
               == R"({"api_version":1,"ok":true,"service":"BAAS Service","version":"1.2.3"})",
           "version must expose injected service metadata and API version");
+}
+
+class ChangingHealthProvider final : public service_router::HealthSnapshotProvider {
+public:
+    [[nodiscard]] service_router::HealthSnapshot health_snapshot() const override
+    {
+        ++calls;
+        auto snapshot = ::health_snapshot(calls > 1, static_cast<std::uint64_t>(calls));
+        snapshot.statuses.emplace_back(
+            "calls", service_router::HealthValue{static_cast<std::int64_t>(calls)}
+        );
+        return snapshot;
+    }
+
+    mutable int calls = 0;
+};
+
+class ThrowingHealthProvider final : public service_router::HealthSnapshotProvider {
+public:
+    [[nodiscard]] service_router::HealthSnapshot health_snapshot() const override
+    {
+        throw std::runtime_error("backend state unavailable");
+    }
+};
+
+class InvalidHealthProvider final : public service_router::HealthSnapshotProvider {
+public:
+    [[nodiscard]] service_router::HealthSnapshot health_snapshot() const override
+    {
+        auto snapshot = ::health_snapshot();
+        snapshot.statuses.emplace_back(
+            "invalid", service_router::HealthValue{std::string{"\xC0\xAF"}}
+        );
+        return snapshot;
+    }
+};
+
+class OversizedHealthProvider final : public service_router::HealthSnapshotProvider {
+public:
+    [[nodiscard]] service_router::HealthSnapshot health_snapshot() const override
+    {
+        auto snapshot = ::health_snapshot();
+        snapshot.statuses.emplace_back(
+            "large", service_router::HealthValue{std::string(1'024, 'x')}
+        );
+        return snapshot;
+    }
+};
+
+void test_dynamic_health_provider_and_failure_containment()
+{
+    ChangingHealthProvider changing;
+    const auto router = service_router::Router::with_health_provider(
+        {"BAAS", "dev"}, changing
+    );
+    const auto first = router.handle({"GET", "/health", {}});
+    const auto second = router.handle({"GET", "/health", {}});
+    check(first.status == 200 && first.body.find(R"("initialized":false)") != std::string::npos,
+          "dynamic provider must supply the first auth snapshot");
+    check(second.status == 200 && second.body.find(R"("initialized":true)") != std::string::npos,
+          "dynamic provider must be queried again for a fresh auth snapshot");
+    check(first.body.find(R"("calls":1)") != std::string::npos
+              && second.body.find(R"("calls":2)") != std::string::npos,
+          "dynamic provider status changes must be visible per request");
+    check(changing.calls == 2, "provider must be invoked exactly once per valid health request");
+
+    ThrowingHealthProvider throwing;
+    const auto unavailable = service_router::Router::with_health_provider(
+        {"BAAS", "dev"}, throwing
+    ).handle({"GET", "/health", {}});
+    check(unavailable.status == 503
+              && unavailable.body.find("health_provider_failed") != std::string::npos,
+          "provider exceptions must be contained as a stable unavailable response");
+
+    InvalidHealthProvider invalid;
+    const auto invalid_response = service_router::Router::with_health_provider(
+        {"BAAS", "dev"}, invalid
+    ).handle({"GET", "/health", {}});
+    check(invalid_response.status == 500
+              && invalid_response.body.find("invalid_health_snapshot") != std::string::npos,
+          "dynamic invalid UTF-8 must never be emitted as JSON");
+
+    service_router::SizeBudget budget;
+    budget.max_response_body_bytes = 128;
+    OversizedHealthProvider oversized;
+    const auto oversized_response = service_router::Router::with_health_provider(
+        {"BAAS", "dev"}, oversized, budget
+    ).handle({"GET", "/health", {}});
+    check(oversized_response.status == 500
+              && oversized_response.body.find("response_too_large") != std::string::npos,
+          "oversized provider output must use the bounded response fallback");
+    check(oversized_response.body.size() <= budget.max_response_body_bytes,
+          "provider output fallback must fit the configured response budget");
+}
+
+void test_health_requires_explicit_state_and_json_safe_static_snapshot()
+{
+    const service_router::Router missing{{"BAAS", "dev"}};
+    const auto missing_response = missing.handle({"GET", "/health", {}});
+    check(missing_response.status == 503
+              && missing_response.body.find("health_unavailable") != std::string::npos,
+          "router without injected state must not fabricate readiness");
+
+    bool invalid_utf8_rejected = false;
+    try {
+        auto snapshot = health_snapshot(false, 0, std::string{"\xC0\xAF"});
+        [[maybe_unused]] const auto invalid = service_router::Router::with_health_snapshot(
+            {"BAAS", "dev"}, std::move(snapshot)
+        );
+    } catch (const std::invalid_argument&) {
+        invalid_utf8_rejected = true;
+    }
+    check(invalid_utf8_rejected, "static health auth UTF-8 must be validated at injection");
+
+    bool duplicate_rejected = false;
+    try {
+        auto snapshot = health_snapshot();
+        snapshot.statuses.emplace_back("alpha", service_router::HealthValue{});
+        [[maybe_unused]] const auto invalid = service_router::Router::with_health_snapshot(
+            {"BAAS", "dev"}, std::move(snapshot)
+        );
+    } catch (const std::invalid_argument&) {
+        duplicate_rejected = true;
+    }
+    check(duplicate_rejected, "duplicate status keys must be rejected deterministically");
+
+    bool non_finite_rejected = false;
+    try {
+        auto snapshot = health_snapshot();
+        snapshot.statuses.emplace_back(
+            "nan", service_router::HealthValue{std::nan("")}
+        );
+        [[maybe_unused]] const auto invalid = service_router::Router::with_health_snapshot(
+            {"BAAS", "dev"}, std::move(snapshot)
+        );
+    } catch (const std::invalid_argument&) {
+        non_finite_rejected = true;
+    }
+    check(non_finite_rejected, "non-finite status numbers must be rejected as non-JSON");
 }
 
 void test_exact_method_and_path_matching()
@@ -201,6 +372,8 @@ void test_invalid_construction_is_rejected()
 int main()
 {
     test_health_and_version_routes();
+    test_dynamic_health_provider_and_failure_containment();
+    test_health_requires_explicit_state_and_json_safe_static_snapshot();
     test_exact_method_and_path_matching();
     test_json_escaping_is_transport_independent_and_safe();
     test_request_and_response_budgets();

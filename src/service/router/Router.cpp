@@ -1,19 +1,28 @@
 #include "service/router/Router.h"
 
+#include <algorithm>
+#include <charconv>
+#include <cmath>
 #include <cstdint>
+#include <iterator>
+#include <limits>
 #include <stdexcept>
+#include <system_error>
 #include <utility>
 
 namespace baas::service::router {
 namespace {
 
 constexpr std::size_t minimum_response_budget = 128;
+constexpr std::size_t maximum_health_depth = 64;
 constexpr std::string_view health_path = "/health";
 constexpr std::string_view version_path = "/version";
 constexpr std::string_view shutdown_path = "/shutdown";
 constexpr std::string_view response_budget_error =
     R"({"error":{"code":"response_too_large","message":"response exceeds configured budget","status":500},"ok":false})";
 static_assert(response_budget_error.size() <= minimum_response_budget);
+
+enum class SnapshotValidation { valid, invalid, too_large };
 
 [[nodiscard]] char hex_digit(const unsigned int value) noexcept
 {
@@ -68,33 +77,237 @@ static_assert(response_budget_error.size() <= minimum_response_budget);
     return true;
 }
 
-[[nodiscard]] std::string json_string(const std::string_view value)
+class BoundedWriter final {
+public:
+    explicit BoundedWriter(const std::size_t limit) : limit_(limit)
+    {
+        output_.reserve(std::min(limit, std::size_t{4'096}));
+    }
+
+    bool append(const std::string_view value)
+    {
+        if (exceeded_) return false;
+        if (value.size() > limit_ - output_.size()) {
+            exceeded_ = true;
+            return false;
+        }
+        output_.append(value);
+        return true;
+    }
+
+    bool append(const char value)
+    {
+        return append(std::string_view{&value, 1});
+    }
+
+    [[nodiscard]] bool exceeded() const noexcept { return exceeded_; }
+    [[nodiscard]] std::string take() { return std::move(output_); }
+
+private:
+    std::size_t limit_;
+    std::string output_;
+    bool exceeded_ = false;
+};
+
+bool append_json_string(BoundedWriter& output, const std::string_view value)
 {
-    std::string output;
-    output.reserve(value.size() + 2);
-    output.push_back('"');
+    if (!output.append('"')) return false;
     for (const unsigned char byte : value) {
         switch (byte) {
-        case '"': output += "\\\""; break;
-        case '\\': output += "\\\\"; break;
-        case '\b': output += "\\b"; break;
-        case '\f': output += "\\f"; break;
-        case '\n': output += "\\n"; break;
-        case '\r': output += "\\r"; break;
-        case '\t': output += "\\t"; break;
+        case '"': if (!output.append("\\\"")) return false; break;
+        case '\\': if (!output.append("\\\\")) return false; break;
+        case '\b': if (!output.append("\\b")) return false; break;
+        case '\f': if (!output.append("\\f")) return false; break;
+        case '\n': if (!output.append("\\n")) return false; break;
+        case '\r': if (!output.append("\\r")) return false; break;
+        case '\t': if (!output.append("\\t")) return false; break;
         default:
             if (byte < 0x20U) {
-                output += "\\u00";
-                output.push_back(hex_digit((byte >> 4U) & 0x0FU));
-                output.push_back(hex_digit(byte & 0x0FU));
-            } else {
-                output.push_back(static_cast<char>(byte));
+                char escaped[] = {'\\', 'u', '0', '0', hex_digit((byte >> 4U) & 0x0FU),
+                                  hex_digit(byte & 0x0FU)};
+                if (!output.append(std::string_view{escaped, sizeof(escaped)})) return false;
+            } else if (!output.append(static_cast<char>(byte))) {
+                return false;
             }
             break;
         }
     }
-    output.push_back('"');
-    return output;
+    return output.append('"');
+}
+
+[[nodiscard]] std::string json_string(const std::string_view value)
+{
+    BoundedWriter output{std::numeric_limits<std::size_t>::max()};
+    static_cast<void>(append_json_string(output, value));
+    return output.take();
+}
+
+SnapshotValidation canonicalize_value(
+    HealthValue& value,
+    const std::size_t depth,
+    std::size_t& nodes,
+    const std::size_t node_limit
+);
+
+SnapshotValidation canonicalize_object(
+    HealthObject& object,
+    const std::size_t depth,
+    std::size_t& nodes,
+    const std::size_t node_limit
+)
+{
+    if (depth > maximum_health_depth) return SnapshotValidation::invalid;
+    if (object.size() > node_limit - std::min(nodes, node_limit)) {
+        return SnapshotValidation::too_large;
+    }
+    for (const auto& [key, unused] : object) {
+        static_cast<void>(unused);
+        if (!is_valid_utf8(key)) return SnapshotValidation::invalid;
+    }
+    std::sort(object.begin(), object.end(), [](const auto& left, const auto& right) {
+        return left.first < right.first;
+    });
+    for (std::size_t index = 1; index < object.size(); ++index) {
+        if (object[index - 1].first == object[index].first) {
+            return SnapshotValidation::invalid;
+        }
+    }
+    for (auto& [key, value] : object) {
+        static_cast<void>(key);
+        const auto result = canonicalize_value(value, depth, nodes, node_limit);
+        if (result != SnapshotValidation::valid) return result;
+    }
+    return SnapshotValidation::valid;
+}
+
+SnapshotValidation canonicalize_value(
+    HealthValue& value,
+    const std::size_t depth,
+    std::size_t& nodes,
+    const std::size_t node_limit
+)
+{
+    if (nodes >= node_limit) return SnapshotValidation::too_large;
+    ++nodes;
+    switch (value.kind()) {
+    case HealthValueKind::null:
+    case HealthValueKind::boolean:
+    case HealthValueKind::integer:
+        return SnapshotValidation::valid;
+    case HealthValueKind::floating:
+        return std::isfinite(std::get<double>(value.storage))
+            ? SnapshotValidation::valid : SnapshotValidation::invalid;
+    case HealthValueKind::string:
+        return is_valid_utf8(std::get<std::string>(value.storage))
+            ? SnapshotValidation::valid : SnapshotValidation::invalid;
+    case HealthValueKind::array:
+        if (depth > maximum_health_depth) return SnapshotValidation::invalid;
+        if (const auto& values = std::get<HealthArray>(value.storage);
+            values.size() > node_limit - std::min(nodes, node_limit)) {
+            return SnapshotValidation::too_large;
+        }
+        for (auto& child : std::get<HealthArray>(value.storage)) {
+            const auto result = canonicalize_value(child, depth + 1, nodes, node_limit);
+            if (result != SnapshotValidation::valid) return result;
+        }
+        return SnapshotValidation::valid;
+    case HealthValueKind::object:
+        return canonicalize_object(
+            std::get<HealthObject>(value.storage), depth + 1, nodes, node_limit
+        );
+    }
+    return SnapshotValidation::invalid;
+}
+
+SnapshotValidation canonicalize_snapshot(
+    HealthSnapshot& snapshot,
+    const std::size_t node_limit
+)
+{
+    if (!is_valid_utf8(snapshot.auth.server_sign_public_key)) {
+        return SnapshotValidation::invalid;
+    }
+    std::size_t nodes = 0;
+    return canonicalize_object(snapshot.statuses, 1, nodes, node_limit);
+}
+
+bool append_health_value(BoundedWriter& output, const HealthValue& value);
+
+bool append_health_object(BoundedWriter& output, const HealthObject& object)
+{
+    if (!output.append('{')) return false;
+    for (std::size_t index = 0; index < object.size(); ++index) {
+        if (index != 0 && !output.append(',')) return false;
+        if (!append_json_string(output, object[index].first) || !output.append(':')
+            || !append_health_value(output, object[index].second)) {
+            return false;
+        }
+    }
+    return output.append('}');
+}
+
+bool append_health_value(BoundedWriter& output, const HealthValue& value)
+{
+    switch (value.kind()) {
+    case HealthValueKind::null: return output.append("null");
+    case HealthValueKind::boolean:
+        return output.append(std::get<bool>(value.storage) ? "true" : "false");
+    case HealthValueKind::integer: {
+        char buffer[32]{};
+        const auto [end, error] = std::to_chars(
+            std::begin(buffer), std::end(buffer), std::get<std::int64_t>(value.storage)
+        );
+        return error == std::errc{}
+            && output.append(std::string_view{buffer, static_cast<std::size_t>(end - buffer)});
+    }
+    case HealthValueKind::floating: {
+        char buffer[64]{};
+        const auto [end, error] = std::to_chars(
+            std::begin(buffer), std::end(buffer), std::get<double>(value.storage)
+        );
+        if (error != std::errc{}) return false;
+        const std::string_view encoded{buffer, static_cast<std::size_t>(end - buffer)};
+        if (!output.append(encoded)) return false;
+        if (encoded.find_first_of(".eE") == std::string_view::npos) {
+            return output.append(".0");
+        }
+        return true;
+    }
+    case HealthValueKind::string:
+        return append_json_string(output, std::get<std::string>(value.storage));
+    case HealthValueKind::array: {
+        if (!output.append('[')) return false;
+        const auto& values = std::get<HealthArray>(value.storage);
+        for (std::size_t index = 0; index < values.size(); ++index) {
+            if (index != 0 && !output.append(',')) return false;
+            if (!append_health_value(output, values[index])) return false;
+        }
+        return output.append(']');
+    }
+    case HealthValueKind::object:
+        return append_health_object(output, std::get<HealthObject>(value.storage));
+    }
+    return false;
+}
+
+[[nodiscard]] std::optional<std::string> serialize_health(
+    const HealthSnapshot& snapshot,
+    const std::size_t limit
+)
+{
+    BoundedWriter output{limit};
+    if (!output.append(R"({"ok":true,"statuses":)")
+        || !append_health_object(output, snapshot.statuses)
+        || !output.append(R"(,"auth":{"initialized":)")
+        || !output.append(snapshot.auth.initialized ? "true" : "false")
+        || !output.append(R"(,"pwd_epoch":)")
+        || !output.append(std::to_string(snapshot.auth.pwd_epoch))
+        || !output.append(R"(,"server_sign_public_key":)")
+        || !append_json_string(output, snapshot.auth.server_sign_public_key)
+        || !output.append("}}") || output.exceeded()) {
+        return std::nullopt;
+    }
+    return output.take();
 }
 
 [[nodiscard]] bool is_known_path(const std::string_view path) noexcept
@@ -114,8 +327,51 @@ void add_allow_header(Response& response, const std::string_view method)
 
 }  // namespace
 
+HealthValueKind HealthValue::kind() const noexcept
+{
+    return static_cast<HealthValueKind>(storage.index());
+}
+
 Router::Router(ServiceInfo service, const SizeBudget budget, ShutdownIntent* shutdown_intent)
-    : service_(std::move(service)), budget_(budget), shutdown_intent_(shutdown_intent)
+    : Router(std::move(service), budget, shutdown_intent, std::nullopt, nullptr)
+{}
+
+Router Router::with_health_snapshot(
+    ServiceInfo service,
+    HealthSnapshot health,
+    const SizeBudget budget,
+    ShutdownIntent* shutdown_intent
+)
+{
+    return Router{
+        std::move(service), budget, shutdown_intent, std::move(health), nullptr
+    };
+}
+
+Router Router::with_health_provider(
+    ServiceInfo service,
+    HealthSnapshotProvider& health_provider,
+    const SizeBudget budget,
+    ShutdownIntent* shutdown_intent
+)
+{
+    return Router{
+        std::move(service), budget, shutdown_intent, std::nullopt, &health_provider
+    };
+}
+
+Router::Router(
+    ServiceInfo service,
+    const SizeBudget budget,
+    ShutdownIntent* shutdown_intent,
+    std::optional<HealthSnapshot> health_snapshot,
+    HealthSnapshotProvider* health_provider
+)
+    : service_(std::move(service)),
+      budget_(budget),
+      shutdown_intent_(shutdown_intent),
+      health_snapshot_(std::move(health_snapshot)),
+      health_provider_(health_provider)
 {
     if (service_.name.empty() || service_.version.empty()) {
         throw std::invalid_argument("service name and version must not be empty");
@@ -127,6 +383,14 @@ Router::Router(ServiceInfo service, const SizeBudget budget, ShutdownIntent* shu
         || budget_.max_request_body_bytes == 0
         || budget_.max_response_body_bytes < minimum_response_budget) {
         throw std::invalid_argument("service router size budget is invalid");
+    }
+    if (health_snapshot_.has_value()) {
+        const auto validation = canonicalize_snapshot(
+            *health_snapshot_, budget_.max_response_body_bytes
+        );
+        if (validation == SnapshotValidation::invalid) {
+            throw std::invalid_argument("static health snapshot must be JSON-safe UTF-8");
+        }
     }
 }
 
@@ -165,7 +429,7 @@ Response Router::route(const Request& request) const
         return response;
     }
     if (request.path == health_path) {
-        return json_response(200, R"({"api_version":1,"ok":true,"status":"healthy"})");
+        return health();
     }
     if (request.path == version_path) {
         return json_response(
@@ -182,6 +446,39 @@ Response Router::route(const Request& request) const
         return error(409, "shutdown_rejected", "shutdown intent rejected the request");
     }
     return json_response(202, R"({"accepted":true,"api_version":1,"ok":true})");
+}
+
+Response Router::health() const
+{
+    HealthSnapshot dynamic_snapshot;
+    const HealthSnapshot* snapshot = nullptr;
+    if (health_provider_ != nullptr) {
+        try {
+            dynamic_snapshot = health_provider_->health_snapshot();
+        } catch (...) {
+            return error(503, "health_provider_failed", "health snapshot provider failed");
+        }
+        const auto validation = canonicalize_snapshot(
+            dynamic_snapshot, budget_.max_response_body_bytes
+        );
+        if (validation == SnapshotValidation::invalid) {
+            return error(500, "invalid_health_snapshot", "health snapshot is not JSON-safe UTF-8");
+        }
+        if (validation == SnapshotValidation::too_large) {
+            return json_response(500, std::string{response_budget_error});
+        }
+        snapshot = &dynamic_snapshot;
+    } else if (health_snapshot_.has_value()) {
+        snapshot = &*health_snapshot_;
+    } else {
+        return error(503, "health_unavailable", "no health snapshot is configured");
+    }
+
+    const auto body = serialize_health(*snapshot, budget_.max_response_body_bytes);
+    if (!body.has_value()) {
+        return json_response(500, std::string{response_budget_error});
+    }
+    return json_response(200, *body);
 }
 
 Response Router::finish(Response response) const

@@ -11,6 +11,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <utility>
 
 namespace service_http = baas::service::http;
 namespace service_router = baas::service::router;
@@ -18,6 +19,18 @@ namespace service_router = baas::service::router;
 namespace {
 
 int failures = 0;
+
+[[nodiscard]] service_router::Router router_with_health(
+    service_router::ServiceInfo service,
+    service_router::SizeBudget budget = {}
+)
+{
+    return service_router::Router::with_health_snapshot(
+        std::move(service),
+        service_router::HealthSnapshot{{}, {false, 0, "dGVzdC1rZXk="}},
+        budget
+    );
+}
 
 void check(const bool condition, const std::string_view message)
 {
@@ -42,13 +55,14 @@ void check(const bool condition, const std::string_view message)
 
 void test_exact_request_and_response_mapping()
 {
-    service_router::Router router{{"BAAS Service", "1.2.3"}};
+    auto router = router_with_health({"BAAS Service", "1.2.3"});
     service_http::HttplibAdapter adapter{router};
 
     httplib::Response response;
     adapter.handle(request("GET", "/health"), response);
     check(response.status == 200, "health status must cross the adapter exactly");
-    check(response.body == R"({"api_version":1,"ok":true,"status":"healthy"})",
+    check(response.body
+              == R"({"ok":true,"statuses":{},"auth":{"initialized":false,"pwd_epoch":0,"server_sign_public_key":"dGVzdC1rZXk="}})",
           "health body must cross the adapter exactly");
     check(response.get_header_value("Content-Type") == "application/json; charset=utf-8",
           "health content type must cross the adapter exactly");
@@ -142,7 +156,7 @@ void test_real_loopback_ephemeral_port_lifecycle()
     service_router::SizeBudget router_budget;
     router_budget.max_path_bytes = 128;
     router_budget.max_request_body_bytes = 64;
-    service_router::Router router{{"BAAS Loopback", "test"}, router_budget};
+    auto router = router_with_health({"BAAS Loopback", "test"}, router_budget);
     service_http::HttplibAdapter adapter{router, service_http::InputBudget{16, 128, 32}};
 
     httplib::Server server;
@@ -179,7 +193,8 @@ void test_real_loopback_ephemeral_port_lifecycle()
     check(static_cast<bool>(health), "loopback health request must complete");
     if (health) {
         check(health->status == 200, "loopback health must return 200");
-        check(health->body == R"({"api_version":1,"ok":true,"status":"healthy"})",
+        check(health->body
+                  == R"({"ok":true,"statuses":{},"auth":{"initialized":false,"pwd_epoch":0,"server_sign_public_key":"dGVzdC1rZXk="}})",
               "loopback health body must come from Router");
     }
 
