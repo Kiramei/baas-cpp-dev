@@ -1119,6 +1119,16 @@ ValueKind Heap::kind(const Value value) const
 ValueKind Heap::kind(const HeapRef reference) const { return data_kind(impl_->dereference(reference).data); }
 std::string Heap::string_copy(const HeapRef reference) const { return std::get<StringCell>(impl_->expected(reference, ValueKind::String).data).value; }
 std::string_view Heap::string_view(const HeapRef reference) const { return std::get<StringCell>(impl_->expected(reference, ValueKind::String).data).value; }
+std::size_t Heap::string_byte_size(const HeapRef reference) const { return std::get<StringCell>(impl_->expected(reference, ValueKind::String).data).value.size(); }
+std::size_t Heap::string_scalar_count(const HeapRef reference) const
+{
+    const auto& value = std::get<StringCell>(impl_->expected(reference, ValueKind::String).data).value;
+    std::size_t result = 0;
+    for (const unsigned char byte : value) {
+        if ((byte & 0xC0U) != 0x80U) ++result;
+    }
+    return result;
+}
 std::size_t Heap::list_size(const HeapRef reference) const { return std::get<ListCell>(impl_->expected(reference, ValueKind::List).data).values.size(); }
 Value Heap::list_value_at(const HeapRef reference, const std::size_t index) const
 {
@@ -1150,6 +1160,7 @@ std::optional<Value> Heap::map_get(const HeapRef reference, const std::string_vi
 }
 FunctionMetadata Heap::function_metadata(const HeapRef reference) const { return std::get<FunctionCell>(impl_->expected(reference, ValueKind::Function).data).metadata; }
 ModuleMetadata Heap::module_metadata(const HeapRef reference) const { return std::get<ModuleCell>(impl_->expected(reference, ValueKind::Module).data).metadata; }
+std::size_t Heap::module_export_count(const HeapRef reference) const { return std::get<ModuleCell>(impl_->expected(reference, ValueKind::Module).data).metadata.exports.size(); }
 ErrorMetadata Heap::error_metadata(const HeapRef reference) const
 {
     try {

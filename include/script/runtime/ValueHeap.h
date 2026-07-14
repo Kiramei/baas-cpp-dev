@@ -331,6 +331,8 @@ public:
     // only until the owning cell is mutated, collected, or the Heap is torn
     // down; callers must stay on the owning context strand.
     [[nodiscard]] std::string_view string_view(HeapRef reference) const;
+    [[nodiscard]] std::size_t string_byte_size(HeapRef reference) const;
+    [[nodiscard]] std::size_t string_scalar_count(HeapRef reference) const;
     [[nodiscard]] std::size_t list_size(HeapRef reference) const;
     [[nodiscard]] Value list_value_at(HeapRef reference, std::size_t index) const;
     [[nodiscard]] std::size_t map_size(HeapRef reference) const;
@@ -344,6 +346,7 @@ public:
     [[nodiscard]] std::optional<Value> map_get(HeapRef reference, std::string_view key) const;
     [[nodiscard]] FunctionMetadata function_metadata(HeapRef reference) const;
     [[nodiscard]] ModuleMetadata module_metadata(HeapRef reference) const;
+    [[nodiscard]] std::size_t module_export_count(HeapRef reference) const;
     [[nodiscard]] ErrorMetadata error_metadata(HeapRef reference) const;
     [[nodiscard]] TaskMetadata task_metadata(HeapRef reference) const;
     [[nodiscard]] HostHandleMetadata host_handle_metadata(HeapRef reference) const;
