@@ -208,10 +208,12 @@ if(BUILD_SERVICE_PROTOCOL)
     include("${CMAKE_CURRENT_LIST_DIR}/cmake/ServiceProtocol.cmake")
 endif()
 
-add_library(
-        BAAS_ipc
-        SHARED
-        ${BAAS_PROJECT_PATH}/src/BAASExternalIPC.cpp
-)
+if(NOT TARGET_OS_NAME STREQUAL "Android")
+    add_library(
+            BAAS_ipc
+            SHARED
+            ${BAAS_PROJECT_PATH}/src/BAASExternalIPC.cpp
+    )
+endif()
 
 baas_install_required_runtime_resources()

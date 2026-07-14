@@ -58,6 +58,17 @@ if ($androidSdk -and (Test-Path -LiteralPath $androidSdk)) {
         (Join-Path $androidSdk "emulator"),
         (Join-Path $androidSdk "cmdline-tools\latest\bin")
     )
+
+    $ndkRoot = Join-Path $androidSdk "ndk"
+    if (Test-Path -LiteralPath $ndkRoot) {
+        $latestNdk = Get-ChildItem -LiteralPath $ndkRoot -Directory |
+            Sort-Object { [version]($_.Name -replace '-.*$', '') } -Descending |
+            Select-Object -First 1
+        if ($latestNdk) {
+            $env:ANDROID_NDK_LATEST_HOME = $latestNdk.FullName
+            $env:ANDROID_NDK_HOME = $latestNdk.FullName
+        }
+    }
 }
 
 $env:Path = (($toolPaths | Where-Object { Test-Path -LiteralPath $_ }) -join ";") + ";$env:Path"

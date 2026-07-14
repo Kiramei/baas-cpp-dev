@@ -52,8 +52,8 @@ Set-Location D:\WorkSpace\pro\BAAS\baas-cpp-dev
 
 This imports the x64 MSVC environment, prepends the repository Python, bundled
 CMake/Ninja, JDK, and Android SDK tools to `PATH`, and sets
-`BAAS_CPP_DEV_ROOT`, `CONAN_HOME`, and `ANDROID_SDK_ROOT`. Activation only
-changes the current PowerShell process.
+`BAAS_CPP_DEV_ROOT`, `CONAN_HOME`, `ANDROID_SDK_ROOT`, and the latest installed
+`ANDROID_NDK_*` paths. Activation only changes the current PowerShell process.
 
 Verify it with:
 
