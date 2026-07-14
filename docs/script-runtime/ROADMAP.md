@@ -73,7 +73,7 @@ versioned compatibility contract linked from the migration matrix.
 - [ ] Add standalone `BAAS_script_runtime` and CLI/test targets.
 - [x] Implement UTF-8 lexer with stable byte/line/column source diagnostics and
   malformed-input recovery.
-- [~] Implement the complete parser and source-spanned immutable AST.
+- [x] Implement the complete parser and source-spanned immutable AST.
 - [ ] Implement values, environments, closures, recursion, collections, and
   control flow.
 - [ ] Implement modules, imports, native-function registration, and JSON bridge.
@@ -86,6 +86,11 @@ versioned compatibility contract linked from the migration matrix.
 
 Exit evidence: conformance corpus passes, memory/error tests pass, and the CLI
 can execute multi-module recursive and concurrent programs on Windows x64.
+
+Verified foundation evidence: commit `f0efa76` adds the owning immutable AST,
+recursive-descent/Pratt parser, recovery diagnostics, and independent lexer and
+parser CTest targets. Coordinator-run MSVC Debug and Release builds both passed
+2/2 tests before integration; the integrated Debug build also passed 2/2 tests.
 
 ## Phase 3 — Host bindings and Python behavior parity
 
