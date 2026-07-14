@@ -1,6 +1,9 @@
 # BAAS_Cpp
 ## BAAS_Cpp是一个安卓自动化脚本框架
 
+当前 Windows 开发环境、目录布局、基础构建与 Conan 使用方法见
+[`docs/DEVELOPMENT_ENVIRONMENT.md`](docs/DEVELOPMENT_ENVIRONMENT.md)。
+
 1. 这是对[blue_archive_auto_script](https://github.com/pur1fying/blue_archive_auto_script)的C++重构 , 目的是实现一个功能齐全的自动化脚本框架,简化开发流程
 
 2. 已经实现的功能(windows平台下):

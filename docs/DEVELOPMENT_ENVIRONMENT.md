@@ -1,0 +1,129 @@
+# BAAS C++ development environment
+
+## Checked-out layout
+
+The configured workspace uses sibling repositories so migration and protocol
+tools can compare production sources without embedding machine-specific paths:
+
+```text
+D:\WorkSpace\pro\BAAS\
+├── baas-cpp-dev\
+├── baas-dev\
+└── baas-tauri\
+```
+
+Run all C++ commands from `D:\WorkSpace\pro\BAAS\baas-cpp-dev`. Do not use the
+old sibling path `D:\WorkSpace\pro\baas-cpp-dev`.
+
+## Windows toolchain installed for this checkout
+
+The repository-local environment currently resolves:
+
+| Tool | Configured version |
+| --- | --- |
+| PowerShell | 7.6.3 |
+| MSVC | 19.44 / Visual Studio 2022 Build Tools |
+| CMake | 3.31.6 |
+| Ninja | 1.12.1 |
+| Python | 3.11.9 in `.venv` |
+| Conan | 2.30.0 in `.venv` |
+| Git | 2.54.0.windows.1 |
+
+The local Python and Conan state is isolated in `.venv` and `.conan2`; the
+activation script sets `CONAN_HOME` to the latter.
+
+## Activate a shell
+
+In PowerShell:
+
+```powershell
+Set-Location D:\WorkSpace\pro\BAAS\baas-cpp-dev
+. .\.local\Enter-DevShell.ps1
+```
+
+This imports the x64 MSVC environment, prepends the repository Python, bundled
+CMake, and Ninja tools to `PATH`, and sets `BAAS_CPP_DEV_ROOT`. Activation only
+changes the current PowerShell process.
+
+Verify it with:
+
+```powershell
+cl
+cmake --version
+ninja --version
+conan --version
+python --version
+```
+
+## Build the dependency-free foundation
+
+Lexer/parser/semantic/runtime-executor and BPIP framing targets do not require
+the full application dependency graph:
+
+```powershell
+cmake -S . -B build\foundation -G Ninja `
+  -DCMAKE_BUILD_TYPE=Debug `
+  -DBUILD_TESTING=ON `
+  -DBUILD_SCRIPT_TESTS=ON `
+  -DBUILD_SERVICE_PROTOCOL_TESTS=ON `
+  -DBUILD_APP_BAAS=OFF `
+  -DBUILD_APP_ISA=OFF `
+  -DBUILD_BAAS_OCR=OFF `
+  -DBUILD_BAAS_AW_CHECKER=OFF `
+  -DBUILD_BAAS_NMS_BENCHMARK=OFF `
+  -DBAAS_FETCH_RESOURCES=OFF
+
+cmake --build build\foundation --parallel 8
+ctest --test-dir build\foundation --output-on-failure --timeout 120
+```
+
+The same targets are checked by `.github/workflows/foundation-runtime.yml` on
+Windows, Ubuntu, and macOS in Debug and Release. Hosted non-Windows results are
+not a substitute for the still-pending full application and Android gates.
+
+## Full Conan builds
+
+BAAS-owned dependency recipes and pinned profiles live in `deploy/conan`. Export
+them before the first full dependency install:
+
+```powershell
+python deploy\conan\scripts\manage_recipes.py export
+```
+
+Then follow `deploy/conan/README.md` and the matching `CMakePresets.json` entry.
+For example, the CPU OCR release profile writes generators under
+`build/conan/windows-msvc-release-ocr` and uses preset
+`conan-windows-msvc-release-ocr`. Keep `--no-remote` when reproducing from the
+checked-in private recipes and local Conan cache; remove it only as an explicit
+dependency-source decision.
+
+Known cross-platform dependency gaps are tracked in
+`docs/conan-migration-gaps.md`. A successful foundation build does not claim
+that the complete OCR, CUDA, Android, emulator, or desktop application stack is
+configured or green.
+
+## Python reference and service-vector checks
+
+The authoritative Python suite and production-anchored service vectors use the
+sibling Python environment:
+
+```powershell
+Push-Location ..\baas-dev
+.\.venv\Scripts\python.exe -m pytest tests -q -rs
+Pop-Location
+
+..\baas-dev\.venv\Scripts\python.exe `
+  -m unittest discover -s tests\service_contract -p "test_*.py" -v
+..\baas-dev\.venv\Scripts\python.exe `
+  scripts\service_contract\generate_vectors.py --check
+```
+
+Do not run an unscoped `pytest` from `baas-dev`: that repository currently has
+no `testpaths` boundary and will collect the vendored CPython/toolkit tree.
+
+## Safe parallelism
+
+This host has 16 physical / 32 logical cores and about 31 GiB RAM. Foundation
+builds use `--parallel 8`. Concurrent worktrees should divide that budget
+explicitly; do not give every simultaneous dependency-heavy build all 32
+logical CPUs.
