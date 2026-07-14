@@ -86,6 +86,8 @@ option(BUILD_SERVICE_PROTOCOL   "Build the standalone BAAS service protocol libr
 option(BUILD_SERVICE_PROTOCOL_TESTS "Build native tests for the BAAS service protocol" OFF)
 option(BUILD_SERVICE_ROUTER     "Build the transport-independent BAAS service router" OFF)
 option(BUILD_SERVICE_ROUTER_TESTS "Build native tests for the BAAS service router" OFF)
+option(BUILD_SERVICE_HTTP       "Build the optional cpp-httplib service adapter" OFF)
+option(BUILD_SERVICE_HTTP_TESTS "Build native tests for the cpp-httplib service adapter" OFF)
 
 if(BUILD_SCRIPT_TESTS AND NOT BUILD_SCRIPT_RUNTIME)
     set(BUILD_SCRIPT_RUNTIME ON CACHE BOOL "Build the standalone BAAS script runtime" FORCE)
@@ -100,6 +102,14 @@ if(BUILD_SERVICE_PROTOCOL_TESTS AND NOT BUILD_SERVICE_PROTOCOL)
 endif()
 
 if(BUILD_SERVICE_ROUTER_TESTS AND NOT BUILD_SERVICE_ROUTER)
+    set(BUILD_SERVICE_ROUTER ON CACHE BOOL "Build the transport-independent BAAS service router" FORCE)
+endif()
+
+if(BUILD_SERVICE_HTTP_TESTS AND NOT BUILD_SERVICE_HTTP)
+    set(BUILD_SERVICE_HTTP ON CACHE BOOL "Build the optional cpp-httplib service adapter" FORCE)
+endif()
+
+if(BUILD_SERVICE_HTTP AND NOT BUILD_SERVICE_ROUTER)
     set(BUILD_SERVICE_ROUTER ON CACHE BOOL "Build the transport-independent BAAS service router" FORCE)
 endif()
 
@@ -149,6 +159,10 @@ if(BUILD_BAAS_AW_CHECKER)
     baas_request_dependencies(opencv nlohmann_json spdlog simdutf)
 endif()
 
+if(BUILD_SERVICE_HTTP)
+    baas_request_dependencies(cpp_httplib)
+endif()
+
 baas_load_requested_dependencies()
 
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
@@ -175,6 +189,7 @@ file(
 list(FILTER BAAS_CORE_SOURCES EXCLUDE REGEX "/src/script/.*\\.cpp$")
 list(FILTER BAAS_CORE_SOURCES EXCLUDE REGEX "/src/service/protocol/.*\\.cpp$")
 list(FILTER BAAS_CORE_SOURCES EXCLUDE REGEX "/src/service/router/.*\\.cpp$")
+list(FILTER BAAS_CORE_SOURCES EXCLUDE REGEX "/src/service/http/.*\\.cpp$")
 
 if(TARGET_OS_NAME STREQUAL "Windows")
     list(REMOVE_ITEM BAAS_CORE_SOURCES "${CMAKE_CURRENT_LIST_DIR}/src/simdutf.cpp")
@@ -217,6 +232,10 @@ endif()
 
 if(BUILD_SERVICE_ROUTER)
     include("${CMAKE_CURRENT_LIST_DIR}/cmake/ServiceRouter.cmake")
+endif()
+
+if(BUILD_SERVICE_HTTP)
+    include("${CMAKE_CURRENT_LIST_DIR}/cmake/ServiceHttp.cmake")
 endif()
 
 if(NOT TARGET_OS_NAME STREQUAL "Android")

@@ -195,7 +195,7 @@ Python fallback is needed for migrated representative workflows.
   `SERVICE_PROTOCOL_V1.md` now defines the normative v1 wire/state/security
   contract and explicit missing gates; shared implementations and E2E evidence
   remain pending.
-- [ ] Implement `cpp-httplib` routing, validation, JSON errors, health/version,
+- [~] Implement `cpp-httplib` routing, validation, JSON errors, health/version,
   graceful shutdown, and bounded concurrency.
 - [ ] Implement task submission, progress/events, cancellation, and result APIs.
 - [ ] Implement configuration and resource update APIs with atomic persistence.
@@ -217,6 +217,15 @@ missing. It opens no listener and performs no shutdown.
 `SERVICE_ROUTER_CORE.md` records the boundary and tests; the `cpp-httplib`
 adapter, authentication, bounded concurrency, real graceful shutdown, and
 Tauri integration remain required, so the broader checklist item stays open.
+
+Optional HTTP adapter foundation: `BAAS_service_http` now requests
+`BAAS::httplib` only when explicitly enabled, maps cpp-httplib method/path/body
+and Router status/headers/body exactly, and applies method/path/body transport
+budgets before Router effects. Its local test binds loopback on an ephemeral
+port with bounded readiness/I/O/CTest timeouts and explicit stop/join. It is not
+a production listener: auth/origin/listen policy, production lifecycle,
+graceful draining, bounded concurrency/load evidence, and Tauri E2E remain
+open as recorded in `SERVICE_HTTPLIB_ADAPTER.md`.
 
 Verified foundation evidence: commit `fec6db0` adds production-anchored service
 vectors (14/14 Python tests), and commit `8b1ff52` adds the standalone C++ BPIP

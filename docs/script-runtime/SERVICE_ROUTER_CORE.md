@@ -99,9 +99,11 @@ invented `/api/v1/health` alias, exact method/path matching, uniform errors,
 JSON escaping, every size budget, and accepted/rejected/unavailable shutdown
 intents.
 
-## Explicitly not implemented
+## Explicitly not implemented by the core
 
-- the `cpp-httplib` adapter and any live HTTP listener;
+- any HTTP dependency or listener; the separately optional
+  [`SERVICE_HTTPLIB_ADAPTER.md`](SERVICE_HTTPLIB_ADAPTER.md) maps cpp-httplib
+  request/response objects and has a loopback-only lifecycle test;
 - HTTP parsing, listen-address/origin/authentication policy, TLS, or CORS;
 - bounded connection/worker concurrency, backpressure, or overload behavior;
 - real process shutdown, task draining, restart, or port-conflict behavior;
@@ -109,6 +111,7 @@ intents.
 - the production-compatible `/health` status/auth payload and the remaining
   required unversioned HTTP routes.
 
-Consequently the Phase 4 `cpp-httplib` checklist item remains open. This core
-is only the independently testable routing boundary that a later adapter can
-call.
+Consequently the broad Phase 4 `cpp-httplib` checklist item remains partial.
+This core remains the independently testable routing boundary; the optional
+adapter does not complete production hosting, policy, concurrency, shutdown,
+or integration.
