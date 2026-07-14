@@ -9,7 +9,9 @@ so cpp-httplib is not exposed through that header either.
 
 This is a bounded loopback host foundation, not the complete production BAAS
 service. Every listener is forced to IPv4 `127.0.0.1`; there is no bind-address
-option that could expose it on a LAN or wildcard interface.
+option that could expose it on a LAN or wildcard interface. Its exact
+Origin/CORS boundary is specified in `SERVICE_ORIGIN_POLICY.md`; that policy is
+not authentication or authorization.
 
 ## Mapping contract
 
@@ -112,6 +114,13 @@ HTTP header count/size, total open connection count, aggregate memory,
 per-client rate, and global load shedding are not implemented. They remain
 requirements for a production service.
 
+Origin, `Access-Control-Request-Method`, and
+`Access-Control-Request-Headers` have independent strict grammar, cardinality,
+and byte/count gates. cpp-httplib's pre-handler payload 413 path reuses the same
+Origin decision as normal dispatch: an allowed actual Origin retains 413 plus
+credentialed exact-origin headers, while a denied Origin returns the stable
+fail-closed 403 response. See `SERVICE_ORIGIN_POLICY.md` for the full matrix.
+
 ## Build and tests
 
 The dependency must first be available through the repository's Conan
@@ -125,7 +134,8 @@ cmake -S . -B build\service-http-release -G Ninja `
   -DBUILD_SERVICE_HTTP_TESTS=ON `
   -DBAAS_FETCH_RESOURCES=OFF
 cmake --build build\service-http-release --parallel 4 `
-  --target BAAS_service_httplib_adapter_tests BAAS_service_http_host_tests
+  --target BAAS_service_origin_policy_tests `
+           BAAS_service_httplib_adapter_tests BAAS_service_http_host_tests
 ctest --test-dir build\service-http-release --output-on-failure `
   -R BAAS_service_
 ctest --test-dir build\service-http-release --output-on-failure `
@@ -154,7 +164,7 @@ OCR, Python service, or Tauri process is used by this test.
 ## Still incomplete
 
 - a real runtime/auth provider wired to persistent production owners;
-- authentication, origin/CORS, cookie, and TLS policy;
+- authentication, cookie, TLS, WebSocket Origin, and LAN-exposure policy;
 - complete graceful in-flight cancellation/deadline/response semantics;
 - bounded total connections, global memory/rate backpressure, and load evidence;
 - logging, metrics, task/config/resource routes, and BPIP integration;

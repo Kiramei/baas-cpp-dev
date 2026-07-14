@@ -479,6 +479,43 @@ void test_bounded_queue_rejects_excess_connection()
           "queue overflow must be counted exactly once in the controlled test");
 }
 
+void test_host_applies_custom_origin_policy_over_loopback()
+{
+    auto config = host_config();
+    config.cors_policy.allowed_origins = {"https://configured.example"};
+    config.cors_policy.allowed_methods = {"GET"};
+    service_http::HttpHost host{static_router_config(), {}, config};
+    const auto started = host.start();
+    check(started.started, "custom-CORS host must start");
+    if (!started.started) return;
+
+    httplib::Client client{std::string{service_http::http_host_loopback_address}, started.port};
+    client.set_connection_timeout(1s);
+    client.set_read_timeout(1s);
+    client.set_write_timeout(1s);
+
+    const auto allowed = client.Get(
+        "/health", httplib::Headers{{"Origin", "https://configured.example"}}
+    );
+    check(allowed && allowed->status == 200
+              && allowed->get_header_value("Access-Control-Allow-Origin")
+                  == "https://configured.example",
+          "HttpHost must pass configured origin policy to its owned adapter");
+
+    const auto denied = client.Get(
+        "/health", httplib::Headers{{"Origin", "http://localhost:8191"}}
+    );
+    check(denied && denied->status == 403
+              && denied->body.find("origin_not_allowed") != std::string::npos,
+          "HttpHost custom policy must replace, not extend, default origins");
+
+    const auto native = client.Get("/health");
+    check(native && native->status == 200,
+          "HttpHost must preserve configured native no-Origin behavior");
+    client.stop();
+    host.stop();
+}
+
 }  // namespace
 
 int main()
@@ -492,6 +529,7 @@ int main()
     test_destructor_owns_provider_and_running_server_lifetime();
     test_stop_from_request_worker_is_deferred_without_deadlock();
     test_bounded_queue_rejects_excess_connection();
+    test_host_applies_custom_origin_policy_over_loopback();
     if (failures != 0) {
         std::cerr << failures << " HTTP host test(s) failed\n";
         return EXIT_FAILURE;

@@ -131,7 +131,7 @@ public:
           router_(make_router(
               std::move(router_config), health_provider_, shutdown_intent_
           )),
-          adapter_(router_, input_budget),
+          adapter_(router_, input_budget, host_config.cors_policy),
           config_(host_config)
     {
         validate_host_config(config_);

@@ -31,6 +31,7 @@ struct HttpHostConfig {
     std::chrono::milliseconds read_timeout{2'000};
     std::chrono::milliseconds write_timeout{2'000};
     std::chrono::milliseconds idle_interval{100};
+    CorsPolicyConfig cors_policy{};
     // Empty uses std::thread directly. Injection exists for embedding and
     // deterministic resource-failure tests; the returned thread must own task.
     HttpHostListenerThreadFactory listener_thread_factory;

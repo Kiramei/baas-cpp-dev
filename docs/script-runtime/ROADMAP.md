@@ -273,6 +273,19 @@ wiring, auth/origin/TLS policy, complete graceful in-flight semantics, global
 connection/load limits, and Tauri E2E remain open as recorded in
 `SERVICE_HTTPLIB_ADAPTER.md`.
 
+HTTP Origin/CORS foundation: `BAAS_service_origin_policy` now provides a strict,
+bounded, exact allowlist with only the three repository-evidenced Tauri origins
+by default and explicit configurable replacement. `HttplibAdapter` applies the
+same decision to actual requests, preflight, stable rejection, and cpp-httplib's
+pre-handler 413 path; `HttpHostConfig` carries the policy while the host remains
+IPv4 loopback-only. Pure matrix/concurrency tests run in standard Debug/Release
+foundation CI and Conan-backed tests cover direct adapter and real loopback host
+integration. This closes only the HTTP CORS foundation slice: browser Origin is
+not authentication, and auth/cookies/TLS/WebSocket Origin, shared Tauri schema,
+browser E2E, LAN policy, and the protocol-wide security review remain open, so
+the broader Phase 4 checklist item stays incomplete. See
+`SERVICE_ORIGIN_POLICY.md`.
+
 Verified foundation evidence: commit `fec6db0` adds production-anchored service
 vectors (14/14 Python tests), and commit `8b1ff52` adds the standalone C++ BPIP
 framing library. Coordinator-run MSVC Debug and Release reviews each passed 30

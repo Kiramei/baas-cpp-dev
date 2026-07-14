@@ -15,6 +15,7 @@ target_include_directories(
 target_link_libraries(
         BAAS_service_http
         PUBLIC
+        BAAS_service_origin_policy
         BAAS_service_router
         BAAS::httplib
 )

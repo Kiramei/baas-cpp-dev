@@ -86,6 +86,8 @@ option(BUILD_SERVICE_PROTOCOL   "Build the standalone BAAS service protocol libr
 option(BUILD_SERVICE_PROTOCOL_TESTS "Build native tests for the BAAS service protocol" OFF)
 option(BUILD_SERVICE_ROUTER     "Build the transport-independent BAAS service router" OFF)
 option(BUILD_SERVICE_ROUTER_TESTS "Build native tests for the BAAS service router" OFF)
+option(BUILD_SERVICE_ORIGIN_POLICY "Build the standalone HTTP Origin/CORS policy" OFF)
+option(BUILD_SERVICE_ORIGIN_POLICY_TESTS "Build native tests for HTTP Origin/CORS policy" OFF)
 option(BUILD_SERVICE_HTTP       "Build the optional cpp-httplib service adapter" OFF)
 option(BUILD_SERVICE_HTTP_TESTS "Build native tests for the cpp-httplib service adapter" OFF)
 
@@ -105,12 +107,24 @@ if(BUILD_SERVICE_ROUTER_TESTS AND NOT BUILD_SERVICE_ROUTER)
     set(BUILD_SERVICE_ROUTER ON CACHE BOOL "Build the transport-independent BAAS service router" FORCE)
 endif()
 
+if(BUILD_SERVICE_ORIGIN_POLICY_TESTS AND NOT BUILD_SERVICE_ORIGIN_POLICY)
+    set(BUILD_SERVICE_ORIGIN_POLICY ON CACHE BOOL "Build the standalone HTTP Origin/CORS policy" FORCE)
+endif()
+
 if(BUILD_SERVICE_HTTP_TESTS AND NOT BUILD_SERVICE_HTTP)
     set(BUILD_SERVICE_HTTP ON CACHE BOOL "Build the optional cpp-httplib service adapter" FORCE)
 endif()
 
+if(BUILD_SERVICE_HTTP_TESTS AND NOT BUILD_SERVICE_ORIGIN_POLICY_TESTS)
+    set(BUILD_SERVICE_ORIGIN_POLICY_TESTS ON CACHE BOOL "Build native tests for HTTP Origin/CORS policy" FORCE)
+endif()
+
 if(BUILD_SERVICE_HTTP AND NOT BUILD_SERVICE_ROUTER)
     set(BUILD_SERVICE_ROUTER ON CACHE BOOL "Build the transport-independent BAAS service router" FORCE)
+endif()
+
+if(BUILD_SERVICE_HTTP AND NOT BUILD_SERVICE_ORIGIN_POLICY)
+    set(BUILD_SERVICE_ORIGIN_POLICY ON CACHE BOOL "Build the standalone HTTP Origin/CORS policy" FORCE)
 endif()
 
 check_app_options(
@@ -232,6 +246,10 @@ endif()
 
 if(BUILD_SERVICE_ROUTER)
     include("${CMAKE_CURRENT_LIST_DIR}/cmake/ServiceRouter.cmake")
+endif()
+
+if(BUILD_SERVICE_ORIGIN_POLICY)
+    include("${CMAKE_CURRENT_LIST_DIR}/cmake/ServiceOriginPolicy.cmake")
 endif()
 
 if(BUILD_SERVICE_HTTP)

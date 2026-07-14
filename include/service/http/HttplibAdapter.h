@@ -1,5 +1,6 @@
 #pragma once
 
+#include "service/http/OriginPolicy.h"
 #include "service/router/Router.h"
 
 #include <cstddef>
@@ -20,7 +21,11 @@ struct InputBudget {
 
 class HttplibAdapter final {
 public:
-    explicit HttplibAdapter(router::Router& router, InputBudget budget = {});
+    explicit HttplibAdapter(
+        router::Router& router,
+        InputBudget budget = {},
+        CorsPolicyConfig cors_config = {}
+    );
 
     HttplibAdapter(const HttplibAdapter&) = delete;
     HttplibAdapter& operator=(const HttplibAdapter&) = delete;
@@ -31,6 +36,7 @@ public:
     void handle(const httplib::Request& request, httplib::Response& response) const;
 
     [[nodiscard]] const InputBudget& budget() const noexcept;
+    [[nodiscard]] const OriginPolicy& origin_policy() const noexcept;
 
 private:
     void apply_transport_error(
@@ -42,6 +48,7 @@ private:
 
     router::Router& router_;
     InputBudget budget_;
+    OriginPolicy origin_policy_;
 };
 
 }  // namespace baas::service::http

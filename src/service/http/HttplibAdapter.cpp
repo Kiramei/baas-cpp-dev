@@ -4,6 +4,7 @@
 
 #include <stdexcept>
 #include <string>
+#include <string_view>
 
 namespace baas::service::http {
 namespace {
@@ -28,10 +29,120 @@ void apply_router_response(const router::Response& source, httplib::Response& de
         + message + "\",\"status\":" + std::to_string(status) + "},\"ok\":false}";
 }
 
+void replace_header(
+    httplib::Response& response,
+    const char* name,
+    const std::string_view value
+)
+{
+    response.headers.erase(name);
+    response.set_header(name, std::string{value});
+}
+
+void apply_actual_cors_headers(
+    httplib::Response& response,
+    const CorsEvaluation& evaluation
+)
+{
+    response.headers.erase("Access-Control-Allow-Methods");
+    response.headers.erase("Access-Control-Allow-Headers");
+    replace_header(response, "Access-Control-Allow-Origin", evaluation.allow_origin);
+    replace_header(response, "Access-Control-Allow-Credentials", "true");
+    replace_header(response, "Vary", "Origin");
+}
+
+void apply_rejection_vary(
+    httplib::Response& response,
+    const bool may_be_preflight
+)
+{
+    replace_header(
+        response,
+        "Vary",
+        may_be_preflight
+            ? "Origin, Access-Control-Request-Method, Access-Control-Request-Headers"
+            : "Origin"
+    );
+}
+
+void apply_preflight_cors_headers(
+    httplib::Response& response,
+    const CorsEvaluation& evaluation
+)
+{
+    replace_header(response, "Access-Control-Allow-Origin", evaluation.allow_origin);
+    replace_header(response, "Access-Control-Allow-Credentials", "true");
+    replace_header(response, "Access-Control-Allow-Methods", evaluation.allow_methods);
+    if (!evaluation.allow_headers.empty()) {
+        replace_header(response, "Access-Control-Allow-Headers", evaluation.allow_headers);
+    } else {
+        response.headers.erase("Access-Control-Allow-Headers");
+    }
+    replace_header(
+        response,
+        "Vary",
+        "Origin, Access-Control-Request-Method, Access-Control-Request-Headers"
+    );
+}
+
+[[nodiscard]] std::optional<std::string_view> single_header(
+    const httplib::Request& request,
+    const char* name,
+    bool& malformed
+)
+{
+    const auto range = request.headers.equal_range(name);
+    if (range.first == range.second) return std::nullopt;
+    const auto first = range.first;
+    auto next = first;
+    ++next;
+    if (next != range.second) {
+        malformed = true;
+        return std::nullopt;
+    }
+    // Request owns header values for the entire synchronous evaluation. A view
+    // avoids copying attacker-controlled bytes before policy length gates.
+    return first->second;
+}
+
+struct RequestCorsEvaluation {
+    CorsEvaluation cors;
+    bool may_be_preflight = false;
+};
+
+[[nodiscard]] RequestCorsEvaluation evaluate_cors_request(
+    const OriginPolicy& policy,
+    const httplib::Request& request
+)
+{
+    bool malformed_headers = false;
+    const auto origin = single_header(request, "Origin", malformed_headers);
+    const auto requested_method = single_header(
+        request, "Access-Control-Request-Method", malformed_headers
+    );
+    const auto requested_headers = single_header(
+        request, "Access-Control-Request-Headers", malformed_headers
+    );
+    return {
+        policy.evaluate({
+            origin,
+            request.method,
+            requested_method,
+            requested_headers,
+            malformed_headers,
+        }),
+        request.method == "OPTIONS" && requested_method.has_value(),
+    };
+}
+
 }  // namespace
 
-HttplibAdapter::HttplibAdapter(router::Router& router, const InputBudget budget)
-    : router_(router), budget_(budget)
+HttplibAdapter::HttplibAdapter(
+    router::Router& router,
+    const InputBudget budget,
+    CorsPolicyConfig cors_config
+)
+    : router_(router), budget_(budget), origin_policy_(std::move(cors_config))
 {
     const auto& router_budget = router_.budget();
     if (budget_.max_method_bytes == 0 || budget_.max_path_bytes == 0
@@ -50,6 +161,11 @@ const InputBudget& HttplibAdapter::budget() const noexcept
     return budget_;
 }
 
+const OriginPolicy& HttplibAdapter::origin_policy() const noexcept
+{
+    return origin_policy_;
+}
+
 void HttplibAdapter::install(httplib::Server& server) const
 {
     server.set_payload_max_length(budget_.max_body_bytes);
@@ -64,9 +180,20 @@ void HttplibAdapter::install(httplib::Server& server) const
     server.Delete(any_path, handler);
     server.Options(any_path, handler);
     server.set_error_handler(
-        [this](const httplib::Request&, httplib::Response& response) {
+        [this](const httplib::Request& request, httplib::Response& response) {
             if (response.status != 413) {
                 return httplib::Server::HandlerResponse::Unhandled;
+            }
+            const auto evaluated = evaluate_cors_request(origin_policy_, request);
+            if (!evaluated.cors.allowed()) {
+                apply_transport_error(
+                    response,
+                    evaluated.cors.status,
+                    evaluated.cors.code.c_str(),
+                    evaluated.cors.message.c_str()
+                );
+                apply_rejection_vary(response, evaluated.may_be_preflight);
+                return httplib::Server::HandlerResponse::Handled;
             }
             apply_transport_error(
                 response,
@@ -74,6 +201,11 @@ void HttplibAdapter::install(httplib::Server& server) const
                 "request_too_large",
                 "request body exceeds HTTP transport budget"
             );
+            if (evaluated.cors.decision == CorsDecision::actual_request) {
+                apply_actual_cors_headers(response, evaluated.cors);
+            } else if (evaluated.cors.decision == CorsDecision::preflight) {
+                apply_preflight_cors_headers(response, evaluated.cors);
+            }
             return httplib::Server::HandlerResponse::Handled;
         }
     );
@@ -84,6 +216,19 @@ void HttplibAdapter::handle(
     httplib::Response& response
 ) const
 {
+    const auto evaluated = evaluate_cors_request(origin_policy_, request);
+    const auto& cors = evaluated.cors;
+    if (!cors.allowed()) {
+        apply_transport_error(response, cors.status, cors.code.c_str(), cors.message.c_str());
+        apply_rejection_vary(response, evaluated.may_be_preflight);
+        return;
+    }
+
+    const auto finish_actual_cors = [&] {
+        if (cors.decision == CorsDecision::actual_request) {
+            apply_actual_cors_headers(response, cors);
+        }
+    };
     if (request.method.size() > budget_.max_method_bytes) {
         apply_transport_error(
             response,
@@ -91,6 +236,7 @@ void HttplibAdapter::handle(
             "method_too_large",
             "request method exceeds HTTP transport budget"
         );
+        finish_actual_cors();
         return;
     }
     if (request.path.size() > budget_.max_path_bytes) {
@@ -100,6 +246,7 @@ void HttplibAdapter::handle(
             "path_too_large",
             "request path exceeds HTTP transport budget"
         );
+        finish_actual_cors();
         return;
     }
     if (request.body.size() > budget_.max_body_bytes) {
@@ -109,12 +256,21 @@ void HttplibAdapter::handle(
             "request_too_large",
             "request body exceeds HTTP transport budget"
         );
+        finish_actual_cors();
+        return;
+    }
+    if (cors.decision == CorsDecision::preflight) {
+        response.status = 204;
+        response.headers.clear();
+        response.body.clear();
+        apply_preflight_cors_headers(response, cors);
         return;
     }
     apply_router_response(
         router_.handle(router::Request{request.method, request.path, request.body}),
         response
     );
+    finish_actual_cors();
 }
 
 void HttplibAdapter::apply_transport_error(

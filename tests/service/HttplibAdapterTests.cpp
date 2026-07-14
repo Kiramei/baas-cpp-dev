@@ -132,6 +132,187 @@ void test_adapter_budget_must_fit_router_budget()
     check(rejected, "transport budget must not exceed the router budget");
 }
 
+void test_origin_cors_actual_preflight_and_rejection_matrix()
+{
+    auto router = router_with_health({"BAAS", "cors"});
+    service_http::HttplibAdapter adapter{router};
+
+    auto native = request("GET", "/health");
+    httplib::Response response;
+    adapter.handle(native, response);
+    check(response.status == 200, "native no-Origin request must retain router behavior");
+    check(!response.has_header("Access-Control-Allow-Origin"),
+          "native request must not receive fabricated CORS headers");
+
+    auto allowed = request("GET", "/health");
+    allowed.headers.emplace("Origin", "http://localhost:8191");
+    response = {};
+    adapter.handle(allowed, response);
+    check(response.status == 200, "allowed actual browser request must reach Router");
+    check(response.get_header_value("Access-Control-Allow-Origin") == "http://localhost:8191",
+          "actual response must echo only the canonical allowed origin");
+    check(response.get_header_value("Access-Control-Allow-Credentials") == "true",
+          "actual allowed response must permit credential flow");
+    check(response.get_header_value("Vary") == "Origin",
+          "actual allowed response must vary on Origin");
+    check(!response.has_header("Access-Control-Allow-Methods"),
+          "actual response must not emit preflight-only headers");
+
+    auto denied = request("GET", "/health");
+    denied.headers.emplace("Origin", "https://evil.example");
+    response = {};
+    adapter.handle(denied, response);
+    check(response.status == 403,
+          "unconfigured browser origin must be rejected before Router dispatch");
+    check(response.body
+              == R"({"error":{"code":"origin_not_allowed","message":"request Origin is not allowed","status":403},"ok":false})",
+          "origin rejection response must be stable and JSON safe");
+    check(response.get_header_value("Vary") == "Origin",
+          "actual origin rejection must vary on Origin");
+    check(!response.has_header("Access-Control-Allow-Origin")
+              && !response.has_header("Access-Control-Allow-Credentials"),
+          "origin rejection must not emit allow or credential headers");
+
+    auto preflight = request("OPTIONS", "/health");
+    preflight.headers.emplace("Origin", "http://127.0.0.1:8191");
+    preflight.headers.emplace("Access-Control-Request-Method", "GET");
+    preflight.headers.emplace("Access-Control-Request-Headers", "Content-Type, Accept");
+    response = {};
+    adapter.handle(preflight, response);
+    check(response.status == 204 && response.body.empty(),
+          "allowed preflight must terminate in the adapter with empty 204");
+    check(response.get_header_value("Access-Control-Allow-Origin")
+              == "http://127.0.0.1:8191",
+          "preflight must return exact allowed origin");
+    check(response.get_header_value("Access-Control-Allow-Credentials") == "true",
+          "preflight credentials must match actual response");
+    check(response.get_header_value("Access-Control-Allow-Methods") == "GET, HEAD, POST",
+          "preflight methods must be deterministic");
+    check(response.get_header_value("Access-Control-Allow-Headers") == "accept, content-type",
+          "preflight requested headers must be normalized and bounded");
+    check(response.get_header_value("Vary")
+              == "Origin, Access-Control-Request-Method, Access-Control-Request-Headers",
+          "preflight response must vary on all decision inputs");
+
+    auto denied_preflight = request("OPTIONS", "/health");
+    denied_preflight.headers.emplace("Origin", "http://localhost:8191");
+    denied_preflight.headers.emplace("Access-Control-Request-Method", "DELETE");
+    response = {};
+    adapter.handle(denied_preflight, response);
+    check(response.status == 403
+              && response.body.find("cors_method_not_allowed") != std::string::npos,
+          "preflight method rejection must be stable");
+    check(!response.has_header("Access-Control-Allow-Origin"),
+          "denied preflight must not emit allow-origin");
+
+    auto duplicate = request("GET", "/health");
+    duplicate.headers.emplace("Origin", "http://localhost:8191");
+    duplicate.headers.emplace("Origin", "http://127.0.0.1:8191");
+    response = {};
+    adapter.handle(duplicate, response);
+    check(response.status == 403 && response.body.find("cors_invalid_request") != std::string::npos,
+          "multiple Origin fields must fail closed");
+
+    auto many_duplicates = request("GET", "/health");
+    for (int i = 0; i < 128; ++i) {
+        many_duplicates.headers.emplace("Origin", "http://localhost:8191");
+    }
+    response = {};
+    adapter.handle(many_duplicates, response);
+    check(response.status == 403 && response.body.find("cors_invalid_request") != std::string::npos,
+          "many duplicate Origin fields must reject with constant cardinality work");
+}
+
+void test_custom_policy_is_wired_into_adapter()
+{
+    auto router = router_with_health({"BAAS", "cors-custom"});
+    service_http::CorsPolicyConfig config;
+    config.allowed_origins = {"https://configured-long-origin.example"};
+    config.allowed_methods = {"GET", "POST"};
+    config.allowed_headers = {"x-this-is-a-long-request-header-name"};
+    config.allow_requests_without_origin = false;
+    service_http::HttplibAdapter adapter{router, {}, config};
+
+    httplib::Response response;
+    adapter.handle(request("GET", "/health"), response);
+    check(response.status == 403 && response.body.find("origin_required") != std::string::npos,
+          "adapter must honor configured no-Origin boundary");
+
+    auto allowed = request("GET", "/health");
+    allowed.headers.emplace("Origin", "https://CONFIGURED-LONG-ORIGIN.example:443");
+    response = {};
+    adapter.handle(allowed, response);
+    check(response.status == 200
+              && response.get_header_value("Access-Control-Allow-Origin")
+                  == "https://configured-long-origin.example",
+          "adapter must use custom canonical allowlist");
+
+    auto preflight = request("OPTIONS", "/health");
+    preflight.headers.emplace("Origin", "https://configured-long-origin.example");
+    preflight.headers.emplace("Access-Control-Request-Method", "POST");
+    preflight.headers.emplace(
+        "Access-Control-Request-Headers", "x-this-is-a-long-request-header-name"
+    );
+    response = {};
+    adapter.handle(preflight, response);
+    check(response.status == 204
+              && response.get_header_value("Access-Control-Allow-Headers")
+                  == "x-this-is-a-long-request-header-name",
+          "owning header extraction must preserve values longer than SSO");
+
+    std::atomic<int> mismatches{0};
+    std::vector<std::thread> workers;
+    for (int i = 0; i < 8; ++i) {
+        workers.emplace_back([&] {
+            for (int iteration = 0; iteration < 250; ++iteration) {
+                auto concurrent = request("GET", "/version");
+                concurrent.headers.emplace("Origin", "https://configured-long-origin.example");
+                httplib::Response concurrent_response;
+                adapter.handle(concurrent, concurrent_response);
+                if (concurrent_response.status != 200
+                    || concurrent_response.get_header_value("Access-Control-Allow-Origin")
+                        != "https://configured-long-origin.example") {
+                    mismatches.fetch_add(1, std::memory_order_relaxed);
+                }
+            }
+        });
+    }
+    for (auto& worker : workers) worker.join();
+    check(mismatches.load() == 0,
+          "concurrent adapter header extraction and policy evaluation must be deterministic");
+}
+
+void test_attacker_headers_are_bounded_before_policy_copies()
+{
+    auto router = router_with_health({"BAAS", "cors-bounds"});
+    service_http::HttplibAdapter adapter{router};
+    constexpr std::size_t attack_bytes = 1'048'576;
+
+    auto huge_origin = request("GET", "/health");
+    huge_origin.headers.emplace("Origin", std::string(attack_bytes, 'a'));
+    httplib::Response response;
+    adapter.handle(huge_origin, response);
+    check(response.status == 403 && response.body.find("invalid_origin") != std::string::npos,
+          "oversized Origin must hit the fixed policy byte gate");
+
+    auto huge_method = request("OPTIONS", "/health");
+    huge_method.headers.emplace("Origin", "http://localhost:8191");
+    huge_method.headers.emplace("Access-Control-Request-Method", std::string(attack_bytes, 'A'));
+    response = {};
+    adapter.handle(huge_method, response);
+    check(response.status == 403 && response.body.find("cors_invalid_method") != std::string::npos,
+          "oversized ACR-Method must hit the fixed method gate before copying");
+
+    auto huge_headers = request("OPTIONS", "/health");
+    huge_headers.headers.emplace("Origin", "http://localhost:8191");
+    huge_headers.headers.emplace("Access-Control-Request-Method", "GET");
+    huge_headers.headers.emplace("Access-Control-Request-Headers", std::string(attack_bytes, 'x'));
+    response = {};
+    adapter.handle(huge_headers, response);
+    check(response.status == 403 && response.body.find("cors_invalid_headers") != std::string::npos,
+          "oversized ACR-Headers must hit the fixed header gate before parsing/copying");
+}
+
 class StopAndJoin final {
 public:
     StopAndJoin(httplib::Server& server, std::thread& thread) : server_(server), thread_(thread) {}
@@ -229,6 +410,37 @@ void test_real_loopback_ephemeral_port_lifecycle()
               "httplib payload gate must use adapter JSON error");
     }
 
+    const auto allowed_oversized = client.Post(
+        "/shutdown",
+        httplib::Headers{{"Origin", "http://localhost:8191"}},
+        std::string(33, 'x'),
+        "application/octet-stream"
+    );
+    check(allowed_oversized && allowed_oversized->status == 413,
+          "real payload rejection must preserve 413 for an allowed actual origin");
+    if (allowed_oversized) {
+        check(allowed_oversized->get_header_value("Access-Control-Allow-Origin")
+                  == "http://localhost:8191"
+                  && allowed_oversized->get_header_value("Access-Control-Allow-Credentials") == "true"
+                  && allowed_oversized->get_header_value("Vary") == "Origin",
+              "real 413 must carry the same actual-request CORS headers");
+    }
+
+    const auto denied_oversized = client.Post(
+        "/shutdown",
+        httplib::Headers{{"Origin", "https://evil.example"}},
+        std::string(33, 'x'),
+        "application/octet-stream"
+    );
+    check(denied_oversized && denied_oversized->status == 403,
+          "real payload rejection must still fail a denied Origin before exposing 413");
+    if (denied_oversized) {
+        check(denied_oversized->body.find("origin_not_allowed") != std::string::npos
+                  && denied_oversized->get_header_value("Vary") == "Origin"
+                  && !denied_oversized->has_header("Access-Control-Allow-Origin"),
+              "real denied oversized request must use stable fail-closed response");
+    }
+
     client.stop();
     server.stop();
     if (worker.joinable()) worker.join();
@@ -242,6 +454,9 @@ int main()
     test_exact_request_and_response_mapping();
     test_transport_limits_precede_router_effects();
     test_adapter_budget_must_fit_router_budget();
+    test_origin_cors_actual_preflight_and_rejection_matrix();
+    test_custom_policy_is_wired_into_adapter();
+    test_attacker_headers_are_bounded_before_policy_copies();
     test_real_loopback_ephemeral_port_lifecycle();
     if (failures != 0) {
         std::cerr << failures << " httplib adapter test(s) failed\n";
