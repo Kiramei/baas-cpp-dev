@@ -675,7 +675,7 @@ defined.
 | [REQUIRED] | Canonical JSON/base64url/control/HKDF/X25519/Ed25519/Argon2 vectors | Python-generated checked-in fixture; C++ crypto not implemented |
 | [MISSING] | Deterministic secretstream header/ciphertext cross-language vector | RNG injection/captured fixture absent |
 | [MISSING] | Password, remember, epoch, persistent key, expiry, restart vectors | Not covered by current fixture |
-| [MISSING] | Complete HTTP route/status/body parity including reset-auth | C++ Router has unit-covered injected `/health` shape only; no shared route suite or host wiring, and one route is absent in Python |
+| [MISSING] | Complete HTTP route/status/body parity including reset-auth | C++ has an owned loopback host and injected `/health` shape, but no real runtime/auth provider wiring or shared route suite, and one route is absent in Python |
 | [MISSING] | Provider/sync/trigger/remote shared contract suite | Inventoried only; focused tests incomplete |
 | [MISSING] | Bounded queues, overload, timeout, cancellation, load gates | Policy constants and tests absent |
 | [MISSING] | Live Windows pipe and Unix socket interoperability/fuzz | Framing unit tests only |

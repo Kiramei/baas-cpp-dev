@@ -14,6 +14,7 @@ VECTORS_PATH = ROOT / "tests" / "service_contract" / "v1_vectors.json"
 WORKFLOW_PATH = ROOT / ".github" / "workflows" / "foundation-runtime.yml"
 ROUTER_SOURCE_PATH = ROOT / "src" / "service" / "router" / "Router.cpp"
 ROUTER_CORE_SPEC_PATH = ROOT / "docs" / "script-runtime" / "SERVICE_ROUTER_CORE.md"
+HTTP_HOST_SPEC_PATH = ROOT / "docs" / "script-runtime" / "SERVICE_HTTPLIB_ADAPTER.md"
 
 
 class ServiceProtocolSpecTests(unittest.TestCase):
@@ -29,6 +30,7 @@ class ServiceProtocolSpecTests(unittest.TestCase):
         cls.examples = [json.loads(block) for block in blocks]
         cls.router_source = ROUTER_SOURCE_PATH.read_text(encoding="utf-8")
         cls.router_core_spec = ROUTER_CORE_SPEC_PATH.read_text(encoding="utf-8")
+        cls.http_host_spec = HTTP_HOST_SPEC_PATH.read_text(encoding="utf-8")
 
     def test_every_tagged_json_example_is_valid_object(self) -> None:
         self.assertGreaterEqual(len(self.examples), 8)
@@ -127,6 +129,23 @@ class ServiceProtocolSpecTests(unittest.TestCase):
             "Windows named-pipe ACL",
         ):
             self.assertIn(missing, self.spec)
+
+    def test_http_host_lifecycle_boundary_remains_explicit(self) -> None:
+        for implemented in (
+            "forced to IPv4 `127.0.0.1`",
+            "max_queued_requests",
+            "queue_rejections()",
+            "stop/drain/join",
+            "--repeat until-fail:20",
+        ):
+            self.assertIn(implemented, self.http_host_spec)
+        for remaining in (
+            "real runtime/auth provider",
+            "authentication, origin/CORS",
+            "complete graceful in-flight",
+            "baas-tauri contract sharing and end-to-end testing",
+        ):
+            self.assertIn(remaining, self.http_host_spec)
 
     def test_spec_does_not_claim_phase_or_e2e_completion(self) -> None:
         self.assertIn("does not satisfy the Phase 4 exit criterion", self.spec)

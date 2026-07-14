@@ -247,19 +247,23 @@ output. Missing injection returns 503 instead of fabricating readiness. A real
 service host has not yet wired runtime/auth owners into that provider, and the
 remaining required v1 routes are still missing. It opens no listener and
 performs no shutdown.
-`SERVICE_ROUTER_CORE.md` records the boundary and tests; the `cpp-httplib`
-adapter, authentication, bounded concurrency, real graceful shutdown, and
-shared Python/Tauri contract and lifecycle integration remain required, so the
-broader checklist item stays open.
+`SERVICE_ROUTER_CORE.md` records the boundary and tests; authentication, full
+graceful request semantics, and shared Python/Tauri contract and lifecycle
+integration remain required, so the broader checklist item stays open.
 
 Optional HTTP adapter foundation: `BAAS_service_http` now requests
 `BAAS::httplib` only when explicitly enabled, maps cpp-httplib method/path/body
 and Router status/headers/body exactly, and applies method/path/body transport
-budgets before Router effects. Its local test binds loopback on an ephemeral
-port with bounded readiness/I/O/CTest timeouts and explicit stop/join. It is not
-a production listener: auth/origin/listen policy, production lifecycle,
-graceful draining, bounded concurrency/load evidence, and Tauri E2E remain
-open as recorded in `SERVICE_HTTPLIB_ADAPTER.md`.
+budgets before Router effects. `HttpHost` now owns Router/adapter/provider,
+Server, listener, and task-worker lifetimes; forces IPv4 loopback; supports
+ephemeral or fixed ports; bounds worker and waiting-request counts; exposes
+bind/readiness/listener failures; and provides repeatable stop/drain/join and
+destructor cleanup. Tests cover port conflicts, concurrent health, in-flight
+stop, provider lifetime, and queue overflow with bounded I/O/readiness/CTest
+timeouts. It is not yet the production service: real runtime/auth provider
+wiring, auth/origin/TLS policy, complete graceful in-flight semantics, global
+connection/load limits, and Tauri E2E remain open as recorded in
+`SERVICE_HTTPLIB_ADAPTER.md`.
 
 Verified foundation evidence: commit `fec6db0` adds production-anchored service
 vectors (14/14 Python tests), and commit `8b1ff52` adds the standalone C++ BPIP

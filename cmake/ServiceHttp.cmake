@@ -4,6 +4,7 @@ add_library(
         BAAS_service_http
         STATIC
         "${BAAS_PROJECT_PATH}/src/service/http/HttplibAdapter.cpp"
+        "${BAAS_PROJECT_PATH}/src/service/http/HttpHost.cpp"
 )
 target_compile_features(BAAS_service_http PUBLIC cxx_std_20)
 target_include_directories(
@@ -39,5 +40,20 @@ if(BUILD_SERVICE_HTTP_TESTS)
     set_tests_properties(
             BAAS_service_httplib_adapter_tests
             PROPERTIES TIMEOUT 15
+    )
+
+    add_executable(
+            BAAS_service_http_host_tests
+            "${BAAS_PROJECT_PATH}/tests/service/HttpHostTests.cpp"
+    )
+    target_compile_features(BAAS_service_http_host_tests PRIVATE cxx_std_20)
+    target_link_libraries(BAAS_service_http_host_tests PRIVATE BAAS_service_http)
+    add_test(
+            NAME BAAS_service_http_host_tests
+            COMMAND BAAS_service_http_host_tests
+    )
+    set_tests_properties(
+            BAAS_service_http_host_tests
+            PROPERTIES TIMEOUT 30
     )
 endif()
