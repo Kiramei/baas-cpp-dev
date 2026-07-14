@@ -46,7 +46,10 @@ an isolated prototype is not considered project completion.
   sizes are recorded in `evidence/python-performance-baseline.json`; full service lifespan,
   device/emulator, OCR, Tauri end-to-end, and packaged installer measurements
   remain pending.
-- [ ] Record platform and emulator smoke-test prerequisites.
+- [x] Record platform and emulator smoke-test prerequisites.
+  `PLATFORM_SMOKE_PREREQUISITES.md` and its deterministic read-only checker
+  record the profiles, current Windows availability, missing Android JDK/images/
+  AVDs, and exact future smoke evidence; no platform smoke is claimed.
 
 Exit evidence: inventories cover all source roots, the migration matrix has no
 unclassified operation families, and baseline commands/results are recorded.

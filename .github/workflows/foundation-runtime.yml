@@ -20,14 +20,18 @@ on:
       - 'src/service/**'
       - 'tests/service/**'
       - 'scripts/service_contract/**'
+      - 'scripts/platform/**'
       - 'tests/service_contract/**'
       - 'scripts/migration/**'
+      - 'tests/platform/**'
       - 'docs/script-runtime/ADR-0001-runtime-architecture.md'
       - 'docs/script-runtime/ADR-0002-vm-memory-management.md'
       - 'docs/script-runtime/LANGUAGE_SPEC_DRAFT.md'
       - 'docs/script-runtime/LANGUAGE_GRAMMAR.md'
       - 'docs/script-runtime/SERVICE_COMPATIBILITY.md'
       - 'docs/script-runtime/SERVICE_PROTOCOL_V1.md'
+      - 'docs/script-runtime/PLATFORM_SMOKE_PREREQUISITES.md'
+      - 'docs/script-runtime/evidence/platform_smoke_prerequisites.windows.json'
   pull_request:
     branches:
       - main
@@ -48,14 +52,18 @@ on:
       - 'src/service/**'
       - 'tests/service/**'
       - 'scripts/service_contract/**'
+      - 'scripts/platform/**'
       - 'tests/service_contract/**'
       - 'scripts/migration/**'
+      - 'tests/platform/**'
       - 'docs/script-runtime/ADR-0001-runtime-architecture.md'
       - 'docs/script-runtime/ADR-0002-vm-memory-management.md'
       - 'docs/script-runtime/LANGUAGE_SPEC_DRAFT.md'
       - 'docs/script-runtime/LANGUAGE_GRAMMAR.md'
       - 'docs/script-runtime/SERVICE_COMPATIBILITY.md'
       - 'docs/script-runtime/SERVICE_PROTOCOL_V1.md'
+      - 'docs/script-runtime/PLATFORM_SMOKE_PREREQUISITES.md'
+      - 'docs/script-runtime/evidence/platform_smoke_prerequisites.windows.json'
 
 permissions:
   contents: read
@@ -121,3 +129,7 @@ jobs:
       - name: Verify migration and baseline tools
         if: matrix.build_type == 'Debug'
         run: python -B -m unittest discover -s scripts/migration/tests -p "test_*.py" -v
+
+      - name: Verify platform prerequisite checker and sanitized evidence
+        if: matrix.build_type == 'Debug'
+        run: python -m unittest discover -s tests/platform -p "test_*.py" -v
