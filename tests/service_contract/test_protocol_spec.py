@@ -174,10 +174,24 @@ class ServiceProtocolSpecTests(unittest.TestCase):
 
     def test_http_stop_latch_is_never_cleared_after_transport_failure(self) -> None:
         self.assertNotIn("clear_server_stop_request", self.http_host_source)
-        self.assertIn("server_stop_failed_ = true", self.http_host_source)
+        catch_order = re.findall(
+            r"catch \([^)]*\) \{\s*"
+            r"(?:\/\/[^\n]*\n\s*\/\/[^\n]*\n\s*)?"
+            r"server_stop_failed_ = true;\s*"
+            r"record_server_stop_failure_noexcept\(\);",
+            self.http_host_source,
+        )
+        self.assertEqual(len(catch_order), 2)
+        self.assertRegex(
+            self.http_host_source,
+            r"state_ = HttpHostState::failed;\s*"
+            r"port_ = 0;\s*"
+            r"last_error_message_ = \"cpp-httplib stop failed; ownership retained\";",
+        )
         self.assertIn("if (server_stop_failed_) return false", self.http_host_source)
         self.assertIn("ownership retained", self.http_host_source)
         self.assertIn("later stop/start calls fail without retrying", self.http_host_spec)
+        self.assertIn("public port is cleared to zero", self.http_host_spec)
 
     def test_spec_does_not_claim_phase_or_e2e_completion(self) -> None:
         self.assertIn("does not satisfy the Phase 4 exit criterion", self.spec)

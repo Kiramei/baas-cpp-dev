@@ -392,9 +392,13 @@ public:
                 try {
                     server->stop();
                 } catch (const std::exception&) {
+                    // lifecycle_mutex_ is still held. Commit the no-retry latch
+                    // before any diagnostic string allocation can fail.
+                    server_stop_failed_ = true;
                     record_server_stop_failure_noexcept();
                     return false;
                 } catch (...) {
+                    server_stop_failed_ = true;
                     record_server_stop_failure_noexcept();
                     return false;
                 }
@@ -531,8 +535,8 @@ private:
         try {
             std::lock_guard<std::mutex> lock{state_mutex_};
             state_ = HttpHostState::failed;
+            port_ = 0;
             last_error_message_ = "cpp-httplib stop failed; ownership retained";
-            server_stop_failed_ = true;
         } catch (...) {}
     }
 

@@ -84,8 +84,10 @@ that accept-stop was requested or that `listen_after_bind()` already returned,
 so a deferred/repeated owner stop never calls cpp-httplib `Server::stop()` twice
 for the same listening socket. If `Server::stop()` throws, the latch remains
 consumed: later stop/start calls fail without retrying that possibly partially
-consumed socket, and destruction retains the ownership graph. The latch resets
-only when a fresh start is safe or a normal stop has destroyed the Server. If
+consumed socket, the public port is cleared to zero, and destruction retains
+the ownership graph. A stop failure therefore never advertises its retained
+transport as usable. The latch resets only when a fresh start is safe or a
+normal stop has destroyed the Server. If
 an exceptional cleanup cannot prove the listener is joined, destruction
 retains the complete implementation ownership graph rather than destroying
 live Router/adapter/provider references or invoking a joinable `std::thread`
