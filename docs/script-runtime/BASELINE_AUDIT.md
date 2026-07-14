@@ -81,6 +81,25 @@ screenshot while preserving the disabled default path. It does not yet capture
 `co_detect`, uiautomator calls, actual asynchronous click completion, or real
 workflow golden fixtures.
 
+### Python test baseline
+
+On the audited Windows x64 host, the intended project test root passed twice:
+
+```powershell
+D:\WorkSpace\pro\BAAS\baas-dev\.venv\Scripts\python.exe -m pytest tests -q -rs
+```
+
+Result: 88 passed, 1 skipped, and 3 warnings in 1.10 seconds. The skipped test
+is the Unix-domain-socket case on Windows. Warnings are the `pkg_resources`
+deprecation in `adbutils` and two Pydantic v1-style validator deprecations.
+
+Running unscoped `pytest -q` from the repository root is not a valid baseline:
+the current pytest configuration has no `testpaths`, so discovery enters
+`develop_tools/test` and the bundled `toolkit/uv/cpython` standard-library
+tests. That produced 121 collection errors unrelated to the intended BAAS
+suite. CI must explicitly use `pytest tests` or add an audited `testpaths`
+setting before treating repository-root discovery as a gate.
+
 ## Reusable C++ inventory
 
 ### Strong reuse candidates
