@@ -57,6 +57,9 @@ The required value set is:
 - task/future;
 - structured error.
 
+Runtime ownership, cycle collection, context isolation, and memory-budget rules
+are defined by `ADR-0002-vm-memory-management.md`.
+
 Integer overflow throws `NumericOverflow`; division by zero throws
 `DivisionByZero`. Numeric operations promote an integer to float only when one
 operand is float. There is no implicit string-to-number conversion.

@@ -55,10 +55,10 @@ blocking host boundary.
 
 Primitive values are stored inline where practical. Lists, ordered maps,
 closures, errors, tasks, and host handles live in a VM-owned heap. The heap must
-support cycles and enforce a context memory budget; the exact collector is left
-to a focused memory-management ADR before value implementation. Native handles
-use explicit close/defer semantics and safe host ownership rather than relying
-on nondeterministic script finalizers.
+support cycles and enforce a context memory budget. ADR-0002 selects a
+per-context non-moving tracing heap with generational references, exact roots,
+and budget accounting. Native handles use explicit close/defer semantics and
+safe host ownership rather than relying on nondeterministic script finalizers.
 
 ### Host API and parity
 
@@ -121,4 +121,3 @@ Costs and risks:
 - Bounded executor cancellation/backpressure and per-device serialization tests
   pass under concurrency.
 - Service cryptographic/pipe golden vectors pass across Python, C++, and Tauri.
-
