@@ -14,6 +14,7 @@ add_library(
         "${BAAS_PROJECT_PATH}/src/script/runtime/Environment.cpp"
         "${BAAS_PROJECT_PATH}/src/script/runtime/ErrorTranslation.cpp"
         "${BAAS_PROJECT_PATH}/src/script/runtime/JsonBridge.cpp"
+        "${BAAS_PROJECT_PATH}/src/script/runtime/ModuleSpecifier.cpp"
         "${BAAS_PROJECT_PATH}/src/script/runtime/ValueHeap.cpp"
 )
 
@@ -172,4 +173,12 @@ if(BUILD_SCRIPT_TESTS)
     target_link_libraries(BAAS_script_json_bridge_tests PRIVATE BAAS_script_runtime)
     add_test(NAME BAAS_script_json_bridge_tests COMMAND BAAS_script_json_bridge_tests)
     set_tests_properties(BAAS_script_json_bridge_tests PROPERTIES TIMEOUT 60)
+
+    add_executable(
+            BAAS_script_module_specifier_tests
+            "${BAAS_PROJECT_PATH}/tests/script/ModuleSpecifierTests.cpp"
+    )
+    target_compile_features(BAAS_script_module_specifier_tests PRIVATE cxx_std_20)
+    target_link_libraries(BAAS_script_module_specifier_tests PRIVATE BAAS_script_runtime)
+    add_test(NAME BAAS_script_module_specifier_tests COMMAND BAAS_script_module_specifier_tests)
 endif()

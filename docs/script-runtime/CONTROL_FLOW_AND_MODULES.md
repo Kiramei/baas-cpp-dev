@@ -216,6 +216,14 @@ segments, and MUST NOT contain a leading slash, drive prefix, backslash, NUL,
 every platform. Import resolution MUST NOT probe the host filesystem or apply
 platform-specific case folding.
 
+`ModuleSpecifier` implements this pure canonicalization boundary for the
+current runtime foundation. It validates UTF-8 and bounded segments without
+filesystem access, preserves accepted bytes and case, and appends `.baas` only
+when producing a package manifest path. ASCII is inherently NFC; non-ASCII
+input fails closed unless the embedding runtime supplies one shared
+platform-independent NFC predicate, so a missing normalization dependency
+cannot silently produce platform-specific identities.
+
 ### CTL-013 — Package graph validation and import cycles
 
 Before activation, the package validator MUST parse and semantically analyze
@@ -433,21 +441,24 @@ The checked-in lexer/parser implement the concrete forms and contextual parser
 diagnostics. `Ast.h` implements immutable source-spanned nodes.
 `SemanticAnalyzer` implements source-order lexical binding, initialization
 checks, nearest resolution, binding kinds, closure capture propagation, and
-bounded AST traversal. `SyntaxCheck` composes those non-executing stages.
+bounded AST traversal. `Environment` implements rooted lexical binding cells.
+`ModuleSpecifier` implements bounded, filesystem-independent canonical import
+specifier validation. `SyntaxCheck` composes the non-executing compile stages.
 
-The repository does not yet implement environments, closure execution,
+The repository does not yet implement closure execution,
 bytecode/compiler/VM evaluation, runtime recursion/control transfer, package
-graph validation, module path resolution, import-cycle detection, namespace
-publication, module initialization/cache, or native module registration. These
-items MUST remain pending in Phase 2 until executable conformance evidence
-exists. Completing this normative Phase 1 specification MUST NOT be described
-as completing the VM, module loader, Turing-machine fixture execution, the
-general conformance corpus, or Phase 1 as a whole.
+graph validation, manifest membership/host-version resolution, import-cycle
+detection, namespace publication, module initialization/cache, or native module
+registration. These items MUST remain pending in Phase 2 until executable
+conformance evidence exists. Completing this normative Phase 1 specification
+MUST NOT be described as completing the VM, module loader, Turing-machine
+fixture execution, the general conformance corpus, or Phase 1 as a whole.
 
 ## Machine-checked evidence
 
 `tests/docs/test_control_modules_spec.py` uses only the Python standard library
 and MUST verify CTL-001 through CTL-020, conformance example ids, grammar and AST
 forms, binding/diagnostic inventories, semantic implementation anchors, the
-syntax-check fixture/CTest gate, module/package links, pending implementation
-statements, the single ROADMAP checkbox, and Foundation CI path wiring.
+syntax-check fixture/CTest gate, canonical module-specifier foundation,
+module/package links, pending implementation statements, the ROADMAP status,
+and Foundation CI path wiring.

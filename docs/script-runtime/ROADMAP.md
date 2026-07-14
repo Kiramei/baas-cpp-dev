@@ -133,7 +133,11 @@ VM/task/host bridge boundary are checked in Foundation CI.
   execution, evaluator/VM, recursion, and control flow remain pending.
 - [x] Implement the dependency-free ordered JSON value bridge and checked
   JSON-safe cross-context deep-copy foundation.
-- [ ] Implement modules, imports, and native-function registration.
+- [~] Implement modules, imports, and native-function registration. Bounded,
+  filesystem-independent canonical specifier validation now distinguishes
+  package and `baas/*` Host modules and fails closed when non-ASCII NFC cannot
+  be verified; package graph validation, manifest/version/capability resolution,
+  namespaces, initialization/cache, and native registration remain pending.
 - [~] Implement structured exceptions, stack traces, cancellation, and limits.
   The total allocation-free RT001-RT023 language-code/catchability mapping is
   implemented, and semantic analysis enforces ERR-015 cleanup-body restrictions

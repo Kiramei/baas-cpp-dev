@@ -21,6 +21,9 @@ PARSER_TEST_PATH = ROOT / "tests" / "script" / "ParserTests.cpp"
 FIXTURE_PATH = ROOT / "tests" / "script" / "fixtures" / "control_modules_valid.baas"
 CMAKE_PATH = ROOT / "cmake" / "ScriptRuntime.cmake"
 WORKFLOW_PATH = ROOT / ".github" / "workflows" / "foundation-runtime.yml"
+MODULE_SPECIFIER_HEADER_PATH = ROOT / "include" / "script" / "runtime" / "ModuleSpecifier.h"
+MODULE_SPECIFIER_SOURCE_PATH = ROOT / "src" / "script" / "runtime" / "ModuleSpecifier.cpp"
+MODULE_SPECIFIER_TEST_PATH = ROOT / "tests" / "script" / "ModuleSpecifierTests.cpp"
 
 
 EXPECTED_CLAUSES = tuple(f"CTL-{number:03d}" for number in range(1, 21))
@@ -45,7 +48,7 @@ CLAUSE_TERMS = {
     "CTL-017": ("signed manifest", "capabilities", "import depth", "SEM006", "SEM007", "1,024"),
     "CTL-018": ("two-counter Minsky machine", "`counter = [counter];`", "`counter is null`", "`counter = counter[0];`", "Turing-complete"),
     "CTL-019": ("conformance:closure-recursion", "conformance:loop-branch-import", "BAAS_script_check", "SEM003", "PAR010"),
-    "CTL-020": ("does not yet implement", "bytecode/compiler/VM", "module path resolution", "MUST remain pending", "Phase 1 as a whole"),
+    "CTL-020": ("does not yet implement", "bytecode/compiler/VM", "manifest membership/host-version resolution", "MUST remain pending", "Phase 1 as a whole"),
 }
 
 EXPECTED_BINDING_KINDS = ("Let", "Parameter", "Function", "Import", "For", "Catch")
@@ -121,6 +124,9 @@ class ControlAndModulesSpecificationTests(unittest.TestCase):
         cls.fixture = read(FIXTURE_PATH)
         cls.cmake = read(CMAKE_PATH)
         cls.workflow = read(WORKFLOW_PATH)
+        cls.module_specifier_header = read(MODULE_SPECIFIER_HEADER_PATH)
+        cls.module_specifier_source = read(MODULE_SPECIFIER_SOURCE_PATH)
+        cls.module_specifier_tests = read(MODULE_SPECIFIER_TEST_PATH)
 
     def test_complete_normative_clause_inventory_and_terms(self) -> None:
         bodies = clause_bodies(self.spec)
@@ -233,7 +239,7 @@ class ControlAndModulesSpecificationTests(unittest.TestCase):
         self.assertIn("BAAS_script_check_control_modules_valid_cli", self.cmake)
         self.assertIn("tests/script/fixtures/control_modules_valid.baas", self.cmake)
 
-    def test_module_contract_is_versioned_isolated_and_still_pending(self) -> None:
+    def test_module_contract_has_canonical_specifier_foundation_and_pending_loader(self) -> None:
         for link in ("`VALUE_SEMANTICS.md`", "`PACKAGE_VERSIONING.md`", "`ADR-0001-runtime-architecture.md`"):
             self.assertIn(link, self.spec)
         package_anchors = (
@@ -254,7 +260,29 @@ class ControlAndModulesSpecificationTests(unittest.TestCase):
         )
         for path in pending_files:
             self.assertFalse(path.exists(), f"update pending boundary for new implementation: {path}")
-        self.assertIn("- [ ] Implement modules, imports, and native-function registration.", self.roadmap)
+        for anchor in (
+            "enum class ModuleKind { Package, Host }",
+            "using NfcPredicate = bool (*)(std::string_view) noexcept",
+            "validate_module_specifier",
+            "manifest_source_path",
+        ):
+            self.assertIn(anchor, self.module_specifier_header)
+        for anchor in (
+            "specifier.starts_with(\"baas/\")",
+            "specifier.find('\\\\')",
+            "segment == \".\" || segment == \"..\"",
+            "specifier.ends_with(\".baas\")",
+            "NfcCheckUnavailable",
+        ):
+            self.assertIn(anchor, self.module_specifier_source)
+        for anchor in (
+            "test_valid_package_and_host_ids",
+            "test_unicode_is_validated_and_fails_closed",
+            "test_path_escape_and_ambiguity_are_rejected",
+        ):
+            self.assertIn(anchor, self.module_specifier_tests)
+        self.assertIn("BAAS_script_module_specifier_tests", self.cmake)
+        self.assertIn("- [~] Implement modules, imports, and native-function registration.", self.roadmap)
         self.assertIn("rooted lexical environments", self.roadmap)
         self.assertIn("closure\n  execution, evaluator/VM", self.roadmap)
 
