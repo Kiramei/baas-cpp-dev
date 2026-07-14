@@ -164,6 +164,11 @@ Verified foundation evidence: commit `fec6db0` adds production-anchored service
 vectors (14/14 Python tests), and commit `8b1ff52` adds the standalone C++ BPIP
 framing library. Coordinator-run MSVC Debug and Release reviews each passed 30
 repeated framing runs; the integrated four-target Debug suite passed 20 repeats.
+Commit `82c6326` adds the normative draft v1 protocol and nine machine checks
+for its tagged examples, route/channel inventory, golden BPIP/control bytes,
+and explicit missing gates. The combined service-contract suite passes 23/23;
+secretstream bytes, live transports, lifecycle, C++ crypto, and Tauri E2E remain
+open exactly as listed in the protocol compliance table.
 
 ## Phase 5 — Script and resource migration
 
