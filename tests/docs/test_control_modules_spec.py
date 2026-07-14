@@ -277,7 +277,10 @@ class ControlAndModulesSpecificationTests(unittest.TestCase):
             re.MULTILINE,
         ))
         self.assertEqual(documented, EXPECTED_FUTURE_ERRORS)
-        self.assertIn("structured\npayload, stack, and source-span schema remains pending", self.spec)
+        self.assertIn(
+            "structured\npayload, stack, and source-span schema follows `ERRORS_AND_CLEANUP.md`",
+            self.spec,
+        )
         self.assertIn("dynamic loader/VM limits are pending implementation", self.spec)
 
     def test_language_docs_roadmap_and_ci_link_the_normative_spec(self) -> None:
@@ -289,7 +292,7 @@ class ControlAndModulesSpecificationTests(unittest.TestCase):
             self.roadmap,
         )
         self.assertIn(
-            "- [ ] Specify structured errors, stack traces, source spans, cleanup/defer, and",
+            "- [ ] Specify futures/tasks, cancellation, deadlines, thread-safety boundaries,",
             self.roadmap,
         )
         self.assertIn("`CONTROL_FLOW_AND_MODULES.md` defines source-order lexical bindings", self.roadmap)

@@ -208,7 +208,7 @@ class ValueSemanticsSpecificationTests(unittest.TestCase):
             self.roadmap,
         )
         self.assertIn(
-            "- [ ] Specify structured errors, stack traces, source spans, cleanup/defer, and",
+            "- [ ] Specify futures/tasks, cancellation, deadlines, thread-safety boundaries,",
             self.roadmap,
         )
         self.assertIn("`VALUE_SEMANTICS.md` defines the normative value", self.roadmap)

@@ -122,6 +122,17 @@ if(BUILD_SCRIPT_TESTS)
                 COMMAND BAAS_script_check --json
                         "${BAAS_PROJECT_PATH}/tests/script/fixtures/control_modules_valid.baas"
         )
+        add_test(
+                NAME BAAS_script_check_errors_cleanup_valid_cli
+                COMMAND BAAS_script_check --json
+                        "${BAAS_PROJECT_PATH}/tests/script/fixtures/errors_cleanup_valid.baas"
+        )
+        add_test(
+                NAME BAAS_script_check_errors_cleanup_invalid_cli
+                COMMAND BAAS_script_check --json
+                        "${BAAS_PROJECT_PATH}/tests/script/fixtures/errors_cleanup_invalid.baas"
+        )
+        set_tests_properties(BAAS_script_check_errors_cleanup_invalid_cli PROPERTIES WILL_FAIL TRUE)
     endif()
 
     add_executable(

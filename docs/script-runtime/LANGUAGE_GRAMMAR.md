@@ -3,8 +3,9 @@
 This document is the grammar contract for the draft implementation. The
 semantic rules in `LANGUAGE_SPEC_DRAFT.md` remain normative where grammar alone
 cannot express a restriction. Lexical scope, function, control-flow, and module
-semantics are refined by `CONTROL_FLOW_AND_MODULES.md`. Draft 0.1 is not the
-language 1.0 compatibility freeze.
+semantics are refined by `CONTROL_FLOW_AND_MODULES.md`; diagnostic,
+throw/catch, and cleanup semantics are refined by `ERRORS_AND_CLEANUP.md`.
+Draft 0.1 is not the language 1.0 compatibility freeze.
 
 ## Notation
 

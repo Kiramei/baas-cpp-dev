@@ -25,7 +25,9 @@ activation, rollback, and cache rules are defined in `PACKAGE_VERSIONING.md`.
 ## 2. Source text and diagnostics
 
 The complete Draft 0.1 lexical and syntactic grammar is defined in
-`LANGUAGE_GRAMMAR.md`.
+`LANGUAGE_GRAMMAR.md`. The normative compile-diagnostic, source-reference,
+runtime Error, stack, cause, serialization, and redaction contract is defined
+in `ERRORS_AND_CLEANUP.md`.
 
 - Source is valid UTF-8 and a byte-order mark is rejected rather than stripped.
 - Line and column diagnostics are one-based. Byte offsets are zero-based.
@@ -139,6 +141,9 @@ Required statements are block, binding, expression, `if`/`else`, `while`,
 `for` over deterministic iterables, `break`, `continue`, `return`, `throw`,
 `try`/`catch`, and `defer`.
 
+The normative throw/catch/defer registration, unwind, cleanup failure, and
+terminal-error rules are defined in `ERRORS_AND_CLEANUP.md`.
+
 `defer statement;` registers cleanup in the current function scope and executes
 in last-in-first-out order on normal return, throw, and cancellation. A host
 stop/cancellation signal cannot be swallowed by a broad catch; it may be
@@ -189,6 +194,9 @@ import "tasks/common" as common;
   checks version/capability declarations before atomic activation.
 
 ## 9. Structured errors
+
+The complete normative structured-error contract is defined in
+`ERRORS_AND_CLEANUP.md`; this section is a summary.
 
 Every error carries a stable code, message, source span when applicable, stack
 frames, task/session metadata, and an optional JSON-safe detail map.

@@ -5,7 +5,8 @@ initialization, functions, closures, recursion, branching, loops, non-local
 control flow, and module loading. It refines the corresponding summaries in
 `LANGUAGE_SPEC_DRAFT.md`, uses the concrete syntax in `LANGUAGE_GRAMMAR.md`,
 and composes with the value contract in `VALUE_SEMANTICS.md` and the package
-contract in `PACKAGE_VERSIONING.md`.
+contract in `PACKAGE_VERSIONING.md`. Structured errors and cleanup are defined
+by `ERRORS_AND_CLEANUP.md`.
 
 The key words **MUST**, **MUST NOT**, **SHOULD**, and **MAY** are normative.
 The CTL identifiers are stable conformance anchors. Static behavior in this
@@ -28,8 +29,9 @@ conformance oracle.
 The AST MUST preserve distinct nodes for block, binding, expression statement,
 branch, while loop, for loop, function declaration/expression, return, break,
 continue, import, throw, try/catch, and defer. This document defines the first
-eleven control/module forms. Structured throw/catch/defer unwinding and async
-execution remain governed by later Phase 1 specifications.
+eleven control/module forms. `ERRORS_AND_CLEANUP.md` defines structured
+throw/catch/defer unwinding; its VM execution and async execution remain
+pending.
 
 ### CTL-002 — Lexical scope regions
 
@@ -193,9 +195,9 @@ enclosing function.
 `break;` and `continue;` MUST target the nearest active `while` or `for` in the
 current function. They are `PAR008` and `PAR009` respectively when no such loop
 exists. Entering a nested function resets the parser's loop context, so it
-cannot break or continue an enclosing function's loop. The eventual structured
-cleanup specification MUST define defer/error unwinding before VM execution is
-claimed; this document does not mark throw/try/defer execution complete.
+cannot break or continue an enclosing function's loop. `ERRORS_AND_CLEANUP.md`
+MUST define defer/error unwinding before VM execution is claimed; this document
+does not mark throw/try/defer execution complete.
 
 ### CTL-012 — Import syntax and canonical resolution
 
@@ -309,7 +311,8 @@ The checked-in static diagnostic anchors are:
 | `SEM008` | malformed immutable AST |
 
 The future VM/loader MUST use these stable dynamic categories. Their structured
-payload, stack, and source-span schema remains pending the error specification:
+payload, stack, and source-span schema follows `ERRORS_AND_CLEANUP.md`; runtime
+implementation remains pending:
 
 | Future stable category | Required dynamic condition |
 | --- | --- |

@@ -1,0 +1,13 @@
+fn guarded(handle) {
+    let state = "open";
+    defer {
+        handle.close();
+        state = "closed";
+    }
+    try {
+        handle.run();
+    } catch (error) {
+        throw error;
+    }
+    return state;
+}

@@ -80,7 +80,7 @@ are recorded.
   JSON interoperation.
 - [x] Specify lexical scope, functions, closures, recursion, loops, branching,
   non-local control flow, and module loading sufficient for Turing completeness.
-- [ ] Specify structured errors, stack traces, source spans, cleanup/defer, and
+- [x] Specify structured errors, stack traces, source spans, cleanup/defer, and
   host-error translation.
 - [ ] Specify futures/tasks, cancellation, deadlines, thread-safety boundaries,
   and deterministic testing hooks.
@@ -106,6 +106,10 @@ its required clauses and implementation anchors are checked in Foundation CI.
 capture, recursion/control transfer, deterministic module loading/isolation,
 and a constructive two-counter-machine argument; its static anchors and
 pending VM/loader boundary are checked in Foundation CI.
+`ERRORS_AND_CLEANUP.md` defines compile/runtime error separation, stable Error
+envelopes and codes, source/stack/cause contracts, deterministic defer unwind,
+and redacted C++ host-failure translation; its static anchors and pending
+VM/host-translator boundary are checked in Foundation CI.
 
 ## Phase 2 — C++ runtime and developer tooling
 
