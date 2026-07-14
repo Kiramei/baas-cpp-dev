@@ -39,11 +39,10 @@ struct ListenerLaunch final {
 
 [[nodiscard]] router::Router make_router(
     HttpHostRouterConfig config,
-    const std::shared_ptr<router::HealthSnapshotProvider>& health_provider,
     const std::shared_ptr<router::ShutdownIntent>& shutdown_intent
 )
 {
-    if (config.health_snapshot.has_value() && health_provider) {
+    if (config.health_snapshot.has_value() && config.health_provider) {
         throw std::invalid_argument(
             "HTTP host router config must select either a health snapshot or provider"
         );
@@ -56,10 +55,10 @@ struct ListenerLaunch final {
             shutdown_intent.get()
         );
     }
-    if (health_provider) {
+    if (config.health_provider) {
         return router::Router::with_health_provider(
             std::move(config.service),
-            *health_provider,
+            std::move(config.health_provider),
             config.budget,
             shutdown_intent.get()
         );
@@ -126,10 +125,9 @@ public:
         const InputBudget input_budget,
         const HttpHostConfig host_config
     )
-        : health_provider_(std::move(router_config.health_provider)),
-          shutdown_intent_(std::move(router_config.shutdown_intent)),
+        : shutdown_intent_(std::move(router_config.shutdown_intent)),
           router_(make_router(
-              std::move(router_config), health_provider_, shutdown_intent_
+              std::move(router_config), shutdown_intent_
           )),
           adapter_(router_, input_budget, host_config.cors_policy),
           config_(host_config)
@@ -159,6 +157,7 @@ public:
             last_error_message_.clear();
             port_ = 0;
             listen_returned_ = false;
+            server_stop_requested_ = false;
         }
         queue_rejections_.store(0, std::memory_order_relaxed);
 
@@ -218,6 +217,10 @@ public:
             try {
                 std::lock_guard<std::mutex> lock{state_mutex_};
                 listen_returned_ = true;
+                // listen_after_bind owns/consumes the listening socket. Once it
+                // returns, calling Server::stop() again can target an invalid
+                // socket while cpp-httplib is still publishing is_running_=false.
+                server_stop_requested_ = true;
                 if (state_ != HttpHostState::stopping) {
                     state_ = HttpHostState::failed;
                     port_ = 0;
@@ -365,6 +368,7 @@ public:
         try {
             std::lock_guard<std::mutex> lifecycle_lock{lifecycle_mutex_};
             httplib::Server* server = nullptr;
+            bool request_server_stop = false;
             {
                 std::lock_guard<std::mutex> lock{state_mutex_};
                 if (server_ == nullptr && !listener_.joinable()) {
@@ -374,16 +378,22 @@ public:
                 }
                 state_ = HttpHostState::stopping;
                 server = server_.get();
+                if (server != nullptr && !server_stop_requested_) {
+                    server_stop_requested_ = true;
+                    request_server_stop = true;
+                }
             }
-            if (server != nullptr) {
+            if (request_server_stop) {
                 try {
                     server->stop();
                 } catch (const std::exception&) {
+                    clear_server_stop_request_noexcept();
                     record_stop_failure_noexcept(
                         "cpp-httplib stop failed", false
                     );
                     return false;
                 } catch (...) {
+                    clear_server_stop_request_noexcept();
                     record_stop_failure_noexcept("cpp-httplib stop failed", false);
                     return false;
                 }
@@ -414,6 +424,7 @@ public:
                 state_ = HttpHostState::stopped;
                 port_ = 0;
                 listen_returned_ = false;
+                server_stop_requested_ = false;
             }
             return true;
         } catch (const std::exception&) {
@@ -513,6 +524,14 @@ private:
         } catch (...) {}
     }
 
+    void clear_server_stop_request_noexcept() noexcept
+    {
+        try {
+            std::lock_guard<std::mutex> lock{state_mutex_};
+            server_stop_requested_ = false;
+        } catch (...) {}
+    }
+
     [[nodiscard]] bool join_stale_listener() noexcept
     {
         try {
@@ -533,8 +552,8 @@ private:
         return false;
     }
 
-    // These shared owners precede Router so they outlive every Router request.
-    std::shared_ptr<router::HealthSnapshotProvider> health_provider_;
+    // This shared owner precedes Router so it outlives every Router request.
+    // Router directly retains the health provider shared owner.
     std::shared_ptr<router::ShutdownIntent> shutdown_intent_;
     router::Router router_;
     HttplibAdapter adapter_;
@@ -551,6 +570,7 @@ private:
     std::string last_error_message_;
     std::uint16_t port_ = 0;
     bool listen_returned_ = false;
+    bool server_stop_requested_ = false;
 };
 
 HttpHost::HttpHost(

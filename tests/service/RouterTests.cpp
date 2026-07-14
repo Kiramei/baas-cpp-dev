@@ -3,6 +3,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <iostream>
+#include <memory>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -78,6 +79,13 @@ private:
     };
 }
 
+[[nodiscard]] service_router::HealthReadinessSnapshot ready_snapshot(
+    service_router::HealthSnapshot snapshot
+)
+{
+    return {service_router::HealthReadinessState::ready, std::move(snapshot)};
+}
+
 void test_health_and_version_routes()
 {
     const auto router = service_router::Router::with_health_snapshot(
@@ -101,14 +109,14 @@ void test_health_and_version_routes()
 
 class ChangingHealthProvider final : public service_router::HealthSnapshotProvider {
 public:
-    [[nodiscard]] service_router::HealthSnapshot health_snapshot() const override
+    [[nodiscard]] service_router::HealthReadinessSnapshot readiness_snapshot() const override
     {
         ++calls;
         auto snapshot = ::health_snapshot(calls > 1, static_cast<std::uint64_t>(calls));
         snapshot.statuses.emplace_back(
             "calls", service_router::HealthValue{static_cast<std::int64_t>(calls)}
         );
-        return snapshot;
+        return ready_snapshot(std::move(snapshot));
     }
 
     mutable int calls = 0;
@@ -116,7 +124,7 @@ public:
 
 class ThrowingHealthProvider final : public service_router::HealthSnapshotProvider {
 public:
-    [[nodiscard]] service_router::HealthSnapshot health_snapshot() const override
+    [[nodiscard]] service_router::HealthReadinessSnapshot readiness_snapshot() const override
     {
         throw std::runtime_error("backend state unavailable");
     }
@@ -124,31 +132,46 @@ public:
 
 class InvalidHealthProvider final : public service_router::HealthSnapshotProvider {
 public:
-    [[nodiscard]] service_router::HealthSnapshot health_snapshot() const override
+    [[nodiscard]] service_router::HealthReadinessSnapshot readiness_snapshot() const override
     {
         auto snapshot = ::health_snapshot();
         snapshot.statuses.emplace_back(
             "invalid", service_router::HealthValue{std::string{"\xC0\xAF"}}
         );
-        return snapshot;
+        return ready_snapshot(std::move(snapshot));
     }
 };
 
 class OversizedHealthProvider final : public service_router::HealthSnapshotProvider {
 public:
-    [[nodiscard]] service_router::HealthSnapshot health_snapshot() const override
+    [[nodiscard]] service_router::HealthReadinessSnapshot readiness_snapshot() const override
     {
         auto snapshot = ::health_snapshot();
         snapshot.statuses.emplace_back(
             "large", service_router::HealthValue{std::string(1'024, 'x')}
         );
-        return snapshot;
+        return ready_snapshot(std::move(snapshot));
     }
+};
+
+class FixedReadinessProvider final : public service_router::HealthSnapshotProvider {
+public:
+    explicit FixedReadinessProvider(const service_router::HealthReadinessState state)
+        : state_(state)
+    {}
+
+    [[nodiscard]] service_router::HealthReadinessSnapshot readiness_snapshot() const override
+    {
+        return {state_, ::health_snapshot()};
+    }
+
+private:
+    service_router::HealthReadinessState state_;
 };
 
 void test_dynamic_health_provider_and_failure_containment()
 {
-    ChangingHealthProvider changing;
+    auto changing = std::make_shared<ChangingHealthProvider>();
     const auto router = service_router::Router::with_health_provider(
         {"BAAS", "dev"}, changing
     );
@@ -161,9 +184,9 @@ void test_dynamic_health_provider_and_failure_containment()
     check(first.body.find(R"("calls":1)") != std::string::npos
               && second.body.find(R"("calls":2)") != std::string::npos,
           "dynamic provider status changes must be visible per request");
-    check(changing.calls == 2, "provider must be invoked exactly once per valid health request");
+    check(changing->calls == 2, "provider must be invoked exactly once per valid health request");
 
-    ThrowingHealthProvider throwing;
+    auto throwing = std::make_shared<ThrowingHealthProvider>();
     const auto unavailable = service_router::Router::with_health_provider(
         {"BAAS", "dev"}, throwing
     ).handle({"GET", "/health", {}});
@@ -171,7 +194,7 @@ void test_dynamic_health_provider_and_failure_containment()
               && unavailable.body.find("health_provider_failed") != std::string::npos,
           "provider exceptions must be contained as a stable unavailable response");
 
-    InvalidHealthProvider invalid;
+    auto invalid = std::make_shared<InvalidHealthProvider>();
     const auto invalid_response = service_router::Router::with_health_provider(
         {"BAAS", "dev"}, invalid
     ).handle({"GET", "/health", {}});
@@ -181,7 +204,7 @@ void test_dynamic_health_provider_and_failure_containment()
 
     service_router::SizeBudget budget;
     budget.max_response_body_bytes = 128;
-    OversizedHealthProvider oversized;
+    auto oversized = std::make_shared<OversizedHealthProvider>();
     const auto oversized_response = service_router::Router::with_health_provider(
         {"BAAS", "dev"}, oversized, budget
     ).handle({"GET", "/health", {}});
@@ -190,6 +213,38 @@ void test_dynamic_health_provider_and_failure_containment()
           "oversized provider output must use the bounded response fallback");
     check(oversized_response.body.size() <= budget.max_response_body_bytes,
           "provider output fallback must fit the configured response budget");
+
+    const auto starting = service_router::Router::with_health_provider(
+        {"BAAS", "dev"},
+        std::make_shared<FixedReadinessProvider>(
+            service_router::HealthReadinessState::starting
+        )
+    ).handle({"GET", "/health", {}});
+    check(starting.status == 503
+              && starting.body
+                  == R"({"error":{"code":"health_starting","message":"service readiness is starting","status":503},"ok":false})",
+          "starting readiness must return the stable 503 contract");
+
+    const auto failed = service_router::Router::with_health_provider(
+        {"BAAS", "dev"},
+        std::make_shared<FixedReadinessProvider>(
+            service_router::HealthReadinessState::failed
+        )
+    ).handle({"GET", "/health", {}});
+    check(failed.status == 503
+              && failed.body
+                  == R"({"error":{"code":"health_failed","message":"service readiness failed","status":503},"ok":false})",
+          "failed readiness must return the stable 503 contract");
+
+    const auto invalid_state = service_router::Router::with_health_provider(
+        {"BAAS", "dev"},
+        std::make_shared<FixedReadinessProvider>(
+            static_cast<service_router::HealthReadinessState>(99)
+        )
+    ).handle({"GET", "/health", {}});
+    check(invalid_state.status == 500
+              && invalid_state.body.find("invalid_health_snapshot") != std::string::npos,
+          "invalid provider readiness values must fail closed as stable 500");
 }
 
 void test_health_requires_explicit_state_and_json_safe_static_snapshot()
@@ -236,6 +291,23 @@ void test_health_requires_explicit_state_and_json_safe_static_snapshot()
         non_finite_rejected = true;
     }
     check(non_finite_rejected, "non-finite status numbers must be rejected as non-JSON");
+}
+
+void test_router_retains_shared_provider_owner()
+{
+    auto provider = std::make_shared<ChangingHealthProvider>();
+    const std::weak_ptr<ChangingHealthProvider> lifetime = provider;
+    {
+        const auto router = service_router::Router::with_health_provider(
+            {"BAAS", "owner"}, provider
+        );
+        provider.reset();
+        check(!lifetime.expired(),
+              "Router must retain the provider shared owner for request lifetime");
+        check(router.handle({"GET", "/health", {}}).status == 200,
+              "owned provider must remain callable after the external owner is reset");
+    }
+    check(lifetime.expired(), "Router destruction must release its provider owner");
 }
 
 void test_exact_method_and_path_matching()
@@ -374,6 +446,7 @@ int main()
     test_health_and_version_routes();
     test_dynamic_health_provider_and_failure_containment();
     test_health_requires_explicit_state_and_json_safe_static_snapshot();
+    test_router_retains_shared_provider_owner();
     test_exact_method_and_path_matching();
     test_json_escaping_is_transport_independent_and_safe();
     test_request_and_response_budgets();

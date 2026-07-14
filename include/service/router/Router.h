@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -80,12 +81,21 @@ struct HealthSnapshot {
     HealthAuthSnapshot auth;
 };
 
+enum class HealthReadinessState { starting, ready, failed };
+
+// A single provider read returns readiness and its complete public projection
+// together. Implementations must not expose fields from different updates.
+struct HealthReadinessSnapshot {
+    HealthReadinessState state = HealthReadinessState::starting;
+    HealthSnapshot health;
+};
+
 class HealthSnapshotProvider {
 public:
     virtual ~HealthSnapshotProvider() = default;
     // Called synchronously from Router::handle(). A provider used by a shared
-    // Router must be thread-safe and must outlive that Router and all requests.
-    [[nodiscard]] virtual HealthSnapshot health_snapshot() const = 0;
+    // Router must be thread-safe. Router retains the provider's shared owner.
+    [[nodiscard]] virtual HealthReadinessSnapshot readiness_snapshot() const = 0;
 };
 
 enum class ShutdownDecision {
@@ -116,7 +126,7 @@ public:
 
     [[nodiscard]] static Router with_health_provider(
         ServiceInfo service,
-        HealthSnapshotProvider& health_provider,
+        std::shared_ptr<HealthSnapshotProvider> health_provider,
         SizeBudget budget = {},
         ShutdownIntent* shutdown_intent = nullptr
     );
@@ -130,7 +140,7 @@ private:
         SizeBudget budget,
         ShutdownIntent* shutdown_intent,
         std::optional<HealthSnapshot> health_snapshot,
-        HealthSnapshotProvider* health_provider
+        std::shared_ptr<HealthSnapshotProvider> health_provider
     );
 
     [[nodiscard]] Response route(const Request& request) const;
@@ -143,7 +153,7 @@ private:
     SizeBudget budget_;
     ShutdownIntent* shutdown_intent_;
     std::optional<HealthSnapshot> health_snapshot_;
-    HealthSnapshotProvider* health_provider_;
+    std::shared_ptr<HealthSnapshotProvider> health_provider_;
 };
 
 }  // namespace baas::service::router

@@ -350,13 +350,17 @@ Router Router::with_health_snapshot(
 
 Router Router::with_health_provider(
     ServiceInfo service,
-    HealthSnapshotProvider& health_provider,
+    std::shared_ptr<HealthSnapshotProvider> health_provider,
     const SizeBudget budget,
     ShutdownIntent* shutdown_intent
 )
 {
+    if (!health_provider) {
+        throw std::invalid_argument("health snapshot provider must not be null");
+    }
     return Router{
-        std::move(service), budget, shutdown_intent, std::nullopt, &health_provider
+        std::move(service), budget, shutdown_intent, std::nullopt,
+        std::move(health_provider)
     };
 }
 
@@ -365,13 +369,13 @@ Router::Router(
     const SizeBudget budget,
     ShutdownIntent* shutdown_intent,
     std::optional<HealthSnapshot> health_snapshot,
-    HealthSnapshotProvider* health_provider
+    std::shared_ptr<HealthSnapshotProvider> health_provider
 )
     : service_(std::move(service)),
       budget_(budget),
       shutdown_intent_(shutdown_intent),
       health_snapshot_(std::move(health_snapshot)),
-      health_provider_(health_provider)
+      health_provider_(std::move(health_provider))
 {
     if (service_.name.empty() || service_.version.empty()) {
         throw std::invalid_argument("service name and version must not be empty");
@@ -452,12 +456,23 @@ Response Router::health() const
 {
     HealthSnapshot dynamic_snapshot;
     const HealthSnapshot* snapshot = nullptr;
-    if (health_provider_ != nullptr) {
+    if (health_provider_) {
+        HealthReadinessSnapshot readiness;
         try {
-            dynamic_snapshot = health_provider_->health_snapshot();
+            readiness = health_provider_->readiness_snapshot();
         } catch (...) {
             return error(503, "health_provider_failed", "health snapshot provider failed");
         }
+        if (readiness.state == HealthReadinessState::starting) {
+            return error(503, "health_starting", "service readiness is starting");
+        }
+        if (readiness.state == HealthReadinessState::failed) {
+            return error(503, "health_failed", "service readiness failed");
+        }
+        if (readiness.state != HealthReadinessState::ready) {
+            return error(500, "invalid_health_snapshot", "health readiness state is invalid");
+        }
+        dynamic_snapshot = std::move(readiness.health);
         const auto validation = canonicalize_snapshot(
             dynamic_snapshot, budget_.max_response_body_bytes
         );

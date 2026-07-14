@@ -1,4 +1,5 @@
 #include "service/http/HttpHost.h"
+#include "service/health/HealthReadiness.h"
 
 #include <httplib.h>
 
@@ -20,6 +21,7 @@
 #include <vector>
 
 namespace service_http = baas::service::http;
+namespace service_health = baas::service::health;
 namespace service_router = baas::service::router;
 
 namespace {
@@ -45,6 +47,13 @@ void check(const bool condition, const std::string_view message)
         }}}},
         {true, 3, "bG9vcGJhY2sta2V5"},
     };
+}
+
+[[nodiscard]] service_router::HealthReadinessSnapshot ready_snapshot(
+    service_router::HealthSnapshot value
+)
+{
+    return {service_router::HealthReadinessState::ready, std::move(value)};
 }
 
 [[nodiscard]] service_http::HttpHostRouterConfig static_router_config()
@@ -83,6 +92,21 @@ void check(const bool condition, const std::string_view message)
             != std::string::npos;
 }
 
+[[nodiscard]] std::pair<int, std::string> health_response(
+    const std::uint16_t port,
+    const std::chrono::milliseconds timeout = 1s
+)
+{
+    httplib::Client client{std::string{service_http::http_host_loopback_address}, port};
+    client.set_connection_timeout(timeout);
+    client.set_read_timeout(timeout);
+    client.set_write_timeout(timeout);
+    const auto response = client.Get("/health");
+    client.stop();
+    if (!response) return {0, {}};
+    return {response->status, response->body};
+}
+
 template <typename Predicate>
 [[nodiscard]] bool wait_until(Predicate predicate, const std::chrono::milliseconds timeout)
 {
@@ -95,13 +119,13 @@ template <typename Predicate>
 
 class BlockingProvider : public service_router::HealthSnapshotProvider {
 public:
-    [[nodiscard]] service_router::HealthSnapshot health_snapshot() const override
+    [[nodiscard]] service_router::HealthReadinessSnapshot readiness_snapshot() const override
     {
         std::unique_lock<std::mutex> lock{mutex_};
         ++entered_;
         entered_changed_.notify_all();
         released_.wait(lock, [this] { return release_; });
-        return snapshot(static_cast<std::int64_t>(entered_));
+        return ready_snapshot(snapshot(static_cast<std::int64_t>(entered_)));
     }
 
     [[nodiscard]] bool wait_for_entered(
@@ -132,7 +156,7 @@ private:
 
 class CountingProvider final : public service_router::HealthSnapshotProvider {
 public:
-    [[nodiscard]] service_router::HealthSnapshot health_snapshot() const override
+    [[nodiscard]] service_router::HealthReadinessSnapshot readiness_snapshot() const override
     {
         const int active = active_.fetch_add(1) + 1;
         int observed = maximum_active_.load();
@@ -141,7 +165,7 @@ public:
         const auto call = calls_.fetch_add(1) + 1;
         std::this_thread::sleep_for(15ms);
         active_.fetch_sub(1);
-        return snapshot(call);
+        return ready_snapshot(snapshot(call));
     }
 
     [[nodiscard]] int calls() const noexcept { return calls_.load(); }
@@ -161,9 +185,9 @@ public:
 
     ~LifetimeProvider() override { destroyed_->store(true); }
 
-    [[nodiscard]] service_router::HealthSnapshot health_snapshot() const override
+    [[nodiscard]] service_router::HealthReadinessSnapshot readiness_snapshot() const override
     {
-        return snapshot(1);
+        return ready_snapshot(snapshot(1));
     }
 
 private:
@@ -174,10 +198,10 @@ class ReentrantStopProvider final : public service_router::HealthSnapshotProvide
 public:
     void attach(service_http::HttpHost& host) noexcept { host_ = &host; }
 
-    [[nodiscard]] service_router::HealthSnapshot health_snapshot() const override
+    [[nodiscard]] service_router::HealthReadinessSnapshot readiness_snapshot() const override
     {
         if (!stopped_.exchange(true)) host_->stop();
-        return snapshot(1);
+        return ready_snapshot(snapshot(1));
     }
 
 private:
@@ -271,6 +295,11 @@ void test_listener_thread_failure_is_transactional_and_observable()
     check(failing.state() == service_http::HttpHostState::failed
               && failing.port() == 0 && !failing.last_error_message().empty(),
           "listener start failure must publish failed state without a bound port");
+    failing.stop();
+    failing.stop();
+    check(failing.state() == service_http::HttpHostState::stopped
+              && failing.port() == 0,
+          "stop after listener-start failure must be repeatable and socket-free");
 
     auto fixed_config = host_config();
     fixed_config.port = available_port;
@@ -304,6 +333,61 @@ void test_repeated_ephemeral_start_stop_is_idempotent()
     }
 }
 
+void test_owned_readiness_tracks_runtime_lifecycle_across_restart()
+{
+    auto readiness = std::make_shared<service_health::HealthReadinessOwner>(snapshot(0));
+    service_http::HttpHostRouterConfig router_config;
+    router_config.service = {"BAAS Readiness Host", "test"};
+    router_config.health_provider = readiness;
+    service_http::HttpHost host{std::move(router_config), {}, host_config()};
+
+    const auto first_start = host.start();
+    check(first_start.started && first_start.port != 0,
+          "readiness host must bind an ephemeral loopback port");
+    if (!first_start.started) return;
+
+    auto response = health_response(first_start.port);
+    check(response.first == 503
+              && response.second.find(R"("code":"health_starting")") != std::string::npos,
+          "listening must not imply runtime readiness while owner is starting");
+
+    check(readiness->publish_ready(snapshot(1)),
+          "runtime owner must publish ready after startup data is loaded");
+    response = health_response(first_start.port);
+    check(response.first == 200
+              && response.second.find(R"("calls":1)") != std::string::npos
+              && response.second.find(R"("initialized":true)") != std::string::npos,
+          "ready HTTP response must expose one complete runtime/auth projection");
+
+    readiness->publish_failed(snapshot(2));
+    response = health_response(first_start.port);
+    check(response.first == 503
+              && response.second.find(R"("code":"health_failed")") != std::string::npos,
+          "runtime failure must withdraw readiness without stopping the listener");
+
+    host.stop();
+    check(host.state() == service_http::HttpHostState::stopped && host.port() == 0,
+          "stopped readiness host must clear its published port");
+    readiness->begin_startup(snapshot(3));
+    const auto second_start = host.start();
+    check(second_start.started && second_start.port != 0
+              && host.port() == second_start.port,
+          "same host and readiness owner must support an explicit restart lifecycle");
+    if (!second_start.started) return;
+
+    response = health_response(second_start.port);
+    check(response.first == 503
+              && response.second.find(R"("code":"health_starting")") != std::string::npos,
+          "restarted listener must remain unavailable until the new runtime is ready");
+    check(readiness->publish_ready(snapshot(4)),
+          "restarted runtime must publish its new complete projection");
+    response = health_response(second_start.port);
+    check(response.first == 200
+              && response.second.find(R"("calls":4)") != std::string::npos,
+          "restart must serve the new runtime projection on its current port");
+    host.stop();
+}
+
 void test_fixed_port_conflict_is_observable_and_recoverable()
 {
     service_http::HttpHost first{static_router_config(), {}, host_config()};
@@ -321,6 +405,11 @@ void test_fixed_port_conflict_is_observable_and_recoverable()
     check(conflicting.state() == service_http::HttpHostState::failed
               && !conflicting.last_error_message().empty(),
           "bind failure must remain observable through host state");
+    conflicting.stop();
+    conflicting.stop();
+    check(conflicting.state() == service_http::HttpHostState::stopped
+              && conflicting.port() == 0,
+          "stop after a cancelled listener launch must be repeatable");
 
     first.stop();
     const auto recovered = conflicting.start();
@@ -523,6 +612,7 @@ int main()
     test_config_is_bounded_and_loopback_only();
     test_listener_thread_failure_is_transactional_and_observable();
     test_repeated_ephemeral_start_stop_is_idempotent();
+    test_owned_readiness_tracks_runtime_lifecycle_across_restart();
     test_fixed_port_conflict_is_observable_and_recoverable();
     test_concurrent_health_respects_worker_bound();
     test_stop_drains_in_flight_and_rejects_new_connections();
