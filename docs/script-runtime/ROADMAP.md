@@ -118,8 +118,9 @@ pending VM/loader boundary are checked in Foundation CI.
 - [~] Implement values, environments, closures, recursion, collections, and
   control flow. Inline values, every heap cell kind, ordered collections,
   generational references, roots, tracing GC, budgets, equality/truthiness,
-  JSON-safety checks, and host release queues are implemented; environments,
-  closure execution, evaluator/VM, recursion, and control flow remain pending.
+  JSON-safety checks, host release queues, and rooted lexical environments with
+  parent lookup, shadowing, mutability, and assignment are implemented; closure
+  execution, evaluator/VM, recursion, and control flow remain pending.
 - [x] Implement the dependency-free ordered JSON value bridge and checked
   JSON-safe cross-context deep-copy foundation.
 - [ ] Implement modules, imports, and native-function registration.

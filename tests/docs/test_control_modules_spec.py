@@ -254,7 +254,8 @@ class ControlAndModulesSpecificationTests(unittest.TestCase):
         for path in pending_files:
             self.assertFalse(path.exists(), f"update pending boundary for new implementation: {path}")
         self.assertIn("- [ ] Implement modules, imports, and native-function registration.", self.roadmap)
-        self.assertIn("environments,\n  closure execution, evaluator/VM", self.roadmap)
+        self.assertIn("rooted lexical environments", self.roadmap)
+        self.assertIn("closure\n  execution, evaluator/VM", self.roadmap)
 
     def test_constructive_turing_argument_has_both_unbounded_counters(self) -> None:
         clause = re.sub(r"\s+", " ", clause_bodies(self.spec)["CTL-018"])

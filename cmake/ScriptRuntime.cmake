@@ -11,6 +11,7 @@ add_library(
         "${BAAS_PROJECT_PATH}/src/script/SyntaxCheck.cpp"
         "${BAAS_PROJECT_PATH}/src/script/Token.cpp"
         "${BAAS_PROJECT_PATH}/src/script/runtime/BoundedExecutor.cpp"
+        "${BAAS_PROJECT_PATH}/src/script/runtime/Environment.cpp"
         "${BAAS_PROJECT_PATH}/src/script/runtime/JsonBridge.cpp"
         "${BAAS_PROJECT_PATH}/src/script/runtime/ValueHeap.cpp"
 )
@@ -88,6 +89,15 @@ if(BUILD_SCRIPT_TESTS)
     target_link_libraries(BAAS_script_value_heap_tests PRIVATE BAAS_script_runtime)
     add_test(NAME BAAS_script_value_heap_tests COMMAND BAAS_script_value_heap_tests)
     set_tests_properties(BAAS_script_value_heap_tests PROPERTIES TIMEOUT 60)
+
+    add_executable(
+            BAAS_script_environment_tests
+            "${BAAS_PROJECT_PATH}/tests/script/EnvironmentTests.cpp"
+    )
+    target_compile_features(BAAS_script_environment_tests PRIVATE cxx_std_20)
+    target_link_libraries(BAAS_script_environment_tests PRIVATE BAAS_script_runtime)
+    add_test(NAME BAAS_script_environment_tests COMMAND BAAS_script_environment_tests)
+    set_tests_properties(BAAS_script_environment_tests PROPERTIES TIMEOUT 60)
 
     add_executable(
             BAAS_script_syntax_check_tests
