@@ -12,6 +12,8 @@ ROOT = Path(__file__).resolve().parents[2]
 SPEC_PATH = ROOT / "docs" / "script-runtime" / "SERVICE_PROTOCOL_V1.md"
 VECTORS_PATH = ROOT / "tests" / "service_contract" / "v1_vectors.json"
 WORKFLOW_PATH = ROOT / ".github" / "workflows" / "foundation-runtime.yml"
+ROUTER_SOURCE_PATH = ROOT / "src" / "service" / "router" / "Router.cpp"
+ROUTER_CORE_SPEC_PATH = ROOT / "docs" / "script-runtime" / "SERVICE_ROUTER_CORE.md"
 
 
 class ServiceProtocolSpecTests(unittest.TestCase):
@@ -25,6 +27,8 @@ class ServiceProtocolSpecTests(unittest.TestCase):
             flags=re.DOTALL,
         )
         cls.examples = [json.loads(block) for block in blocks]
+        cls.router_source = ROUTER_SOURCE_PATH.read_text(encoding="utf-8")
+        cls.router_core_spec = ROUTER_CORE_SPEC_PATH.read_text(encoding="utf-8")
 
     def test_every_tagged_json_example_is_valid_object(self) -> None:
         self.assertGreaterEqual(len(self.examples), 8)
@@ -98,6 +102,14 @@ class ServiceProtocolSpecTests(unittest.TestCase):
             self.assertIn(route, self.spec)
         for channel in ("control", "provider", "sync", "trigger", "remote"):
             self.assertRegex(self.spec, rf"`{channel}`")
+
+    def test_router_uses_frozen_unversioned_health_path(self) -> None:
+        self.assertIn('health_path = "/health"', self.router_source)
+        self.assertNotIn('health_path = "/api/v1/health"', self.router_source)
+        self.assertIn("HTTP v1 paths are intentionally unversioned", self.spec)
+        self.assertIn("not yet payload-compatible", self.router_core_spec)
+        for field in ("statuses", "auth.initialized", "auth.pwd_epoch", "auth.server_sign_public_key"):
+            self.assertIn(field, self.router_core_spec)
 
     def test_required_optional_and_missing_classes_are_present(self) -> None:
         self.assertGreater(self.spec.count("[REQUIRED]"), 35)
