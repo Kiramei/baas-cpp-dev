@@ -78,14 +78,18 @@ resolution, immutable cache snapshots, atomic activation, and rollback gates.
 
 ## Phase 2 — C++ runtime and developer tooling
 
-- [ ] Add standalone `BAAS_script_runtime` and CLI/test targets.
+- [~] Add standalone `BAAS_script_runtime` and CLI/test targets. The library
+  and focused CTest targets exist; the executable CLI remains pending.
 - [x] Implement UTF-8 lexer with stable byte/line/column source diagnostics and
   malformed-input recovery.
 - [x] Implement the complete parser and source-spanned immutable AST.
 - [x] Implement lexical semantic analysis, declaration/reference resolution,
   closure-capture metadata, and AST node/depth limits.
-- [ ] Implement values, environments, closures, recursion, collections, and
-  control flow.
+- [~] Implement values, environments, closures, recursion, collections, and
+  control flow. Inline values, every heap cell kind, ordered collections,
+  generational references, roots, tracing GC, budgets, equality/truthiness,
+  JSON-safety checks, and host release queues are implemented; environments,
+  closure execution, evaluator/VM, recursion, and control flow remain pending.
 - [ ] Implement modules, imports, native-function registration, and JSON bridge.
 - [ ] Implement structured exceptions, stack traces, cancellation, and limits.
 - [x] Implement the bounded cooperative executor, queue backpressure, task
@@ -110,6 +114,11 @@ Commit `9cca7ba` adds lexical semantic analysis. Independent MSVC Debug and
 Release reviews each passed 20 repeated lexer/parser/semantic runs; after
 integration, all five script/service targets passed 20 repeated Debug runs and
 a complete Release run.
+Commit `bf7c180` implements the per-context non-moving tracing value heap from
+ADR-0002 with stable RT001-RT017 errors, transactional budget accounting,
+cycle-aware collections/equality, and bounded host-release records. Independent
+Debug and Release reviews passed its five script CTest targets; the integrated
+six-target script/service gate is recorded separately after CI review.
 
 ## Phase 3 — Host bindings and Python behavior parity
 
@@ -183,10 +192,12 @@ emulator, and installation no longer requires Python for normal operation.
 Exit evidence: required platform matrix is green and performance budgets pass.
 
 Foundation evidence: `.github/workflows/foundation-runtime.yml` defines a
-six-case Windows/Ubuntu/macOS Debug/Release matrix for the five standalone
+six-case Windows/Ubuntu/macOS Debug/Release matrix for the six standalone
 script/service foundation targets. Debug jobs also validate the checked-in
 service vectors. The exact Windows commands passed locally for both build
-types (5/5 CTest targets each), and all 14 service-vector tests passed. The
+types after the value-heap addition: all six CTest targets passed 20 repeated
+Debug runs and one complete Release run; all 14 service-vector tests also
+passed. The
 hosted Linux/macOS jobs, full application/parity/service smoke coverage,
 Android, performance budgets, sanitizers, fuzzing, and caches remain pending.
 

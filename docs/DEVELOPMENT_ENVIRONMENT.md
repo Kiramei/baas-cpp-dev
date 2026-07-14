@@ -57,8 +57,8 @@ python --version
 
 ## Build the dependency-free foundation
 
-Lexer/parser/semantic/runtime-executor and BPIP framing targets do not require
-the full application dependency graph:
+Lexer/parser/semantic/runtime-executor/value-heap and BPIP framing targets do
+not require the full application dependency graph:
 
 ```powershell
 cmake -S . -B build\foundation -G Ninja `
