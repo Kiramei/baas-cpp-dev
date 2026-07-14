@@ -98,7 +98,9 @@ resolution, immutable cache snapshots, atomic activation, and rollback gates.
   generational references, roots, tracing GC, budgets, equality/truthiness,
   JSON-safety checks, and host release queues are implemented; environments,
   closure execution, evaluator/VM, recursion, and control flow remain pending.
-- [ ] Implement modules, imports, native-function registration, and JSON bridge.
+- [x] Implement the dependency-free ordered JSON value bridge and checked
+  JSON-safe cross-context deep-copy foundation.
+- [ ] Implement modules, imports, and native-function registration.
 - [ ] Implement structured exceptions, stack traces, cancellation, and limits.
 - [x] Implement the bounded cooperative executor, queue backpressure, task
   handles, cancellation requests, and drain/cancel-pending shutdown.
@@ -129,6 +131,10 @@ ADR-0002 with stable RT001-RT017 errors, transactional budget accounting,
 cycle-aware collections/equality, and bounded host-release records. Independent
 Debug and Release reviews passed its five script CTest targets; the integrated
 six-target script/service gate is recorded separately after CI review.
+The JSON bridge foundation adds an insertion-ordered dependency-free value
+model, iterative budgeted heap conversion, and isolated cross-context deep
+copy. JSON text parsing/serialization and complete modules/imports remain
+pending.
 
 ## Phase 3 — Host bindings and Python behavior parity
 

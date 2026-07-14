@@ -464,6 +464,11 @@ std::string_view runtime_error_code_name(const RuntimeErrorCode code) noexcept
         case RuntimeErrorCode::HeapTornDown: return "RT015_HEAP_TORN_DOWN";
         case RuntimeErrorCode::IndexOutOfRange: return "RT016_INDEX_OUT_OF_RANGE";
         case RuntimeErrorCode::ReleaseQueueLimitExceeded: return "RT017_RELEASE_QUEUE_LIMIT_EXCEEDED";
+        case RuntimeErrorCode::JsonDepthLimitExceeded: return "RT018_JSON_DEPTH_LIMIT_EXCEEDED";
+        case RuntimeErrorCode::JsonNodeLimitExceeded: return "RT019_JSON_NODE_LIMIT_EXCEEDED";
+        case RuntimeErrorCode::JsonStringLimitExceeded: return "RT020_JSON_STRING_LIMIT_EXCEEDED";
+        case RuntimeErrorCode::JsonByteLimitExceeded: return "RT021_JSON_BYTE_LIMIT_EXCEEDED";
+        case RuntimeErrorCode::JsonWorkLimitExceeded: return "RT022_JSON_WORK_LIMIT_EXCEEDED";
     }
     return "RT000_UNKNOWN";
 }

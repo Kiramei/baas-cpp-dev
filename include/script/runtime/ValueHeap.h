@@ -32,6 +32,11 @@ enum class RuntimeErrorCode {
     HeapTornDown,
     IndexOutOfRange,
     ReleaseQueueLimitExceeded,
+    JsonDepthLimitExceeded,
+    JsonNodeLimitExceeded,
+    JsonStringLimitExceeded,
+    JsonByteLimitExceeded,
+    JsonWorkLimitExceeded,
 };
 
 [[nodiscard]] std::string_view runtime_error_code_name(RuntimeErrorCode code) noexcept;
