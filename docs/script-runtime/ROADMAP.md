@@ -78,6 +78,8 @@ resolution, immutable cache snapshots, atomic activation, and rollback gates.
 - [x] Implement UTF-8 lexer with stable byte/line/column source diagnostics and
   malformed-input recovery.
 - [x] Implement the complete parser and source-spanned immutable AST.
+- [x] Implement lexical semantic analysis, declaration/reference resolution,
+  closure-capture metadata, and AST node/depth limits.
 - [ ] Implement values, environments, closures, recursion, collections, and
   control flow.
 - [ ] Implement modules, imports, native-function registration, and JSON bridge.
@@ -100,6 +102,10 @@ parser CTest targets. Coordinator-run MSVC Debug and Release builds both passed
 Commit `f0e1985` adds the standard-library-only bounded executor. Independent
 MSVC Debug and Release reviews each passed 30 repeated runs; after integration,
 all lexer, parser, and executor tests passed 20 repeated Debug runs (3/3).
+Commit `9cca7ba` adds lexical semantic analysis. Independent MSVC Debug and
+Release reviews each passed 20 repeated lexer/parser/semantic runs; after
+integration, all five script/service targets passed 20 repeated Debug runs and
+a complete Release run.
 
 ## Phase 3 — Host bindings and Python behavior parity
 
