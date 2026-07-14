@@ -24,6 +24,9 @@ WORKFLOW_PATH = ROOT / ".github" / "workflows" / "foundation-runtime.yml"
 MODULE_SPECIFIER_HEADER_PATH = ROOT / "include" / "script" / "runtime" / "ModuleSpecifier.h"
 MODULE_SPECIFIER_SOURCE_PATH = ROOT / "src" / "script" / "runtime" / "ModuleSpecifier.cpp"
 MODULE_SPECIFIER_TEST_PATH = ROOT / "tests" / "script" / "ModuleSpecifierTests.cpp"
+MODULE_GRAPH_HEADER_PATH = ROOT / "include" / "script" / "runtime" / "ModuleGraph.h"
+MODULE_GRAPH_SOURCE_PATH = ROOT / "src" / "script" / "runtime" / "ModuleGraph.cpp"
+MODULE_GRAPH_TEST_PATH = ROOT / "tests" / "script" / "ModuleGraphTests.cpp"
 
 
 EXPECTED_CLAUSES = tuple(f"CTL-{number:03d}" for number in range(1, 21))
@@ -48,7 +51,7 @@ CLAUSE_TERMS = {
     "CTL-017": ("signed manifest", "capabilities", "import depth", "SEM006", "SEM007", "1,024"),
     "CTL-018": ("two-counter Minsky machine", "`counter = [counter];`", "`counter is null`", "`counter = counter[0];`", "Turing-complete"),
     "CTL-019": ("conformance:closure-recursion", "conformance:loop-branch-import", "BAAS_script_check", "SEM003", "PAR010"),
-    "CTL-020": ("does not yet implement", "bytecode/compiler/VM", "manifest membership/host-version resolution", "MUST remain pending", "Phase 1 as a whole"),
+    "CTL-020": ("does not yet implement", "bytecode/compiler/VM", "Host-version/capability resolution", "MUST remain pending", "Phase 1 as a whole"),
 }
 
 EXPECTED_BINDING_KINDS = ("Let", "Parameter", "Function", "Import", "For", "Catch")
@@ -127,6 +130,9 @@ class ControlAndModulesSpecificationTests(unittest.TestCase):
         cls.module_specifier_header = read(MODULE_SPECIFIER_HEADER_PATH)
         cls.module_specifier_source = read(MODULE_SPECIFIER_SOURCE_PATH)
         cls.module_specifier_tests = read(MODULE_SPECIFIER_TEST_PATH)
+        cls.module_graph_header = read(MODULE_GRAPH_HEADER_PATH)
+        cls.module_graph_source = read(MODULE_GRAPH_SOURCE_PATH)
+        cls.module_graph_tests = read(MODULE_GRAPH_TEST_PATH)
 
     def test_complete_normative_clause_inventory_and_terms(self) -> None:
         bodies = clause_bodies(self.spec)
@@ -282,6 +288,28 @@ class ControlAndModulesSpecificationTests(unittest.TestCase):
         ):
             self.assertIn(anchor, self.module_specifier_tests)
         self.assertIn("BAAS_script_module_specifier_tests", self.cmake)
+        for anchor in (
+            "struct ModuleDefinition",
+            "struct ValidatedModuleGraph",
+            "validate_module_graph",
+            "max_validation_work",
+        ):
+            self.assertIn(anchor, self.module_graph_header)
+        for anchor in (
+            "Iterative Kosaraju traversal",
+            "find_cycle(selected_component",
+            "remaining_dependencies",
+            "std::priority_queue",
+            "const auto primary_module = cycle.front()",
+        ):
+            self.assertIn(anchor, self.module_graph_source)
+        for anchor in (
+            "test_stable_dependency_first_order_and_host_edges",
+            "test_deterministic_cycle_uses_smallest_scc_and_source_order",
+            "test_limits_and_unicode_validation",
+        ):
+            self.assertIn(anchor, self.module_graph_tests)
+        self.assertIn("BAAS_script_module_graph_tests", self.cmake)
         self.assertIn("- [~] Implement modules, imports, and native-function registration.", self.roadmap)
         self.assertIn("rooted lexical environments", self.roadmap)
         self.assertIn("closure\n  execution, evaluator/VM", self.roadmap)

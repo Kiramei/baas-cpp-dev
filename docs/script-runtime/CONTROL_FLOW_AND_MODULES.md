@@ -241,6 +241,14 @@ edges with canonical-id tie breaking, and repeat the first id at the end. The
 runtime loader MUST also detect a `Loading` module edge defensively and fail
 without publishing a partial namespace.
 
+`ModuleGraph` implements the non-executing package-DAG foundation over already
+extracted module/import IDs. It validates every ID through `ModuleSpecifier`,
+rejects missing/duplicate/Host definitions transactionally, bounds modules,
+edges, and iterative graph work, reports the lexicographically first cyclic SCC
+with a source-order path, and emits a deterministic dependency-first order. It
+does not parse manifests, resolve Host versions/capabilities, publish namespaces,
+or initialize modules.
+
 ### CTL-014 — Module initialization, caching, and failure
 
 Each execution context MUST own a module cache with `Loading`, `Ready`, and
@@ -443,13 +451,15 @@ diagnostics. `Ast.h` implements immutable source-spanned nodes.
 checks, nearest resolution, binding kinds, closure capture propagation, and
 bounded AST traversal. `Environment` implements rooted lexical binding cells.
 `ModuleSpecifier` implements bounded, filesystem-independent canonical import
-specifier validation. `SyntaxCheck` composes the non-executing compile stages.
+specifier validation. `ModuleGraph` implements bounded deterministic package
+dependency validation and cycle reporting. `SyntaxCheck` composes the
+non-executing compile stages.
 
 The repository does not yet implement closure execution,
-bytecode/compiler/VM evaluation, runtime recursion/control transfer, package
-graph validation, manifest membership/host-version resolution, import-cycle
-detection, namespace publication, module initialization/cache, or native module
-registration. These items MUST remain pending in Phase 2 until executable
+bytecode/compiler/VM evaluation, runtime recursion/control transfer, manifest
+parsing/membership and Host-version/capability resolution, defensive runtime
+`Loading` cycle detection, namespace publication, module initialization/cache,
+or native module registration. These items MUST remain pending in Phase 2 until executable
 conformance evidence exists. Completing this normative Phase 1 specification
 MUST NOT be described as completing the VM, module loader, Turing-machine
 fixture execution, the general conformance corpus, or Phase 1 as a whole.
@@ -460,5 +470,5 @@ fixture execution, the general conformance corpus, or Phase 1 as a whole.
 and MUST verify CTL-001 through CTL-020, conformance example ids, grammar and AST
 forms, binding/diagnostic inventories, semantic implementation anchors, the
 syntax-check fixture/CTest gate, canonical module-specifier foundation,
-module/package links, pending implementation statements, the ROADMAP status,
-and Foundation CI path wiring.
+deterministic package-graph foundation, module/package links, pending
+implementation statements, the ROADMAP status, and Foundation CI path wiring.

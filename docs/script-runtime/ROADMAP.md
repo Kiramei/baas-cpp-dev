@@ -136,7 +136,9 @@ VM/task/host bridge boundary are checked in Foundation CI.
 - [~] Implement modules, imports, and native-function registration. Bounded,
   filesystem-independent canonical specifier validation now distinguishes
   package and `baas/*` Host modules and fails closed when non-ASCII NFC cannot
-  be verified; package graph validation, manifest/version/capability resolution,
+  be verified. Bounded package-graph validation now rejects missing/duplicate
+  modules and deterministic cycles and produces dependency-first order;
+  manifest/Host-version/capability resolution, runtime loading states,
   namespaces, initialization/cache, and native registration remain pending.
 - [~] Implement structured exceptions, stack traces, cancellation, and limits.
   The total allocation-free RT001-RT023 language-code/catchability mapping is
