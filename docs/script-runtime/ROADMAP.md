@@ -78,7 +78,9 @@ versioned compatibility contract linked from the migration matrix.
   control flow.
 - [ ] Implement modules, imports, native-function registration, and JSON bridge.
 - [ ] Implement structured exceptions, stack traces, cancellation, and limits.
-- [ ] Implement task/future primitives and a bounded executor.
+- [x] Implement the bounded cooperative executor, queue backpressure, task
+  handles, cancellation requests, and drain/cancel-pending shutdown.
+- [ ] Integrate language-level task/future primitives with the VM and executor.
 - [ ] Provide formatter/linter, syntax checker, language-server path, and script
   package validator.
 - [ ] Add unit, conformance, property, fuzz, sanitizer, and leak tests.
@@ -91,6 +93,9 @@ Verified foundation evidence: commit `f0efa76` adds the owning immutable AST,
 recursive-descent/Pratt parser, recovery diagnostics, and independent lexer and
 parser CTest targets. Coordinator-run MSVC Debug and Release builds both passed
 2/2 tests before integration; the integrated Debug build also passed 2/2 tests.
+Commit `f0e1985` adds the standard-library-only bounded executor. Independent
+MSVC Debug and Release reviews each passed 30 repeated runs; after integration,
+all lexer, parser, and executor tests passed 20 repeated Debug runs (3/3).
 
 ## Phase 3 — Host bindings and Python behavior parity
 
