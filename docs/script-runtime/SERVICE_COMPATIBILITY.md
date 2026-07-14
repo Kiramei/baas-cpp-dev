@@ -61,6 +61,16 @@ Compatibility requires golden vectors for:
 - business resume proof, secret-stream headers, AAD, and binary framing;
 - pinned signing identity and the existing persistent key migration path.
 
+Current foundation evidence is checked in at
+`tests/service_contract/v1_vectors.json` and can be regenerated from the
+anchored Python and Tauri production sources with
+`scripts/service_contract/generate_vectors.py --check`. It covers canonical
+JSON/base64url, control nonce/AAD/envelopes, X25519/Ed25519/Argon2id,
+HKDF/HMAC labels and contexts, and the complete current BPIP frame shape and
+boundary behavior. It does not yet close the full gate: deterministic
+secret-stream header/ciphertext, password and persistent-key lifecycle cases,
+and execution by the future C++ implementation remain required.
+
 The default public signing key is compiled into the current frontend. A C++
 service cannot silently generate a new identity without a coordinated pin
 migration.
