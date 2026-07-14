@@ -458,6 +458,15 @@ class HostCapabilityContractTests(unittest.TestCase):
             self.workflow,
         )
 
+    def test_generated_migration_evidence_has_checkout_stable_line_endings(self) -> None:
+        attributes = (ROOT / ".gitattributes").read_text(encoding="utf-8")
+        for path in (
+            "docs/script-runtime/evidence/*.json text eol=lf",
+            "docs/script-runtime/MIGRATION_MATRIX.md text eol=lf",
+            "scripts/migration/*.json text eol=lf",
+        ):
+            self.assertIn(path, attributes)
+
     def test_catalog_patterns_do_not_silently_claim_unmapped_operations(self) -> None:
         rule_by_id = {item["id"]: item for item in self.rules["rules"]}
         for gap in self.catalog["gap_resolutions"]:

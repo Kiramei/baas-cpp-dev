@@ -4,4 +4,5 @@
 # Deterministic migration evidence and versioned rule digests are byte-stable
 # across Windows and POSIX checkouts.
 docs/script-runtime/evidence/*.json text eol=lf
+docs/script-runtime/MIGRATION_MATRIX.md text eol=lf
 scripts/migration/*.json text eol=lf
