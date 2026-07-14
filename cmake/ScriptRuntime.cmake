@@ -142,6 +142,17 @@ if(BUILD_SCRIPT_TESTS)
                         "${BAAS_PROJECT_PATH}/tests/script/fixtures/errors_cleanup_invalid.baas"
         )
         set_tests_properties(BAAS_script_check_errors_cleanup_invalid_cli PROPERTIES WILL_FAIL TRUE)
+        add_test(
+                NAME BAAS_script_check_async_tasks_valid_cli
+                COMMAND BAAS_script_check --json
+                        "${BAAS_PROJECT_PATH}/tests/script/fixtures/async_tasks_valid.baas"
+        )
+        add_test(
+                NAME BAAS_script_check_async_tasks_invalid_cli
+                COMMAND BAAS_script_check --json
+                        "${BAAS_PROJECT_PATH}/tests/script/fixtures/async_tasks_invalid.baas"
+        )
+        set_tests_properties(BAAS_script_check_async_tasks_invalid_cli PROPERTIES WILL_FAIL TRUE)
     endif()
 
     add_executable(

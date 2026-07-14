@@ -6,7 +6,8 @@ control flow, and module loading. It refines the corresponding summaries in
 `LANGUAGE_SPEC_DRAFT.md`, uses the concrete syntax in `LANGUAGE_GRAMMAR.md`,
 and composes with the value contract in `VALUE_SEMANTICS.md` and the package
 contract in `PACKAGE_VERSIONING.md`. Structured errors and cleanup are defined
-by `ERRORS_AND_CLEANUP.md`.
+by `ERRORS_AND_CLEANUP.md`; async execution and cancellation are defined by
+`ASYNC_TASKS.md`.
 
 The key words **MUST**, **MUST NOT**, **SHOULD**, and **MAY** are normative.
 The CTL identifiers are stable conformance anchors. Static behavior in this
@@ -30,8 +31,8 @@ The AST MUST preserve distinct nodes for block, binding, expression statement,
 branch, while loop, for loop, function declaration/expression, return, break,
 continue, import, throw, try/catch, and defer. This document defines the first
 eleven control/module forms. `ERRORS_AND_CLEANUP.md` defines structured
-throw/catch/defer unwinding; its VM execution and async execution remain
-pending.
+throw/catch/defer unwinding, and `ASYNC_TASKS.md` defines async suspension and
+cancellation; their VM execution remains pending.
 
 ### CTL-002 — Lexical scope regions
 

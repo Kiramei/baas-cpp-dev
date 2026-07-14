@@ -5,7 +5,7 @@ runtime errors, source references, script and host stack frames, cause chains,
 `throw`, `try`/`catch`, `defer`, cleanup failure precedence, and translation at
 the C++ host boundary. It refines Sections 2, 6, 9, and 14 of
 `LANGUAGE_SPEC_DRAFT.md`, uses the syntax in `LANGUAGE_GRAMMAR.md`, and composes
-with `VALUE_SEMANTICS.md`, `CONTROL_FLOW_AND_MODULES.md`, and
+with `VALUE_SEMANTICS.md`, `CONTROL_FLOW_AND_MODULES.md`, `ASYNC_TASKS.md`, and
 `ADR-0002-vm-memory-management.md`.
 
 The key words **MUST**, **MUST NOT**, **SHOULD**, and **MAY** are normative. The
@@ -96,12 +96,14 @@ catchability MUST NOT change within language version 1.
 | --- | --- | --- |
 | `ThrownValue` | yes | `throw` operand was not already an Error |
 | `TypeMismatch` | yes | operation received the wrong value kind |
+| `ArgumentInvalid` | yes | argument has the right kind but invalid value/shape |
 | `NameNotFound` | yes | dynamic name/member lookup has no binding |
 | `UninitializedBinding` | yes | declared slot was read before initialization |
 | `NotCallable` | yes | call target is not callable |
 | `CallArityMismatch` | yes | required/excess positional argument mismatch |
 | `CallArgumentDuplicate` | yes | parameter supplied more than once |
 | `CallArgumentUnknown` | yes | named argument does not name a parameter |
+| `TaskCycle` | yes | adding an await edge would form a wait cycle |
 | `IndexOutOfRange` | yes | index/slice/map lookup is outside its contract |
 | `NumericOverflow` | yes | checked integer arithmetic overflow |
 | `DivisionByZero` | yes | division, floor division, or modulo by zero |
@@ -132,6 +134,7 @@ catchability MUST NOT change within language version 1.
 | `MemoryLimitExceeded` | no | context heap/external memory budget was exhausted |
 | `StackLimitExceeded` | no | script call-frame budget was exhausted |
 | `CleanupLimitExceeded` | no | defer count/work/emergency cleanup budget exhausted |
+| `TaskLimitExceeded` | no | task/awaiter/timer/host-operation bound exhausted |
 | `InternalInvariant` | no | stale/cross-context/corrupt runtime state detected |
 
 `catchable = no` identifies terminal errors. Terminal status is part of the
@@ -244,11 +247,14 @@ surrounded registration.
 ### ERR-011 — Terminal failure and cancellation priority
 
 `Cancelled`, `HumanTakeover`, `DeadlineExceeded`, instruction/memory/stack/
-cleanup limit failures, and `InternalInvariant` MUST NOT be swallowed or
+cleanup/task limit failures, and `InternalInvariant` MUST NOT be swallowed or
 converted by ordinary script. They bypass catch and become the primary outcome
 after cleanup. Only a separately capability-checked privileged host boundary
 MAY convert cancellation/human-takeover into a new task outcome, outside the
 terminating script context.
+
+`ASYNC_TASKS.md` defines request propagation, deadline clocks, safe-point
+observation, masking, and deterministic priority without changing catchability.
 
 At a host safe point, a result/error already atomically published before a stop
 request wins. Otherwise an observed stop request wins as `Cancelled` or

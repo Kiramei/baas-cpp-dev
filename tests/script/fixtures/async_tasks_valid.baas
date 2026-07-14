@@ -1,0 +1,16 @@
+import "baas/task" as task;
+import "baas/clock" as clock;
+
+async fn child(value) {
+    await clock.sleep(1);
+    return value;
+}
+
+async fn workflow() {
+    let first = child(1);
+    let second = task.spawn(child, 2);
+    defer task.cancel(second);
+    let values = await task.all([first, second]);
+    let winner = await task.race([child(values[0]), child(values[1])]);
+    return await task.timeout(child(winner), 5);
+}

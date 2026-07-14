@@ -210,6 +210,11 @@ to structured script errors and preserve safe causal details.
 
 ## 10. Tasks, cancellation, and time
 
+The normative Task state machine, structured ownership, await/suspension,
+cancellation/deadline priority, safe-point, thread-confinement, host async, and
+deterministic scheduler/clock contract is defined in `ASYNC_TASKS.md`; this
+section is a summary.
+
 `async fn` returns a task. `await` suspends without blocking an executor worker.
 The standard task module provides structured `spawn`, `join/all`, `race`,
 `timeout`, and cancellation scopes. Detached fire-and-forget tasks are forbidden

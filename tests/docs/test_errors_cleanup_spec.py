@@ -63,12 +63,14 @@ EXPECTED_ERROR_FIELDS = (
 EXPECTED_LANGUAGE_ERRORS = (
     ("ThrownValue", "yes"),
     ("TypeMismatch", "yes"),
+    ("ArgumentInvalid", "yes"),
     ("NameNotFound", "yes"),
     ("UninitializedBinding", "yes"),
     ("NotCallable", "yes"),
     ("CallArityMismatch", "yes"),
     ("CallArgumentDuplicate", "yes"),
     ("CallArgumentUnknown", "yes"),
+    ("TaskCycle", "yes"),
     ("IndexOutOfRange", "yes"),
     ("NumericOverflow", "yes"),
     ("DivisionByZero", "yes"),
@@ -99,6 +101,7 @@ EXPECTED_LANGUAGE_ERRORS = (
     ("MemoryLimitExceeded", "no"),
     ("StackLimitExceeded", "no"),
     ("CleanupLimitExceeded", "no"),
+    ("TaskLimitExceeded", "no"),
     ("InternalInvariant", "no"),
 )
 
@@ -362,7 +365,7 @@ class ErrorsAndCleanupSpecificationTests(unittest.TestCase):
             self.roadmap,
         )
         self.assertIn(
-            "- [ ] Specify futures/tasks, cancellation, deadlines, thread-safety boundaries,",
+            "- [ ] Specify capability-scoped host APIs for image, OCR, device, configuration,",
             self.roadmap,
         )
         self.assertIn("`ERRORS_AND_CLEANUP.md` defines compile/runtime error separation", self.roadmap)

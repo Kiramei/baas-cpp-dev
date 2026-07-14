@@ -1,0 +1,3 @@
+fn sync() {
+    return await work();
+}

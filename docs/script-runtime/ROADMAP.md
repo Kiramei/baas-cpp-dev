@@ -82,7 +82,7 @@ are recorded.
   non-local control flow, and module loading sufficient for Turing completeness.
 - [x] Specify structured errors, stack traces, source spans, cleanup/defer, and
   host-error translation.
-- [ ] Specify futures/tasks, cancellation, deadlines, thread-safety boundaries,
+- [x] Specify futures/tasks, cancellation, deadlines, thread-safety boundaries,
   and deterministic testing hooks.
 - [ ] Specify capability-scoped host APIs for image, OCR, device, configuration,
   logging, scheduler, resources, filesystem, and service operations.
@@ -110,6 +110,10 @@ pending VM/loader boundary are checked in Foundation CI.
 envelopes and codes, source/stack/cause contracts, deterministic defer unwind,
 and redacted C++ host-failure translation; its static anchors and pending
 VM/host-translator boundary are checked in Foundation CI.
+`ASYNC_TASKS.md` defines the Task state machine, structured ownership,
+await/cancellation/deadline priority, context-strand and host async boundaries,
+and deterministic scheduler/clock/trace hooks; its static anchors and pending
+VM/task/host bridge boundary are checked in Foundation CI.
 
 ## Phase 2 — C++ runtime and developer tooling
 
