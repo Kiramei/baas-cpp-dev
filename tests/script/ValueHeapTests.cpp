@@ -58,7 +58,7 @@ void test_primitives_and_every_cell_kind()
     const auto string = heap.allocate_string("文本");
     const auto list = heap.allocate_list({Value(std::int64_t{1}), string});
     const auto map = heap.allocate_map({{"first", list}, {"second", Value(true)}});
-    const auto function = heap.allocate_function({7, {map}});
+    const auto function = heap.allocate_function({CallableKind::Native, 7, {map}});
     const auto module = heap.allocate_module({"demo", {{"run", function}}});
     ErrorMetadata error_metadata{LanguageErrorCode::HostInternal, "failed", ErrorOrigin::Runtime};
     error_metadata.details.push_back({"payload", map});
@@ -73,8 +73,9 @@ void test_primitives_and_every_cell_kind()
     check(heap.kind(map) == ValueKind::OrderedMap && heap.map_get(map.as_heap_ref(), "first") == list,
           "ordered map should preserve keyed values");
     check(heap.kind(function) == ValueKind::Function &&
-              heap.function_metadata(function.as_heap_ref()).function_id == 7,
-          "function cell should preserve opaque id and captures");
+              heap.function_metadata(function.as_heap_ref()).kind == CallableKind::Native &&
+              heap.function_metadata(function.as_heap_ref()).callable_id == 7,
+          "function cell should preserve callable kind, opaque id, and captures");
     check(heap.kind(module) == ValueKind::Module && heap.module_metadata(module.as_heap_ref()).name == "demo",
           "module namespace kind must be present");
     check(heap.kind(error) == ValueKind::Error &&
@@ -303,8 +304,8 @@ void test_cycle_equality_identity_and_json_checks()
     heap.map_set(cyclic_map_b.as_heap_ref(), "self", cyclic_map_b);
     check(heap.equals(cyclic_map_a, cyclic_map_b),
           "isomorphic ordered-map cycles should compare structurally without recursion");
-    const auto function_a = heap.allocate_function({1, {}});
-    const auto function_b = heap.allocate_function({1, {}});
+    const auto function_a = heap.allocate_function({CallableKind::Script, 1, {}});
+    const auto function_b = heap.allocate_function({CallableKind::Script, 1, {}});
     check(heap.equals(function_a, function_a) && !heap.equals(function_a, function_b),
           "functions should use heap identity equality");
     const auto module_a = heap.allocate_module({"same", {}});

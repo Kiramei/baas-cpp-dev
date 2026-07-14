@@ -587,7 +587,7 @@ struct SynchronousEvaluator::Impl {
         functions.push_back(
             {id, std::move(name), current_module, span, parameters, body, closure});
         try {
-            auto value = heap.allocate_function({id, {}});
+            auto value = heap.allocate_function({CallableKind::Script, id, {}});
             stats.created_functions = functions.size();
             return value;
         } catch (...) {
@@ -1399,10 +1399,11 @@ Value SynchronousEvaluator::Impl::invoke(
         fail(LanguageErrorCode::NotCallable, "call target is not a function", span);
     }
     const auto metadata = heap.function_metadata(callee.as_heap_ref());
-    if (metadata.function_id == 0 || metadata.function_id > functions.size()) {
+    if (metadata.kind != CallableKind::Script || metadata.callable_id == 0 ||
+        metadata.callable_id > functions.size()) {
         fail(LanguageErrorCode::InternalInvariant, "function metadata is not evaluator-owned", span);
     }
-    const auto& function_record = functions[static_cast<std::size_t>(metadata.function_id - 1)];
+    const auto& function_record = functions[static_cast<std::size_t>(metadata.callable_id - 1)];
     if (arguments.size() > std::numeric_limits<std::size_t>::max()
             - function_record.parameters.size()) {
         fail(LanguageErrorCode::MemoryLimitExceeded, "call binding size overflow", span);

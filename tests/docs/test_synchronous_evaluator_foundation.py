@@ -45,7 +45,7 @@ class SynchronousEvaluatorFoundationTest(unittest.TestCase):
         self.assertIn("BAAS_script_sync_evaluator_tests", WORKFLOW)
 
     def test_transitional_closure_and_two_layer_equality_boundaries_are_explicit(self) -> None:
-        self.assertIn("heap.allocate_function({id, {}})", SOURCE)
+        self.assertIn("heap.allocate_function({CallableKind::Script, id, {}})", SOURCE)
         self.assertIn("unreachable side-table records are retained", CONTROL)
         self.assertIn("non-reclaiming transitional side", VALUES)
         self.assertIn("not cumulatively add nested heap equality traversal", VALUES)

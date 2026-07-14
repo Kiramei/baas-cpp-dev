@@ -251,7 +251,7 @@ void test_invalid_details_are_marked_without_identity_or_secret_leaks()
     const auto root = heap.add_root(error);
 
     const auto secret = heap.allocate_string("DO_NOT_LEAK_CAPTURED_SECRET");
-    const auto function = heap.allocate_function({99, {secret}});
+    const auto function = heap.allocate_function({CallableKind::Script, 99, {secret}});
     heap.list_append(details.as_heap_ref(), function);
     heap.list_append(details.as_heap_ref(), Value(std::numeric_limits<double>::infinity()));
     heap.list_append(details.as_heap_ref(), details);

@@ -163,7 +163,7 @@ void test_cycles_nonfinite_and_identity_values()
                 "non-finite JSON floats must be rejected before destination allocation");
 
     std::vector<Value> identities;
-    identities.push_back(heap.allocate_function({1, {}}));
+    identities.push_back(heap.allocate_function({CallableKind::Script, 1, {}}));
     identities.push_back(heap.allocate_module({"module", {}}));
     identities.push_back(heap.allocate_error(
         {LanguageErrorCode::HostInternal, "error", ErrorOrigin::Runtime}));

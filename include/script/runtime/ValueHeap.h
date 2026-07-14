@@ -96,8 +96,11 @@ private:
     std::variant<std::monostate, bool, std::int64_t, double, HeapRef> storage_;
 };
 
+enum class CallableKind : std::uint8_t { Script, Native };
+
 struct FunctionMetadata {
-    std::uint64_t function_id{};
+    CallableKind kind{CallableKind::Script};
+    std::uint64_t callable_id{};
     std::vector<Value> captures;
 };
 
