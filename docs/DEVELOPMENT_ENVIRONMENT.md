@@ -123,6 +123,23 @@ Known cross-platform dependency gaps are tracked in
 that the complete OCR, CUDA, Android, emulator, or desktop application stack is
 configured or green.
 
+## Android OCR cross-builds
+
+The configured JDK 17, Android SDK, NDK, and repository-local Conan cache can
+reproduce both Android OCR ABIs from PowerShell:
+
+```powershell
+.\scripts\dev\Build-AndroidOcr.ps1 -Abi all -Jobs 8
+```
+
+Use `-Abi arm64-v8a` or `-Abi x86_64` for one target. The script exports the
+checked-in recipes, installs or builds dependencies without a Conan remote,
+configures the matching preset, builds the OCR shared library, and verifies its
+ELF machine plus packaged runtime libraries. It does not launch, stop, or
+otherwise modify an emulator or connected Android device. Passing
+`-SkipRecipeExport` is safe after the current recipes are already in the local
+Conan cache.
+
 ## Python reference and service-vector checks
 
 The repository-local `.venv` is configured from

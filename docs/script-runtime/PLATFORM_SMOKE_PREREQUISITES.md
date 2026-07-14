@@ -231,6 +231,13 @@ python scripts\platform\check_smoke_prerequisites.py `
 The exact C++ OCR build entrypoints are:
 
 ```powershell
+.\scripts\dev\Build-AndroidOcr.ps1 -Abi all -Jobs 8
+```
+
+The wrapper below expands to the same per-ABI Conan and CMake commands and
+performs post-build ELF/runtime-library checks without touching an emulator:
+
+```powershell
 conan install deploy/conan `
   -of build/conan/android-clang-release-ocr-arm64-v8a `
   -pr:h=deploy/conan/profiles/android-clang-arm64-v8a-release `
