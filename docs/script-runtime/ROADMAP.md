@@ -155,9 +155,12 @@ pending.
   implemented from the stable `LanguageErrorCode` table, semantic analysis
   enforces ERR-015 cleanup-body restrictions with `SEM009`, and `ValueHeap`
   publishes immutable, budgeted Error records with source/frame/cause/
-  suppressed/detail/context edges and GC tests. Script-visible Error members,
-  VM stack capture/unwinding, cause-chain normalization, executor/host
-  translation, Error envelope serialization, cancellation propagation, and
+  suppressed/detail/context edges and GC tests. The dependency-free,
+  caller-buffer `ErrorEnvelope` boundary now emits deterministic ERR-003 JSON,
+  including bounded recursive errors/details, explicit truncation, redacted
+  fallback, and stale/GC failure containment. VM stack capture/unwinding,
+  script-visible Error members, cause-chain normalization, executor/host
+  translation, service diagnostic integration, cancellation propagation, and
   execution limits remain pending.
 - [x] Implement the bounded cooperative executor, queue backpressure, task
   handles, cancellation requests, and drain/cancel-pending shutdown.
@@ -192,6 +195,11 @@ The JSON bridge foundation adds an insertion-ordered dependency-free value
 model, iterative budgeted heap conversion, and isolated cross-context deep
 copy. JSON text parsing/serialization and complete modules/imports remain
 pending.
+The Error-envelope foundation adds a specialized dependency-free JSON writer,
+allocation-free checked detail traversal, deterministic field/value ordering,
+independent depth/node/output/string/work budgets, ERR-008 truncation, and a
+non-throwing redacted fallback. It does not provide general JSON text I/O, VM
+unwinding, Host translation, or service transport integration.
 
 ## Phase 3 — Host bindings and Python behavior parity
 
@@ -306,8 +314,9 @@ Exit evidence: required platform matrix is green and performance budgets pass.
 
 Foundation evidence: `.github/workflows/foundation-runtime.yml` defines a
 six-case Windows/Ubuntu/macOS Debug/Release matrix that builds the script
-checker plus eight standalone script/service test executables and runs ten
-CTest cases. Debug jobs also validate the checked-in
+checker and focused standalone script/service test executables, including the
+Error-envelope boundary target, then runs the registered CTest suite. Debug
+jobs also validate the checked-in
 service vectors. The exact Windows commands passed locally for both build
 types after the value-heap addition: all six CTest targets passed 20 repeated
 Debug runs and one complete Release run; all 14 service-vector tests also

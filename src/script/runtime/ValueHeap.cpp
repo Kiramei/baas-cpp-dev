@@ -1118,6 +1118,28 @@ ValueKind Heap::kind(const Value value) const
 }
 ValueKind Heap::kind(const HeapRef reference) const { return data_kind(impl_->dereference(reference).data); }
 std::string Heap::string_copy(const HeapRef reference) const { return std::get<StringCell>(impl_->expected(reference, ValueKind::String).data).value; }
+std::string_view Heap::string_view(const HeapRef reference) const { return std::get<StringCell>(impl_->expected(reference, ValueKind::String).data).value; }
+std::size_t Heap::list_size(const HeapRef reference) const { return std::get<ListCell>(impl_->expected(reference, ValueKind::List).data).values.size(); }
+Value Heap::list_value_at(const HeapRef reference, const std::size_t index) const
+{
+    const auto& values = std::get<ListCell>(impl_->expected(reference, ValueKind::List).data).values;
+    if (index >= values.size())
+        throw RuntimeError(RuntimeErrorCode::IndexOutOfRange, "list index is out of range");
+    return values[index];
+}
+std::size_t Heap::map_size(const HeapRef reference) const { return std::get<MapCell>(impl_->expected(reference, ValueKind::OrderedMap).data).entries.size(); }
+std::pair<std::string_view, Value> Heap::map_entry_at(
+    const HeapRef reference, const std::size_t index) const
+{
+    const auto& entries = std::get<MapCell>(impl_->expected(reference, ValueKind::OrderedMap).data).entries;
+    if (index >= entries.size())
+        throw RuntimeError(RuntimeErrorCode::IndexOutOfRange, "map index is out of range");
+    return {entries[index].first, entries[index].second};
+}
+const ErrorMetadata& Heap::error_metadata_view(const HeapRef reference) const
+{
+    return std::get<ErrorCell>(impl_->expected(reference, ValueKind::Error).data).metadata;
+}
 std::vector<Value> Heap::list_values(const HeapRef reference) const { return std::get<ListCell>(impl_->expected(reference, ValueKind::List).data).values; }
 std::vector<std::pair<std::string, Value>> Heap::map_entries(const HeapRef reference) const { return std::get<MapCell>(impl_->expected(reference, ValueKind::OrderedMap).data).entries; }
 std::optional<Value> Heap::map_get(const HeapRef reference, const std::string_view key) const

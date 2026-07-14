@@ -12,6 +12,7 @@ add_library(
         "${BAAS_PROJECT_PATH}/src/script/Token.cpp"
         "${BAAS_PROJECT_PATH}/src/script/runtime/BoundedExecutor.cpp"
         "${BAAS_PROJECT_PATH}/src/script/runtime/Environment.cpp"
+        "${BAAS_PROJECT_PATH}/src/script/runtime/ErrorEnvelope.cpp"
         "${BAAS_PROJECT_PATH}/src/script/runtime/ErrorTranslation.cpp"
         "${BAAS_PROJECT_PATH}/src/script/runtime/HostModuleRegistry.cpp"
         "${BAAS_PROJECT_PATH}/src/script/runtime/JsonBridge.cpp"
@@ -105,6 +106,15 @@ if(BUILD_SCRIPT_TESTS)
             COMMAND BAAS_script_structured_error_heap_tests
     )
     set_tests_properties(BAAS_script_structured_error_heap_tests PROPERTIES TIMEOUT 60)
+
+    add_executable(
+            BAAS_script_error_envelope_tests
+            "${BAAS_PROJECT_PATH}/tests/script/ErrorEnvelopeTests.cpp"
+    )
+    target_compile_features(BAAS_script_error_envelope_tests PRIVATE cxx_std_20)
+    target_link_libraries(BAAS_script_error_envelope_tests PRIVATE BAAS_script_runtime)
+    add_test(NAME BAAS_script_error_envelope_tests COMMAND BAAS_script_error_envelope_tests)
+    set_tests_properties(BAAS_script_error_envelope_tests PROPERTIES TIMEOUT 60)
 
     add_executable(
             BAAS_script_environment_tests

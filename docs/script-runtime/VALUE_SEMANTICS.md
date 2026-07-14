@@ -389,7 +389,9 @@ checked-in parser, `ValueHeap`, and `JsonBridge` provide evidence for the
 clauses they implement; evaluator/VM execution, language-level lookup errors,
 arithmetic errors, modules/imports, and JSON text I/O remain separately pending
 ROADMAP work. Those pending components MUST conform to these clauses rather
-than infer Python or JavaScript coercion behavior.
+than infer Python or JavaScript coercion behavior. The specialized ERR-018
+Error-envelope writer does not change this boundary: it emits only the fixed
+ERR-003 schema and is not a general `JsonValue` text parser/serializer.
 
 ## Machine-checked evidence
 

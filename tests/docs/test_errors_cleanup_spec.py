@@ -24,9 +24,12 @@ VALUE_SOURCE_PATH = ROOT / "src" / "script" / "runtime" / "ValueHeap.cpp"
 EXECUTOR_HEADER_PATH = ROOT / "include" / "script" / "runtime" / "BoundedExecutor.h"
 ERROR_TRANSLATION_HEADER_PATH = ROOT / "include" / "script" / "runtime" / "ErrorTranslation.h"
 ERROR_TRANSLATION_SOURCE_PATH = ROOT / "src" / "script" / "runtime" / "ErrorTranslation.cpp"
+ERROR_ENVELOPE_HEADER_PATH = ROOT / "include" / "script" / "runtime" / "ErrorEnvelope.h"
+ERROR_ENVELOPE_SOURCE_PATH = ROOT / "src" / "script" / "runtime" / "ErrorEnvelope.cpp"
 PARSER_TEST_PATH = ROOT / "tests" / "script" / "ParserTests.cpp"
 SEMANTIC_TEST_PATH = ROOT / "tests" / "script" / "SemanticAnalyzerTests.cpp"
 STRUCTURED_ERROR_TEST_PATH = ROOT / "tests" / "script" / "StructuredErrorHeapTests.cpp"
+ERROR_ENVELOPE_TEST_PATH = ROOT / "tests" / "script" / "ErrorEnvelopeTests.cpp"
 VALID_FIXTURE_PATH = ROOT / "tests" / "script" / "fixtures" / "errors_cleanup_valid.baas"
 INVALID_FIXTURE_PATH = ROOT / "tests" / "script" / "fixtures" / "errors_cleanup_invalid.baas"
 SEMANTIC_INVALID_FIXTURE_PATH = (
@@ -180,9 +183,12 @@ class ErrorsAndCleanupSpecificationTests(unittest.TestCase):
         cls.executor_header = read(EXECUTOR_HEADER_PATH)
         cls.error_translation_header = read(ERROR_TRANSLATION_HEADER_PATH)
         cls.error_translation_source = read(ERROR_TRANSLATION_SOURCE_PATH)
+        cls.error_envelope_header = read(ERROR_ENVELOPE_HEADER_PATH)
+        cls.error_envelope_source = read(ERROR_ENVELOPE_SOURCE_PATH)
         cls.parser_tests = read(PARSER_TEST_PATH)
         cls.semantic_tests = read(SEMANTIC_TEST_PATH)
         cls.structured_error_tests = read(STRUCTURED_ERROR_TEST_PATH)
+        cls.error_envelope_tests = read(ERROR_ENVELOPE_TEST_PATH)
         cls.valid_fixture = read(VALID_FIXTURE_PATH)
         cls.invalid_fixture = read(INVALID_FIXTURE_PATH)
         cls.semantic_invalid_fixture = read(SEMANTIC_INVALID_FIXTURE_PATH)
@@ -380,6 +386,31 @@ class ErrorsAndCleanupSpecificationTests(unittest.TestCase):
             self.assertIn(test_name, self.structured_error_tests)
         self.assertIn("BAAS_script_structured_error_heap_tests", self.cmake)
         self.assertIn("BAAS_script_structured_error_heap_tests", self.workflow)
+        for anchor in (
+            "struct ErrorEnvelopeLimits", "max_depth{256}", "max_nodes{100'000}",
+            "max_output_bytes", "max_string_bytes", "max_work{500'000}",
+            "ErrorEnvelopeStatus", "std::span<char>", "noexcept",
+        ):
+            self.assertIn(anchor, self.error_envelope_header)
+        for anchor in (
+            "baas.script.error/v1", "write_fallback", "write_details",
+            "write_optional_source", "language_error_code_catchable",
+            "InsufficientCapacity", "catch (...)"
+        ):
+            self.assertIn(anchor, self.error_envelope_source)
+        for test_name in (
+            "test_stable_minimal_bytes_and_derived_catchability",
+            "test_source_frame_nested_error_and_detail_order",
+            "test_message_cause_suppressed_and_detail_boundaries",
+            "test_detail_preflight_prefers_local_marker_in_tight_output_buffer",
+            "test_invalid_details_are_marked_without_identity_or_secret_leaks",
+            "test_existing_utf8_and_duplicate_rules_reject_invalid_envelopes_upstream",
+            "test_depth_node_work_string_and_output_boundaries",
+            "test_fallback_privacy_gc_stale_and_capacity",
+        ):
+            self.assertIn(test_name, self.error_envelope_tests)
+        self.assertIn("BAAS_script_error_envelope_tests", self.cmake)
+        self.assertIn("BAAS_script_error_envelope_tests", self.workflow)
         for path in (
             ROOT / "include" / "script" / "runtime" / "Vm.h",
             ROOT / "include" / "script" / "runtime" / "StructuredError.h",
@@ -389,8 +420,10 @@ class ErrorsAndCleanupSpecificationTests(unittest.TestCase):
         self.assertIn("does not yet implement VM execution", self.spec)
         self.assertIn("- [~] Implement structured exceptions, stack traces, cancellation, and limits.", self.roadmap)
         self.assertIn("VM stack capture/unwinding", self.roadmap)
-        self.assertIn("Error envelope serialization", self.roadmap)
-        self.assertIn("the heap snapshot is not an ERR-003 serialized\nenvelope", self.spec)
+        self.assertIn("caller-buffer `ErrorEnvelope` boundary", self.roadmap)
+        self.assertIn("service diagnostic integration", self.roadmap)
+        self.assertIn("the heap snapshot is not\nan ERR-003 serialized envelope", self.spec)
+        self.assertIn("only the bounded `serialize_error_envelope`\nboundary produces one", self.spec)
 
     def test_static_conformance_fixtures_and_ctest_wiring(self) -> None:
         valid_example = re.search(

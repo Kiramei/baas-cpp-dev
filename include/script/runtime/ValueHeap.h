@@ -327,6 +327,16 @@ public:
     [[nodiscard]] ValueKind kind(Value value) const;
     [[nodiscard]] ValueKind kind(HeapRef reference) const;
     [[nodiscard]] std::string string_copy(HeapRef reference) const;
+    // Allocation-free checked views for bounded serializers. They remain valid
+    // only until the owning cell is mutated, collected, or the Heap is torn
+    // down; callers must stay on the owning context strand.
+    [[nodiscard]] std::string_view string_view(HeapRef reference) const;
+    [[nodiscard]] std::size_t list_size(HeapRef reference) const;
+    [[nodiscard]] Value list_value_at(HeapRef reference, std::size_t index) const;
+    [[nodiscard]] std::size_t map_size(HeapRef reference) const;
+    [[nodiscard]] std::pair<std::string_view, Value> map_entry_at(
+        HeapRef reference, std::size_t index) const;
+    [[nodiscard]] const ErrorMetadata& error_metadata_view(HeapRef reference) const;
     // Returned Values are snapshots, not roots. Register them before invoking
     // any allocation-capable heap API that may collect.
     [[nodiscard]] std::vector<Value> list_values(HeapRef reference) const;

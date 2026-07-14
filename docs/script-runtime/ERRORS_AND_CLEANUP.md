@@ -472,16 +472,31 @@ responsible for preserving nearest causes while deriving a bounded replacement.
 mutating it. `BAAS_script_structured_error_heap_tests` verifies these heap-only
 contracts, including GC and allocation accounting.
 
+`ErrorEnvelope.h` and `ErrorEnvelope.cpp` implement the dependency-free ERR-018
+serialization foundation. `serialize_error_envelope` is a `noexcept`,
+caller-buffer API: it writes the twelve ERR-003 fields in normative order,
+derives `catchable` from `LanguageErrorCode`, recursively serializes bounded
+cause/suppressed/detail graphs, and applies independent depth/node/output-byte/
+string/work plus ERR-008 cause/suppressed/message/detail limits. Invalid detail
+values become allowlisted kind markers. Cycles, stale/cross-heap references,
+budget exhaustion, and native allocation failures fail closed to a complete
+redacted fallback when the caller buffer can hold it; otherwise the API reports
+zero published bytes. Allocation-free checked Heap views keep detail traversal
+from copying attacker-expanded containers. `BAAS_script_error_envelope_tests`
+fix stable bytes, nested ordering, every budget boundary, fallback privacy,
+invalid-detail markers, and rooted/stale GC behavior.
+
 The repository does not yet implement VM execution, script-visible Error member
 access, throw/catch unwinding, defer registration/execution, live VM stack
 capture, terminal-error propagation, host ABI guards/translators, domain
-mappings, cause-chain normalization, or Error/public diagnostic-envelope
-serialization. In particular, the heap snapshot is not an ERR-003 serialized
-envelope. Those MUST remain pending in Phase 2 until executable conformance
-evidence exists. Completing this normative Phase 1 specification MUST NOT be
-described as implementing structured exceptions, the VM, module loading,
-cancellation/task semantics, the general conformance corpus, or Phase 1 as a
-whole.
+mappings, cause-chain normalization, or wiring serialized envelopes into a
+service/public diagnostic transport. In particular, the heap snapshot is not
+an ERR-003 serialized envelope; only the bounded `serialize_error_envelope`
+boundary produces one. Those VM/translator/integration components MUST remain
+pending in Phase 2 until executable conformance evidence exists. This serializer
+foundation MUST NOT be described as implementing structured exceptions, VM
+unwinding, Host translation, module loading, cancellation/task semantics, the
+general conformance corpus, or Phase 1 as a whole.
 
 ## Machine-checked evidence
 
@@ -489,6 +504,7 @@ whole.
 and MUST verify ERR-001 through ERR-020, exact Error fields and stable language
 codes, source/diagnostic anchors, stack/cause/truncation rules, the complete
 RT001–RT023 translation table, parser/AST/semantic foundations, tagged static
-fixtures and CTest wiring, structured Error heap/API/test anchors, explicit
-missing VM/translator/serialization implementation, the single ROADMAP
+fixtures and CTest wiring, structured Error heap/API/test anchors, the
+implemented serialization boundary, explicit missing VM/translator/integration
+implementation, the single ROADMAP
 checkbox, and Foundation CI path wiring.
