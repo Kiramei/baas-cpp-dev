@@ -16,6 +16,7 @@ add_library(
         "${BAAS_PROJECT_PATH}/src/script/runtime/ErrorTranslation.cpp"
         "${BAAS_PROJECT_PATH}/src/script/runtime/HostModuleRegistry.cpp"
         "${BAAS_PROJECT_PATH}/src/script/runtime/JsonBridge.cpp"
+        "${BAAS_PROJECT_PATH}/src/script/runtime/LogHost.cpp"
         "${BAAS_PROJECT_PATH}/src/script/runtime/ModuleGraph.cpp"
         "${BAAS_PROJECT_PATH}/src/script/runtime/ModuleSpecifier.cpp"
         "${BAAS_PROJECT_PATH}/src/script/runtime/SynchronousEvaluator.cpp"
@@ -255,4 +256,36 @@ if(BUILD_SCRIPT_TESTS)
             COMMAND BAAS_script_sync_host_evaluator_tests
     )
     set_tests_properties(BAAS_script_sync_host_evaluator_tests PROPERTIES TIMEOUT 30)
+
+    add_executable(
+            BAAS_script_log_host_tests
+            "${BAAS_PROJECT_PATH}/tests/script/LogHostTests.cpp"
+    )
+    target_compile_features(BAAS_script_log_host_tests PRIVATE cxx_std_20)
+    target_link_libraries(BAAS_script_log_host_tests PRIVATE BAAS_script_runtime)
+    add_test(NAME BAAS_script_log_host_tests COMMAND BAAS_script_log_host_tests)
+    set_tests_properties(BAAS_script_log_host_tests PROPERTIES TIMEOUT 30)
+endif()
+
+if(TARGET BAAS_APP)
+    add_library(
+            BAAS_script_baas_logger_adapter
+            STATIC
+            "${BAAS_PROJECT_PATH}/src/script/host/BAASLoggerLogSink.cpp"
+    )
+    target_compile_features(BAAS_script_baas_logger_adapter PUBLIC cxx_std_20)
+    target_include_directories(
+            BAAS_script_baas_logger_adapter
+            PUBLIC
+            "${BAAS_PROJECT_PATH}/include"
+    )
+    target_link_libraries(
+            BAAS_script_baas_logger_adapter
+            PUBLIC BAAS_script_runtime
+            PRIVATE BAAS::spdlog BAAS::simdutf
+    )
+    target_link_libraries(
+            BAAS_APP
+            PRIVATE BAAS_script_baas_logger_adapter
+    )
 endif()

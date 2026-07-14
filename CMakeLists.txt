@@ -91,6 +91,13 @@ option(BUILD_SERVICE_ORIGIN_POLICY_TESTS "Build native tests for HTTP Origin/COR
 option(BUILD_SERVICE_HTTP       "Build the optional cpp-httplib service adapter" OFF)
 option(BUILD_SERVICE_HTTP_TESTS "Build native tests for the cpp-httplib service adapter" OFF)
 
+# BAAS_APP owns the production script Host adapters. Standalone runtime builds
+# stay opt-in, while application builds always compile the runtime and its
+# BAASLogger bridge together.
+if(BUILD_APP_BAAS AND NOT BUILD_SCRIPT_RUNTIME)
+    set(BUILD_SCRIPT_RUNTIME ON CACHE BOOL "Build the standalone BAAS script runtime" FORCE)
+endif()
+
 if(BUILD_SCRIPT_TESTS AND NOT BUILD_SCRIPT_RUNTIME)
     set(BUILD_SCRIPT_RUNTIME ON CACHE BOOL "Build the standalone BAAS script runtime" FORCE)
 endif()
