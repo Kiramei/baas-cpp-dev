@@ -14,6 +14,9 @@ namespace {
 
 int failures = 0;
 
+bool accept_nfc(std::string_view) noexcept { return true; }
+bool reject_nfc(std::string_view) noexcept { return false; }
+
 void check(const bool condition, const std::string_view message)
 {
     if (!condition) { std::cerr << "FAIL: " << message << '\n'; ++failures; }
@@ -260,6 +263,47 @@ void test_cross_heap_invalid_edges_and_obvious_cycles()
                 "details must reject cyclic JSON graphs with bounded traversal");
 }
 
+void test_source_modules_share_import_canonicalization()
+{
+    Heap heap(generous_limits());
+    auto dotted = metadata();
+    dotted.source = SourceReference{"snapshot-a", "workflow/main.v2", source().span};
+    (void)heap.allocate_error(std::move(dotted));
+
+    const std::string unicode_module = "workflow/\xE5\x85\xB1\xE9\x80\x9A";
+    auto missing_nfc = metadata();
+    missing_nfc.source = SourceReference{"snapshot-a", unicode_module, source().span};
+    check_error(RuntimeErrorCode::TypeMismatch,
+                [&] { (void)heap.allocate_error(std::move(missing_nfc)); },
+                "non-ASCII source modules must fail closed without the shared NFC predicate");
+
+    Heap rejecting(generous_limits(), reject_nfc);
+    auto non_nfc = metadata();
+    non_nfc.source = SourceReference{"snapshot-a", unicode_module, source().span};
+    check_error(RuntimeErrorCode::TypeMismatch,
+                [&] { (void)rejecting.allocate_error(std::move(non_nfc)); },
+                "SourceReference must preserve the import validator's NFC rejection");
+
+    Heap accepting(generous_limits(), accept_nfc);
+    auto nfc = metadata();
+    nfc.source = SourceReference{"snapshot-a", unicode_module, source().span};
+    (void)accepting.allocate_error(std::move(nfc));
+
+    auto host_source = metadata();
+    host_source.source = SourceReference{"snapshot-a", "baas/device", source().span};
+    check_error(RuntimeErrorCode::TypeMismatch,
+                [&] { (void)heap.allocate_error(std::move(host_source)); },
+                "SourceReference must identify package source, never a Host module");
+
+    auto mismatched_frame = metadata();
+    auto invalid_frame = frame("run", 0);
+    invalid_frame.module = "baas/device";
+    mismatched_frame.stack.push_back(std::move(invalid_frame));
+    check_error(RuntimeErrorCode::TypeMismatch,
+                [&] { (void)heap.allocate_error(std::move(mismatched_frame)); },
+                "script and Host stack-frame kinds must match their canonical module kind");
+}
+
 void test_gc_edges_identity_and_immutable_derivation()
 {
     Heap heap(generous_limits());
@@ -294,6 +338,38 @@ void test_gc_edges_identity_and_immutable_derivation()
     heap.collect();
     check(heap.stats().live_cells == 0,
           "unrooted immutable Error graphs and cycles-free edges must be reclaimable");
+}
+
+void test_error_publication_roots_edges_during_preflight_collection()
+{
+    auto limits = generous_limits();
+    limits.soft_collect_threshold = 1;
+    Heap heap(limits);
+
+    const auto cause = heap.allocate_error(metadata(LanguageErrorCode::HostInternal, "cause"));
+    const auto cause_root = heap.add_root(cause);
+    const auto suppressed = heap.allocate_error(metadata(LanguageErrorCode::Timeout, "secondary"));
+    const auto suppressed_root = heap.add_root(suppressed);
+    const auto leaf = heap.allocate_string("leaf");
+    const auto leaf_root = heap.add_root(leaf);
+    const auto details = heap.allocate_list({leaf});
+    const auto details_root = heap.add_root(details);
+    heap.remove_root(leaf_root);
+
+    auto input = metadata(LanguageErrorCode::HostValidationFailed, "primary");
+    input.cause = cause;
+    input.suppressed.push_back(suppressed);
+    input.details.push_back({"payload", details});
+    heap.remove_root(cause_root);
+    heap.remove_root(suppressed_root);
+    heap.remove_root(details_root);
+
+    const auto primary = heap.allocate_error(std::move(input));
+    const auto snapshot = heap.error_metadata(primary.as_heap_ref());
+    check(snapshot.cause == cause && snapshot.suppressed == std::vector<Value>{suppressed} &&
+              snapshot.details.size() == 1 && snapshot.details.front().second == details &&
+              heap.list_values(details.as_heap_ref()) == std::vector<Value>{leaf},
+          "Error publication must root every retained edge before allocation preflight collects");
 }
 
 void test_dynamic_error_metadata_is_heap_budgeted()
@@ -335,7 +411,9 @@ int main()
     test_complete_metadata_and_read_only_snapshot();
     test_deterministic_truncation_and_cause_budget();
     test_cross_heap_invalid_edges_and_obvious_cycles();
+    test_source_modules_share_import_canonicalization();
     test_gc_edges_identity_and_immutable_derivation();
+    test_error_publication_roots_edges_during_preflight_collection();
     test_dynamic_error_metadata_is_heap_budgeted();
     if (failures != 0) {
         std::cerr << failures << " assertion(s) failed\n";

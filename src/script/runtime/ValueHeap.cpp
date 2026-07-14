@@ -285,25 +285,18 @@ void compact_string(std::string& text)
     text.swap(compact);
 }
 
-[[nodiscard]] bool is_canonical_module_id(const std::string_view module) noexcept
+[[nodiscard]] std::optional<ModuleKind> canonical_module_kind(
+    const std::string_view module,
+    const NfcPredicate is_nfc)
 {
-    if (module.empty() || module.front() == '/' || module.back() == '/' ||
-        module.find('\\') != std::string_view::npos ||
-        module.find(':') != std::string_view::npos ||
-        module.find('\0') != std::string_view::npos) return false;
-    std::size_t start = 0;
-    while (start < module.size()) {
-        const auto slash = module.find('/', start);
-        const auto part = module.substr(start, slash == std::string_view::npos ?
-                                               module.size() - start : slash - start);
-        if (part.empty() || part == "." || part == "..") return false;
-        if (slash == std::string_view::npos) return part.find('.') == std::string_view::npos;
-        start = slash + 1;
+    try {
+        return validate_module_specifier(module, is_nfc).kind;
+    } catch (const ModuleSpecifierError&) {
+        return std::nullopt;
     }
-    return false;
 }
 
-void validate_source_reference(const SourceReference& source)
+void validate_source_reference(const SourceReference& source, const NfcPredicate is_nfc)
 {
     if (!is_valid_utf8(source.snapshot_id) || !is_valid_utf8(source.module)) {
         throw RuntimeError(RuntimeErrorCode::InvalidUtf8,
@@ -312,7 +305,7 @@ void validate_source_reference(const SourceReference& source)
     if (source.snapshot_id.empty() || source.snapshot_id.find('/') != std::string::npos ||
         source.snapshot_id.find('\\') != std::string::npos ||
         source.snapshot_id.find('\0') != std::string::npos ||
-        !is_canonical_module_id(source.module)) {
+        canonical_module_kind(source.module, is_nfc) != ModuleKind::Package) {
         throw RuntimeError(RuntimeErrorCode::TypeMismatch,
                            "error source reference is not canonical");
     }
@@ -326,24 +319,28 @@ void validate_source_reference(const SourceReference& source)
     }
 }
 
-void validate_optional_source(const std::optional<SourceReference>& source)
+void validate_optional_source(
+    const std::optional<SourceReference>& source,
+    const NfcPredicate is_nfc)
 {
-    if (source) validate_source_reference(*source);
+    if (source) validate_source_reference(*source, is_nfc);
 }
 
-void validate_error_frame(const ErrorStackFrame& frame)
+void validate_error_frame(const ErrorStackFrame& frame, const NfcPredicate is_nfc)
 {
     if (!is_valid_utf8(frame.module) || !is_valid_utf8(frame.function)) {
         throw RuntimeError(RuntimeErrorCode::InvalidUtf8,
                            "error stack frame is not valid UTF-8");
     }
-    if (!is_canonical_module_id(frame.module) || frame.function.empty()) {
+    const auto module_kind = canonical_module_kind(frame.module, is_nfc);
+    if (!module_kind || frame.function.empty() ||
+        (frame.kind == ErrorFrameKind::Host) != (*module_kind == ModuleKind::Host)) {
         throw RuntimeError(RuntimeErrorCode::TypeMismatch,
                            "error stack frame identity is not canonical");
     }
-    validate_optional_source(frame.call_source);
-    validate_optional_source(frame.definition_source);
-    validate_optional_source(frame.defer_source);
+    validate_optional_source(frame.call_source, is_nfc);
+    validate_optional_source(frame.definition_source, is_nfc);
+    validate_optional_source(frame.defer_source, is_nfc);
     if (frame.kind == ErrorFrameKind::Host && frame.definition_source) {
         throw RuntimeError(RuntimeErrorCode::TypeMismatch,
                            "host error frame cannot carry a definition source");
@@ -429,8 +426,9 @@ struct Heap::Impl {
         std::uint64_t generation{1};
     };
 
-    explicit Impl(const HeapLimits requested)
-        : limits(requested), heap_identity(allocate_heap_identity())
+    explicit Impl(const HeapLimits requested, const NfcPredicate requested_module_nfc)
+        : limits(requested), module_nfc(requested_module_nfc),
+          heap_identity(allocate_heap_identity())
     {
         if (limits.soft_collect_threshold > limits.max_live_bytes) {
             limits.soft_collect_threshold = limits.max_live_bytes;
@@ -802,6 +800,7 @@ struct Heap::Impl {
     }
 
     HeapLimits limits;
+    NfcPredicate module_nfc{};
     HeapStats stats;
     std::uint64_t heap_identity;
     std::vector<Slot> slots;
@@ -867,7 +866,10 @@ Heap::RootScope::RootScope(Heap& heap) : heap_(&heap), marker_(heap.impl_->tempo
 Heap::RootScope::~RootScope() { if (heap_) heap_->pop_temporary_roots(marker_); }
 void Heap::RootScope::add(const Value value) { heap_->add_temporary_root(value); }
 
-Heap::Heap(const HeapLimits limits) : impl_(new Impl(limits)) {}
+Heap::Heap(const HeapLimits limits, const NfcPredicate module_nfc)
+    : impl_(new Impl(limits, module_nfc))
+{
+}
 Heap::~Heap()
 {
     if (!impl_->torn_down) {
@@ -963,7 +965,7 @@ Value Heap::allocate_error(ErrorMetadata metadata)
         truncate_utf8(metadata.message, impl_->limits.max_error_message_bytes,
                       metadata.truncated.message_bytes);
         compact_string(metadata.message);
-        validate_optional_source(metadata.source);
+        validate_optional_source(metadata.source, impl_->module_nfc);
 
         if (metadata.stack.size() > impl_->limits.max_error_stack_frames) {
             const auto omitted = metadata.stack.size() - impl_->limits.max_error_stack_frames;
@@ -979,7 +981,9 @@ Value Heap::allocate_error(ErrorMetadata metadata)
             metadata.stack.swap(bounded);
             saturating_add(metadata.truncated.stack_frames, omitted);
         }
-        for (const auto& frame : metadata.stack) validate_error_frame(frame);
+        for (const auto& frame : metadata.stack) {
+            validate_error_frame(frame, impl_->module_nfc);
+        }
 
         if (metadata.cause) {
             impl_->validate_error_graph(*metadata.cause);

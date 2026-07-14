@@ -1,6 +1,7 @@
 #pragma once
 
 #include "script/SourceLocation.h"
+#include "script/runtime/ModuleSpecifier.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -296,7 +297,10 @@ public:
         std::size_t marker_;
     };
 
-    explicit Heap(HeapLimits limits = {});
+    // SourceReference and stack-frame module IDs use the same canonicalization
+    // boundary as imports. ASCII IDs need no callback; embedders that enable
+    // non-ASCII modules must inject their shared platform-independent NFC test.
+    explicit Heap(HeapLimits limits = {}, NfcPredicate module_nfc = nullptr);
     ~Heap();
     Heap(const Heap&) = delete;
     Heap& operator=(const Heap&) = delete;

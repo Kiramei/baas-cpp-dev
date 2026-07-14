@@ -461,6 +461,9 @@ identity-bearing, read-only-after-publication heap records for origin,
 `SourceReference`, bounded stack frames, cause, ordered suppressed Errors,
 JSON-safe details, allowlisted context, and explicit truncation metadata. All
 retained `Value` edges are same-heap validated and traced. Construction applies
+the shared `ModuleSpecifier` boundary to source/frame module IDs (including its
+fail-closed NFC policy), requires source IDs to name package modules, and keeps
+script/Host frame kinds consistent with their module kind. It also applies
 the ERR-008 message/stack/suppressed/detail defaults, rejects duplicate,
 wrong-kind, stale, cross-heap, self/obvious-cycle edges, and rejects a cause
 chain already beyond `max_error_cause_depth`; VM Error builders remain
