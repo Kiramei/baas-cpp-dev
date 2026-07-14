@@ -142,6 +142,9 @@ public:
         std::lock_guard<std::mutex> lifecycle_lock{lifecycle_mutex_};
         {
             std::lock_guard<std::mutex> lock{state_mutex_};
+            if (server_stop_failed_) {
+                return {false, HttpHostStartError::listener_start_failed, 0};
+            }
             if (state_ == HttpHostState::starting || state_ == HttpHostState::running
                 || state_ == HttpHostState::stopping) {
                 return {false, HttpHostStartError::already_active, port_};
@@ -158,6 +161,7 @@ public:
             port_ = 0;
             listen_returned_ = false;
             server_stop_requested_ = false;
+            server_stop_failed_ = false;
         }
         queue_rejections_.store(0, std::memory_order_relaxed);
 
@@ -376,6 +380,7 @@ public:
                     port_ = 0;
                     return true;
                 }
+                if (server_stop_failed_) return false;
                 state_ = HttpHostState::stopping;
                 server = server_.get();
                 if (server != nullptr && !server_stop_requested_) {
@@ -387,14 +392,10 @@ public:
                 try {
                     server->stop();
                 } catch (const std::exception&) {
-                    clear_server_stop_request_noexcept();
-                    record_stop_failure_noexcept(
-                        "cpp-httplib stop failed", false
-                    );
+                    record_server_stop_failure_noexcept();
                     return false;
                 } catch (...) {
-                    clear_server_stop_request_noexcept();
-                    record_stop_failure_noexcept("cpp-httplib stop failed", false);
+                    record_server_stop_failure_noexcept();
                     return false;
                 }
             }
@@ -425,6 +426,7 @@ public:
                 port_ = 0;
                 listen_returned_ = false;
                 server_stop_requested_ = false;
+                server_stop_failed_ = false;
             }
             return true;
         } catch (const std::exception&) {
@@ -524,11 +526,13 @@ private:
         } catch (...) {}
     }
 
-    void clear_server_stop_request_noexcept() noexcept
+    void record_server_stop_failure_noexcept() noexcept
     {
         try {
             std::lock_guard<std::mutex> lock{state_mutex_};
-            server_stop_requested_ = false;
+            state_ = HttpHostState::failed;
+            last_error_message_ = "cpp-httplib stop failed; ownership retained";
+            server_stop_failed_ = true;
         } catch (...) {}
     }
 
@@ -571,6 +575,7 @@ private:
     std::uint16_t port_ = 0;
     bool listen_returned_ = false;
     bool server_stop_requested_ = false;
+    bool server_stop_failed_ = false;
 };
 
 HttpHost::HttpHost(

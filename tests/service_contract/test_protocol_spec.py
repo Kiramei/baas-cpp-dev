@@ -15,6 +15,7 @@ WORKFLOW_PATH = ROOT / ".github" / "workflows" / "foundation-runtime.yml"
 ROUTER_SOURCE_PATH = ROOT / "src" / "service" / "router" / "Router.cpp"
 ROUTER_CORE_SPEC_PATH = ROOT / "docs" / "script-runtime" / "SERVICE_ROUTER_CORE.md"
 HTTP_HOST_SPEC_PATH = ROOT / "docs" / "script-runtime" / "SERVICE_HTTPLIB_ADAPTER.md"
+HTTP_HOST_SOURCE_PATH = ROOT / "src" / "service" / "http" / "HttpHost.cpp"
 ORIGIN_POLICY_SPEC_PATH = ROOT / "docs" / "script-runtime" / "SERVICE_ORIGIN_POLICY.md"
 HEALTH_READINESS_SPEC_PATH = ROOT / "docs" / "script-runtime" / "SERVICE_HEALTH_READINESS.md"
 
@@ -33,6 +34,7 @@ class ServiceProtocolSpecTests(unittest.TestCase):
         cls.router_source = ROUTER_SOURCE_PATH.read_text(encoding="utf-8")
         cls.router_core_spec = ROUTER_CORE_SPEC_PATH.read_text(encoding="utf-8")
         cls.http_host_spec = HTTP_HOST_SPEC_PATH.read_text(encoding="utf-8")
+        cls.http_host_source = HTTP_HOST_SOURCE_PATH.read_text(encoding="utf-8")
         cls.origin_policy_spec = ORIGIN_POLICY_SPEC_PATH.read_text(encoding="utf-8")
         cls.health_readiness_spec = HEALTH_READINESS_SPEC_PATH.read_text(encoding="utf-8")
 
@@ -169,6 +171,13 @@ class ServiceProtocolSpecTests(unittest.TestCase):
             "no browser/Tauri end-to-end test",
         ):
             self.assertIn(boundary, self.origin_policy_spec)
+
+    def test_http_stop_latch_is_never_cleared_after_transport_failure(self) -> None:
+        self.assertNotIn("clear_server_stop_request", self.http_host_source)
+        self.assertIn("server_stop_failed_ = true", self.http_host_source)
+        self.assertIn("if (server_stop_failed_) return false", self.http_host_source)
+        self.assertIn("ownership retained", self.http_host_source)
+        self.assertIn("later stop/start calls fail without retrying", self.http_host_spec)
 
     def test_spec_does_not_claim_phase_or_e2e_completion(self) -> None:
         self.assertIn("does not satisfy the Phase 4 exit criterion", self.spec)

@@ -82,11 +82,15 @@ a host request worker closes the listener but defers join to the owner, avoiding
 a worker joining itself through cpp-httplib's pool shutdown. The host records
 that accept-stop was requested or that `listen_after_bind()` already returned,
 so a deferred/repeated owner stop never calls cpp-httplib `Server::stop()` twice
-for the same listening socket. This latch resets before every new start. If an exceptional
-cleanup cannot prove the listener is joined, destruction retains the complete
-implementation ownership graph rather than destroying live Router/adapter/
-provider references or invoking a joinable `std::thread` destructor. This rare
-failure containment trades a bounded process-lifetime leak for memory safety.
+for the same listening socket. If `Server::stop()` throws, the latch remains
+consumed: later stop/start calls fail without retrying that possibly partially
+consumed socket, and destruction retains the ownership graph. The latch resets
+only when a fresh start is safe or a normal stop has destroyed the Server. If
+an exceptional cleanup cannot prove the listener is joined, destruction
+retains the complete implementation ownership graph rather than destroying
+live Router/adapter/provider references or invoking a joinable `std::thread`
+destructor. This rare failure containment trades a bounded process-lifetime
+leak for memory safety.
 
 This is a drain/join boundary, not complete graceful request semantics.
 cpp-httplib waits for queued and active handlers; the host cannot cancel an
