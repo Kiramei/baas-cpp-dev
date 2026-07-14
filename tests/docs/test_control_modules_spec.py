@@ -51,7 +51,7 @@ CLAUSE_TERMS = {
     "CTL-017": ("signed manifest", "capabilities", "import depth", "SEM006", "SEM007", "1,024"),
     "CTL-018": ("two-counter Minsky machine", "`counter = [counter];`", "`counter is null`", "`counter = counter[0];`", "Turing-complete"),
     "CTL-019": ("conformance:closure-recursion", "conformance:loop-branch-import", "BAAS_script_check", "SEM003", "PAR010"),
-    "CTL-020": ("does not yet implement", "bytecode/compiler/VM", "Host-version/capability resolution", "MUST remain pending", "Phase 1 as a whole"),
+    "CTL-020": ("SynchronousEvaluator", "FunctionRecord", "bytecode/compiler/production VM", "MUST remain pending", "Phase 1 as a whole"),
 }
 
 EXPECTED_BINDING_KINDS = ("Let", "Parameter", "Function", "Import", "For", "Catch")
@@ -312,7 +312,7 @@ class ControlAndModulesSpecificationTests(unittest.TestCase):
         self.assertIn("BAAS_script_module_graph_tests", self.cmake)
         self.assertIn("- [~] Implement modules, imports, and native-function registration.", self.roadmap)
         self.assertIn("rooted lexical environments", self.roadmap)
-        self.assertIn("closure\n  execution, evaluator/VM", self.roadmap)
+        self.assertIn("bounded synchronous AST evaluator executes collections, closures", self.roadmap)
 
     def test_constructive_turing_argument_has_both_unbounded_counters(self) -> None:
         clause = re.sub(r"\s+", " ", clause_bodies(self.spec)["CTL-018"])
@@ -334,11 +334,8 @@ class ControlAndModulesSpecificationTests(unittest.TestCase):
             re.MULTILINE,
         ))
         self.assertEqual(documented, EXPECTED_FUTURE_ERRORS)
-        self.assertIn(
-            "structured\npayload, stack, and source-span schema follows `ERRORS_AND_CLEANUP.md`",
-            self.spec,
-        )
-        self.assertIn("dynamic loader/VM limits are pending implementation", self.spec)
+        self.assertIn("Full\nstructured Error payload, stack capture, and unwinding", self.spec)
+        self.assertIn("Production VM/loader limits", self.spec)
 
     def test_language_docs_roadmap_and_ci_link_the_normative_spec(self) -> None:
         self.assertIn("`CONTROL_FLOW_AND_MODULES.md`", self.grammar)

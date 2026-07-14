@@ -10,11 +10,12 @@ by `ERRORS_AND_CLEANUP.md`; async execution and cancellation are defined by
 `ASYNC_TASKS.md`.
 
 The key words **MUST**, **MUST NOT**, **SHOULD**, and **MAY** are normative.
-The CTL identifiers are stable conformance anchors. Static behavior in this
-document is implemented by the checked-in parser, immutable AST, and lexical
-semantic analyzer. Dynamic evaluation, bytecode, the VM, and the module loader
-remain pending; normative rules for them are requirements, not completion
-claims.
+The CTL identifiers are stable conformance anchors. Static behavior is
+implemented by the checked-in parser, immutable AST, and lexical semantic
+analyzer. `SynchronousEvaluator` is a bounded deterministic AST conformance
+oracle for the synchronous subset described below. Bytecode, the production
+VM/loader, async execution, and Host adapters remain pending; normative rules
+for those boundaries are requirements, not completion claims.
 
 ## Normative clauses
 
@@ -22,7 +23,8 @@ claims.
 
 The source pipeline MUST be UTF-8 source to tokens to immutable source-spanned
 AST to lexical semantic analysis. A module containing any lexer, parser, or
-semantic error MUST NOT execute. The future production pipeline MUST continue
+semantic error MUST NOT execute. `SynchronousEvaluator` executes only that
+validated AST. The future production pipeline MUST continue
 from the validated AST to verified bytecode and a stack VM as selected by
 `ADR-0001-runtime-architecture.md`; an AST evaluator MAY exist only as a
 conformance oracle.
@@ -311,8 +313,11 @@ Validation and execution MUST bound source bytes, module count, import depth,
 AST nodes/depth, bytecode size, call depth, instructions, heap/external bytes,
 host queues, and initialization work. Limit exhaustion and cancellation MUST
 produce stable errors and leave the active package record and ready cache
-entries unchanged. These dynamic loader/VM limits are pending implementation;
-existing `SEM006` and `SEM007` provide the AST node/depth foundation.
+entries unchanged. The synchronous evaluator enforces pre-parse per-module and
+package source-byte limits plus module, import-depth, instruction, call-depth,
+value-stack, collection, function, and heap limits. Production VM/loader limits
+for bytecode, external memory, host queues, deadlines, and cancellation remain
+pending; `SEM006` and `SEM007` provide the AST node/depth foundation.
 
 The checked-in static diagnostic anchors are:
 
@@ -328,9 +333,10 @@ The checked-in static diagnostic anchors are:
 | `SEM008` | malformed immutable AST |
 | `SEM009` | forbidden non-local or suspending operation in a defer cleanup body |
 
-The future VM/loader MUST use these stable dynamic categories. Their structured
-payload, stack, and source-span schema follows `ERRORS_AND_CLEANUP.md`; runtime
-implementation remains pending:
+The evaluator uses the applicable stable dynamic categories below with module,
+source span, and step metadata. The future VM/loader MUST preserve them. Full
+structured Error payload, stack capture, and unwinding follow
+`ERRORS_AND_CLEANUP.md` and remain pending:
 
 | Future stable category | Required dynamic condition |
 | --- | --- |
@@ -455,11 +461,19 @@ specifier validation. `ModuleGraph` implements bounded deterministic package
 dependency validation and cycle reporting. `SyntaxCheck` composes the
 non-executing compile stages.
 
-The repository does not yet implement closure execution,
-bytecode/compiler/VM evaluation, runtime recursion/control transfer, manifest
-parsing/membership and Host-version/capability resolution, defensive runtime
-`Loading` cycle detection, namespace publication, module initialization/cache,
-or native module registration. These items MUST remain pending in Phase 2 until executable
+`SynchronousEvaluator` now implements bounded synchronous AST evaluation,
+runtime recursion/control transfer, closure calls, defensive runtime `Loading`
+detection, lazy package initialization, stable failure caching, and namespace
+identity caching. Its bounded `FunctionRecord` side table owns rooted lexical
+`Environment` closures while heap `FunctionMetadata.captures` remains empty;
+unreachable side-table records are retained until evaluator teardown. This is
+an explicit transitional representation, not the final traced closure design
+selected by ADR-0002.
+
+The repository does not yet implement the bytecode/compiler/production VM,
+structured throw/catch/defer unwinding, async/task execution, manifest
+activation, Host-version/capability resolution, or callable native module
+registration. These items MUST remain pending in Phase 2 until executable
 conformance evidence exists. Completing this normative Phase 1 specification
 MUST NOT be described as completing the VM, module loader, Turing-machine
 fixture execution, the general conformance corpus, or Phase 1 as a whole.
@@ -472,3 +486,6 @@ forms, binding/diagnostic inventories, semantic implementation anchors, the
 syntax-check fixture/CTest gate, canonical module-specifier foundation,
 deterministic package-graph foundation, module/package links, pending
 implementation statements, the ROADMAP status, and Foundation CI path wiring.
+`tests/script/SynchronousEvaluatorTests.cpp` additionally checks recursive and
+constructive two-counter execution, closure survival across heap collection,
+module cache/laziness/failure identity, and deterministic budget failures.

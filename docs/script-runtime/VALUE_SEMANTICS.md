@@ -10,8 +10,9 @@ the subjects in its title.
 The key words **MUST**, **MUST NOT**, **SHOULD**, and **MAY** are normative.
 The clause identifiers are stable conformance anchors; renumbering one is a
 specification compatibility change. This document describes the checked-in
-`ValueHeap` and `JsonBridge` foundation. It does not claim that the pending
-evaluator, VM, module loader, or JSON text parser/serializer exists.
+`ValueHeap` and `JsonBridge` foundation plus the bounded synchronous AST
+evaluator. It does not claim that the production VM/loader or JSON text
+parser/serializer exists.
 
 ## Normative clauses
 
@@ -140,6 +141,13 @@ The cycle algorithm MUST terminate by remembering already compared reference
 pairs. Two independently allocated acyclic collections MAY be equal without
 being identical. Shared subgraphs do not change structural equality.
 
+There are two deliberate work-accounting layers. Each `ValueHeap::equals` call
+is cycle-aware and bounded by the heap's `HeapLimits` and reachable cell graph.
+`SynchronousEvaluator::EvaluationStats.collection_work` separately counts its
+own collection materialization, iteration, lookup, and preflight work; it does
+not cumulatively add nested heap equality traversal. This boundary is explicit
+until a future heap API exposes per-comparison traversal accounting.
+
 The grammar's `is` operator MUST test representation identity: two heap-backed
 values are identical only when heap identity, slot, and generation all match;
 two inline values are identical only when they have the same runtime kind and
@@ -181,7 +189,7 @@ The grammar accepts an expression before `:` in a map literal so parsing can
 recover uniformly, but evaluation MUST require the result to be a string and
 otherwise report `RT001_TYPE_MISMATCH`. Member syntax is string-key access
 sugar. A missing lookup remains an absent optional result at the heap boundary;
-the pending evaluator MUST translate bracket/member access for that result to
+the evaluator MUST translate bracket/member access for that result to
 `RT016_INDEX_OUT_OF_RANGE` rather than silently insert a key. Map assignment is
 an upsert and follows the stable-position rule above.
 
@@ -200,6 +208,13 @@ and closed state. Closing MUST be idempotent, MUST queue host release work only
 once, and MUST NOT perform host I/O from the collector. Collection or teardown
 of an open handle also queues a release record. The owning adapter strand MUST
 drain that bounded queue.
+
+The synchronous AST evaluator currently uses a bounded side table whose
+`FunctionRecord` entries own rooted lexical `Environment` objects. Its heap
+`FunctionMetadata.captures` vectors are intentionally empty, and records are
+not reclaimed before evaluator teardown. Heap collection therefore cannot
+invalidate a reachable callable, but this non-reclaiming transitional side
+table MUST NOT be treated as ADR-0002's final traced closure representation.
 
 ### VAL-010 — Mutability, aliasing, and lifetime
 
@@ -385,13 +400,15 @@ at evaluation. Postfix index/member syntax and `in`, `==`, `!=`, `is`, `not is`,
 and truthiness rules.
 
 This specification freezes semantics, not implementation completion. The
-checked-in parser, `ValueHeap`, and `JsonBridge` provide evidence for the
-clauses they implement; evaluator/VM execution, language-level lookup errors,
-arithmetic errors, modules/imports, and JSON text I/O remain separately pending
-ROADMAP work. Those pending components MUST conform to these clauses rather
-than infer Python or JavaScript coercion behavior. The specialized ERR-018
-Error-envelope writer does not change this boundary: it emits only the fixed
-ERR-003 schema and is not a general `JsonValue` text parser/serializer.
+checked-in parser, `ValueHeap`, `JsonBridge`, and `SynchronousEvaluator` provide
+evidence for the clauses they implement. The evaluator covers synchronous
+lookup/arithmetic, collections, functions and package imports. Bytecode,
+production VM/loader execution, Host imports, structured unwinding, async, and
+JSON text I/O remain separately pending ROADMAP work. Those pending components
+MUST conform to these clauses rather than infer Python or JavaScript coercion
+behavior. The specialized ERR-018 Error-envelope writer does not change this
+boundary: it emits only the fixed ERR-003 schema and is not a general
+`JsonValue` text parser/serializer.
 
 ## Machine-checked evidence
 

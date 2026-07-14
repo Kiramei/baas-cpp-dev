@@ -41,7 +41,7 @@ CLAUSE_TERMS = {
     "VAL-015": ("max_live_bytes", "max_cells", "max_collection_work", "max_pending_release_records"),
     "VAL-016": ("max_depth", "max_nodes", "max_string_bytes", "max_total_bytes", "max_work", "1,024"),
     "VAL-017": ("RT001_TYPE_MISMATCH", "RT011_INVALID_UTF8", "RT018_JSON_DEPTH_LIMIT_EXCEEDED", "RT023_JSON_DUPLICATE_KEY"),
-    "VAL-018": ("LANGUAGE_GRAMMAR.md", "evaluator/VM execution", "JSON text I/O", "Python or JavaScript"),
+    "VAL-018": ("LANGUAGE_GRAMMAR.md", "SynchronousEvaluator", "JSON text I/O", "Python or JavaScript"),
 }
 
 EXPECTED_ERRORS = (

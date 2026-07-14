@@ -136,8 +136,9 @@ pending.
   control flow. Inline values, every heap cell kind, ordered collections,
   generational references, roots, tracing GC, budgets, equality/truthiness,
   JSON-safety checks, host release queues, and rooted lexical environments with
-  parent lookup, shadowing, mutability, and assignment are implemented; closure
-  execution, evaluator/VM, recursion, and control flow remain pending.
+  parent lookup, shadowing, mutability, and assignment are implemented. The
+  bounded synchronous AST evaluator executes collections, closures, recursion,
+  branches, and loops; bytecode and production VM execution remain pending.
 - [x] Implement the dependency-free ordered JSON value bridge and checked
   JSON-safe cross-context deep-copy foundation.
 - [~] Implement modules, imports, and native-function registration. Bounded,
@@ -148,8 +149,9 @@ pending.
   the immutable metadata Host registry now validates canonical descriptors,
   selects the greatest sufficient same-major minor, and resolves manifest
   modules/exports through declared-policy-platform-task capability intersection.
-  Runtime loading states, namespaces, initialization/cache, callable native
-  registration, and every real Host adapter remain pending.
+  The synchronous evaluator has lazy package loading states, namespace identity,
+  initialization and stable failure caches. Manifest activation, the production
+  loader, callable native registration, and every real Host adapter remain pending.
 - [~] Implement structured exceptions, stack traces, cancellation, and limits.
   The total allocation-free RT001-RT023 language-code/catchability mapping is
   implemented from the stable `LanguageErrorCode` table, semantic analysis
@@ -161,7 +163,9 @@ pending.
   fallback, and stale/GC failure containment. VM stack capture/unwinding,
   script-visible Error members, cause-chain normalization, executor/host
   translation, service diagnostic integration, cancellation propagation, and
-  execution limits remain pending.
+  production VM limits remain pending. The synchronous evaluator enforces
+  source, module, import, step, call, value-stack, collection, function, and
+  heap budgets with stable language errors.
 - [x] Implement the bounded cooperative executor, queue backpressure, task
   handles, cancellation requests, and drain/cancel-pending shutdown.
 - [ ] Integrate language-level task/future primitives with the VM and executor.
