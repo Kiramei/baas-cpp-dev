@@ -57,8 +57,9 @@ EXPECTED_SEMANTIC_CODES = (
     ("node_limit", "SEM006"),
     ("nesting_limit", "SEM007"),
     ("malformed_ast", "SEM008"),
+    ("cleanup_control", "SEM009"),
 )
-EXPECTED_DOCUMENTED_SEMANTICS = tuple(f"SEM{number:03d}" for number in range(1, 9))
+EXPECTED_DOCUMENTED_SEMANTICS = tuple(f"SEM{number:03d}" for number in range(1, 10))
 EXPECTED_CONFORMANCE_IDS = (
     "turing-machine",
     "closure-recursion",

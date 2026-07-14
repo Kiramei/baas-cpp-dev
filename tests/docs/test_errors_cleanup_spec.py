@@ -25,8 +25,12 @@ EXECUTOR_HEADER_PATH = ROOT / "include" / "script" / "runtime" / "BoundedExecuto
 ERROR_TRANSLATION_HEADER_PATH = ROOT / "include" / "script" / "runtime" / "ErrorTranslation.h"
 ERROR_TRANSLATION_SOURCE_PATH = ROOT / "src" / "script" / "runtime" / "ErrorTranslation.cpp"
 PARSER_TEST_PATH = ROOT / "tests" / "script" / "ParserTests.cpp"
+SEMANTIC_TEST_PATH = ROOT / "tests" / "script" / "SemanticAnalyzerTests.cpp"
 VALID_FIXTURE_PATH = ROOT / "tests" / "script" / "fixtures" / "errors_cleanup_valid.baas"
 INVALID_FIXTURE_PATH = ROOT / "tests" / "script" / "fixtures" / "errors_cleanup_invalid.baas"
+SEMANTIC_INVALID_FIXTURE_PATH = (
+    ROOT / "tests" / "script" / "fixtures" / "errors_cleanup_semantic_invalid.baas"
+)
 CMAKE_PATH = ROOT / "cmake" / "ScriptRuntime.cmake"
 WORKFLOW_PATH = ROOT / ".github" / "workflows" / "foundation-runtime.yml"
 
@@ -51,7 +55,7 @@ CLAUSE_TERMS = {
     "ERR-016": ("outermost native ABI boundary", "MUST NOT", "`HostInternal`", "`std::bad_alloc`"),
     "ERR-017": ("RT001_TYPE_MISMATCH", "RT023_JSON_DUPLICATE_KEY", "`runtime_code`", "`TaskCancelled`"),
     "ERR-018": ("deterministic", "non-throwing", "same twelve ERR-003 fields", "correlation id", "redact"),
-    "ERR-019": ("conformance:error-cleanup-valid", "conformance:error-cleanup-invalid", "`PAR014`", "not claimed"),
+    "ERR-019": ("conformance:error-cleanup-valid", "conformance:error-cleanup-invalid", "conformance:error-cleanup-semantic-invalid", "`SEM009`"),
     "ERR-020": ("implemented foundations", "does not yet implement", "MUST remain pending", "Phase 1 as a whole"),
 }
 
@@ -137,7 +141,7 @@ EXPECTED_PARSE_CODES = (
     "PAR014", "PAR018", "PAR019",
 )
 EXPECTED_SEMANTIC_CODES = (
-    "SEM001", "SEM002", "SEM003", "SEM004", "SEM006", "SEM007", "SEM008",
+    "SEM001", "SEM002", "SEM003", "SEM004", "SEM006", "SEM007", "SEM008", "SEM009",
 )
 
 
@@ -176,8 +180,10 @@ class ErrorsAndCleanupSpecificationTests(unittest.TestCase):
         cls.error_translation_header = read(ERROR_TRANSLATION_HEADER_PATH)
         cls.error_translation_source = read(ERROR_TRANSLATION_SOURCE_PATH)
         cls.parser_tests = read(PARSER_TEST_PATH)
+        cls.semantic_tests = read(SEMANTIC_TEST_PATH)
         cls.valid_fixture = read(VALID_FIXTURE_PATH)
         cls.invalid_fixture = read(INVALID_FIXTURE_PATH)
+        cls.semantic_invalid_fixture = read(SEMANTIC_INVALID_FIXTURE_PATH)
         cls.cmake = read(CMAKE_PATH)
         cls.workflow = read(WORKFLOW_PATH)
 
@@ -234,8 +240,17 @@ class ErrorsAndCleanupSpecificationTests(unittest.TestCase):
         self.assertEqual(lex_codes, EXPECTED_LEX_CODES)
         self.assertEqual(parse_codes, EXPECTED_PARSE_CODES)
         self.assertEqual(semantic_codes, EXPECTED_SEMANTIC_CODES)
-        self.assertNotIn('"SEM009"', self.semantic_header + self.semantic_source)
-        self.assertIn("future cleanup-control validator reserves\n`SEM009`", self.spec)
+        self.assertIn('cleanup_control{"SEM009"}', self.semantic_header)
+        for anchor in (
+            'reject_cleanup_control(*statement, "return")',
+            'reject_cleanup_control(*statement, "break")',
+            'reject_cleanup_control(*statement, "continue")',
+            'reject_cleanup_control(*expression, "await")',
+            'reject_cleanup_control(*statement, "nested defer")',
+            "previous_cleanup_depth(analyzer.cleanup_body_depth_)",
+        ):
+            self.assertIn(anchor, self.semantic_source)
+        self.assertIn("count_code(invalid_result, semantic_diagnostic_code::cleanup_control) == 5", self.semantic_tests)
 
     def test_throw_catch_defer_grammar_ast_and_semantics_are_anchored(self) -> None:
         for anchor in (
@@ -342,15 +357,27 @@ class ErrorsAndCleanupSpecificationTests(unittest.TestCase):
             self.spec,
             re.DOTALL,
         )
+        semantic_invalid_example = re.search(
+            r"<!-- conformance:error-cleanup-semantic-invalid -->\s*```baas\n(.*?)\n```",
+            self.spec,
+            re.DOTALL,
+        )
         self.assertIsNotNone(valid_example)
         self.assertIsNotNone(invalid_example)
+        self.assertIsNotNone(semantic_invalid_example)
         self.assertEqual(valid_example.group(1) + "\n", self.valid_fixture)
         self.assertEqual(invalid_example.group(1) + "\n", self.invalid_fixture)
+        self.assertEqual(
+            semantic_invalid_example.group(1) + "\n",
+            self.semantic_invalid_fixture,
+        )
         for anchor in (
             "BAAS_script_check_errors_cleanup_valid_cli",
             "tests/script/fixtures/errors_cleanup_valid.baas",
             "BAAS_script_check_errors_cleanup_invalid_cli",
             "tests/script/fixtures/errors_cleanup_invalid.baas",
+            "BAAS_script_check_errors_cleanup_semantic_invalid_cli",
+            "tests/script/fixtures/errors_cleanup_semantic_invalid.baas",
             "WILL_FAIL TRUE",
         ):
             self.assertIn(anchor, self.cmake)

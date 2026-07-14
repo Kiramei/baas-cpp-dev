@@ -31,6 +31,13 @@ bool has_code(const SemanticResult& result, const std::string_view code)
     });
 }
 
+std::size_t count_code(const SemanticResult& result, const std::string_view code)
+{
+    return static_cast<std::size_t>(std::count_if(
+        result.diagnostics.begin(), result.diagnostics.end(),
+        [&](const Diagnostic& diagnostic) { return diagnostic.code == code; }));
+}
+
 const BindingInfo* binding_named(const SemanticResult& result, const std::string_view name,
                                  const BindingKind kind)
 {
@@ -207,6 +214,49 @@ void test_malformed_ast_is_rejected_safely()
           "missing required function body should report SEM008 instead of dereferencing null");
 }
 
+void test_defer_cleanup_control_restrictions()
+{
+    const auto invalid = parse(
+        "async fn invalid(work) {\n"
+        "  while (true) {\n"
+        "    defer {\n"
+        "      return;\n"
+        "      break;\n"
+        "      continue;\n"
+        "      await work();\n"
+        "      defer work();\n"
+        "    }\n"
+        "  }\n"
+        "}\n");
+    check(!invalid.has_errors(), "cleanup-control fixture must parse before semantic validation");
+    const auto invalid_result = analyze_semantics(invalid.program);
+    check(count_code(invalid_result, semantic_diagnostic_code::cleanup_control) == 5,
+          "return, break, continue, await and nested defer must each report SEM009");
+
+    const auto nested_function = parse(
+        "fn valid(cleanup) {\n"
+        "  defer {\n"
+        "    async fn later(work) { defer work(); return await work(); }\n"
+        "    cleanup();\n"
+        "  }\n"
+        "}\n");
+    check(!nested_function.has_errors(), "nested-function cleanup fixture must parse");
+    const auto nested_result = analyze_semantics(nested_function.program);
+    check(!has_code(nested_result, semantic_diagnostic_code::cleanup_control),
+          "ERR-015 cleanup restrictions must not cross a nested function boundary");
+
+    const auto restored_cleanup = parse(
+        "fn invalid_after_nested(cleanup) {\n"
+        "  defer {\n"
+        "    async fn later(work) { return await work(); }\n"
+        "    return;\n"
+        "  }\n"
+        "}\n");
+    const auto restored_result = analyze_semantics(restored_cleanup.program);
+    check(count_code(restored_result, semantic_diagnostic_code::cleanup_control) == 1,
+          "cleanup restriction must resume after leaving a nested function");
+}
+
 }  // namespace
 
 int main()
@@ -218,6 +268,7 @@ int main()
     test_declaration_order_is_conservative();
     test_node_and_depth_limits();
     test_malformed_ast_is_rejected_safely();
+    test_defer_cleanup_control_restrictions();
 
     if (failures != 0) {
         std::cerr << failures << " assertion(s) failed\n";

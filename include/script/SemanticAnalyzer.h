@@ -20,6 +20,7 @@ inline constexpr std::string_view duplicate_parameter{"SEM004"};
 inline constexpr std::string_view node_limit{"SEM006"};
 inline constexpr std::string_view nesting_limit{"SEM007"};
 inline constexpr std::string_view malformed_ast{"SEM008"};
+inline constexpr std::string_view cleanup_control{"SEM009"};
 }  // namespace semantic_diagnostic_code
 
 using BindingId = std::size_t;

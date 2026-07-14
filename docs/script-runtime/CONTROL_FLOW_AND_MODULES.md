@@ -310,6 +310,7 @@ The checked-in static diagnostic anchors are:
 | `SEM006` | AST node limit |
 | `SEM007` | semantic nesting limit, hard ceiling 1,024 |
 | `SEM008` | malformed immutable AST |
+| `SEM009` | forbidden non-local or suspending operation in a defer cleanup body |
 
 The future VM/loader MUST use these stable dynamic categories. Their structured
 payload, stack, and source-span schema follows `ERRORS_AND_CLEANUP.md`; runtime

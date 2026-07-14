@@ -136,7 +136,8 @@ VM/task/host bridge boundary are checked in Foundation CI.
 - [ ] Implement modules, imports, and native-function registration.
 - [~] Implement structured exceptions, stack traces, cancellation, and limits.
   The total allocation-free RT001-RT023 language-code/catchability mapping is
-  implemented; Error envelopes, stack capture, VM unwinding, executor/host
+  implemented, and semantic analysis enforces ERR-015 cleanup-body restrictions
+  with `SEM009`; Error envelopes, stack capture, VM unwinding, executor/host
   translation, cancellation propagation, and execution limits remain pending.
 - [x] Implement the bounded cooperative executor, queue backpressure, task
   handles, cancellation requests, and drain/cancel-pending shutdown.

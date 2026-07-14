@@ -44,9 +44,8 @@ Existing `LEXnnn`, `PARnnn`, and `SEMnnn` spellings are stable. A code MUST NOT
 be reused for a different condition; gaps remain reserved. Human-readable
 messages MAY improve without changing the code. Draft 0.1 currently anchors
 `LEX001`–`LEX006`, `PAR001`–`PAR011`, `PAR014`, `PAR018`, `PAR019`, `SEM001`–
-`SEM004`, and `SEM006`–`SEM008`. The future cleanup-control validator reserves
-`SEM009` for a forbidden non-local or suspending operation described by
-ERR-015; it is not yet implemented.
+`SEM004`, and `SEM006`–`SEM009`. `SEM009` reports a forbidden non-local or
+suspending operation in a defer cleanup body under ERR-015.
 
 Every location refers to the original UTF-8 byte sequence. `byte_offset` is
 zero-based; `line` and `column` are one-based; columns count Unicode scalar
@@ -319,8 +318,8 @@ The nested statement of a defer MAY use any grammar statement, including calls,
 assignments, blocks, branches, loops, declarations, `try`/`catch`, and `throw`,
 except for the following restriction. Outside a nested function declaration or
 expression it MUST NOT contain `return`, `break`, `continue`, `await`, or
-another `defer`; the future semantic validator MUST report `SEM009` at the
-forbidden node. This prevents cleanup from replacing an unwind target,
+another `defer`; the semantic validator MUST report `SEM009` at the forbidden
+node. This prevents cleanup from replacing an unwind target,
 suspending indefinitely, or growing the active cleanup stack while draining it.
 
 Each frame/context MUST bound registered defer count, cleanup instructions,
@@ -436,21 +435,33 @@ VM conformance test MUST therefore return `"open"` after closing the handle.
 defer cleanup();
 ```
 
-The invalid example MUST retain `PAR014`. A future semantic fixture containing
-`fn bad() { defer return; }` MUST retain reserved `SEM009`; it is intentionally
-not claimed by the current syntax checker.
+The invalid example MUST retain `PAR014`. The semantic fixture below MUST retain
+`SEM009`.
+
+<!-- conformance:error-cleanup-semantic-invalid -->
+```baas
+fn invalid(cleanup) {
+    defer return;
+}
+```
+
+The semantic invalid example MUST parse successfully and then report `SEM009`.
+The validator also rejects `break`, `continue`, `await`, and nested `defer`
+inside a cleanup body, but resets the restriction across a nested function
+declaration or expression as required by ERR-015.
 
 ### ERR-020 — Implementation and completion boundary
 
 `SourceLocation.h`, `Diagnostic.h`, lexer/parser diagnostics, source-spanned AST
-nodes, catch binding analysis, `PAR014`, and `ValueHeap` Error cells are
-implemented foundations. The current `ErrorMetadata` stores only code, message,
+nodes, catch binding analysis, `PAR014`, the `SEM009` cleanup-control validator,
+and `ValueHeap` Error cells are implemented foundations. The current
+`ErrorMetadata` stores only code, message,
 optional span, and traced details; it does not yet satisfy ERR-003 stack,
 source-reference, cause, suppressed, context, immutability API, or envelope
 requirements.
 
 The repository does not yet implement VM execution, Error construction/member
-access, `SEM009`, throw/catch unwinding, defer registration/execution, stack
+access, throw/catch unwinding, defer registration/execution, stack
 capture, terminal-error propagation, host ABI guards, domain mappings, or error
 or public diagnostic-envelope serialization. Those MUST remain pending in Phase
 2 until executable conformance evidence exists. Completing this normative Phase

@@ -44,19 +44,35 @@ private:
     struct FunctionGuard {
         Engine& analyzer;
         std::optional<FunctionId> previous;
+        std::size_t previous_cleanup_depth;
         FunctionGuard(Engine& analyzer, const Node* node)
-            : analyzer(analyzer), previous(analyzer.current_function_)
+            : analyzer(analyzer), previous(analyzer.current_function_),
+              previous_cleanup_depth(analyzer.cleanup_body_depth_)
         {
             const auto id = analyzer.result_.functions.size();
             analyzer.result_.functions.push_back({id, node, previous, {}});
             analyzer.current_function_ = id;
+            // A function declared inside a defer body is executed later as an
+            // ordinary function. ERR-015 restrictions do not cross that
+            // function boundary.
+            analyzer.cleanup_body_depth_ = 0;
             analyzer.scopes_.emplace_back();
         }
         ~FunctionGuard()
         {
             analyzer.scopes_.pop_back();
             analyzer.current_function_ = previous;
+            analyzer.cleanup_body_depth_ = previous_cleanup_depth;
         }
+    };
+
+    struct CleanupBodyGuard {
+        Engine& analyzer;
+        explicit CleanupBodyGuard(Engine& analyzer) : analyzer(analyzer)
+        {
+            ++analyzer.cleanup_body_depth_;
+        }
+        ~CleanupBodyGuard() { --analyzer.cleanup_body_depth_; }
     };
 
     [[nodiscard]] bool enter(const Node& node, const std::size_t depth)
@@ -217,12 +233,16 @@ private:
                 break;
             }
             case NodeKind::ReturnStatement: {
+                reject_cleanup_control(*statement, "return");
                 const auto& returned = static_cast<const ReturnStatement&>(*statement);
                 if (returned.value) visit_expression(returned.value->get(), depth + 1);
                 break;
             }
             case NodeKind::BreakStatement:
+                reject_cleanup_control(*statement, "break");
+                break;
             case NodeKind::ContinueStatement:
+                reject_cleanup_control(*statement, "continue");
                 break;
             case NodeKind::ImportStatement: {
                 const auto& imported = static_cast<const ImportStatement&>(*statement);
@@ -241,9 +261,12 @@ private:
                 visit_statement(attempt.catch_block.get(), depth + 1);
                 break;
             }
-            case NodeKind::DeferStatement:
+            case NodeKind::DeferStatement: {
+                reject_cleanup_control(*statement, "nested defer");
+                CleanupBodyGuard cleanup(*this);
                 visit_statement(static_cast<const DeferStatement&>(*statement).statement.get(), depth + 1);
                 break;
+            }
             default:
                 break;
         }
@@ -336,6 +359,7 @@ private:
                 break;
             }
             case NodeKind::AwaitExpression:
+                reject_cleanup_control(*expression, "await");
                 visit_expression(static_cast<const AwaitExpression&>(*expression).value.get(), depth + 1);
                 break;
             default:
@@ -355,11 +379,20 @@ private:
         visit_expression(target, depth);
     }
 
+    void reject_cleanup_control(const Node& node, const std::string_view operation)
+    {
+        if (cleanup_body_depth_ == 0) return;
+        diagnose(semantic_diagnostic_code::cleanup_control,
+                 std::string(operation) + " is not allowed in a defer cleanup body",
+                 node.span);
+    }
+
     SemanticOptions options_;
     std::size_t effective_max_depth_;
     SemanticResult result_;
     std::vector<std::unordered_map<std::string, BindingId>> scopes_;
     std::optional<FunctionId> current_function_;
+    std::size_t cleanup_body_depth_{0};
     std::size_t visited_nodes_{0};
     bool node_limit_reported_{false};
     bool depth_limit_reported_{false};
