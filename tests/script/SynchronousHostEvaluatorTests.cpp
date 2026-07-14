@@ -152,6 +152,319 @@ void test_no_host_constructor_preserves_explicit_boundary()
         "legacy no-host construction must preserve explicit HostUnavailable behavior");
 }
 
+void test_capability_adapter_and_syntax_gates_precede_arguments()
+{
+    struct GateCase { bool declared; bool policy; bool platform; bool task; };
+    const std::vector<GateCase> gates{
+        {false, true, true, true},
+        {true, false, true, true},
+        {true, true, false, true},
+        {true, true, true, false},
+    };
+    for (const auto gate : gates) {
+        auto calls = std::make_shared<std::atomic<int>>(0);
+        auto binding = runtime::make_in_memory_log_binding(
+            std::make_shared<runtime::InMemoryLogHost>());
+        binding.callback = [calls](const runtime::HostCallContext&,
+                                   const runtime::HostArguments&) {
+            ++*calls;
+            return runtime::HostResult::success();
+        };
+        auto bindings = std::make_shared<const runtime::SynchronousNativeBindingSet>(
+            std::vector<runtime::SynchronousNativeBinding>{std::move(binding)});
+        runtime::SynchronousEvaluator evaluator(
+            {{"main",
+              "import \"baas/log\" as log; log.emit(1 / 0, \"never\");\n"}},
+            log_options(bindings, gate.declared, gate.policy, gate.platform, gate.task));
+        expect_error(runtime::LanguageErrorCode::CapabilityDenied,
+            [&] { static_cast<void>(evaluator.execute("main")); },
+            "each missing capability layer must deny before evaluating arguments");
+        check(calls->load() == 0 && evaluator.stats().host_calls == 0,
+              "capability denial must not enter the callback");
+    }
+
+    auto empty_bindings = std::make_shared<const runtime::SynchronousNativeBindingSet>(
+        std::vector<runtime::SynchronousNativeBinding>{});
+    runtime::SynchronousEvaluator missing_adapter(
+        {{"main",
+          "import \"baas/log\" as log; log.emit(1 / 0, \"never\");\n"}},
+        log_options(empty_bindings));
+    expect_error(runtime::LanguageErrorCode::HostUnavailable,
+        [&] { static_cast<void>(missing_adapter.execute("main")); },
+        "missing adapter must win before a failing argument expression");
+
+    auto host = std::make_shared<runtime::InMemoryLogHost>();
+    auto bindings = std::make_shared<const runtime::SynchronousNativeBindingSet>(
+        std::vector<runtime::SynchronousNativeBinding>{
+            runtime::make_in_memory_log_binding(host)});
+    runtime::SynchronousEvaluator unknown(
+        {{"main",
+          "import \"baas/log\" as log;\n"
+          "log.emit(level = \"i\", message = \"m\", bogus = 1 / 0);\n"}},
+        log_options(bindings));
+    expect_error(runtime::LanguageErrorCode::CallArgumentUnknown,
+        [&] { static_cast<void>(unknown.execute("main")); },
+        "unknown named Host arguments must be rejected before any expression evaluation");
+    runtime::SynchronousEvaluator duplicate(
+        {{"main",
+          "import \"baas/log\" as log;\n"
+          "log.emit(\"i\", level = 1 / 0, message = \"m\");\n"}},
+        log_options(bindings));
+    expect_error(runtime::LanguageErrorCode::CallArgumentDuplicate,
+        [&] { static_cast<void>(duplicate.execute("main")); },
+        "duplicate Host arguments must be rejected before any expression evaluation");
+    check(host->events().empty(),
+          "syntax-gate failures must not produce an in-memory log effect");
+}
+
+void test_argument_shapes_aggregate_limits_and_named_binding()
+{
+    auto host = std::make_shared<runtime::InMemoryLogHost>();
+    auto bindings = std::make_shared<const runtime::SynchronousNativeBindingSet>(
+        std::vector<runtime::SynchronousNativeBinding>{
+            runtime::make_in_memory_log_binding(host)});
+
+    runtime::SynchronousEvaluator wrong_shape(
+        {{"main",
+          "import \"baas/log\" as log; log.emit(\"i\", \"m\", 7);\n"}},
+        log_options(bindings));
+    expect_error(runtime::LanguageErrorCode::HostValidationFailed,
+        [&] { static_cast<void>(wrong_shape.execute("main")); },
+        "log fields must be an ordered map rather than arbitrary JSON");
+    check(host->events().empty() && wrong_shape.stats().host_calls == 0,
+          "shape validation must finish before Host side effects");
+
+    auto node_limited_options = log_options(bindings);
+    node_limited_options.limits.max_conversion_nodes = 2;
+    runtime::SynchronousEvaluator node_limited(
+        {{"main",
+          "import \"baas/log\" as log; log.emit(\"i\", \"m\", {});\n"}},
+        node_limited_options);
+    expect_error(runtime::LanguageErrorCode::HostValidationFailed,
+        [&] { static_cast<void>(node_limited.execute("main")); },
+        "all Host arguments must share one aggregate node budget");
+    check(node_limited.stats().host_calls == 0 &&
+              node_limited.stats().host_conversion_nodes == 0,
+          "rejected aggregate arguments must not publish callback or conversion stats");
+
+    auto byte_limited_options = log_options(bindings);
+    byte_limited_options.limits.max_conversion_bytes = 6;
+    runtime::SynchronousEvaluator byte_limited(
+        {{"main",
+          "import \"baas/log\" as log; log.emit(\"a\", \"0123456789\");\n"}},
+        byte_limited_options);
+    expect_error(runtime::LanguageErrorCode::HostValidationFailed,
+        [&] { static_cast<void>(byte_limited.execute("main")); },
+        "later arguments must be converted under the remaining aggregate byte budget");
+    check(byte_limited.stats().host_calls == 0 && host->events().empty(),
+          "an oversized second argument must not enter the adapter");
+
+    runtime::SynchronousEvaluator named(
+        {{"main",
+          "import \"baas/log\" as log;\n"
+          "log.emit(message = \"named\", level = \"info\");\n"}},
+        log_options(bindings));
+    static_cast<void>(named.execute("main"));
+    const auto events = host->events();
+    check(events.size() == 1 && events[0].level == "info" &&
+              events[0].message == "named",
+          "named Host arguments must bind in catalog parameter order");
+}
+
+void test_budget_failure_cache_and_exception_translation()
+{
+    auto host = std::make_shared<runtime::InMemoryLogHost>();
+    auto bindings = std::make_shared<const runtime::SynchronousNativeBindingSet>(
+        std::vector<runtime::SynchronousNativeBinding>{
+            runtime::make_in_memory_log_binding(host)});
+    auto budgeted_options = log_options(bindings);
+    budgeted_options.budget_limits.push_back({"log_events", 1});
+    runtime::SynchronousEvaluator budgeted(
+        {{"main",
+          "import \"baas/log\" as log;\n"
+          "log.emit(\"i\", \"first\");\n"
+          "log.emit(1 / 0, \"never\");\n"}},
+        budgeted_options);
+    expect_error(runtime::LanguageErrorCode::TaskLimitExceeded,
+        [&] { static_cast<void>(budgeted.execute("main")); },
+        "named Host budget exhaustion must win before later argument evaluation");
+    check(host->events().size() == 1 && budgeted.stats().host_calls == 1,
+          "only the budget-admitted call may reach the adapter");
+
+    auto calls = std::make_shared<std::atomic<int>>(0);
+    auto timeout_binding = runtime::make_in_memory_log_binding(host);
+    timeout_binding.callback = [calls](const runtime::HostCallContext&,
+                                       const runtime::HostArguments&) {
+        ++*calls;
+        return runtime::HostResult::failure({
+            runtime::HostErrorCode::DeadlineExceeded, "safe timeout", true,
+            runtime::HostEffectState::Unknown,
+            runtime::JsonValue(runtime::JsonObject{
+                {"deadline_scope", runtime::JsonValue("call")}})});
+    };
+    auto timeout_bindings = std::make_shared<const runtime::SynchronousNativeBindingSet>(
+        std::vector<runtime::SynchronousNativeBinding>{std::move(timeout_binding)});
+    runtime::SynchronousEvaluator failed(
+        {{"main", "import \"baas/log\" as log; log.emit(\"i\", \"m\");\n"}},
+        log_options(timeout_bindings));
+    const auto first = expect_error(runtime::LanguageErrorCode::Timeout,
+        [&] { static_cast<void>(failed.execute("main")); },
+        "Host deadline discriminator must translate through ERR-016");
+    expect_error(runtime::LanguageErrorCode::Timeout,
+        [&] { static_cast<void>(failed.execute("main")); },
+        "failed module execution must rethrow its cached Host translation");
+    check(calls->load() == 1 &&
+              std::string(first.what()).find("host.log.emit.v1") != std::string::npos &&
+              std::string(first.what()).find("effect_state=unknown") != std::string::npos,
+          "Host failure cache must avoid repeated effects and retain safe identity/effect state");
+
+    auto bad_alloc_binding = runtime::make_in_memory_log_binding(host);
+    bad_alloc_binding.callback = [](const runtime::HostCallContext&,
+                                    const runtime::HostArguments&) -> runtime::HostResult {
+        throw std::bad_alloc();
+    };
+    auto allocation_bindings = std::make_shared<const runtime::SynchronousNativeBindingSet>(
+        std::vector<runtime::SynchronousNativeBinding>{std::move(bad_alloc_binding)});
+    runtime::SynchronousEvaluator allocation(
+        {{"main", "import \"baas/log\" as log; log.emit(\"i\", \"m\");\n"}},
+        log_options(allocation_bindings));
+    expect_error(runtime::LanguageErrorCode::MemoryLimitExceeded,
+        [&] { static_cast<void>(allocation.execute("main")); },
+        "callback bad_alloc must map without allocation to MemoryLimitExceeded");
+
+    auto throwing_binding = runtime::make_in_memory_log_binding(host);
+    throwing_binding.callback = [](const runtime::HostCallContext&,
+                                   const runtime::HostArguments&) -> runtime::HostResult {
+        throw std::runtime_error("secret credential");
+    };
+    auto throwing_bindings = std::make_shared<const runtime::SynchronousNativeBindingSet>(
+        std::vector<runtime::SynchronousNativeBinding>{std::move(throwing_binding)});
+    runtime::SynchronousEvaluator throwing(
+        {{"main", "import \"baas/log\" as log; log.emit(\"i\", \"m\");\n"}},
+        log_options(throwing_bindings));
+    const auto redacted = expect_error(runtime::LanguageErrorCode::HostInternal,
+        [&] { static_cast<void>(throwing.execute("main")); },
+        "unknown callback exceptions must translate to HostInternal");
+    check(std::string(redacted.what()).find("secret") == std::string::npos,
+          "native exception what() text must remain redacted");
+}
+
+void test_cache_transaction_permission_preflight_and_failure_cache()
+{
+    auto host = std::make_shared<runtime::InMemoryLogHost>();
+    auto bindings = std::make_shared<const runtime::SynchronousNativeBindingSet>(
+        std::vector<runtime::SynchronousNativeBinding>{
+            runtime::make_in_memory_log_binding(host)});
+    auto options = log_options(bindings);
+    runtime::HostResolutionRequest initial;
+    initial.declared_modules = options.permissions.declared_modules;
+    initial.declared_capabilities = options.permissions.declared_capabilities;
+    initial.policy_capabilities = options.permissions.policy_capabilities;
+    initial.platform_capabilities = options.permissions.platform_capabilities;
+    initial.task_capabilities = options.permissions.task_capabilities;
+    initial.imports.push_back({"baas/log", {}});
+    auto authorized = initial;
+    authorized.imports[0].exports.push_back("emit");
+    const auto initial_work = options.metadata->resolve(initial).validation_work;
+    const auto authorization_work = options.metadata->resolve(authorized).validation_work;
+    options.limits.max_registry_validation_work =
+        initial_work + authorization_work - 1;
+    runtime::SynchronousEvaluator transactional(
+        {
+            {"first", "import \"baas/log\" as log; log.emit(\"i\", \"m\");\n"},
+            {"second", "import \"baas/log\" as log; log.emit(\"i\", \"m\");\n"},
+        },
+        options);
+    expect_error(runtime::LanguageErrorCode::MemoryLimitExceeded,
+        [&] { static_cast<void>(transactional.execute("first")); },
+        "aggregate registry work exact-over must reject the first authorization");
+    expect_error(runtime::LanguageErrorCode::MemoryLimitExceeded,
+        [&] { static_cast<void>(transactional.execute("second")); },
+        "rolled-back authorization cache must retry rather than return a null callable");
+    check(transactional.stats().host_authorization_attempts == 2 &&
+              transactional.stats().authorized_host_exports == 0,
+          "transient authorization failures must leave no partially published cache entry");
+
+    auto no_adapter = std::make_shared<const runtime::SynchronousNativeBindingSet>(
+        std::vector<runtime::SynchronousNativeBinding>{});
+    runtime::SynchronousEvaluator stable_failure(
+        {
+            {"first", "import \"baas/log\" as log; log.emit(\"i\", \"m\");\n"},
+            {"second", "import \"baas/log\" as log; log.emit(\"i\", \"m\");\n"},
+        },
+        log_options(no_adapter));
+    expect_error(runtime::LanguageErrorCode::HostUnavailable,
+        [&] { static_cast<void>(stable_failure.execute("first")); },
+        "stable missing-adapter failure must be reported");
+    expect_error(runtime::LanguageErrorCode::HostUnavailable,
+        [&] { static_cast<void>(stable_failure.execute("second")); },
+        "stable missing-adapter failure must be cacheable across modules");
+    check(stable_failure.stats().host_authorization_attempts == 1,
+          "stable authorization failure must not repeat registry resolution");
+
+    auto too_many_permissions = log_options(bindings);
+    too_many_permissions.limits.max_permission_entries = 1;
+    expect_error(runtime::LanguageErrorCode::MemoryLimitExceeded,
+        [&] {
+            runtime::SynchronousEvaluator rejected(
+                {{"main", "import \"baas/log\" as log;\n"}},
+                too_many_permissions);
+        },
+        "permission vectors must be count-bounded before resolution request copies");
+    auto too_many_bytes = log_options(bindings);
+    too_many_bytes.limits.max_permission_string_bytes = 3;
+    expect_error(runtime::LanguageErrorCode::MemoryLimitExceeded,
+        [&] {
+            runtime::SynchronousEvaluator rejected(
+                {{"main", "import \"baas/log\" as log;\n"}},
+                too_many_bytes);
+        },
+        "permission vectors must be string-bounded before resolution request copies");
+}
+
+void test_owner_thread_and_reentry_guards()
+{
+    auto host = std::make_shared<runtime::InMemoryLogHost>();
+    auto bindings = std::make_shared<const runtime::SynchronousNativeBindingSet>(
+        std::vector<runtime::SynchronousNativeBinding>{
+            runtime::make_in_memory_log_binding(host)});
+    runtime::SynchronousEvaluator owner(
+        {{"main", "let value = 1;\n"}}, log_options(bindings));
+    std::atomic<int> observed{-1};
+    std::thread foreign([&] {
+        try {
+            static_cast<void>(owner.execute("main"));
+        } catch (const runtime::EvaluationError& error) {
+            observed = static_cast<int>(error.code());
+        }
+    });
+    foreign.join();
+    check(observed.load() == static_cast<int>(runtime::LanguageErrorCode::HostUnavailable),
+          "synchronous evaluator must reject execution from a non-owning thread");
+
+    runtime::SynchronousEvaluator* evaluator = nullptr;
+    std::atomic<int> reentry_code{-1};
+    auto reentrant_binding = runtime::make_in_memory_log_binding(host);
+    reentrant_binding.callback = [&](const runtime::HostCallContext&,
+                                     const runtime::HostArguments&) {
+        try {
+            static_cast<void>(evaluator->execute("main"));
+        } catch (const runtime::EvaluationError& error) {
+            reentry_code = static_cast<int>(error.code());
+        }
+        return runtime::HostResult::success();
+    };
+    auto reentrant_bindings = std::make_shared<const runtime::SynchronousNativeBindingSet>(
+        std::vector<runtime::SynchronousNativeBinding>{std::move(reentrant_binding)});
+    runtime::SynchronousEvaluator reentrant(
+        {{"main", "import \"baas/log\" as log; log.emit(\"i\", \"m\");\n"}},
+        log_options(reentrant_bindings));
+    evaluator = &reentrant;
+    static_cast<void>(reentrant.execute("main"));
+    check(reentry_code.load() == static_cast<int>(runtime::LanguageErrorCode::HostUnavailable),
+          "Host callbacks must not re-enter the owning evaluator");
+}
+
 }  // namespace
 
 int main()
@@ -160,6 +473,11 @@ int main()
         test_log_emit_vertical_slice_and_version_selection();
         test_import_dedup_dynamic_alias_and_gc_roots();
         test_no_host_constructor_preserves_explicit_boundary();
+        test_capability_adapter_and_syntax_gates_precede_arguments();
+        test_argument_shapes_aggregate_limits_and_named_binding();
+        test_budget_failure_cache_and_exception_translation();
+        test_cache_transaction_permission_preflight_and_failure_cache();
+        test_owner_thread_and_reentry_guards();
     } catch (const std::exception& error) {
         std::cerr << "UNCAUGHT: " << error.what() << '\n';
         return EXIT_FAILURE;

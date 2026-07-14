@@ -1,9 +1,10 @@
 # Capability-scoped Host API Contract (Draft 0.1)
 
-Status: Host adapters specified, not implemented. This document fixes the Phase
-1 contract surface. A metadata-only registry/permission-resolution foundation
-exists, but no named C++ adapter, callable binding, or parity implementation is
-claimed.
+Status: Host contracts specified; real adapters not implemented. This document
+fixes the Phase 1 contract surface. A metadata-only registry and a bounded
+synchronous `baas/log.emit` conformance bridge exist; no production named
+adapter or parity implementation is claimed.
+Most catalog Host APIs therefore remain specified, not implemented.
 
 The normative machine catalog is
 [`host-capabilities.v1.json`](host-capabilities.v1.json). Taxonomy coverage is
@@ -324,6 +325,39 @@ bindings, the sorted effective capability intersection, and validation work.
 After safe publication, concurrent `const resolve` calls are permitted because
 all registry state is immutable and every call owns its scratch state.
 
+## Bounded synchronous bridge evidence
+
+`SynchronousNativeBindingSet` is an immutable callback/contract registry keyed
+by binding ID. It is intentionally separate from `HostModuleRegistry`, so the
+metadata registry still contains no callback, adapter object, pointer, native
+descriptor, or device handle. Published bindings are bounded and accept only
+`thread_safe` execution with `preflight` cancellation. Parameters are ordered,
+required parameters cannot follow optional ones, and callbacks receive owning
+null/boolean/integer/finite-float/string/JSON-safe values only.
+
+`SynchronousEvaluator` deduplicates Host imports from validated source, resolves
+their exact versions with empty export sets, then calls `resolve` lazily for one
+accessed export at a time. Successful and stable failed authorizations are
+cached; transient allocation/aggregate-work failures roll back the cache entry.
+The manifest/policy/platform/task gate, adapter availability, owner thread,
+reentry, call shape, and named budget checks occur before argument evaluation.
+Each parameter conversion is narrowed by the remaining aggregate node/byte/work
+allowance before it copies data. Native callback entry is the first Host side
+effect boundary.
+
+The guarded callback returns `HostResult<HostValue>` or a structured `HostError`.
+All HOST001-HOST016 mappings and deadline/budget discriminators are total;
+`std::bad_alloc` uses an allocation-free boundary state that maps to
+`MemoryLimitExceeded`, while other C++ exceptions are redacted to `HostInternal`.
+The transitional evaluator preserves safe binding identity and `effect_state`
+in `EvaluationError` text, but does not claim the pending ERR-003 heap-Error
+unwinder.
+
+The only executable catalog vertical slice is `host.log.emit.v1(level:string,
+message:string, fields?:ordered-map<string,json>) -> null`, capability
+`log.emit`, budget `log_events`, through `InMemoryLogHost`. It is deterministic
+test/embedder evidence, not a real logging service adapter.
+
 Registry failures use the following stable foundation codes. They are package
 validation results, not adapter `HOSTnnn` statuses and not proof that a Host
 operation can execute:
@@ -380,9 +414,10 @@ normative in `host-capabilities.v1.json`.
 
 ## Explicitly pending implementation evidence
 
-The registry header/source and its metadata tests do not define or invoke
-`ProcessHost`, `HttpHost`, `SocketHost`, `ServiceHost`, or any other named
-adapter. Those remain proposed interface identities. Native registration into
-the VM, adapter availability, invocation-time argument policy, strands,
-cancellation injection, Host error translation, and Python-versus-C++ parity
-remain pending until their production code and tests exist.
+The production adapter set and metadata registry do not define or invoke
+`ProcessHost`, `HttpHost`, `SocketHost`, `ServiceHost`, a production `LogHost`,
+or any other real named adapter. Bytes,
+typed generational `host<T>`, async completion, cooperative cancellation,
+bounded pools, keyed strands, production VM registration, full manifest
+activation, ERR-003 unwinding, and Python-versus-C++ parity remain pending until
+their production code and tests exist.

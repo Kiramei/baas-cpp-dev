@@ -402,9 +402,11 @@ and truthiness rules.
 This specification freezes semantics, not implementation completion. The
 checked-in parser, `ValueHeap`, `JsonBridge`, and `SynchronousEvaluator` provide
 evidence for the clauses they implement. The evaluator covers synchronous
-lookup/arithmetic, collections, functions and package imports. Bytecode,
-production VM/loader execution, Host imports, structured unwinding, async, and
-JSON text I/O remain separately pending ROADMAP work. Those pending components
+lookup/arithmetic, collections, functions, package imports, and the bounded
+scalar/JSON side of the synchronous `baas/log.emit` conformance bridge. Bytecode,
+production VM/loader execution, bytes, typed Host handles, real Host adapters,
+structured unwinding, async, and JSON text I/O remain separately pending ROADMAP
+work. Those pending components
 MUST conform to these clauses rather than infer Python or JavaScript coercion
 behavior. The specialized ERR-018 Error-envelope writer does not change this
 boundary: it emits only the fixed ERR-003 schema and is not a general

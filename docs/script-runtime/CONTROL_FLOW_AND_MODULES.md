@@ -14,8 +14,10 @@ The CTL identifiers are stable conformance anchors. Static behavior is
 implemented by the checked-in parser, immutable AST, and lexical semantic
 analyzer. `SynchronousEvaluator` is a bounded deterministic AST conformance
 oracle for the synchronous subset described below. Bytecode, the production
-VM/loader, async execution, and Host adapters remain pending; normative rules
-for those boundaries are requirements, not completion claims.
+VM/loader and async execution remain pending. A bounded synchronous conformance
+bridge implements only the catalog `baas/log.emit` shape with an in-memory
+adapter; every real Host adapter remains pending. Normative rules for the wider
+boundaries are requirements, not completion claims.
 
 ## Normative clauses
 
@@ -470,10 +472,22 @@ unreachable side-table records are retained until evaluator teardown. This is
 an explicit transitional representation, not the final traced closure design
 selected by ADR-0002.
 
+The evaluator also implements a deliberately narrow synchronous Host bridge.
+It deduplicates actual `baas/*` imports, fixes the greatest compatible minor,
+and lazily authorizes each accessed export through the manifest/policy/platform/
+task intersection before evaluating call arguments. Native functions retain
+`ValueKind::Function` with an explicit `CallableKind` tag and opaque bounded
+side-table ID. `SynchronousNativeBindingSet` remains separate from the
+metadata-only `HostModuleRegistry`; it accepts only `thread_safe` + `preflight`
+callbacks and owning scalar/JSON-safe values. The executable catalog slice is
+`host.log.emit.v1` through `InMemoryLogHost`, which is test/embedder evidence and
+MUST NOT be described as the production LogHost.
+
 The repository does not yet implement the bytecode/compiler/production VM,
 structured throw/catch/defer unwinding, async/task execution, manifest
-activation, Host-version/capability resolution, or callable native module
-registration. These items MUST remain pending in Phase 2 until executable
+activation/signature verification, general native catalog registration, bytes,
+typed generational Host handles, cooperative cancellation, pools/strands, or
+real adapters. These items MUST remain pending in Phase 2 until executable
 conformance evidence exists. Completing this normative Phase 1 specification
 MUST NOT be described as completing the VM, module loader, Turing-machine
 fixture execution, the general conformance corpus, or Phase 1 as a whole.
@@ -489,3 +503,8 @@ implementation statements, the ROADMAP status, and Foundation CI path wiring.
 `tests/script/SynchronousEvaluatorTests.cpp` additionally checks recursive and
 constructive two-counter execution, closure survival across heap collection,
 module cache/laziness/failure identity, and deterministic budget failures.
+`tests/script/SynchronousHostTests.cpp` and
+`tests/script/SynchronousHostEvaluatorTests.cpp` check the bounded native ABI,
+all HOST001-HOST016 mappings, exception redaction, capability-before-argument
+ordering, lazy authorization/cache rollback, aggregate conversion limits,
+owner-thread/reentry gates, GC roots, and the in-memory log vertical slice.

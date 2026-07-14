@@ -6,6 +6,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[2]
 HEADER = (ROOT / "include/script/runtime/SynchronousEvaluator.h").read_text(encoding="utf-8")
 SOURCE = (ROOT / "src/script/runtime/SynchronousEvaluator.cpp").read_text(encoding="utf-8")
 TESTS = (ROOT / "tests/script/SynchronousEvaluatorTests.cpp").read_text(encoding="utf-8")
+HOST_TESTS = (ROOT / "tests/script/SynchronousHostEvaluatorTests.cpp").read_text(encoding="utf-8")
 CMAKE = (ROOT / "cmake/ScriptRuntime.cmake").read_text(encoding="utf-8")
 WORKFLOW = (ROOT / ".github/workflows/foundation-runtime.yml").read_text(encoding="utf-8")
 CONTROL = (ROOT / "docs/script-runtime/CONTROL_FLOW_AND_MODULES.md").read_text(encoding="utf-8")
@@ -43,6 +44,9 @@ class SynchronousEvaluatorFoundationTest(unittest.TestCase):
             self.assertIn(anchor, TESTS)
         self.assertIn("BAAS_script_sync_evaluator_tests", CMAKE)
         self.assertIn("BAAS_script_sync_evaluator_tests", WORKFLOW)
+        self.assertIn("BAAS_script_sync_host_tests", CMAKE)
+        self.assertIn("BAAS_script_sync_host_evaluator_tests", CMAKE)
+        self.assertIn("BAAS_script_sync_host_evaluator_tests", WORKFLOW)
 
     def test_transitional_closure_and_two_layer_equality_boundaries_are_explicit(self) -> None:
         self.assertIn("heap.allocate_function({CallableKind::Script, id, {}})", SOURCE)
@@ -54,7 +58,11 @@ class SynchronousEvaluatorFoundationTest(unittest.TestCase):
         self.assertIn("bounded synchronous AST evaluator", ROADMAP)
         self.assertIn("production VM execution remain pending", ROADMAP)
         self.assertIn("every real Host adapter remain pending", ROADMAP)
-        for forbidden in ("ErrorEnvelope", "HttpHost", "HostModuleRegistry"):
+        self.assertIn("SynchronousHostOptions", HEADER)
+        self.assertIn("authorize_host_member", SOURCE)
+        self.assertIn("test_capability_adapter_and_syntax_gates_precede_arguments", HOST_TESTS)
+        self.assertIn("test_cache_transaction_permission_preflight_and_failure_cache", HOST_TESTS)
+        for forbidden in ("ErrorEnvelope", "HttpHost"):
             self.assertNotIn(forbidden, HEADER)
             self.assertNotIn(forbidden, SOURCE)
 

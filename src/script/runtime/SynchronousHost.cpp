@@ -73,12 +73,14 @@ namespace {
     return std::nullopt;
 }
 
-[[nodiscard]] bool validate_json(const JsonValue& value, const JsonBridgeLimits limits) noexcept
+[[nodiscard]] bool validate_json(const JsonValue& value, const JsonBridgeLimits limits)
 {
     try {
         Heap heap;
         (void)json_to_heap_value(heap, value, limits);
         return true;
+    } catch (const std::bad_alloc&) {
+        throw;
     } catch (...) {
         return false;
     }
@@ -86,7 +88,7 @@ namespace {
 
 [[nodiscard]] bool validate_host_value(
     const HostValue& value, const HostValueType expected,
-    const JsonBridgeLimits limits) noexcept
+    const JsonBridgeLimits limits)
 {
     if (expected == HostValueType::OrderedStringJsonMap) {
         return value.type() == HostValueType::Json &&

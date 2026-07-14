@@ -152,8 +152,12 @@ pending.
   selects the greatest sufficient same-major minor, and resolves manifest
   modules/exports through declared-policy-platform-task capability intersection.
   The synchronous evaluator has lazy package loading states, namespace identity,
-  initialization and stable failure caches. Manifest activation, the production
-  loader, callable native registration, and every real Host adapter remain pending.
+  initialization and stable failure caches. It now deduplicates actual Host
+  imports, lazily authorizes accessed exports through the four capability layers,
+  dispatches explicitly tagged native functions through a bounded scalar/JSON
+  ABI, and executes the in-memory `baas/log.emit` conformance slice. Manifest
+  activation, the production loader, general native catalog registration,
+  bytes/typed handles/async/strands, and every real Host adapter remain pending.
 - [~] Implement structured exceptions, stack traces, cancellation, and limits.
   The total allocation-free RT001-RT023 language-code/catchability mapping is
   implemented from the stable `LanguageErrorCode` table, semantic analysis
@@ -163,11 +167,14 @@ pending.
   caller-buffer `ErrorEnvelope` boundary now emits deterministic ERR-003 JSON,
   including bounded recursive errors/details, explicit truncation, redacted
   fallback, and stale/GC failure containment. VM stack capture/unwinding,
-  script-visible Error members, cause-chain normalization, executor/host
+  script-visible Error members, cause-chain normalization, production executor/host
   translation, service diagnostic integration, cancellation propagation, and
   production VM limits remain pending. The synchronous evaluator enforces
   source, module, import, step, call, value-stack, collection, function, and
-  heap budgets with stable language errors.
+  heap budgets with stable language errors. Its narrow synchronous Host bridge
+  additionally implements the HOST001-HOST016 mapping, discriminator checks,
+  safe exception redaction, and allocation-free callback `bad_alloc` mapping,
+  while ERR-003 Host Error materialization remains pending.
 - [x] Implement the bounded cooperative executor, queue backpressure, task
   handles, cancellation requests, and drain/cancel-pending shutdown.
 - [ ] Integrate language-level task/future primitives with the VM and executor.

@@ -1890,11 +1890,14 @@ Value SynchronousEvaluator::Impl::invoke_native(
         host_options->bindings->limits());
     if (!result.ok()) {
         if (!result.has_error())
+        {
+            std::string message = "Host binding ";
+            message += function.binding->binding_id;
+            message += result.boundary_failure() == HostResult::BoundaryFailure::Allocation
+                ? " callback allocation failed" : " callback failed";
             fail(translate_host_boundary_failure(result.boundary_failure()),
-                 result.boundary_failure() == HostResult::BoundaryFailure::Allocation
-                     ? "Host callback allocation failed"
-                     : "Host callback failed",
-                 span);
+                 std::move(message), span);
+        }
         const auto translated = translate_host_error(result.error());
         const auto effect = result.error().effect_state == HostEffectState::NotStarted
             ? "not_started"
