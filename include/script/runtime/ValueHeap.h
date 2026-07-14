@@ -37,6 +37,7 @@ enum class RuntimeErrorCode {
     JsonStringLimitExceeded,
     JsonByteLimitExceeded,
     JsonWorkLimitExceeded,
+    JsonDuplicateKey,
 };
 
 [[nodiscard]] std::string_view runtime_error_code_name(RuntimeErrorCode code) noexcept;

@@ -469,6 +469,7 @@ std::string_view runtime_error_code_name(const RuntimeErrorCode code) noexcept
         case RuntimeErrorCode::JsonStringLimitExceeded: return "RT020_JSON_STRING_LIMIT_EXCEEDED";
         case RuntimeErrorCode::JsonByteLimitExceeded: return "RT021_JSON_BYTE_LIMIT_EXCEEDED";
         case RuntimeErrorCode::JsonWorkLimitExceeded: return "RT022_JSON_WORK_LIMIT_EXCEEDED";
+        case RuntimeErrorCode::JsonDuplicateKey: return "RT023_JSON_DUPLICATE_KEY";
     }
     return "RT000_UNKNOWN";
 }

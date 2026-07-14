@@ -278,6 +278,33 @@ void test_destination_gc_rooting_failure_atomicity_and_utf8()
           "invalid UTF-8 must not leave a destination cell");
 }
 
+void test_duplicate_object_keys_fail_before_destination_allocation()
+{
+    Heap destination(generous_heap_limits());
+    const auto sentinel = destination.allocate_list();
+    const auto sentinel_root = destination.add_root(sentinel);
+    const auto before = destination.stats();
+    const JsonValue duplicate(JsonArray{JsonValue(JsonObject{
+        {"same", JsonValue(std::string("first"))},
+        {"same", JsonValue(std::string("second"))},
+    })});
+
+    check_error(RuntimeErrorCode::JsonDuplicateKey,
+                [&] { (void)json_to_heap_value(destination, duplicate,
+                                               generous_bridge_limits()); },
+                "nested duplicate JSON object keys must be rejected");
+    const auto after = destination.stats();
+    check(after.live_cells == before.live_cells && after.live_bytes == before.live_bytes &&
+              after.string_bytes == before.string_bytes &&
+              after.collections == before.collections &&
+              destination.kind(sentinel) == ValueKind::List,
+          "duplicate-key rejection must occur before destination allocation or collection");
+    check(runtime_error_code_name(RuntimeErrorCode::JsonDuplicateKey) ==
+              "RT023_JSON_DUPLICATE_KEY",
+          "duplicate keys must expose their stable RT023 name");
+    check(destination.remove_root(sentinel_root), "duplicate-key sentinel root should be removable");
+}
+
 void dismantle_deep_json(JsonValue& value)
 {
     while (value.kind() == JsonKind::Array) {
@@ -327,6 +354,7 @@ int main()
     test_cycles_nonfinite_and_identity_values();
     test_each_bridge_budget_boundary();
     test_destination_gc_rooting_failure_atomicity_and_utf8();
+    test_duplicate_object_keys_fail_before_destination_allocation();
     test_hostile_ten_thousand_depth_is_rejected_iteratively();
 
     if (failures != 0) {

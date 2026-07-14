@@ -4,6 +4,7 @@
 #include <cmath>
 #include <limits>
 #include <memory>
+#include <string_view>
 #include <unordered_set>
 #include <utility>
 
@@ -287,6 +288,13 @@ struct InputNode {
             }
             case JsonKind::Object: {
                 const auto& entries = std::get<JsonObject>(frame.value->storage);
+                std::unordered_set<std::string_view> keys;
+                keys.reserve(entries.size());
+                for (const auto& entry : entries) {
+                    if (!keys.insert(entry.first).second)
+                        throw RuntimeError(RuntimeErrorCode::JsonDuplicateKey,
+                                           "duplicate JSON object key");
+                }
                 budget.schedule_children(nodes.size(), entries.size());
                 budget.add_total(checked_multiply(entries.size(), sizeof(std::size_t)));
                 nodes[frame.node].children.resize(entries.size());

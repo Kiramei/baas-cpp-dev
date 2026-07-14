@@ -14,6 +14,8 @@ namespace baas::script::runtime {
 struct JsonValue;
 using JsonArray = std::vector<JsonValue>;
 // A vector is intentional: object insertion order is part of the bridge ABI.
+// Keys must be unique; JSON-to-heap conversion rejects duplicates before any
+// destination heap allocation.
 using JsonObject = std::vector<std::pair<std::string, JsonValue>>;
 
 enum class JsonKind { Null, Boolean, Integer, Float, String, Array, Object };
