@@ -84,6 +84,8 @@ option(BUILD_SCRIPT_TESTS       "Build native tests for the BAAS script runtime"
 option(BUILD_SCRIPT_TOOLS       "Build BAAS script developer tools" OFF)
 option(BUILD_SERVICE_PROTOCOL   "Build the standalone BAAS service protocol library" OFF)
 option(BUILD_SERVICE_PROTOCOL_TESTS "Build native tests for the BAAS service protocol" OFF)
+option(BUILD_SERVICE_ROUTER     "Build the transport-independent BAAS service router" OFF)
+option(BUILD_SERVICE_ROUTER_TESTS "Build native tests for the BAAS service router" OFF)
 
 if(BUILD_SCRIPT_TESTS AND NOT BUILD_SCRIPT_RUNTIME)
     set(BUILD_SCRIPT_RUNTIME ON CACHE BOOL "Build the standalone BAAS script runtime" FORCE)
@@ -95,6 +97,10 @@ endif()
 
 if(BUILD_SERVICE_PROTOCOL_TESTS AND NOT BUILD_SERVICE_PROTOCOL)
     set(BUILD_SERVICE_PROTOCOL ON CACHE BOOL "Build the standalone BAAS service protocol library" FORCE)
+endif()
+
+if(BUILD_SERVICE_ROUTER_TESTS AND NOT BUILD_SERVICE_ROUTER)
+    set(BUILD_SERVICE_ROUTER ON CACHE BOOL "Build the transport-independent BAAS service router" FORCE)
 endif()
 
 check_app_options(
@@ -168,6 +174,7 @@ file(
 # core sources.
 list(FILTER BAAS_CORE_SOURCES EXCLUDE REGEX "/src/script/.*\\.cpp$")
 list(FILTER BAAS_CORE_SOURCES EXCLUDE REGEX "/src/service/protocol/.*\\.cpp$")
+list(FILTER BAAS_CORE_SOURCES EXCLUDE REGEX "/src/service/router/.*\\.cpp$")
 
 if(TARGET_OS_NAME STREQUAL "Windows")
     list(REMOVE_ITEM BAAS_CORE_SOURCES "${CMAKE_CURRENT_LIST_DIR}/src/simdutf.cpp")
@@ -206,6 +213,10 @@ endif()
 
 if(BUILD_SERVICE_PROTOCOL)
     include("${CMAKE_CURRENT_LIST_DIR}/cmake/ServiceProtocol.cmake")
+endif()
+
+if(BUILD_SERVICE_ROUTER)
+    include("${CMAKE_CURRENT_LIST_DIR}/cmake/ServiceRouter.cmake")
 endif()
 
 if(NOT TARGET_OS_NAME STREQUAL "Android")

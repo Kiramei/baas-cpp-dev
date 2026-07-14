@@ -201,6 +201,14 @@ Python fallback is needed for migrated representative workflows.
 
 Exit evidence: contract suite and Tauri end-to-end workflows pass under load.
 
+Transport-independent routing foundation: `BAAS_service_router` now provides
+dependency-free, in-memory v1 health/version routing, exact method/path
+matching, bounded request/response bodies, uniform JSON-safe errors, and an
+injectable shutdown intent. It opens no listener and performs no shutdown.
+`SERVICE_ROUTER_CORE.md` records the boundary and tests; the `cpp-httplib`
+adapter, authentication, bounded concurrency, real graceful shutdown, and
+Tauri integration remain required, so the broader checklist item stays open.
+
 Verified foundation evidence: commit `fec6db0` adds production-anchored service
 vectors (14/14 Python tests), and commit `8b1ff52` adds the standalone C++ BPIP
 framing library. Coordinator-run MSVC Debug and Release reviews each passed 30
