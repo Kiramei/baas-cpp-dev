@@ -49,7 +49,9 @@ unclassified operation families, and baseline commands/results are recorded.
 
 ## Phase 1 — Language and compatibility specification
 
-- [ ] Write the lexical grammar and source encoding rules.
+- [x] Write the Draft 0.1 lexical/syntactic grammar and source encoding rules,
+  including UTF-8/BOM recovery, exact literals/operators, precedence, and
+  contextual restrictions in `LANGUAGE_GRAMMAR.md`.
 - [ ] Specify value types, equality, conversions, collections, mutability, and
   JSON interoperation.
 - [ ] Specify lexical scope, functions, closures, recursion, loops, branching,

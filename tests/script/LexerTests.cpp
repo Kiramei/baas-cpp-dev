@@ -150,6 +150,20 @@ void test_invalid_utf8_forms_and_unknown_escape()
     check(result.tokens.back().kind == TokenKind::EndOfFile, "recovery should reach EOF");
 }
 
+void test_utf8_bom_is_rejected_and_recovery_continues()
+{
+    const auto result = baas::script::lex("\xef\xbb\xbflet ok = 1;");
+    check(result.has_errors(), "UTF-8 BOM should be rejected explicitly");
+    check(result.diagnostics.size() == 1 && result.diagnostics[0].code == "LEX006",
+          "UTF-8 BOM should use stable LEX006 diagnostic");
+    check(result.diagnostics[0].span.begin == SourceLocation{0, 1, 1} &&
+              result.diagnostics[0].span.end == SourceLocation{3, 1, 2},
+          "UTF-8 BOM diagnostic should cover one scalar and three bytes");
+    check(result.tokens.size() >= 2 && result.tokens[0].kind == TokenKind::Let &&
+              result.tokens[0].span.begin == SourceLocation{3, 1, 2},
+          "lexer should recover after BOM and preserve byte/scalar locations");
+}
+
 }  // namespace
 
 int main()
@@ -159,6 +173,7 @@ int main()
     test_numbers_strings_comments_and_operators();
     test_error_recovery();
     test_invalid_utf8_forms_and_unknown_escape();
+    test_utf8_bom_is_rejected_and_recovery_continues();
 
     if (failures != 0) {
         std::cerr << failures << " assertion(s) failed\n";

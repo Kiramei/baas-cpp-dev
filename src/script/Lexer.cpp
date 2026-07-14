@@ -123,6 +123,12 @@ public:
                 diagnose_invalid_utf8();
                 continue;
             }
+            if (offset_ == 0 && decoded.value == U'\ufeff') {
+                const auto start = location();
+                advance();
+                add_error("LEX006", "UTF-8 byte-order mark is not permitted", start);
+                continue;
+            }
             if (is_identifier_start(decoded.value)) {
                 scan_identifier();
             } else if (decoded.length == 1 && is_ascii_digit(static_cast<char>(decoded.value))) {

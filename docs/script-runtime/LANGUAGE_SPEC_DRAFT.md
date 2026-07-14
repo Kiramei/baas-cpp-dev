@@ -24,13 +24,17 @@ activation, rollback, and cache rules are defined in `PACKAGE_VERSIONING.md`.
 
 ## 2. Source text and diagnostics
 
-- Source is valid UTF-8 without a required byte-order mark.
+The complete Draft 0.1 lexical and syntactic grammar is defined in
+`LANGUAGE_GRAMMAR.md`.
+
+- Source is valid UTF-8 and a byte-order mark is rejected rather than stripped.
 - Line and column diagnostics are one-based. Byte offsets are zero-based.
 - A source span records start/end byte offsets and start/end line/column.
 - Newline is whitespace; semicolons terminate simple statements.
 - `#` begins a line comment. `/* ... */` is a block comment. `//` is reserved
   for floor division and is never a comment marker.
-- Identifiers may contain Unicode identifier characters; keywords are ASCII.
+- Identifiers preserve their exact UTF-8 bytes; the draft Unicode acceptance
+  profile and its pre-1.0 normalization decision are explicit in the grammar.
 - Invalid UTF-8, invalid escapes, unterminated strings/comments, and unknown
   characters produce recoverable diagnostics with source spans.
 
