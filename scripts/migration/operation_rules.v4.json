@@ -199,6 +199,16 @@
       "result_type": "builtins.str"
     },
     {
+      "id": "string-split-results-v4",
+      "call_patterns": [
+        "builtins.str.rsplit",
+        "builtins.str.split",
+        "builtins.str.splitlines"
+      ],
+      "element_type": "builtins.str",
+      "result_type": "builtins.list"
+    },
+    {
       "id": "text-codec-results-v3",
       "call_patterns": ["builtins.bytes.decode"],
       "result_type": "builtins.str"
@@ -561,7 +571,7 @@
       "owner": "Runtime Observability",
       "parity_test_id": "PARITY-LOG-EVENT",
       "source_scopes": ["SCRIPT_RUNTIME", "GENERATED_RESOURCE"],
-      "symbol_patterns": ["_logger.*", "logger.*", "logging.*", "self.logger.*"]
+      "symbol_patterns": ["_logger.*", "dynamic:attribute-result(core.Baas_thread.Baas_thread.logger).info", "logger.*", "logging.*", "self.logger.*"]
     },
     {
       "cpp_host_binding": "baas::script::host::SchedulerHost",
@@ -673,6 +683,8 @@
         "dynamic:subscript(builtins.dict).remove",
         "dynamic:subscript(builtins.list).__str__",
         "dynamic:subscript(builtins.list).split",
+        "dynamic:subscript(builtins.tuple)",
+        "dynamic:subscript(builtins.tuple).items",
         "dynamic:subscript(data).replace",
         "dynamic:subscript(dynamic:call-result(mostPossibleMaterial.split)()).split",
         "dynamic:subscript(dynamic:subscript(ocr_res)).lower",

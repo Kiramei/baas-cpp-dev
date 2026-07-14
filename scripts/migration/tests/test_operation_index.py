@@ -388,6 +388,41 @@ class OperationIndexTests(unittest.TestCase):
             decision = self.scope_decision(operation, "SCRIPT_RUNTIME")
             self.assertEqual(decision["disposition"], "UNRESOLVED")
 
+    def test_exact_type_guards_and_proven_container_elements_propagate_conservatively(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repository = Path(directory) / "repo"
+            module = repository / "module" / "only.py"
+            module.parent.mkdir(parents=True)
+            module.write_text(
+                "def guarded(item):\n"
+                "    if type(item) is str:\n"
+                "        parts = item.split(',')\n"
+                "        parts[0].isdigit()\n"
+                "    item.split(',')\n"
+                "def annotated(values: list[str], mapping: dict[str, int]):\n"
+                "    values[0].strip()\n"
+                "    mapping['answer'].bit_length()\n"
+                "def literal():\n"
+                "    ['text'][0].strip()\n"
+                "    {'answer': 42}['answer'].bit_length()\n",
+                encoding="utf-8",
+            )
+
+            report = self.generate(repository)
+            by_symbol = {item["symbol"]: item for item in report["operations"]}
+            for symbol in (
+                "builtins.int.bit_length",
+                "builtins.str.isdigit",
+                "builtins.str.split",
+                "builtins.str.strip",
+            ):
+                with self.subTest(symbol=symbol):
+                    decision = self.scope_decision(by_symbol[symbol], "SCRIPT_RUNTIME")
+                    self.assertEqual(decision["disposition"], "SCRIPT_LANGUAGE_OR_MODULE")
+                    self.assertEqual(decision["classification_rule"], "language-builtins-v2")
+            outside_guard = self.scope_decision(by_symbol["item.split"], "SCRIPT_RUNTIME")
+            self.assertEqual(outside_guard["disposition"], "UNRESOLVED")
+
     def test_proven_factory_iteration_and_nested_definition_types_are_conservative(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             repository = Path(directory) / "repo"
@@ -482,7 +517,7 @@ class OperationIndexTests(unittest.TestCase):
         self.assertEqual(click["id"], "op-8446093f5f2315e0")
         self.assertEqual(report["schema_version"], 2)
         self.assertEqual(report["identity_version"], 1)
-        self.assertEqual(report["generator_version"], "4.0.0")
+        self.assertEqual(report["generator_version"], "4.1.0")
         self.assertEqual(report["rules"]["rules_version"], 4)
 
     def test_strict_fails_for_unresolved_disposition_and_parse_error(self) -> None:
