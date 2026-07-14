@@ -23,12 +23,13 @@ from pathlib import Path
 from typing import Any, Iterable
 
 
-SCHEMA_VERSION = 1
-GENERATOR_VERSION = "1.0.0"
-RULES_VERSION = 1
+SCHEMA_VERSION = 2
+IDENTITY_VERSION = 1
+GENERATOR_VERSION = "2.0.0"
+RULES_VERSION = 2
 BEGIN_MARKER = "<!-- BEGIN GENERATED OPERATION INDEX -->"
 END_MARKER = "<!-- END GENERATED OPERATION INDEX -->"
-DEFAULT_RULES = Path(__file__).with_name("operation_rules.v1.json")
+DEFAULT_RULES = Path(__file__).with_name("operation_rules.v2.json")
 IGNORED_DIRECTORIES = frozenset(
     {
         ".git",
@@ -139,63 +140,83 @@ class ParseFailure:
         return result
 
 
-class BindingCollector(ast.NodeVisitor):
-    """Collect conservative file-level aliases and top-level definitions."""
+class DefinitionCollector(ast.NodeVisitor):
+    """Collect module definitions without treating nested bindings as global."""
 
     def __init__(self, source_module: str) -> None:
         self.source_module = source_module
-        self.aliases: dict[str, str] = {}
         self.definitions: dict[str, str] = {}
-        self.rebound: set[str] = set()
-        self.depth = 0
-
-    def visit_Import(self, node: ast.Import) -> None:
-        for item in node.names:
-            local = item.asname or item.name.split(".")[0]
-            resolved = item.name if item.asname else item.name.split(".")[0]
-            self.aliases[local] = resolved
-
-    def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
-        if node.module is None or node.level:
-            return
-        for item in node.names:
-            if item.name == "*":
-                continue
-            self.aliases[item.asname or item.name] = f"{node.module}.{item.name}"
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-        if self.depth == 0:
-            self.definitions[node.name] = f"{self.source_module}.{node.name}"
-        self.depth += 1
-        self._record_arguments(node.args)
-        for statement in node.body:
-            self.visit(statement)
-        self.depth -= 1
+        self.definitions[node.name] = f"{self.source_module}.{node.name}"
 
     visit_AsyncFunctionDef = visit_FunctionDef
 
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
-        if self.depth == 0:
-            self.definitions[node.name] = f"{self.source_module}.{node.name}"
-        self.depth += 1
-        for statement in node.body:
-            self.visit(statement)
-        self.depth -= 1
+        self.definitions[node.name] = f"{self.source_module}.{node.name}"
+
+
+class LocalBindingCollector(ast.NodeVisitor):
+    """Collect compile-time local names for one function-like scope."""
+
+    def __init__(self) -> None:
+        self.names: set[str] = set()
+        self.globals: set[str] = set()
+        self.nonlocals: set[str] = set()
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        self.names.add(node.name)
+
+    visit_AsyncFunctionDef = visit_FunctionDef
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        self.names.add(node.name)
+
+    def visit_Lambda(self, node: ast.Lambda) -> None:
+        return
+
+    def visit_ListComp(self, node: ast.ListComp) -> None:
+        return
+
+    visit_SetComp = visit_ListComp
+    visit_GeneratorExp = visit_ListComp
+
+    def visit_DictComp(self, node: ast.DictComp) -> None:
+        return
+
+    def visit_Import(self, node: ast.Import) -> None:
+        for item in node.names:
+            self.names.add(item.asname or item.name.split(".")[0])
+
+    def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
+        for item in node.names:
+            if item.name != "*":
+                self.names.add(item.asname or item.name)
 
     def visit_Name(self, node: ast.Name) -> None:
         if isinstance(node.ctx, (ast.Store, ast.Del)):
-            self.rebound.add(node.id)
+            self.names.add(node.id)
 
-    def _record_arguments(self, arguments: ast.arguments) -> None:
-        for argument in [*arguments.posonlyargs, *arguments.args, *arguments.kwonlyargs]:
-            self.rebound.add(argument.arg)
-        if arguments.vararg:
-            self.rebound.add(arguments.vararg.arg)
-        if arguments.kwarg:
-            self.rebound.add(arguments.kwarg.arg)
+    def visit_Global(self, node: ast.Global) -> None:
+        self.globals.update(node.names)
 
-    def resolved_aliases(self) -> dict[str, str]:
-        return {name: target for name, target in self.aliases.items() if name not in self.rebound}
+    def visit_Nonlocal(self, node: ast.Nonlocal) -> None:
+        self.nonlocals.update(node.names)
+
+    def visit_ExceptHandler(self, node: ast.ExceptHandler) -> None:
+        if node.name:
+            self.names.add(node.name)
+        for statement in node.body:
+            self.visit(statement)
+
+
+@dataclass
+class ScopeFrame:
+    kind: str
+    aliases: dict[str, str]
+    local_names: set[str]
+    global_names: set[str]
+    nonlocal_names: set[str]
 
 
 class OperationVisitor(ast.NodeVisitor):
@@ -203,16 +224,19 @@ class OperationVisitor(ast.NodeVisitor):
         self,
         filename: str,
         source_module: str,
-        aliases: dict[str, str],
         definitions: dict[str, str],
         tree: ast.Module,
     ) -> None:
         self.filename = filename
         self.source_module = source_module
-        self.aliases = aliases
         self.definitions = definitions
         self.observations: list[Observation] = []
         self.scope: list[str] = []
+        package_init = filename == "__init__.py" or filename.endswith("/__init__.py")
+        self.current_package = (
+            source_module if package_init else source_module.rpartition(".")[0]
+        )
+        self.frames = [ScopeFrame("module", {}, set(), set(), set())]
         self.awaited_calls = {
             id(node.value)
             for node in ast.walk(tree)
@@ -265,9 +289,31 @@ class OperationVisitor(ast.NodeVisitor):
             self.visit(node.args.kwarg.annotation)
         if node.returns is not None:
             self.visit(node.returns)
+        bindings = LocalBindingCollector()
+        for statement in node.body:
+            bindings.visit(statement)
+        local_names = set(bindings.names)
+        for argument in [*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs]:
+            local_names.add(argument.arg)
+        if node.args.vararg:
+            local_names.add(node.args.vararg.arg)
+        if node.args.kwarg:
+            local_names.add(node.args.kwarg.arg)
+        local_names.difference_update(bindings.globals)
+        local_names.difference_update(bindings.nonlocals)
         self.scope.append(node.name)
+        self.frames.append(
+            ScopeFrame(
+                "function",
+                {},
+                local_names,
+                bindings.globals,
+                bindings.nonlocals,
+            )
+        )
         for statement in node.body:
             self.visit(statement)
+        self.frames.pop()
         self.scope.pop()
 
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
@@ -278,20 +324,274 @@ class OperationVisitor(ast.NodeVisitor):
         for keyword in node.keywords:
             self.visit(keyword.value)
         self.scope.append(node.name)
+        self.frames.append(ScopeFrame("class", {}, set(), set(), set()))
         for statement in node.body:
             self.visit(statement)
+        self.frames.pop()
         self.scope.pop()
+
+    def visit_Lambda(self, node: ast.Lambda) -> None:
+        local_names = {
+            argument.arg
+            for argument in [*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs]
+        }
+        if node.args.vararg:
+            local_names.add(node.args.vararg.arg)
+        if node.args.kwarg:
+            local_names.add(node.args.kwarg.arg)
+        for default in [*node.args.defaults, *node.args.kw_defaults]:
+            if default is not None:
+                self.visit(default)
+        self.frames.append(ScopeFrame("function", {}, local_names, set(), set()))
+        self.visit(node.body)
+        self.frames.pop()
+
+    def visit_Import(self, node: ast.Import) -> None:
+        for item in node.names:
+            local = item.asname or item.name.split(".")[0]
+            target = item.name if item.asname else item.name.split(".")[0]
+            self._bind_alias(local, target)
+
+    def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
+        base = self._import_from_base(node)
+        if base is None:
+            return
+        for item in node.names:
+            if item.name == "*":
+                continue
+            target = f"{base}.{item.name}" if base else item.name
+            self._bind_alias(item.asname or item.name, target)
+
+    def _import_from_base(self, node: ast.ImportFrom) -> str | None:
+        if node.level == 0:
+            return node.module or ""
+        package = self.current_package.split(".") if self.current_package else []
+        ascend = node.level - 1
+        if ascend >= len(package) and ascend:
+            return None
+        prefix = package[: len(package) - ascend] if ascend else package
+        if node.module:
+            prefix.extend(node.module.split("."))
+        return ".".join(prefix)
+
+    def _target_frame(self, name: str) -> ScopeFrame:
+        current = self.frames[-1]
+        if name in current.global_names:
+            return self.frames[0]
+        if name in current.nonlocal_names:
+            for frame in reversed(self.frames[:-1]):
+                if frame.kind != "class" and name in frame.local_names:
+                    return frame
+        return current
+
+    def _bind_alias(self, name: str, target: str) -> None:
+        frame = self._target_frame(name)
+        frame.local_names.add(name)
+        frame.aliases[name] = target
+
+    def _bind_unresolved(self, name: str) -> None:
+        frame = self._target_frame(name)
+        frame.local_names.add(name)
+        frame.aliases.pop(name, None)
+
+    def _bind_target(self, node: ast.AST) -> None:
+        if isinstance(node, ast.Name):
+            self._bind_unresolved(node.id)
+        elif isinstance(node, (ast.List, ast.Tuple)):
+            for item in node.elts:
+                self._bind_target(item)
+        elif isinstance(node, ast.Starred):
+            self._bind_target(node.value)
+
+    def _lookup_alias(self, name: str) -> tuple[bool, str | None]:
+        inside_function = any(frame.kind == "function" for frame in self.frames[1:])
+        for frame in reversed(self.frames):
+            if inside_function and frame.kind == "class":
+                continue
+            if name in frame.aliases:
+                return True, frame.aliases[name]
+            if name in frame.local_names:
+                return True, None
+        return False, None
+
+    def _snapshot_frames(self) -> list[ScopeFrame]:
+        return [
+            ScopeFrame(
+                frame.kind,
+                dict(frame.aliases),
+                set(frame.local_names),
+                set(frame.global_names),
+                set(frame.nonlocal_names),
+            )
+            for frame in self.frames
+        ]
+
+    def _restore_frames(self, frames: list[ScopeFrame]) -> None:
+        self.frames = self._copy_frames(frames)
+
+    @staticmethod
+    def _copy_frames(frames: list[ScopeFrame]) -> list[ScopeFrame]:
+        return [
+            ScopeFrame(
+                frame.kind,
+                dict(frame.aliases),
+                set(frame.local_names),
+                set(frame.global_names),
+                set(frame.nonlocal_names),
+            )
+            for frame in frames
+        ]
+
+    def _merge_frame_states(self, states: list[list[ScopeFrame]]) -> None:
+        if not states or any(len(state) != len(states[0]) for state in states):
+            raise ValueError("cannot merge incompatible lexical scope states")
+        merged: list[ScopeFrame] = []
+        for index in range(len(states[0])):
+            frames = [state[index] for state in states]
+            common_aliases: dict[str, str] = {}
+            for name, target in frames[0].aliases.items():
+                if all(frame.aliases.get(name) == target for frame in frames[1:]):
+                    common_aliases[name] = target
+            merged.append(
+                ScopeFrame(
+                    frames[0].kind,
+                    common_aliases,
+                    set().union(*(frame.local_names for frame in frames)),
+                    set().union(*(frame.global_names for frame in frames)),
+                    set().union(*(frame.nonlocal_names for frame in frames)),
+                )
+            )
+        self.frames = merged
 
     def visit_Assign(self, node: ast.Assign) -> None:
         for target in node.targets:
             if isinstance(target, ast.Name):
                 self._record_registry(target.id, node.value, node)
-        self.generic_visit(node)
+        self.visit(node.value)
+        for target in node.targets:
+            self._bind_target(target)
+            self.visit(target)
 
     def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
         if isinstance(node.target, ast.Name) and node.value is not None:
             self._record_registry(node.target.id, node.value, node)
-        self.generic_visit(node)
+        self.visit(node.annotation)
+        if node.value is not None:
+            self.visit(node.value)
+        self._bind_target(node.target)
+        self.visit(node.target)
+
+    def visit_AugAssign(self, node: ast.AugAssign) -> None:
+        self.visit(node.target)
+        self.visit(node.value)
+        self._bind_target(node.target)
+
+    def visit_NamedExpr(self, node: ast.NamedExpr) -> None:
+        self.visit(node.value)
+        self._bind_target(node.target)
+
+    def visit_Delete(self, node: ast.Delete) -> None:
+        for target in node.targets:
+            self._bind_target(target)
+
+    def visit_If(self, node: ast.If) -> None:
+        self.visit(node.test)
+        initial = self._snapshot_frames()
+        states: list[list[ScopeFrame]] = []
+        self._restore_frames(initial)
+        for statement in node.body:
+            self.visit(statement)
+        states.append(self._snapshot_frames())
+        self._restore_frames(initial)
+        for statement in node.orelse:
+            self.visit(statement)
+        states.append(self._snapshot_frames())
+        self._merge_frame_states(states)
+
+    def visit_For(self, node: ast.For) -> None:
+        self.visit(node.iter)
+        zero_iterations = self._snapshot_frames()
+        self._bind_target(node.target)
+        for statement in node.body:
+            self.visit(statement)
+        one_or_more_iterations = self._snapshot_frames()
+        self._merge_frame_states([zero_iterations, one_or_more_iterations])
+        for statement in node.orelse:
+            self.visit(statement)
+
+    visit_AsyncFor = visit_For
+
+    def visit_Try(self, node: ast.Try) -> None:
+        initial = self._snapshot_frames()
+        states: list[list[ScopeFrame]] = []
+        self._restore_frames(initial)
+        for statement in node.body:
+            self.visit(statement)
+        for statement in node.orelse:
+            self.visit(statement)
+        states.append(self._snapshot_frames())
+        for handler in node.handlers:
+            self._restore_frames(initial)
+            self.visit(handler)
+            states.append(self._snapshot_frames())
+        self._merge_frame_states(states)
+        for statement in node.finalbody:
+            self.visit(statement)
+
+    visit_TryStar = visit_Try
+
+    def visit_With(self, node: ast.With) -> None:
+        for item in node.items:
+            self.visit(item.context_expr)
+            if item.optional_vars is not None:
+                self._bind_target(item.optional_vars)
+        for statement in node.body:
+            self.visit(statement)
+
+    visit_AsyncWith = visit_With
+
+    def visit_ExceptHandler(self, node: ast.ExceptHandler) -> None:
+        if node.type is not None:
+            self.visit(node.type)
+        if node.name:
+            self._bind_unresolved(node.name)
+        for statement in node.body:
+            self.visit(statement)
+
+    def _visit_comprehension(
+        self,
+        generators: list[ast.comprehension],
+        values: list[ast.AST],
+    ) -> None:
+        if not generators:
+            for value in values:
+                self.visit(value)
+            return
+        self.visit(generators[0].iter)
+        local_names: set[str] = set()
+        collector = LocalBindingCollector()
+        for generator in generators:
+            collector.visit(generator.target)
+        local_names.update(collector.names)
+        self.frames.append(ScopeFrame("comprehension", {}, local_names, set(), set()))
+        for index, generator in enumerate(generators):
+            if index:
+                self.visit(generator.iter)
+            self._bind_target(generator.target)
+            for condition in generator.ifs:
+                self.visit(condition)
+        for value in values:
+            self.visit(value)
+        self.frames.pop()
+
+    def visit_ListComp(self, node: ast.ListComp) -> None:
+        self._visit_comprehension(node.generators, [node.elt])
+
+    visit_SetComp = visit_ListComp
+    visit_GeneratorExp = visit_ListComp
+
+    def visit_DictComp(self, node: ast.DictComp) -> None:
+        self._visit_comprehension(node.generators, [node.key, node.value])
 
     def _record_registry(self, name: str, value: ast.AST, node: ast.AST) -> None:
         if name not in REGISTRY_NAMES or not isinstance(value, ast.Dict):
@@ -390,8 +690,11 @@ class OperationVisitor(ast.NodeVisitor):
 
     def resolve_expression(self, node: ast.AST) -> tuple[str, str, str]:
         if isinstance(node, ast.Name):
-            if node.id in self.aliases:
-                return self.aliases[node.id], "alias", "resolved"
+            bound, alias = self._lookup_alias(node.id)
+            if alias is not None:
+                return alias, "alias", "resolved"
+            if bound:
+                return node.id, "name", "unresolved"
             if node.id in self.definitions:
                 return self.definitions[node.id], "name", "resolved"
             if node.id in BUILTIN_NAMES:
@@ -449,15 +752,17 @@ class OperationVisitor(ast.NodeVisitor):
 
 
 class RuleSet:
-    REQUIRED_FIELDS = frozenset(
+    REQUIRED_FIELDS = frozenset({"disposition", "id", "symbol_patterns"})
+    VALID_DISPOSITIONS = frozenset(
         {
-            "cpp_host_binding",
-            "family",
-            "id",
-            "migration_status",
-            "owner",
-            "parity_test_id",
-            "symbol_patterns",
+            "HOST_BINDING_REQUIRED",
+            "SCRIPT_LANGUAGE_OR_MODULE",
+            "CPP_SERVICE_INTERNAL",
+            "TAURI_UI_REPLACED",
+            "MIGRATION_TOOLING_ONLY",
+            "TEST_ONLY",
+            "EXTERNAL_DEPENDENCY",
+            "UNRESOLVED",
         }
     )
 
@@ -473,6 +778,22 @@ class RuleSet:
         self.sha256 = sha256_bytes(canonical)
         if document.get("rules_version") != RULES_VERSION:
             raise ValueError(f"rules_version must be {RULES_VERSION}")
+        scope_rules = document.get("source_scope_rules")
+        if not isinstance(scope_rules, list) or not scope_rules:
+            raise ValueError("source_scope_rules must be a non-empty array")
+        scope_identifiers: set[str] = set()
+        for index, rule in enumerate(scope_rules):
+            if not isinstance(rule, dict) or not {
+                "id",
+                "source_patterns",
+                "source_scope",
+            }.issubset(rule):
+                raise ValueError(f"source scope rule {index} is missing required fields")
+            if rule["id"] in scope_identifiers:
+                raise ValueError(f"duplicate source scope rule id: {rule['id']}")
+            scope_identifiers.add(rule["id"])
+            if not isinstance(rule["source_patterns"], list) or not rule["source_patterns"]:
+                raise ValueError(f"source scope rule {rule['id']} requires source_patterns")
         rules = document.get("rules")
         if not isinstance(rules, list):
             raise ValueError("rules must be an array")
@@ -483,18 +804,56 @@ class RuleSet:
             if rule["id"] in identifiers:
                 raise ValueError(f"duplicate rule id: {rule['id']}")
             identifiers.add(rule["id"])
+            if rule["disposition"] not in self.VALID_DISPOSITIONS:
+                raise ValueError(f"rule {rule['id']} has invalid disposition")
             if not isinstance(rule["symbol_patterns"], list) or not rule["symbol_patterns"]:
                 raise ValueError(f"rule {rule['id']} requires symbol_patterns")
+        self.source_scope_rules = scope_rules
         self.rules = rules
 
-    def classify(self, symbol: str, call_form: str, files: list[str]) -> dict[str, str]:
-        if call_form in {"dynamic", "chained"} and symbol.startswith("dynamic:"):
-            return unclassified("dynamic expression cannot be resolved statically")
+    def source_scope(self, filename: str) -> str:
+        matches = [
+            rule["source_scope"]
+            for rule in self.source_scope_rules
+            if any(fnmatch.fnmatchcase(filename, pattern) for pattern in rule["source_patterns"])
+        ]
+        if not matches:
+            return "UNRESOLVED_SOURCE"
+        if len(set(matches)) != 1:
+            return "UNRESOLVED_SOURCE"
+        return matches[0]
+
+    def classify(
+        self,
+        symbol: str,
+        call_form: str,
+        resolution: str,
+        files: list[str],
+        source_scope: str,
+        local_module_roots: set[str],
+    ) -> dict[str, Any]:
+        if resolution == "dynamic" or (
+            call_form in {"dynamic", "chained"} and symbol.startswith("dynamic:")
+        ):
+            return disposition_result(
+                "UNRESOLVED",
+                "dynamic-expression-v2",
+                "dynamic expression cannot be resolved statically",
+            )
+        if source_scope == "UNRESOLVED_SOURCE":
+            return disposition_result(
+                "UNRESOLVED",
+                "unresolved-source-scope-v2",
+                "no unique versioned source-scope rule matched",
+            )
         for rule in self.rules:
             if not any(fnmatch.fnmatchcase(symbol, pattern) for pattern in rule["symbol_patterns"]):
                 continue
             forms = rule.get("call_forms")
             if forms and call_form not in forms:
+                continue
+            scopes = rule.get("source_scopes")
+            if scopes and source_scope not in scopes:
                 continue
             sources = rule.get("source_patterns")
             if sources and not all(
@@ -502,26 +861,98 @@ class RuleSet:
                 for filename in files
             ):
                 continue
-            return {
-                "classification_rule": rule["id"],
-                "cpp_host_binding": rule["cpp_host_binding"],
-                "family": rule["family"],
-                "migration_status": rule["migration_status"],
-                "owner": rule["owner"],
-                "parity_test_id": rule["parity_test_id"],
+            return disposition_result(
+                rule["disposition"],
+                rule["id"],
+                rule.get("reason", "versioned disposition rule matched"),
+                rule,
+            )
+        if resolution == "unresolved":
+            return disposition_result(
+                "UNRESOLVED",
+                "unresolved-expression-v2",
+                "call owner cannot be resolved statically",
+            )
+
+        defaults = {
+            "CPP_SERVICE": ("CPP_SERVICE_INTERNAL", "service.internal", "C++ Service"),
+            "DEPLOYMENT_TOOLING": (
+                "MIGRATION_TOOLING_ONLY",
+                "tooling.deployment",
+                "Migration Tooling",
+            ),
+            "LEGACY_GUI": ("TAURI_UI_REPLACED", "ui.legacy", "Tauri UI"),
+            "MIGRATION_TOOLING": (
+                "MIGRATION_TOOLING_ONLY",
+                "tooling.migration",
+                "Migration Tooling",
+            ),
+            "TEST": ("TEST_ONLY", "test.support", "Test Infrastructure"),
+        }
+        if source_scope in defaults:
+            disposition, family, owner = defaults[source_scope]
+            return disposition_result(
+                disposition,
+                f"{source_scope.lower()}-default-v2",
+                f"resolved call belongs to the {source_scope} source scope",
+                {"family": family, "owner": owner},
+            )
+
+        if source_scope in {"SCRIPT_RUNTIME", "GENERATED_RESOURCE"}:
+            root = symbol.split(".", 1)[0]
+            internal_roots = {
+                "builtins",
+                "self",
+                "super()",
+                *local_module_roots,
+                *sys.stdlib_module_names,
             }
-        return unclassified("no versioned classification rule matched")
+            if ":" not in symbol and root not in internal_roots:
+                return disposition_result(
+                    "EXTERNAL_DEPENDENCY",
+                    "external-dependency-default-v2",
+                    "resolved import root is neither local nor Python standard library",
+                    {"family": "dependency.external", "owner": "Dependency Migration"},
+                )
+            return disposition_result(
+                "SCRIPT_LANGUAGE_OR_MODULE",
+                "script-language-module-default-v2",
+                "resolved call remains in the script language or migrated module layer",
+                {"family": "script.language-module", "owner": "Script Runtime"},
+            )
+
+        return disposition_result(
+            "UNRESOLVED",
+            "no-disposition-rule-v2",
+            "no conservative disposition rule matched",
+        )
 
 
-def unclassified(reason: str) -> dict[str, str]:
+def disposition_result(
+    disposition: str,
+    rule_id: str,
+    reason: str,
+    rule: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    rule = rule or {}
+    host_required = disposition == "HOST_BINDING_REQUIRED"
+    default_status = {
+        "EXTERNAL_DEPENDENCY": "DEPENDENCY_DECISION_PENDING",
+        "UNRESOLVED": "UNRESOLVED",
+    }.get(disposition, "SCOPED")
     return {
-        "classification_rule": "UNCLASSIFIED",
-        "cpp_host_binding": "UNCLASSIFIED",
-        "family": "UNCLASSIFIED",
-        "migration_status": "UNCLASSIFIED",
-        "owner": "UNASSIGNED",
-        "parity_test_id": "UNCLASSIFIED",
-        "unclassified_reason": reason,
+        "classification_rule": rule_id,
+        "cpp_host_binding": rule.get(
+            "cpp_host_binding", "UNASSIGNED" if host_required else "NOT_APPLICABLE"
+        ),
+        "disposition": disposition,
+        "disposition_reason": reason,
+        "family": rule.get("family", "UNASSIGNED" if host_required else "UNRESOLVED"),
+        "migration_status": rule.get("migration_status", default_status),
+        "owner": rule.get("owner", "UNASSIGNED"),
+        "parity_test_id": rule.get(
+            "parity_test_id", "UNASSIGNED" if host_required else "NOT_APPLICABLE"
+        ),
     }
 
 
@@ -532,6 +963,10 @@ class OperationIndexer:
 
     def generate(self) -> dict[str, Any]:
         sources = discover_python_sources(self.root)
+        local_module_roots = {
+            module_name(relative(source, self.root)).split(".", 1)[0]
+            for source in sources
+        }
         observations: list[Observation] = []
         failures: list[ParseFailure] = []
         snapshot = hashlib.sha256()
@@ -564,32 +999,59 @@ class OperationIndexer:
                 continue
 
             source_module = module_name(filename)
-            bindings = BindingCollector(source_module)
-            bindings.visit(tree)
+            definitions = DefinitionCollector(source_module)
+            definitions.visit(tree)
             visitor = OperationVisitor(
                 filename,
                 source_module,
-                bindings.resolved_aliases(),
-                bindings.definitions,
+                definitions.definitions,
                 tree,
             )
             visitor.visit(tree)
             observations.extend(visitor.observations)
 
-        operations = self._aggregate(observations)
+        operations = self._aggregate(observations, local_module_roots)
         failures.sort(key=lambda item: (item.file, item.line or -1, item.error_type, item.message))
-        unclassified_ids = [
-            operation["id"]
+        decisions = [
+            (operation, decision)
             for operation in operations
-            if operation["migration_status"] == "UNCLASSIFIED"
+            for decision in operation["scope_decisions"]
+        ]
+        unresolved_ids = [
+            decision["id"]
+            for _, decision in decisions
+            if decision["disposition"] == "UNRESOLVED"
+        ]
+        host_gap_ids = [
+            decision["id"]
+            for _, decision in decisions
+            if decision["host_binding_gap_fields"]
         ]
         dynamic_ids = [
             operation["id"]
             for operation in operations
             if operation["resolution"] == "dynamic"
         ]
+        disposition_counts: dict[str, int] = {}
+        disposition_sites: dict[str, int] = {}
+        disposition_ids: dict[str, set[str]] = {}
+        source_scope_counts: dict[str, int] = {}
+        source_scope_sites: dict[str, int] = {}
+        for operation, decision in decisions:
+            disposition = decision["disposition"]
+            disposition_counts[disposition] = disposition_counts.get(disposition, 0) + 1
+            disposition_sites[disposition] = (
+                disposition_sites.get(disposition, 0) + decision["occurrences"]
+            )
+            disposition_ids.setdefault(disposition, set()).add(operation["id"])
+            source_scope = decision["source_scope"]
+            source_scope_counts[source_scope] = source_scope_counts.get(source_scope, 0) + 1
+            source_scope_sites[source_scope] = (
+                source_scope_sites.get(source_scope, 0) + decision["occurrences"]
+            )
         return {
             "generator_version": GENERATOR_VERSION,
+            "identity_version": IDENTITY_VERSION,
             "operations": operations,
             "repository": {
                 "revision": repository_revision(self.root),
@@ -606,18 +1068,49 @@ class OperationIndexer:
             ],
             "summary": {
                 "call_sites": sum(operation["occurrences"] for operation in operations),
-                "classified_operations": len(operations) - len(unclassified_ids),
+                "disposition_call_sites": dict(sorted(disposition_sites.items())),
+                "disposition_scope_decisions": dict(sorted(disposition_counts.items())),
                 "dynamic_operations": len(dynamic_ids),
+                "host_binding_gaps": len(host_gap_ids),
+                "host_binding_required_scope_decisions": disposition_counts.get(
+                    "HOST_BINDING_REQUIRED", 0
+                ),
                 "operation_count": len(operations),
+                "operations_with_host_binding_gap": len(
+                    {
+                        operation["id"]
+                        for operation, decision in decisions
+                        if decision["host_binding_gap_fields"]
+                    }
+                ),
+                "operations_with_unresolved_disposition": len(
+                    {
+                        operation["id"]
+                        for operation, decision in decisions
+                        if decision["disposition"] == "UNRESOLVED"
+                    }
+                ),
                 "parse_errors": len(failures),
                 "python_files": len(sources),
-                "unclassified_operations": len(unclassified_ids),
+                "scope_decision_count": len(decisions),
+                "source_scope_call_sites": dict(sorted(source_scope_sites.items())),
+                "source_scope_decisions": dict(sorted(source_scope_counts.items())),
+                "unresolved_disposition_scope_decisions": len(unresolved_ids),
             },
-            "unclassified_operation_ids": unclassified_ids,
+            "disposition_operation_ids": {
+                disposition: sorted(identifiers)
+                for disposition, identifiers in sorted(disposition_ids.items())
+            },
+            "host_binding_gap_ids": host_gap_ids,
+            "unresolved_disposition_ids": unresolved_ids,
             "unresolved_sources": [failure.as_dict() for failure in failures],
         }
 
-    def _aggregate(self, observations: Iterable[Observation]) -> list[dict[str, Any]]:
+    def _aggregate(
+        self,
+        observations: Iterable[Observation],
+        local_module_roots: set[str],
+    ) -> list[dict[str, Any]]:
         grouped: dict[tuple[str, str, str], list[Observation]] = {}
         for observation in observations:
             key = (observation.kind, observation.call_form, observation.symbol)
@@ -656,9 +1149,47 @@ class OperationIndexer:
                 )
             resolutions = sorted({item.resolution for item in items})
             resolution = resolutions[0] if len(resolutions) == 1 else "mixed"
-            identity = f"v{SCHEMA_VERSION}\0{kind}\0{call_form}\0{symbol}".encode("utf-8")
+            identity = f"v{IDENTITY_VERSION}\0{kind}\0{call_form}\0{symbol}".encode("utf-8")
             operation_id = f"op-{sha256_bytes(identity)[:16]}"
             files = sorted({location.file for location in locations})
+            scope_items: dict[str, list[Observation]] = {}
+            for item in items:
+                scope_items.setdefault(
+                    self.rules.source_scope(item.location.file), []
+                ).append(item)
+            scope_decisions: list[dict[str, Any]] = []
+            for source_scope, scoped_items in sorted(scope_items.items()):
+                scoped_locations = sorted(
+                    {item.location for item in scoped_items},
+                    key=lambda item: (item.file, item.line, item.column, item.scope),
+                )
+                scoped_files = sorted({location.file for location in scoped_locations})
+                scoped_resolutions = sorted({item.resolution for item in scoped_items})
+                scoped_resolution = (
+                    scoped_resolutions[0] if len(scoped_resolutions) == 1 else "mixed"
+                )
+                decision = {
+                    "id": f"{operation_id}@{source_scope}",
+                    "occurrences": len(scoped_items),
+                    "representative_locations": [
+                        location.as_dict() for location in scoped_locations[:3]
+                    ],
+                    "resolution": scoped_resolution,
+                    "source_file_count": len(scoped_files),
+                    "source_scope": source_scope,
+                }
+                decision.update(
+                    self.rules.classify(
+                        symbol,
+                        call_form,
+                        scoped_resolution,
+                        scoped_files,
+                        source_scope,
+                        local_module_roots,
+                    )
+                )
+                decision["host_binding_gap_fields"] = host_binding_gap_fields(decision)
+                scope_decisions.append(decision)
             entry: dict[str, Any] = {
                 "call_form": call_form,
                 "call_shapes": shapes,
@@ -667,12 +1198,32 @@ class OperationIndexer:
                 "occurrences": len(items),
                 "representative_locations": [location.as_dict() for location in locations[:3]],
                 "resolution": resolution,
+                "scope_decisions": scope_decisions,
                 "source_file_count": len(files),
+                "source_scopes": [decision["source_scope"] for decision in scope_decisions],
                 "symbol": symbol,
             }
-            entry.update(self.rules.classify(symbol, call_form, files))
+            for field in (
+                "classification_rule",
+                "cpp_host_binding",
+                "disposition",
+                "family",
+                "migration_status",
+                "owner",
+                "parity_test_id",
+            ):
+                values = sorted({str(decision[field]) for decision in scope_decisions})
+                entry[field] = values[0] if len(values) == 1 else "MULTIPLE"
             result.append(entry)
         return result
+
+
+def host_binding_gap_fields(decision: dict[str, Any]) -> list[str]:
+    if decision["disposition"] != "HOST_BINDING_REQUIRED":
+        return []
+    placeholders = {"", "NOT_APPLICABLE", "UNASSIGNED", "UNCLASSIFIED", "UNRESOLVED"}
+    required = ("cpp_host_binding", "family", "owner", "parity_test_id")
+    return [field for field in required if str(decision.get(field, "")) in placeholders]
 
 
 def repository_revision(root: Path) -> str:
@@ -705,35 +1256,39 @@ def render_generated_matrix(report: dict[str, Any], evidence_link: str) -> str:
         (
             f"Snapshot `{report['repository']['revision']}` contains "
             f"{summary['python_files']} Python files, {summary['operation_count']} unique operations, "
-            f"{summary['call_sites']} observed sites, {summary['unclassified_operations']} unclassified "
-            f"operations, and {summary['parse_errors']} parse errors."
+            f"{summary['call_sites']} observed sites, {summary['scope_decision_count']} source-scope "
+            f"decisions, {summary['unresolved_disposition_scope_decisions']} unresolved dispositions, "
+            f"{summary['host_binding_gaps']} host-binding gaps, and {summary['parse_errors']} parse errors."
         ),
         "",
-        "| Evidence ID | Kind/form | Operation symbol | Uses | Family | Owner | Proposed C++ binding | Parity test | Status | Representative source |",
-        "| --- | --- | --- | ---: | --- | --- | --- | --- | --- | --- |",
+        "| Evidence ID | Source scope | Disposition | Kind/form | Operation symbol | Uses | Family | Owner / target | Proposed C++ binding | Parity test | Status | Representative source |",
+        "| --- | --- | --- | --- | --- | ---: | --- | --- | --- | --- | --- | --- |",
     ]
     for operation in report["operations"]:
-        location = operation["representative_locations"][0]
-        source = f"{location['file']}:{location['line']}"
-        lines.append(
-            "| "
-            + " | ".join(
-                markdown_escape(value)
-                for value in (
-                    operation["id"],
-                    f"{operation['kind']}/{operation['call_form']}",
-                    f"`{operation['symbol']}`",
-                    operation["occurrences"],
-                    operation["family"],
-                    operation["owner"],
-                    f"`{operation['cpp_host_binding']}`",
-                    operation["parity_test_id"],
-                    operation["migration_status"],
-                    f"`{source}`",
+        for decision in operation["scope_decisions"]:
+            location = decision["representative_locations"][0]
+            source = f"{location['file']}:{location['line']}"
+            lines.append(
+                "| "
+                + " | ".join(
+                    markdown_escape(value)
+                    for value in (
+                        decision["id"],
+                        decision["source_scope"],
+                        decision["disposition"],
+                        f"{operation['kind']}/{operation['call_form']}",
+                        f"`{operation['symbol']}`",
+                        decision["occurrences"],
+                        decision["family"],
+                        decision["owner"],
+                        f"`{decision['cpp_host_binding']}`",
+                        decision["parity_test_id"],
+                        decision["migration_status"],
+                        f"`{source}`",
+                    )
                 )
+                + " |"
             )
-            + " |"
-        )
     lines.extend([END_MARKER, ""])
     return "\n".join(lines)
 
@@ -772,7 +1327,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--strict",
         action="store_true",
-        help="fail when any operation is UNCLASSIFIED or any Python source cannot be parsed",
+        help=(
+            "fail for unresolved dispositions, host-binding gaps, or Python parse errors; "
+            "the two gap counts remain separate in JSON"
+        ),
     )
     return parser
 
@@ -803,7 +1361,11 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     summary = report["summary"]
-    if args.strict and (summary["unclassified_operations"] or summary["parse_errors"]):
+    if args.strict and (
+        summary["unresolved_disposition_scope_decisions"]
+        or summary["host_binding_gaps"]
+        or summary["parse_errors"]
+    ):
         return 1
     return 0
 

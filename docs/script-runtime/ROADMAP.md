@@ -33,8 +33,12 @@ an isolated prototype is not considered project completion.
   modifying its existing dirty worktree.
 - [~] Record every discovered Python operation in `MIGRATION_MATRIX.md` with an
   owner, C++ host binding, parity test, and migration status.
-  The generated operation index tracks every discovered item, but 4,022 remain
-  explicitly `UNCLASSIFIED`; see `OPERATION_INDEX_AUDIT.md`.
+  Taxonomy v2 preserves all 15,469 sites as 4,545 operations and 5,128
+  operation/source-scope decisions. It separates script Host requirements,
+  script/module rewrites, C++ service internals, Tauri UI replacement,
+  tooling/tests, dependencies, and unresolved calls; 1,842 disposition
+  decisions and eight Host contracts remain strict gaps. See
+  `OPERATION_INDEX_AUDIT.md`.
 - [x] Implement an opt-in, deterministic, bounded Python parity trace foundation
   on `feat/cpp-parity-trace` without changing the default execution path.
 - [x] Add a deterministic static migration validator for grid actions, image
@@ -52,7 +56,8 @@ an isolated prototype is not considered project completion.
   AVDs, and exact future smoke evidence; no platform smoke is claimed.
 
 Exit evidence: inventories cover all source roots, the migration matrix has no
-unclassified operation families, and baseline commands/results are recorded.
+unresolved disposition or Host-contract gaps, and baseline commands/results
+are recorded.
 
 ## Phase 1 — Language and compatibility specification
 

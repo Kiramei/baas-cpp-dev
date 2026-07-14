@@ -23,12 +23,20 @@ from scripts.migration.operation_index import (
 HERE = Path(__file__).resolve().parent
 FIXTURE_REPO = HERE / "fixtures" / "operation_repo"
 INDEXER = HERE.parent / "operation_index.py"
-RULES = HERE.parent / "operation_rules.v1.json"
+RULES = HERE.parent / "operation_rules.v2.json"
 
 
 class OperationIndexTests(unittest.TestCase):
     def generate(self, root: Path = FIXTURE_REPO) -> dict:
         return OperationIndexer(root, RuleSet(RULES)).generate()
+
+    @staticmethod
+    def scope_decision(operation: dict, source_scope: str) -> dict:
+        return next(
+            decision
+            for decision in operation["scope_decisions"]
+            if decision["source_scope"] == source_scope
+        )
 
     def test_fixture_covers_alias_member_self_super_chained_and_dynamic(self) -> None:
         report = self.generate()
@@ -49,12 +57,86 @@ class OperationIndexTests(unittest.TestCase):
             for operation in report["operations"]
             if operation["symbol"].startswith("dynamic:getattr(self,?)")
         )
-        self.assertEqual(dynamic["migration_status"], "UNCLASSIFIED")
+        self.assertEqual(dynamic["migration_status"], "UNRESOLVED")
+        self.assertEqual(dynamic["disposition"], "UNRESOLVED")
         self.assertEqual(dynamic["resolution"], "dynamic")
 
         alias = by_symbol["core.device.Control.Control"]
         self.assertEqual(alias["call_form"], "alias")
         self.assertEqual(alias["family"], "device.input-capture")
+        self.assertEqual(alias["disposition"], "HOST_BINDING_REQUIRED")
+
+    def test_relative_imports_package_init_shadowing_and_rebinding(self) -> None:
+        report = self.generate()
+        operations = report["operations"]
+        symbols = {operation["symbol"] for operation in operations}
+
+        self.assertIn("module.pkg.helpers.execute", symbols)
+        self.assertIn("module.pkg.helpers.run", symbols)
+        self.assertIn("module.pkg.sub.local.initialize", symbols)
+        self.assertIn("module.pkg.sub.local.go", symbols)
+        self.assertIn("core.image.detect", symbols)
+        self.assertIn("image.detect", symbols)
+        self.assertIn("module_picture.co_detect", symbols)
+        self.assertIn("scoped_picture.co_detect", symbols)
+        self.assertIn("conditional_alias.co_detect", symbols)
+
+        resolved_image = next(
+            operation for operation in operations if operation["symbol"] == "core.image.detect"
+        )
+        unresolved_image = next(
+            operation for operation in operations if operation["symbol"] == "image.detect"
+        )
+        self.assertEqual(resolved_image["occurrences"], 2)
+        self.assertEqual(resolved_image["resolution"], "resolved")
+        self.assertEqual(unresolved_image["occurrences"], 3)
+        self.assertEqual(unresolved_image["resolution"], "unresolved")
+
+        resolved_picture = next(
+            operation
+            for operation in operations
+            if operation["symbol"] == "core.picture.co_detect"
+            and operation["call_form"] == "alias-member"
+        )
+        self.assertGreaterEqual(resolved_picture["occurrences"], 3)
+        identical_branch = next(
+            operation
+            for operation in operations
+            if operation["symbol"] == "core.picture.co_detect"
+            and operation["call_form"] == "alias-member"
+        )
+        ambiguous_branch = next(
+            operation
+            for operation in operations
+            if operation["symbol"] == "conditional_alias.co_detect"
+        )
+        self.assertEqual(identical_branch["resolution"], "resolved")
+        self.assertEqual(ambiguous_branch["resolution"], "unresolved")
+
+    def test_scope_dispositions_and_host_gaps_are_separate(self) -> None:
+        report = self.generate()
+        by_symbol = {operation["symbol"]: operation for operation in report["operations"]}
+
+        cases = {
+            "PyQt5.QtWidgets.QApplication": ("LEGACY_GUI", "TAURI_UI_REPLACED"),
+            "json.loads": ("MIGRATION_TOOLING", "MIGRATION_TOOLING_ONLY"),
+            "shutil.copy": ("DEPLOYMENT_TOOLING", "MIGRATION_TOOLING_ONLY"),
+            "module.pkg.helpers.run": ("TEST", "TEST_ONLY"),
+            "thirdparty.run": ("SCRIPT_RUNTIME", "EXTERNAL_DEPENDENCY"),
+        }
+        for symbol, (source_scope, disposition) in cases.items():
+            decision = self.scope_decision(by_symbol[symbol], source_scope)
+            self.assertEqual(decision["disposition"], disposition, symbol)
+            self.assertEqual(decision["host_binding_gap_fields"], [], symbol)
+
+        process = self.scope_decision(by_symbol["subprocess.run"], "SCRIPT_RUNTIME")
+        self.assertEqual(process["disposition"], "HOST_BINDING_REQUIRED")
+        self.assertEqual(
+            process["host_binding_gap_fields"],
+            ["cpp_host_binding", "owner", "parity_test_id"],
+        )
+        self.assertGreater(report["summary"]["unresolved_disposition_scope_decisions"], 0)
+        self.assertGreater(report["summary"]["host_binding_gaps"], 0)
 
     def test_fixture_discovers_registries_routes_dispatch_and_parse_errors(self) -> None:
         report = self.generate()
@@ -88,8 +170,11 @@ class OperationIndexTests(unittest.TestCase):
             ],
         )
         self.assertLessEqual(len(click["representative_locations"]), 3)
+        self.assertEqual(click["id"], "op-8446093f5f2315e0")
+        self.assertEqual(report["schema_version"], 2)
+        self.assertEqual(report["identity_version"], 1)
 
-    def test_strict_fails_for_unclassified_and_parse_error(self) -> None:
+    def test_strict_fails_for_unresolved_disposition_host_gap_and_parse_error(self) -> None:
         process = subprocess.run(
             [
                 sys.executable,
@@ -106,14 +191,16 @@ class OperationIndexTests(unittest.TestCase):
         )
         self.assertEqual(process.returncode, 1, process.stderr)
         report = json.loads(process.stdout)
-        self.assertGreater(report["summary"]["unclassified_operations"], 0)
+        self.assertGreater(report["summary"]["unresolved_disposition_scope_decisions"], 0)
+        self.assertGreater(report["summary"]["host_binding_gaps"], 0)
         self.assertEqual(report["summary"]["parse_errors"], 1)
 
     def test_strict_succeeds_for_fully_classified_fixture(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             repository = Path(directory) / "repo"
             repository.mkdir()
-            (repository / "only.py").write_text(
+            (repository / "module").mkdir()
+            (repository / "module" / "only.py").write_text(
                 "def run(self):\n    self.click(1, 2, wait_over=True)\n",
                 encoding="utf-8",
             )
@@ -134,7 +221,51 @@ class OperationIndexTests(unittest.TestCase):
             self.assertEqual(process.returncode, 0, process.stderr)
             report = json.loads(process.stdout)
             self.assertEqual(report["summary"]["operation_count"], 1)
-            self.assertEqual(report["summary"]["unclassified_operations"], 0)
+            self.assertEqual(report["summary"]["unresolved_disposition_scope_decisions"], 0)
+            self.assertEqual(report["summary"]["host_binding_gaps"], 0)
+
+    def test_strict_reports_unresolved_and_host_binding_gaps_independently(self) -> None:
+        cases = (
+            (
+                "import subprocess\nsubprocess.run(['tool'])\n",
+                0,
+                1,
+            ),
+            (
+                "def run(obj):\n    obj.unknown()\n",
+                1,
+                0,
+            ),
+        )
+        for source, unresolved, host_gaps in cases:
+            with self.subTest(unresolved=unresolved, host_gaps=host_gaps):
+                with tempfile.TemporaryDirectory() as directory:
+                    repository = Path(directory) / "repo"
+                    module = repository / "module"
+                    module.mkdir(parents=True)
+                    (module / "only.py").write_text(source, encoding="utf-8")
+                    process = subprocess.run(
+                        [
+                            sys.executable,
+                            str(INDEXER),
+                            "--python-repo",
+                            str(repository),
+                            "--rules",
+                            str(RULES),
+                            "--strict",
+                        ],
+                        check=False,
+                        capture_output=True,
+                        text=True,
+                    )
+                    report = json.loads(process.stdout)
+
+                self.assertEqual(process.returncode, 1, process.stderr)
+                self.assertEqual(
+                    report["summary"]["unresolved_disposition_scope_decisions"],
+                    unresolved,
+                )
+                self.assertEqual(report["summary"]["host_binding_gaps"], host_gaps)
 
     def test_matrix_marker_update_preserves_manual_sections(self) -> None:
         report = self.generate()

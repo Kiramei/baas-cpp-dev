@@ -1,0 +1,229 @@
+{
+  "rules_version": 2,
+  "source_scope_rules": [
+    {
+      "id": "script-runtime-sources-v2",
+      "source_patterns": ["core/*", "module/*", "main.py", "cli.example.py"],
+      "source_scope": "SCRIPT_RUNTIME"
+    },
+    {
+      "id": "generated-resource-sources-v2",
+      "source_patterns": ["src/*"],
+      "source_scope": "GENERATED_RESOURCE"
+    },
+    {
+      "id": "cpp-service-sources-v2",
+      "source_patterns": ["service/*", "main.service.py", "service.example.py"],
+      "source_scope": "CPP_SERVICE"
+    },
+    {
+      "id": "legacy-gui-sources-v2",
+      "source_patterns": ["gui/*", "window.py"],
+      "source_scope": "LEGACY_GUI"
+    },
+    {
+      "id": "test-sources-v2",
+      "source_patterns": ["tests/*"],
+      "source_scope": "TEST"
+    },
+    {
+      "id": "migration-tooling-sources-v2",
+      "source_patterns": ["develop_tools/*"],
+      "source_scope": "MIGRATION_TOOLING"
+    },
+    {
+      "id": "deployment-tooling-sources-v2",
+      "source_patterns": ["deploy/*"],
+      "source_scope": "DEPLOYMENT_TOOLING"
+    }
+  ],
+  "rules": [
+    {
+      "cpp_host_binding": "baas::script::host::TaskRegistry::register_task",
+      "disposition": "HOST_BINDING_REQUIRED",
+      "family": "task.scheduler",
+      "id": "task-registry-v2",
+      "migration_status": "INVENTORIED",
+      "owner": "Runtime Scheduling",
+      "parity_test_id": "PARITY-TASK-REGISTRY",
+      "source_scopes": ["SCRIPT_RUNTIME"],
+      "symbol_patterns": ["registry:core.Baas_thread.func_dict:*"]
+    },
+    {
+      "cpp_host_binding": "baas::script::host::TaskActionHost::dispatch",
+      "disposition": "HOST_BINDING_REQUIRED",
+      "family": "task.action",
+      "id": "task-action-dispatch-v2",
+      "migration_status": "INVENTORIED",
+      "owner": "Runtime Scheduling",
+      "parity_test_id": "PARITY-TASK-ACTION",
+      "source_scopes": ["SCRIPT_RUNTIME"],
+      "symbol_patterns": ["dispatch:operation:*"]
+    },
+    {
+      "cpp_host_binding": "baas::service::TransportRegistry::open_channel",
+      "disposition": "CPP_SERVICE_INTERNAL",
+      "family": "service.transport",
+      "id": "service-channel-registry-v2",
+      "migration_status": "INVENTORIED",
+      "owner": "Service Platform",
+      "parity_test_id": "PARITY-SERVICE-CHANNEL",
+      "source_scopes": ["CPP_SERVICE"],
+      "symbol_patterns": ["registry:service.transport.pipe_server._HANDLERS:*"]
+    },
+    {
+      "cpp_host_binding": "baas::service::Router::dispatch",
+      "disposition": "CPP_SERVICE_INTERNAL",
+      "family": "service.transport",
+      "id": "service-route-v2",
+      "migration_status": "INVENTORIED",
+      "owner": "Service Platform",
+      "parity_test_id": "PARITY-SERVICE-ROUTE",
+      "source_scopes": ["CPP_SERVICE"],
+      "symbol_patterns": ["route:*"]
+    },
+    {
+      "cpp_host_binding": "baas::service::CommandDispatcher::dispatch",
+      "disposition": "CPP_SERVICE_INTERNAL",
+      "family": "service.transport",
+      "id": "service-command-dispatch-v2",
+      "migration_status": "INVENTORIED",
+      "owner": "Service Platform",
+      "parity_test_id": "PARITY-SERVICE-COMMAND",
+      "source_scopes": ["CPP_SERVICE"],
+      "symbol_patterns": ["dispatch:command:*", "dispatch:channel:*", "dispatch:msg_type:*", "dispatch:req_type:*"]
+    },
+    {
+      "cpp_host_binding": "baas::script::host::DeviceHost",
+      "disposition": "HOST_BINDING_REQUIRED",
+      "family": "device.input-capture",
+      "id": "device-host-v2",
+      "migration_status": "INVENTORIED",
+      "owner": "Runtime Device",
+      "parity_test_id": "PARITY-DEVICE-HOST",
+      "source_scopes": ["SCRIPT_RUNTIME", "GENERATED_RESOURCE"],
+      "symbol_patterns": [
+        "adbutils.*",
+        "core.device.*",
+        "mss.*",
+        "pyautogui.*",
+        "self.check_atx*",
+        "self.check_resolution*",
+        "self.click*",
+        "self.control.*",
+        "self.get_screenshot_array",
+        "self.normalize_screenshot",
+        "self.screenshot.*",
+        "self.start_emulator*",
+        "self.swipe*",
+        "self.u2_*",
+        "self.update_screenshot_array",
+        "uiautomator2.*"
+      ]
+    },
+    {
+      "cpp_host_binding": "baas::script::host::VisionHost",
+      "disposition": "HOST_BINDING_REQUIRED",
+      "family": "image.detect",
+      "id": "vision-host-v2",
+      "migration_status": "INVENTORIED",
+      "owner": "Runtime Vision",
+      "parity_test_id": "PARITY-VISION-HOST",
+      "source_scopes": ["SCRIPT_RUNTIME", "GENERATED_RESOURCE"],
+      "symbol_patterns": ["core.color.*", "core.image.*", "core.picture.*", "cv2.*", "numpy.*"]
+    },
+    {
+      "cpp_host_binding": "baas::script::host::OcrHost",
+      "disposition": "HOST_BINDING_REQUIRED",
+      "family": "ocr.inference",
+      "id": "ocr-host-v2",
+      "migration_status": "INVENTORIED",
+      "owner": "Runtime OCR",
+      "parity_test_id": "PARITY-OCR-HOST",
+      "source_scopes": ["SCRIPT_RUNTIME", "GENERATED_RESOURCE"],
+      "symbol_patterns": ["core.ocr.*", "self.ocr.*"]
+    },
+    {
+      "cpp_host_binding": "baas::script::host::ConfigHost",
+      "disposition": "HOST_BINDING_REQUIRED",
+      "family": "config.state",
+      "id": "config-host-v2",
+      "migration_status": "INVENTORIED",
+      "owner": "Runtime Configuration",
+      "parity_test_id": "PARITY-CONFIG-HOST",
+      "source_scopes": ["SCRIPT_RUNTIME", "GENERATED_RESOURCE"],
+      "symbol_patterns": ["core.config.*", "self.config.*", "self.config_set.*"]
+    },
+    {
+      "cpp_host_binding": "baas::script::host::LogHost",
+      "disposition": "HOST_BINDING_REQUIRED",
+      "family": "log.event",
+      "id": "logging-host-v2",
+      "migration_status": "INVENTORIED",
+      "owner": "Runtime Observability",
+      "parity_test_id": "PARITY-LOG-EVENT",
+      "source_scopes": ["SCRIPT_RUNTIME", "GENERATED_RESOURCE"],
+      "symbol_patterns": ["_logger.*", "logger.*", "logging.*", "self.logger.*"]
+    },
+    {
+      "cpp_host_binding": "baas::script::host::SchedulerHost",
+      "disposition": "HOST_BINDING_REQUIRED",
+      "family": "task.scheduler-thread",
+      "id": "scheduler-host-v2",
+      "migration_status": "INVENTORIED",
+      "owner": "Runtime Scheduling",
+      "parity_test_id": "PARITY-SCHEDULER-HOST",
+      "source_scopes": ["SCRIPT_RUNTIME", "GENERATED_RESOURCE"],
+      "symbol_patterns": ["asyncio.*", "concurrent.futures.*", "core.scheduler.*", "self.scheduler.*", "threading.*", "time.sleep"]
+    },
+    {
+      "cpp_host_binding": "baas::script::host::ResourceHost",
+      "disposition": "HOST_BINDING_REQUIRED",
+      "family": "resource.filesystem",
+      "id": "resource-host-v2",
+      "migration_status": "INVENTORIED",
+      "owner": "Runtime Resources",
+      "parity_test_id": "PARITY-RESOURCE-HOST",
+      "source_scopes": ["SCRIPT_RUNTIME", "GENERATED_RESOURCE"],
+      "symbol_patterns": [
+        "builtins.open",
+        "glob.*",
+        "os.listdir",
+        "os.makedirs",
+        "os.mkdir",
+        "os.remove",
+        "os.rename",
+        "os.replace",
+        "os.walk",
+        "shutil.*"
+      ]
+    },
+    {
+      "disposition": "HOST_BINDING_REQUIRED",
+      "family": "system.process",
+      "id": "process-host-gap-v2",
+      "migration_status": "BINDING_REQUIRED",
+      "source_scopes": ["SCRIPT_RUNTIME", "GENERATED_RESOURCE"],
+      "symbol_patterns": ["os.popen", "os.system", "psutil.*", "subprocess.*"]
+    },
+    {
+      "disposition": "HOST_BINDING_REQUIRED",
+      "family": "network.external",
+      "id": "network-host-gap-v2",
+      "migration_status": "BINDING_REQUIRED",
+      "source_scopes": ["SCRIPT_RUNTIME", "GENERATED_RESOURCE"],
+      "symbol_patterns": ["aiohttp.*", "requests.*", "socket.*", "urllib.*", "websocket.*", "websockets.*"]
+    },
+    {
+      "cpp_host_binding": "NOT_APPLICABLE",
+      "disposition": "SCRIPT_LANGUAGE_OR_MODULE",
+      "family": "language.intrinsic",
+      "id": "language-builtins-v2",
+      "migration_status": "SCOPED",
+      "owner": "Script Runtime",
+      "parity_test_id": "LANGUAGE-CONFORMANCE",
+      "source_scopes": ["SCRIPT_RUNTIME", "GENERATED_RESOURCE"],
+      "symbol_patterns": ["builtins.*", "collections.*", "copy.*", "itertools.*", "json.*", "math.*", "operator.*"]
+    }
+  ]
+}

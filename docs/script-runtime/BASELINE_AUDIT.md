@@ -170,10 +170,11 @@ requirement to only the most frequent operations.
 The deterministic static operation index is recorded in
 [`OPERATION_INDEX_AUDIT.md`](OPERATION_INDEX_AUDIT.md), with full JSON evidence
 linked from the generated section of `MIGRATION_MATRIX.md`. At the audited
-snapshot it finds 4,556 unique operations across 15,469 sites, with 4,022 still
-unclassified. Its strict gate therefore fails as intended, and Phase 0 remains
-incomplete alongside the outstanding golden-trace, performance, and smoke-test
-gates.
+snapshot taxonomy v2 preserves 15,469 sites as 4,545 unique operations and
+5,128 operation/source-scope decisions. It records 1,842 unresolved
+dispositions and eight unassigned Host contracts separately. Its strict gate
+therefore fails as intended, and Phase 0 remains incomplete alongside the
+outstanding golden-trace, performance, and smoke-test gates.
 
 ## Host-side Python performance baseline
 

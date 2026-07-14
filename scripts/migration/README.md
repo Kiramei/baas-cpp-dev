@@ -28,9 +28,12 @@ warnings fail. Bad CLI input returns exit code 2.
 `operation_index.py` is a separate Python 3.11 standard-library tool. It does
 not change the validator above. It recursively parses every BAAS Python source
 root without importing the checkout and records calls, static registries,
-route decorators, and string dispatch operations. A versioned rule file adds
-an owner, proposed C++ host binding, parity-test ID, and migration status only
-when a conservative rule matches.
+route decorators, and string dispatch operations. Rule schema v2 first assigns
+each occurrence to a versioned source scope, then makes a conservative
+disposition decision for every operation/scope pair. The decisions distinguish
+required script Host APIs, script-language/module rewrites, C++ service
+internals, legacy UI replaced by Tauri, migration/deployment tooling, tests,
+external dependencies, and unresolved expressions.
 
 ```powershell
 python scripts/migration/operation_index.py `
@@ -41,12 +44,20 @@ python scripts/migration/operation_index.py `
   --strict
 ```
 
-A normal run returns zero after producing evidence even if gaps remain, while
-`--strict` returns 1 when any operation is `UNCLASSIFIED` or any source cannot
-be parsed. Invalid paths, rules, or matrix markers return 2. Dynamic calls are
-always preserved as unclassified evidence. The generated JSON contains no
-timestamps or absolute paths; the matrix updater replaces only its generated
-marker block.
+A normal run returns zero after producing evidence even if gaps remain.
+`--strict` returns 1 when an operation/scope disposition is `UNRESOLVED`, a
+`HOST_BINDING_REQUIRED` decision lacks its proposed binding/owner/parity
+contract, or a source cannot be parsed. The JSON reports unresolved-disposition
+and host-binding-gap counts separately. Dynamic calls stay unresolved even
+when they occur below `tests/`, `gui/`, or tooling directories; source location
+alone never marks an unknown call complete.
+
+Schema v2 retains operation identity version 1. Unchanged
+`(kind, call_form, symbol)` identities therefore keep their existing IDs;
+corrected absolute/relative import resolution can intentionally retire an old
+alias identity and create a corrected one. The generated JSON contains no
+timestamps or absolute paths, and the matrix updater replaces only its
+generated marker block. Invalid paths, rules, or matrix markers return 2.
 
 ## Host-side Python performance baseline
 
