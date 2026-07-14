@@ -1,8 +1,9 @@
 # Capability-scoped Host API Contract (Draft 0.1)
 
-Status: specified, not implemented. This document fixes the Phase 1 contract
-surface; it does not claim that any named C++ interface, adapter, binding, or
-parity test exists or passes.
+Status: Host adapters specified, not implemented. This document fixes the Phase
+1 contract surface. A metadata-only registry/permission-resolution foundation
+exists, but no named C++ adapter, callable binding, or parity implementation is
+claimed.
 
 The normative machine catalog is
 [`host-capabilities.v1.json`](host-capabilities.v1.json). Taxonomy coverage is
@@ -31,6 +32,13 @@ additive behavior only under the same major. A binding ID MUST NOT be reused
 for a different parameter, result, permission, side-effect, or error contract.
 The canonical schema-1 inventory is `host-capabilities.v1.json`; Markdown names
 that disagree with that catalog are invalid.
+
+The metadata registry MUST accept only canonical `baas/<name>` descriptors with
+unique `{module, major, minor}` versions, exports, and binding ownership. For a
+manifest `{major, min_minor}` requirement it MUST consider only that exact major
+and deterministically select the greatest registered minor satisfying
+`minor >= min_minor`, independent of descriptor or request order. A higher minor
+MUST retain every earlier export with the same binding and capability.
 
 ### HST-002 — Checked invocation and result boundary
 
@@ -92,6 +100,13 @@ process, network, device, or service access. Capability arguments are narrowed
 again by injected policy objects such as device IDs, resource snapshots,
 filesystem roots, executable IDs, endpoint allowlists, and service operation
 IDs. Possession of one handle or capability MUST NOT imply another.
+
+Registry resolution MUST reject an imported module absent from manifest
+`host_modules`, then reject an imported export capability absent from manifest
+`capabilities`, before evaluating grants. For a declared capability, the fixed
+narrowing order is service/user policy, platform availability, then per-task
+narrowing. Successful results contain only their four-way intersection; no
+denial may be converted into a weaker export or adapter fallback.
 
 ### HST-005 — Deadlines, cancellation, and effect visibility
 
@@ -279,6 +294,55 @@ emulator fixtures. Documentation tests validate the catalog, taxonomy evidence,
 rules, matrix, roadmap, and CI linkage but MUST NOT count as C++ binding or
 parity implementation.
 
+## Metadata registry foundation
+
+`HostModuleRegistry` is a standard-library-only, immutable metadata registry.
+`HostModuleDescriptor` contains a canonical module ID, `{major, minor}`, and
+per-export `{export_name, binding_id, capability}` strings; it deliberately has
+no callback, adapter object, native pointer, native file descriptor, or device
+handle.
+Construction validates descriptor identity, additive minor compatibility,
+explicit count/string/work budgets, and UTF-8 before publishing the registry.
+
+`resolve` accepts manifest module requirements and declared capabilities plus
+requested exports and policy/platform/task capability sets. `HostResolution`
+returns bytewise-sorted modules, selected exact versions, bytewise-sorted
+bindings, the sorted effective capability intersection, and validation work.
+After safe publication, concurrent `const resolve` calls are permitted because
+all registry state is immutable and every call owns its scratch state.
+
+Registry failures use the following stable foundation codes. They are package
+validation results, not adapter `HOSTnnn` statuses and not proof that a Host
+operation can execute:
+
+| Code | Condition |
+| --- | --- |
+| `HREG001_INVALID_LIMITS` | a configured limit is zero |
+| `HREG002_MODULE_VERSION_LIMIT_EXCEEDED` | registered/declared module versions exceed the bound |
+| `HREG003_EXPORT_LIMIT_EXCEEDED` | descriptor/request export count exceeds the bound |
+| `HREG004_CAPABILITY_LIMIT_EXCEEDED` | a capability layer exceeds the bound |
+| `HREG005_IMPORT_LIMIT_EXCEEDED` | imported Host modules exceed the bound |
+| `HREG006_STRING_BUDGET_EXCEEDED` | one or total identifier bytes exceed bounds |
+| `HREG007_VALIDATION_WORK_LIMIT_EXCEEDED` | deterministic validation work is exhausted |
+| `HREG008_INVALID_UTF8` | identity metadata is not valid UTF-8 |
+| `HREG009_INVALID_MODULE_ID` | module ID is not canonical `baas/<name>` |
+| `HREG010_INVALID_EXPORT_NAME` | export is not lowercase ASCII identity |
+| `HREG011_INVALID_CAPABILITY_ID` | capability is not dotted lowercase identity |
+| `HREG012_INVALID_BINDING_ID` | binding does not match module-major binding shape |
+| `HREG013_DUPLICATE_MODULE_VERSION` | `{module, major, minor}` repeats |
+| `HREG014_DUPLICATE_EXPORT` | one descriptor/import repeats an export |
+| `HREG015_DUPLICATE_BINDING` | binding ownership conflicts |
+| `HREG016_INCOMPATIBLE_MINOR_CONTRACT` | a higher minor removes or changes an export |
+| `HREG017_DUPLICATE_MANIFEST_MODULE` | manifest repeats a Host requirement |
+| `HREG018_DUPLICATE_CAPABILITY` | one capability layer repeats an ID |
+| `HREG019_DUPLICATE_IMPORT` | request repeats an imported Host module |
+| `HREG020_UNDECLARED_MODULE` | import is absent from manifest `host_modules` |
+| `HREG021_MODULE_UNAVAILABLE` | declared module has no registered descriptor |
+| `HREG022_VERSION_INCOMPATIBLE` | exact major/sufficient minor cannot be selected |
+| `HREG023_UNKNOWN_EXPORT` | selected version lacks the requested export |
+| `HREG024_UNDECLARED_CAPABILITY` | export capability is absent from the manifest |
+| `HREG025_CAPABILITY_DENIED` | policy, platform, or task narrowing denies it |
+
 ## Version-1 binding signatures
 
 The following compact view is informative; parameter requiredness, complete
@@ -302,8 +366,9 @@ normative in `host-capabilities.v1.json`.
 
 ## Explicitly pending implementation evidence
 
-No header or source file is introduced by this contract. `ProcessHost`,
-`HttpHost`, `SocketHost`, `ServiceHost`, and the other named interfaces remain
-proposed interface identities. Phase 3 binding, permission enforcement,
-threading implementation, cancellation injection, and parity checkboxes remain
-pending until their production code and tests exist.
+The registry header/source and its metadata tests do not define or invoke
+`ProcessHost`, `HttpHost`, `SocketHost`, `ServiceHost`, or any other named
+adapter. Those remain proposed interface identities. Native registration into
+the VM, adapter availability, invocation-time argument policy, strands,
+cancellation injection, Host error translation, and Python-versus-C++ parity
+remain pending until their production code and tests exist.

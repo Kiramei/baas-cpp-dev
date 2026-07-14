@@ -131,12 +131,25 @@ An import of `baas/device` is valid only when:
 3. the package declares every capability required by the imported symbols;
 4. execution policy grants a subset containing those declared capabilities.
 
+When more than one registered descriptor has the requested major and satisfies
+`minor >= min_minor`, resolution selects the greatest such minor. Selection is
+bytewise/deterministic and independent of manifest, import, capability, or
+registration input order. An unavailable exact major never falls forward or
+back to another major. The activation contract requires the selected exact pair
+to be stored in its immutable snapshot.
+
 The effective capability set is the intersection of package declaration,
 service/user policy, platform availability, and per-task narrowing. No layer
 can broaden an earlier layer. A package cannot enumerate or import an
 undeclared host module. Raw filesystem, process, network, native extension, and
 remote-control capabilities are separate privileged grants and are absent by
 default.
+
+The metadata gate evaluates required export capabilities in fixed order:
+manifest declaration, service/user policy, platform availability, then
+per-task narrowing. Manifest absence is an undeclared-capability validation
+failure; a later missing grant is `CapabilityDenied` attributed to that layer.
+This pre-activation resolution neither locates nor calls a native adapter.
 
 Deprecation metadata belongs to a host module version. Use of a deprecated name
 emits a stable validation warning with its replacement and planned next-major

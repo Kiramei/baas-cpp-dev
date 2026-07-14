@@ -13,6 +13,7 @@ add_library(
         "${BAAS_PROJECT_PATH}/src/script/runtime/BoundedExecutor.cpp"
         "${BAAS_PROJECT_PATH}/src/script/runtime/Environment.cpp"
         "${BAAS_PROJECT_PATH}/src/script/runtime/ErrorTranslation.cpp"
+        "${BAAS_PROJECT_PATH}/src/script/runtime/HostModuleRegistry.cpp"
         "${BAAS_PROJECT_PATH}/src/script/runtime/JsonBridge.cpp"
         "${BAAS_PROJECT_PATH}/src/script/runtime/ModuleGraph.cpp"
         "${BAAS_PROJECT_PATH}/src/script/runtime/ModuleSpecifier.cpp"
@@ -203,4 +204,13 @@ if(BUILD_SCRIPT_TESTS)
     target_link_libraries(BAAS_script_module_graph_tests PRIVATE BAAS_script_runtime)
     add_test(NAME BAAS_script_module_graph_tests COMMAND BAAS_script_module_graph_tests)
     set_tests_properties(BAAS_script_module_graph_tests PROPERTIES TIMEOUT 15)
+
+    add_executable(
+            BAAS_script_host_registry_tests
+            "${BAAS_PROJECT_PATH}/tests/script/HostModuleRegistryTests.cpp"
+    )
+    target_compile_features(BAAS_script_host_registry_tests PRIVATE cxx_std_20)
+    target_link_libraries(BAAS_script_host_registry_tests PRIVATE BAAS_script_runtime)
+    add_test(NAME BAAS_script_host_registry_tests COMMAND BAAS_script_host_registry_tests)
+    set_tests_properties(BAAS_script_host_registry_tests PROPERTIES TIMEOUT 30)
 endif()

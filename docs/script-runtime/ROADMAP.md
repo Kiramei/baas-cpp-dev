@@ -145,8 +145,11 @@ pending.
   package and `baas/*` Host modules and fails closed when non-ASCII NFC cannot
   be verified. Bounded package-graph validation now rejects missing/duplicate
   modules and deterministic cycles and produces dependency-first order;
-  manifest/Host-version/capability resolution, runtime loading states,
-  namespaces, initialization/cache, and native registration remain pending.
+  the immutable metadata Host registry now validates canonical descriptors,
+  selects the greatest sufficient same-major minor, and resolves manifest
+  modules/exports through declared-policy-platform-task capability intersection.
+  Runtime loading states, namespaces, initialization/cache, callable native
+  registration, and every real Host adapter remain pending.
 - [~] Implement structured exceptions, stack traces, cancellation, and limits.
   The total allocation-free RT001-RT023 language-code/catchability mapping is
   implemented from the stable `LanguageErrorCode` table, semantic analysis
@@ -200,7 +203,10 @@ pending.
 - [ ] Bind device discovery, ADB/scrcpy/Nemu capture, input, and lifecycle.
 - [ ] Bind feature matching and procedures.
 - [ ] Bind scheduling, workflow state, retries, deadlines, and cancellation.
-- [ ] Add host capability permissions and thread-safety declarations.
+- [~] Add host capability permissions and thread-safety declarations. Catalog
+  declarations and the immutable pre-activation capability gate exist; adapter
+  permission enforcement, affinity/strand execution, and race/parity evidence
+  remain pending.
 - [ ] Add Python-versus-C++ golden parity tests for every matrix entry.
 
 Exit evidence: every required operation has a binding and parity test; no
