@@ -71,7 +71,7 @@ are recorded.
   contextual restrictions in `LANGUAGE_GRAMMAR.md`.
 - [x] Specify value types, equality, conversions, collections, mutability, and
   JSON interoperation.
-- [ ] Specify lexical scope, functions, closures, recursion, loops, branching,
+- [x] Specify lexical scope, functions, closures, recursion, loops, branching,
   non-local control flow, and module loading sufficient for Turing completeness.
 - [ ] Specify structured errors, stack traces, source spans, cleanup/defer, and
   host-error translation.
@@ -95,6 +95,10 @@ resolution, immutable cache snapshots, atomic activation, and rollback gates.
 `VALUE_SEMANTICS.md` defines the normative value, numeric, equality,
 collection, mutability, heap-isolation, JSON, budget, and RT001-RT023 contract;
 its required clauses and implementation anchors are checked in Foundation CI.
+`CONTROL_FLOW_AND_MODULES.md` defines source-order lexical bindings, closure
+capture, recursion/control transfer, deterministic module loading/isolation,
+and a constructive two-counter-machine argument; its static anchors and
+pending VM/loader boundary are checked in Foundation CI.
 
 ## Phase 2 — C++ runtime and developer tooling
 

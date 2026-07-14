@@ -201,14 +201,14 @@ class ValueSemanticsSpecificationTests(unittest.TestCase):
         self.assertIn("`LANGUAGE_GRAMMAR.md`", self.spec)
         self.assertIn("JSON text parsing or serialization", self.language_spec)
 
-    def test_roadmap_marks_only_the_completed_value_spec_item(self) -> None:
+    def test_roadmap_marks_the_completed_value_spec_item(self) -> None:
         self.assertIn(
             "- [x] Specify value types, equality, conversions, collections, mutability, and\n"
             "  JSON interoperation.",
             self.roadmap,
         )
         self.assertIn(
-            "- [ ] Specify lexical scope, functions, closures, recursion, loops, branching,",
+            "- [ ] Specify structured errors, stack traces, source spans, cleanup/defer, and",
             self.roadmap,
         )
         self.assertIn("`VALUE_SEMANTICS.md` defines the normative value", self.roadmap)

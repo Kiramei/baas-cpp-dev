@@ -107,6 +107,11 @@ if(BUILD_SCRIPT_TESTS)
                 COMMAND BAAS_script_check --json "${BAAS_PROJECT_PATH}/tests/script/fixtures/invalid.baas"
         )
         set_tests_properties(BAAS_script_check_invalid_cli PROPERTIES WILL_FAIL TRUE)
+        add_test(
+                NAME BAAS_script_check_control_modules_valid_cli
+                COMMAND BAAS_script_check --json
+                        "${BAAS_PROJECT_PATH}/tests/script/fixtures/control_modules_valid.baas"
+        )
     endif()
 
     add_executable(

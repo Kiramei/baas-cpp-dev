@@ -83,6 +83,10 @@ empty string, empty list, and empty map are false; other values are true.
 
 ## 4. Lexical scope and state
 
+The normative scope, initialization, function, closure, recursion, branch,
+loop, non-local return/break/continue, and module-loading rules for Sections 4,
+6, 7, and 8 are defined in `CONTROL_FLOW_AND_MODULES.md`.
+
 `let name = expression;` creates a mutable binding in the current lexical
 scope. Reading an uninitialized or unknown name is an error. Assignment updates
 the nearest existing lexical binding; implicit globals are forbidden.
@@ -174,7 +178,8 @@ import "tasks/common" as common;
 ```
 
 - Imports resolve through the package manifest and immutable package snapshot.
-- Relative package imports cannot escape the package root.
+- Package imports use canonical root-relative extensionless logical ids and
+  cannot escape or probe outside the immutable package snapshot.
 - Host modules use the reserved `baas/` namespace.
 - A module initializes at most once per execution context. Import cycles produce
   a deterministic `ImportCycle` diagnostic in language version 1.
