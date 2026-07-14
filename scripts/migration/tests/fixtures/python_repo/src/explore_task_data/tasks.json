@@ -1,0 +1,14 @@
+{
+  "valid": {
+    "start": [["burst", [10, 20]]],
+    "action": [{"t": "click", "p": [30, 40], "ec": true}]
+  },
+  "bad_array": {
+    "start": [["pierce", [10, 20]]],
+    "action": [{"t": ["exchange", "click_and_teleport"], "p": [30, 40]}]
+  },
+  "bad_unknown": {
+    "start": [["mystic", [10, 20]]],
+    "action": [{"t": "nothing"}]
+  }
+}
