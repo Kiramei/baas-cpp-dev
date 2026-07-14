@@ -4,11 +4,13 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdlib>
+#include <functional>
 #include <iostream>
 #include <memory>
 #include <mutex>
 #include <stdexcept>
 #include <string_view>
+#include <thread>
 #include <vector>
 
 using namespace std::chrono_literals;
@@ -91,6 +93,59 @@ public:
     {
         throw std::runtime_error("sink failure must stay behind worker boundary");
     }
+};
+
+class OwnerReleaseSink final : public runtime::StructuredLogSink {
+public:
+    void set_release(std::function<void()> release)
+    {
+        release_ = std::move(release);
+    }
+
+    void write(const runtime::StructuredLogEvent&) override
+    {
+        {
+            std::unique_lock lock(mutex_);
+            entered_ = true;
+            changed_.notify_all();
+            changed_.wait(lock, [&] { return proceed_; });
+        }
+        release_();
+        {
+            const std::lock_guard lock(mutex_);
+            completed_ = true;
+        }
+        changed_.notify_all();
+    }
+
+    bool wait_until_entered()
+    {
+        std::unique_lock lock(mutex_);
+        return changed_.wait_for(lock, 2s, [&] { return entered_; });
+    }
+
+    void proceed()
+    {
+        {
+            const std::lock_guard lock(mutex_);
+            proceed_ = true;
+        }
+        changed_.notify_all();
+    }
+
+    bool wait_until_completed()
+    {
+        std::unique_lock lock(mutex_);
+        return changed_.wait_for(lock, 2s, [&] { return completed_; });
+    }
+
+private:
+    std::mutex mutex_;
+    std::condition_variable changed_;
+    std::function<void()> release_;
+    bool entered_{};
+    bool proceed_{};
+    bool completed_{};
 };
 
 runtime::HostArguments arguments(
@@ -328,6 +383,31 @@ void test_sink_failures_and_configuration_limits()
         }, "invalid UTF-8 host identity must be rejected");
 }
 
+void test_last_binding_release_from_worker_retains_task_state()
+{
+    auto sink = std::make_shared<OwnerReleaseSink>();
+    auto host = std::make_shared<runtime::QueuedLogHost>(
+        sink, runtime::LogHostIdentity{});
+    std::optional<runtime::SynchronousNativeBinding> binding(
+        runtime::make_queued_log_binding(host));
+    sink->set_release([&] { binding.reset(); });
+
+    check(invoke(*binding, arguments("info", "worker-owned teardown")).ok(),
+          "worker teardown fixture event must enqueue");
+    check(sink->wait_until_entered(),
+          "worker teardown fixture must reach the sink before owner release");
+    host.reset();
+    sink->proceed();
+    check(sink->wait_until_completed(),
+          "destroying the last binding on its worker must not self-join or deadlock");
+
+    const auto deadline = std::chrono::steady_clock::now() + 2s;
+    while (sink.use_count() != 1 && std::chrono::steady_clock::now() < deadline)
+        std::this_thread::yield();
+    check(!binding && sink.use_count() == 1,
+          "worker task must retain diagnostics state and release all task ownership safely");
+}
+
 }  // namespace
 
 int main()
@@ -336,6 +416,7 @@ int main()
     test_invalid_level_backpressure_and_shutdown();
     test_evaluator_to_production_queue_vertical_slice();
     test_sink_failures_and_configuration_limits();
+    test_last_binding_release_from_worker_retains_task_state();
     if (failures != 0) {
         std::cerr << failures << " LogHost test(s) failed\n";
         return EXIT_FAILURE;

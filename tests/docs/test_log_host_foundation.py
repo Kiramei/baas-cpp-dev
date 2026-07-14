@@ -35,6 +35,8 @@ class LogHostFoundationTests(unittest.TestCase):
         self.assertIn("TrySubmit", self.source)
         self.assertIn("HostErrorCode::Backpressure", self.source)
         self.assertIn("HostErrorCode::Unavailable", self.source)
+        self.assertIn("std::shared_ptr<Counters> counters", self.source)
+        self.assertIn("last binding on its worker", self.native_tests)
         self.assertNotIn("BAASLogger.h", self.header)
         self.assertNotIn("BAASLogger.h", self.source)
 

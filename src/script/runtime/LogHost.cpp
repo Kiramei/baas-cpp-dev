@@ -282,6 +282,14 @@ std::string_view structured_log_level_name(const StructuredLogLevel level) noexc
 }
 
 struct QueuedLogHost::Impl final {
+    struct Counters final {
+        std::atomic<std::size_t> accepted{};
+        std::atomic<std::size_t> delivered{};
+        std::atomic<std::size_t> sink_failures{};
+        std::atomic<std::size_t> backpressure_rejections{};
+        std::atomic<std::size_t> unavailable_rejections{};
+    };
+
     Impl(
         std::shared_ptr<StructuredLogSink> sink_value,
         LogHostIdentity identity_value,
@@ -291,6 +299,7 @@ struct QueuedLogHost::Impl final {
           identity(std::move(identity_value)),
           secrets(std::move(secrets_value)),
           limits(limits_value),
+          counters(std::make_shared<Counters>()),
           executor(1, limits.queue_capacity)
     {
     }
@@ -299,12 +308,8 @@ struct QueuedLogHost::Impl final {
     LogHostIdentity identity;
     std::vector<std::string> secrets;
     QueuedLogHostLimits limits;
+    std::shared_ptr<Counters> counters;
     BoundedExecutor executor;
-    std::atomic<std::size_t> accepted{};
-    std::atomic<std::size_t> delivered{};
-    std::atomic<std::size_t> sink_failures{};
-    std::atomic<std::size_t> backpressure_rejections{};
-    std::atomic<std::size_t> unavailable_rejections{};
 };
 
 QueuedLogHost::QueuedLogHost(
@@ -361,11 +366,11 @@ void QueuedLogHost::shutdown() noexcept
 QueuedLogHostStats QueuedLogHost::stats() const noexcept
 {
     return {
-        impl_->accepted.load(std::memory_order_relaxed),
-        impl_->delivered.load(std::memory_order_relaxed),
-        impl_->sink_failures.load(std::memory_order_relaxed),
-        impl_->backpressure_rejections.load(std::memory_order_relaxed),
-        impl_->unavailable_rejections.load(std::memory_order_relaxed),
+        impl_->counters->accepted.load(std::memory_order_relaxed),
+        impl_->counters->delivered.load(std::memory_order_relaxed),
+        impl_->counters->sink_failures.load(std::memory_order_relaxed),
+        impl_->counters->backpressure_rejections.load(std::memory_order_relaxed),
+        impl_->counters->unavailable_rejections.load(std::memory_order_relaxed),
     };
 }
 
@@ -413,26 +418,26 @@ HostResult QueuedLogHost::emit(const HostCallContext&, const HostArguments& argu
     if (!serialize_structured_log_event(event, impl_->limits.max_event_bytes))
         return budget_failure("structured log event byte budget exceeded");
 
-    const auto state = impl_.get();
+    const auto counters = impl_->counters;
     try {
         auto accepted = impl_->executor.TrySubmit(
-            [sink = impl_->sink, event = std::move(event), state] {
+            [sink = impl_->sink, event = std::move(event), counters] {
                 try {
                     sink->write(event);
-                    state->delivered.fetch_add(1, std::memory_order_relaxed);
+                    counters->delivered.fetch_add(1, std::memory_order_relaxed);
                 } catch (...) {
-                    state->sink_failures.fetch_add(1, std::memory_order_relaxed);
+                    counters->sink_failures.fetch_add(1, std::memory_order_relaxed);
                 }
             });
         if (!accepted) {
-            impl_->backpressure_rejections.fetch_add(1, std::memory_order_relaxed);
+            counters->backpressure_rejections.fetch_add(1, std::memory_order_relaxed);
             return host_failure(
                 HostErrorCode::Backpressure, "structured log queue is full", true);
         }
-        impl_->accepted.fetch_add(1, std::memory_order_relaxed);
+        counters->accepted.fetch_add(1, std::memory_order_relaxed);
         return HostResult::success();
     } catch (const ExecutorShutdown&) {
-        impl_->unavailable_rejections.fetch_add(1, std::memory_order_relaxed);
+        counters->unavailable_rejections.fetch_add(1, std::memory_order_relaxed);
         return host_failure(HostErrorCode::Unavailable, "structured log sink is shut down");
     }
 }

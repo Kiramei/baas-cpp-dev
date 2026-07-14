@@ -39,6 +39,9 @@ enqueue already succeeded. It is contained at the worker boundary and counted
 as `sink_failures`. `accepted`, `delivered`, backpressure, unavailable, and sink
 failure counters are observable for embedding diagnostics. `shutdown()` stops
 admission and drains every accepted event; it never reopens the queue.
+Worker tasks retain their diagnostics counters independently of the Host owner,
+so a sink that indirectly releases the final binding on that same worker cannot
+leave a task-tail reference into a destroyed `QueuedLogHost`.
 
 ## Identity, redaction, and serialization
 
