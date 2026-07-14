@@ -18,6 +18,7 @@ ROADMAP_PATH = ROOT / "docs" / "script-runtime" / "ROADMAP.md"
 PACKAGE_PATH = ROOT / "docs" / "script-runtime" / "PACKAGE_VERSIONING.md"
 LANGUAGE_PATH = ROOT / "docs" / "script-runtime" / "LANGUAGE_SPEC_DRAFT.md"
 ADR_PATH = ROOT / "docs" / "script-runtime" / "ADR-0001-runtime-architecture.md"
+PRIVILEGED_ADR_PATH = ROOT / "docs" / "script-runtime" / "ADR-0003-privileged-operation-boundaries.md"
 ASYNC_PATH = ROOT / "docs" / "script-runtime" / "ASYNC_TASKS.md"
 ERRORS_PATH = ROOT / "docs" / "script-runtime" / "ERRORS_AND_CLEANUP.md"
 WORKFLOW_PATH = ROOT / ".github" / "workflows" / "foundation-runtime.yml"
@@ -33,7 +34,7 @@ CLAUSE_TERMS = {
     "HST-007": ("bounded_cpu_pool", "bounded_io_pool", "device_id", "socket handle", "MUST NOT re-enter"),
     "HST-008": ("generational", "HOST015_HANDLE_CLOSED", "MUST NOT cross execution contexts", "ADR-0002"),
     "HST-009": ("baas/vision", "baas/ocr", "baas/device", "HOST008_DEVICE_DISCONNECTED"),
-    "HST-010": ("baas/config.snapshot", "expected revision", "HOST009_CONFIG_CONFLICT", "baas/log.emit"),
+    "HST-010": ("baas/config.snapshot", "expected revision", "baas/log.emit", "baas/notify.prompt", "NotificationAction"),
     "HST-011": ("baas/task", "baas/scheduler", "cancel(Task) -> bool", "cancel(host<ScheduledTask>) -> null", "MUST NOT be overloaded"),
     "HST-012": ("baas/resource", "baas/fs", "symlink/reparse escape", "write_atomic"),
     "HST-013": ("baas/service.publish", "baas/service.request", "MUST NOT grant", "HOST013_PROTOCOL_ERROR"),
@@ -48,6 +49,7 @@ EXPECTED_MODULES = (
     "baas/device",
     "baas/config",
     "baas/log",
+    "baas/notify",
     "baas/scheduler",
     "baas/resource",
     "baas/fs",
@@ -101,6 +103,7 @@ class HostCapabilityContractTests(unittest.TestCase):
         cls.package = read(PACKAGE_PATH)
         cls.language = read(LANGUAGE_PATH)
         cls.adr = read(ADR_PATH)
+        cls.privileged_adr = read(PRIVILEGED_ADR_PATH)
         cls.async_spec = read(ASYNC_PATH)
         cls.errors_spec = read(ERRORS_PATH)
         cls.workflow = read(WORKFLOW_PATH)
@@ -159,7 +162,7 @@ class HostCapabilityContractTests(unittest.TestCase):
                 for parameter in binding["parameters"]:
                     self.assertIsInstance(parameter["required"], bool)
                     self.assertTrue(parameter["type"])
-        self.assertEqual(len(binding_ids), 39)
+        self.assertEqual(len(binding_ids), 41)
 
     def test_catalog_covers_every_requested_domain_and_privileged_capability(self) -> None:
         capabilities = {
@@ -177,6 +180,8 @@ class HostCapabilityContractTests(unittest.TestCase):
             "config.read",
             "config.write",
             "log.emit",
+            "notification.show",
+            "notification.interact",
             "scheduler.register",
             "scheduler.dispatch",
             "scheduler.schedule",
@@ -195,7 +200,7 @@ class HostCapabilityContractTests(unittest.TestCase):
         for anchor in (
             "image", "ocr", "device", "configuration", "logging", "scheduler",
             "resource", "filesystem", "service", "psutil", "requests", "socket",
-            "subprocess",
+            "subprocess", "notification",
         ):
             self.assertIn(anchor, normalized_spec)
 
@@ -284,7 +289,7 @@ class HostCapabilityContractTests(unittest.TestCase):
             for decision in operation["scope_decisions"]:
                 if decision["disposition"] == "HOST_BINDING_REQUIRED":
                     host_decisions.append((operation, decision))
-        self.assertEqual(len(host_decisions), 343)
+        self.assertEqual(len(host_decisions), 349)
         self.assertEqual(
             {decision["classification_rule"] for _, decision in host_decisions},
             set(mappings),
@@ -299,6 +304,33 @@ class HostCapabilityContractTests(unittest.TestCase):
                 self.assertEqual(decision["migration_status"], "INVENTORIED")
                 self.assertEqual(decision["host_binding_gap_fields"], [])
         self.assertEqual(self.index["summary"]["host_binding_gaps"], 0)
+
+    def test_privileged_boundary_adr_and_rules_preserve_exact_ownership(self) -> None:
+        rules = {item["id"]: item for item in self.rules["rules"]}
+        expected_sources = {
+            "windows-shortcut-tooling-boundary-v4": ["core/Baas_thread.py"],
+            "emulator-registry-device-boundary-v4": ["core/device/emulator_manager/*"],
+            "nemu-native-device-boundary-v4": ["core/device/nemu_client.py"],
+            "device-descriptor-boundary-v4": ["core/device/nemu_client.py"],
+            "notification-host-boundary-v4": ["core/notification.py"],
+            "ocr-updater-tooling-boundary-v4": ["core/ocr/baas_ocr_client/server_installer.py"],
+            "socket-listener-service-boundary-v4": ["core/ocr/ocr.py"],
+        }
+        for identifier, sources in expected_sources.items():
+            with self.subTest(rule=identifier):
+                self.assertEqual(rules[identifier]["source_patterns"], sources)
+                self.assertIn(identifier, self.privileged_adr)
+        self.assertEqual(
+            rules["notification-host-boundary-v4"]["cpp_host_binding"],
+            "baas::script::host::NotifyHost",
+        )
+        self.assertIn("`baas/notify.prompt` preserves", self.privileged_adr)
+        self.assertIn("receiver suffix", re.sub(r"\s+", " ", self.privileged_adr))
+        self.assertNotIn("core/device/*", rules["nemu-native-device-boundary-v4"]["source_patterns"])
+        self.assertIn(
+            "docs/script-runtime/ADR-0003-privileged-operation-boundaries.md",
+            self.workflow,
+        )
 
     def test_eleven_v3_gaps_resolve_to_exact_capabilities_and_bindings(self) -> None:
         gaps = self.catalog["gap_resolutions"]
@@ -322,6 +354,7 @@ class HostCapabilityContractTests(unittest.TestCase):
                     item
                     for item in operation["scope_decisions"]
                     if item["source_scope"] == "SCRIPT_RUNTIME"
+                    and item["classification_rule"] == gap["taxonomy_rule"]
                 )
                 self.assertEqual(decision["classification_rule"], gap["taxonomy_rule"])
                 mapping = mappings[gap["taxonomy_rule"]]

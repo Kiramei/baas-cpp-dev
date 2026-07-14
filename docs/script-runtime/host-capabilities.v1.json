@@ -11,6 +11,7 @@
     {"budget": "filesystem_operations", "scope": "host_operation"},
     {"budget": "log_events", "scope": "host_operation"},
     {"budget": "network_bytes", "scope": "external_memory"},
+    {"budget": "notification_events", "scope": "host_operation"},
     {"budget": "ocr_model_bytes", "scope": "external_memory"},
     {"budget": "ocr_work_units", "scope": "host_operation"},
     {"budget": "process_operations", "scope": "host_operation"},
@@ -114,6 +115,17 @@
     },
     {
       "bindings": [
+        {"budget": "notification_events", "cancellation": "preflight", "capability": "notification.show", "errors": ["HOST001_CAPABILITY_DENIED", "HOST002_INVALID_ARGUMENT", "HOST005_BUDGET_EXCEEDED", "HOST006_UNAVAILABLE", "HOST016_BACKPRESSURE", "HOST014_INTERNAL"], "export": "show", "id": "host.notify.show.v1", "parameters": [{"name": "title", "required": true, "type": "string"}, {"name": "body", "required": true, "type": "string"}, {"name": "options", "required": false, "type": "ordered-map"}], "parity_test": "PARITY-NOTIFY-HOST", "returns": "null"},
+        {"budget": "notification_events", "cancellation": "cooperative", "capability": "notification.interact", "errors": ["HOST001_CAPABILITY_DENIED", "HOST002_INVALID_ARGUMENT", "HOST003_CANCELLED", "HOST004_DEADLINE_EXCEEDED", "HOST005_BUDGET_EXCEEDED", "HOST006_UNAVAILABLE", "HOST016_BACKPRESSURE", "HOST014_INTERNAL"], "export": "prompt", "id": "host.notify.prompt.v1", "parameters": [{"name": "title", "required": true, "type": "string"}, {"name": "body", "required": true, "type": "string"}, {"name": "actions", "required": true, "type": "list<string>"}, {"name": "options", "required": false, "type": "ordered-map"}], "parity_test": "PARITY-NOTIFY-HOST", "returns": "ordered-map<NotificationAction>|null"}
+      ],
+      "capabilities": ["notification.interact", "notification.show"],
+      "concurrency": {"mode": "context_strand", "strand_key": "execution_context_id"},
+      "cpp_interfaces": ["baas::script::host::NotifyHost"],
+      "default_budget": "notification_events",
+      "id": "baas/notify"
+    },
+    {
+      "bindings": [
         {"budget": "scheduler_registrations", "cancellation": "preflight", "capability": "scheduler.register", "errors": ["HOST002_INVALID_ARGUMENT", "HOST005_BUDGET_EXCEEDED", "HOST014_INTERNAL"], "export": "register", "id": "host.scheduler.register.v1", "parameters": [{"name": "task_id", "required": true, "type": "string"}, {"name": "metadata", "required": true, "type": "ordered-map"}], "parity_test": "PARITY-TASK-REGISTRY", "returns": "null"},
         {"budget": "scheduler_operations", "cancellation": "cooperative", "capability": "scheduler.dispatch", "errors": ["HOST002_INVALID_ARGUMENT", "HOST003_CANCELLED", "HOST004_DEADLINE_EXCEEDED", "HOST005_BUDGET_EXCEEDED", "HOST006_UNAVAILABLE", "HOST014_INTERNAL"], "export": "dispatch", "id": "host.scheduler.dispatch.v1", "parameters": [{"name": "action", "required": true, "type": "string"}, {"name": "arguments", "required": false, "type": "ordered-map"}], "parity_test": "PARITY-TASK-ACTION", "returns": "json"},
         {"budget": "scheduler_operations", "cancellation": "cooperative", "capability": "scheduler.schedule", "errors": ["HOST003_CANCELLED", "HOST004_DEADLINE_EXCEEDED", "HOST005_BUDGET_EXCEEDED", "HOST016_BACKPRESSURE"], "export": "sleep", "id": "host.scheduler.sleep.v1", "parameters": [{"name": "duration_ms", "required": true, "type": "int"}], "parity_test": "PARITY-SCHEDULER-HOST", "returns": "null"},
@@ -208,10 +220,15 @@
     {"cpp_binding": "baas::script::host::SchedulerHost::register_task", "families": ["task.scheduler"], "modules": ["baas/scheduler"], "parity_test": "PARITY-TASK-REGISTRY", "rule": "task-registry-v2"},
     {"cpp_binding": "baas::script::host::SchedulerHost::dispatch", "families": ["task.action"], "modules": ["baas/scheduler"], "parity_test": "PARITY-TASK-ACTION", "rule": "task-action-dispatch-v2"},
     {"cpp_binding": "baas::script::host::DeviceHost", "families": ["device.input-capture"], "modules": ["baas/device"], "parity_test": "PARITY-DEVICE-HOST", "rule": "device-host-v2"},
+    {"cpp_binding": "baas::script::host::DeviceHost", "families": ["device.emulator-discovery"], "modules": ["baas/device"], "parity_test": "PARITY-DEVICE-HOST", "rule": "emulator-registry-device-boundary-v4"},
+    {"cpp_binding": "baas::script::host::DeviceHost", "families": ["device.native-adapter"], "modules": ["baas/device"], "parity_test": "PARITY-DEVICE-HOST", "rule": "nemu-native-device-boundary-v4"},
+    {"cpp_binding": "baas::script::host::DeviceHost", "families": ["device.native-adapter"], "modules": ["baas/device"], "parity_test": "PARITY-DEVICE-HOST", "rule": "device-descriptor-boundary-v4"},
+    {"cpp_binding": "baas::script::host::DeviceHost", "families": ["device.window-input"], "modules": ["baas/device"], "parity_test": "PARITY-DEVICE-HOST", "rule": "window-input-device-boundary-v4"},
     {"cpp_binding": "baas::script::host::VisionHost", "families": ["image.detect"], "modules": ["baas/vision"], "parity_test": "PARITY-VISION-HOST", "rule": "vision-host-v2"},
     {"cpp_binding": "baas::script::host::OcrHost", "families": ["ocr.inference"], "modules": ["baas/ocr"], "parity_test": "PARITY-OCR-HOST", "rule": "ocr-host-v2"},
     {"cpp_binding": "baas::script::host::ConfigHost", "families": ["config.state"], "modules": ["baas/config"], "parity_test": "PARITY-CONFIG-HOST", "rule": "config-host-v2"},
     {"cpp_binding": "baas::script::host::LogHost", "families": ["log.event"], "modules": ["baas/log"], "parity_test": "PARITY-LOG-EVENT", "rule": "logging-host-v2"},
+    {"cpp_binding": "baas::script::host::NotifyHost", "families": ["notification.user"], "modules": ["baas/notify"], "parity_test": "PARITY-NOTIFY-HOST", "rule": "notification-host-boundary-v4"},
     {"cpp_binding": "baas::script::host::SchedulerHost", "families": ["task.scheduler-thread"], "modules": ["baas/scheduler"], "parity_test": "PARITY-SCHEDULER-HOST", "rule": "scheduler-host-v2"},
     {"cpp_binding": "baas::script::host::ResourceHost", "families": ["resource.filesystem"], "modules": ["baas/resource", "baas/fs"], "parity_test": "PARITY-RESOURCE-HOST", "rule": "resource-host-v2"},
     {"cpp_binding": "baas::script::host::ProcessHost", "families": ["system.process"], "modules": ["baas/process"], "parity_test": "PARITY-PROCESS-HOST", "rule": "process-host-v3"},

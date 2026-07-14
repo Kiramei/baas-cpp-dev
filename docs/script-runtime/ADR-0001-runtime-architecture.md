@@ -67,6 +67,9 @@ and results cross a checked value boundary. Host exceptions become structured
 errors. Fake hosts use the same interfaces and produce deterministic traces.
 Every migrated operation links to Python source, its host function, and golden
 parity evidence in `MIGRATION_MATRIX.md`.
+ADR-0003 assigns privileged legacy operations to Host, service, or migration
+tooling boundaries and defines which static receiver facts may justify that
+assignment.
 
 ### Service transport
 

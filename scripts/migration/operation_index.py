@@ -318,6 +318,8 @@ class OperationVisitor(ast.NodeVisitor):
             self.visit(node.args.kwarg.annotation)
         if node.returns is not None:
             self.visit(node.returns)
+        qualified_name = ".".join([self.source_module, *self.scope, node.name])
+        self._bind_alias(node.name, qualified_name)
         bindings = LocalBindingCollector()
         for statement in node.body:
             bindings.visit(statement)
@@ -362,12 +364,14 @@ class OperationVisitor(ast.NodeVisitor):
             self.visit(base)
         for keyword in node.keywords:
             self.visit(keyword.value)
+        qualified_name = ".".join([self.source_module, *self.scope, node.name])
         self.scope.append(node.name)
         self.frames.append(ScopeFrame("class", {}, {}, set(), set(), set()))
         for statement in node.body:
             self.visit(statement)
         self.frames.pop()
         self.scope.pop()
+        self._bind_alias(node.name, qualified_name)
 
     def visit_Lambda(self, node: ast.Lambda) -> None:
         local_names = {
@@ -651,10 +655,12 @@ class OperationVisitor(ast.NodeVisitor):
             return next(iter(types)) if len(types) == 1 else None
         if isinstance(node, ast.Call):
             symbol, _, resolution = self.resolve_expression(node.func)
-            if resolution in {"resolved", "builtin"} and symbol == "builtins.range":
+            if resolution in {"resolved", "builtin", "inferred"} and symbol == "builtins.range":
                 return "builtins.int"
-            if resolution in {"resolved", "builtin"} and symbol == "builtins.enumerate":
+            if resolution in {"resolved", "builtin", "inferred"} and symbol == "builtins.enumerate":
                 return "builtins.tuple"
+            if resolution in {"resolved", "builtin", "inferred"}:
+                return self.rules.infer_call_element_type(symbol)
         return None
 
     def _isinstance_narrowings(self, node: ast.AST) -> dict[str, str]:
@@ -1190,6 +1196,11 @@ class RuleSet:
                     raise ValueError(f"value type rule {rule['id']} has invalid {field}")
             if not isinstance(rule["result_type"], str) or not rule["result_type"]:
                 raise ValueError(f"value type rule {rule['id']} has invalid result_type")
+            element_type = rule.get("element_type")
+            if element_type is not None and (
+                not isinstance(element_type, str) or not element_type
+            ):
+                raise ValueError(f"value type rule {rule['id']} has invalid element_type")
         self.source_scope_rules = scope_rules
         self.rules = rules
         self.value_type_rules = value_type_rules
@@ -1210,6 +1221,15 @@ class RuleSet:
                 for pattern in rule.get("attribute_patterns", [])
             ):
                 return symbol if rule["result_type"] == "$attribute" else rule["result_type"]
+        return None
+
+    def infer_call_element_type(self, symbol: str) -> str | None:
+        for rule in self.value_type_rules:
+            if any(
+                fnmatch.fnmatchcase(symbol, pattern)
+                for pattern in rule.get("call_patterns", [])
+            ):
+                return rule.get("element_type")
         return None
 
     def source_scope(self, filename: str) -> str:
@@ -1384,6 +1404,8 @@ def collect_known_classes(parsed_modules: list[ParsedModule]) -> set[str]:
                 symbol = f"{prefix}.{statement.name}"
                 result.add(symbol)
                 collect(statement.body, symbol)
+            elif isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                collect(statement.body, f"{prefix}.{statement.name}")
 
     for parsed in parsed_modules:
         collect(parsed.tree.body, parsed.source_module)
@@ -1684,44 +1706,74 @@ class OperationIndexer:
             identity = f"v{IDENTITY_VERSION}\0{kind}\0{call_form}\0{symbol}".encode("utf-8")
             operation_id = f"op-{sha256_bytes(identity)[:16]}"
             files = sorted({location.file for location in locations})
-            scope_items: dict[str, list[Observation]] = {}
+            scope_file_items: dict[str, dict[str, list[Observation]]] = {}
             for item in items:
-                scope_items.setdefault(
-                    self.rules.source_scope(item.location.file), []
+                source_scope = self.rules.source_scope(item.location.file)
+                scope_file_items.setdefault(source_scope, {}).setdefault(
+                    item.location.file, []
                 ).append(item)
             scope_decisions: list[dict[str, Any]] = []
-            for source_scope, scoped_items in sorted(scope_items.items()):
-                scoped_locations = sorted(
-                    {item.location for item in scoped_items},
-                    key=lambda item: (item.file, item.line, item.column, item.scope),
-                )
-                scoped_files = sorted({location.file for location in scoped_locations})
-                scoped_resolutions = sorted({item.resolution for item in scoped_items})
-                scoped_resolution = (
-                    scoped_resolutions[0] if len(scoped_resolutions) == 1 else "mixed"
-                )
-                decision = {
-                    "id": f"{operation_id}@{source_scope}",
-                    "occurrences": len(scoped_items),
-                    "representative_locations": [
-                        location.as_dict() for location in scoped_locations[:3]
-                    ],
-                    "resolution": scoped_resolution,
-                    "source_file_count": len(scoped_files),
-                    "source_scope": source_scope,
-                }
-                decision.update(
-                    self.rules.classify(
+            for source_scope, file_items in sorted(scope_file_items.items()):
+                classified_groups: dict[
+                    tuple[str, str], tuple[dict[str, Any], list[Observation]]
+                ] = {}
+                for filename, same_file_items in sorted(file_items.items()):
+                    file_resolutions = sorted({item.resolution for item in same_file_items})
+                    file_resolution = (
+                        file_resolutions[0]
+                        if len(file_resolutions) == 1
+                        else "mixed"
+                    )
+                    classification = self.rules.classify(
                         symbol,
                         call_form,
-                        scoped_resolution,
-                        scoped_files,
+                        file_resolution,
+                        [filename],
                         source_scope,
                         local_module_roots,
                     )
-                )
-                decision["host_binding_gap_fields"] = host_binding_gap_fields(decision)
-                scope_decisions.append(decision)
+                    classification_key = json.dumps(
+                        classification,
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                        sort_keys=True,
+                    )
+                    group_key = (file_resolution, classification_key)
+                    if group_key not in classified_groups:
+                        classified_groups[group_key] = (classification, [])
+                    classified_groups[group_key][1].extend(same_file_items)
+
+                multiple_scope_decisions = len(classified_groups) > 1
+                for (scoped_resolution, classification_key), (
+                    classification,
+                    scoped_items,
+                ) in sorted(classified_groups.items()):
+                    scoped_locations = sorted(
+                        {item.location for item in scoped_items},
+                        key=lambda item: (item.file, item.line, item.column, item.scope),
+                    )
+                    scoped_files = sorted(
+                        {location.file for location in scoped_locations}
+                    )
+                    decision_suffix = ""
+                    if multiple_scope_decisions:
+                        identity = (
+                            f"{source_scope}\0{scoped_resolution}\0{classification_key}"
+                        ).encode("utf-8")
+                        decision_suffix = f":{sha256_bytes(identity)[:8]}"
+                    decision = {
+                        "id": f"{operation_id}@{source_scope}{decision_suffix}",
+                        "occurrences": len(scoped_items),
+                        "representative_locations": [
+                            location.as_dict() for location in scoped_locations[:3]
+                        ],
+                        "resolution": scoped_resolution,
+                        "source_file_count": len(scoped_files),
+                        "source_scope": source_scope,
+                    }
+                    decision.update(classification)
+                    decision["host_binding_gap_fields"] = host_binding_gap_fields(decision)
+                    scope_decisions.append(decision)
             entry: dict[str, Any] = {
                 "call_form": call_form,
                 "call_shapes": shapes,

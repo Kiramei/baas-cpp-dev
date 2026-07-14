@@ -223,6 +223,177 @@ class OperationIndexTests(unittest.TestCase):
                         )
             self.assertEqual(covered_scopes, set(sources.values()))
 
+    def test_privileged_script_boundaries_precede_dynamic_and_stdlib_defaults(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repository = Path(directory) / "repo"
+            sources = {
+                "core/Baas_thread.py": (
+                    "import win32com.client\n"
+                    "def run(shell, path):\n"
+                    "    win32com.client.Dispatch('WScript.Shell')\n"
+                    "    shell.CreateShortCut(path)\n"
+                ),
+                "core/device/emulator_manager/probe.py": (
+                    "import winreg\n"
+                    "def run():\n"
+                    "    winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, 'key')\n"
+                    "    bst_read_registry_key('')\n"
+                ),
+                "core/device/nemu_client.py": (
+                    "import ctypes\n"
+                    "def run(file_out, length):\n"
+                    "    ctypes.pointer((ctypes.c_ubyte * length)())\n"
+                    "    file_out.fileno()\n"
+                ),
+                "core/device/window_capture/windows/window_info.py": (
+                    "def run(handle):\n"
+                    "    monitor_from_window(handle, 2)\n"
+                    "    get_monitor_info(handle, None)\n"
+                ),
+                "core/device/control/pyautogui.py": (
+                    "def run(user32):\n"
+                    "    user32.SystemParametersInfoA(1, 2, 3, 4)\n"
+                ),
+                "core/notification.py": "def run():\n    _notify(title='done')\n    _toast(title='done')\n",
+                "core/exception.py": "def run(context):\n    context.send('stop')\n",
+                "core/ipc_manager.py": (
+                    "class SharedMemory:\n"
+                    "    shm_map = {}\n"
+                    "def run(name):\n"
+                    "    SharedMemory.shm_map[name]._release()\n"
+                ),
+                "core/ocr/baas_ocr_client/server_installer.py": (
+                    "import pygit2, zipfile\n"
+                    "def run(repo, archive):\n"
+                    "    pygit2.init_repository('repo')\n"
+                    "    repo.reset(None, 0)\n"
+                    "    archive.extractall('dst')\n"
+                ),
+                "core/ocr/ocr.py": "def run(s):\n    s.bind(('127.0.0.1', 0))\n",
+                "core/device/scrcpy/core.py": (
+                    "import av\n"
+                    "def run(codec, frame):\n"
+                    "    av.CodecContext.create('h264', 'r')\n"
+                    "    codec.parse(b'data')\n"
+                    "    frame.to_ndarray(format='bgr24')\n"
+                ),
+                "module/ordinary.py": (
+                    "def run(obj, left, right):\n"
+                    "    obj.bind()\n"
+                    "    obj.fileno()\n"
+                    "    obj.extractall('dst')\n"
+                    "    (left * right)()\n"
+                ),
+                "core/device/other.py": "def run(left, right):\n    (left * right)()\n",
+                "core/ocr/other.py": "def run(repo):\n    repo.fetch()\n",
+            }
+            for relative, source in sources.items():
+                path = repository / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(source, encoding="utf-8")
+
+            report = self.generate(repository)
+            decisions_by_file: dict[str, list[dict]] = {}
+            for operation in report["operations"]:
+                for decision in operation["scope_decisions"]:
+                    for location in decision["representative_locations"]:
+                        decisions_by_file.setdefault(location["file"], []).append(decision)
+
+            expected_rules = {
+                "core/Baas_thread.py": {"windows-shortcut-tooling-boundary-v4"},
+                "core/device/emulator_manager/probe.py": {"emulator-registry-device-boundary-v4"},
+                "core/device/nemu_client.py": {
+                    "device-descriptor-boundary-v4",
+                    "nemu-native-device-boundary-v4",
+                },
+                "core/device/window_capture/windows/window_info.py": {"window-input-device-boundary-v4"},
+                "core/device/control/pyautogui.py": {"window-input-device-boundary-v4"},
+                "core/notification.py": {"notification-host-boundary-v4"},
+                "core/exception.py": {"raw-ipc-service-boundary-v4"},
+                "core/ocr/baas_ocr_client/server_installer.py": {"ocr-updater-tooling-boundary-v4"},
+                "core/ocr/ocr.py": {"socket-listener-service-boundary-v4"},
+                "core/device/scrcpy/core.py": {"vision-host-v2"},
+            }
+            for filename, rules in expected_rules.items():
+                with self.subTest(filename=filename):
+                    self.assertTrue(decisions_by_file[filename])
+                    self.assertEqual(
+                        {item["classification_rule"] for item in decisions_by_file[filename]},
+                        rules,
+                        decisions_by_file[filename],
+                    )
+            self.assertEqual(
+                {
+                    item["classification_rule"]
+                    for item in decisions_by_file["core/ipc_manager.py"]
+                },
+                {"raw-ipc-service-boundary-v4"},
+            )
+            for filename in ("module/ordinary.py", "core/device/other.py", "core/ocr/other.py"):
+                self.assertTrue(
+                    all(item["disposition"] == "UNRESOLVED" for item in decisions_by_file[filename]),
+                    filename,
+                )
+
+    def test_proven_factory_iteration_and_nested_definition_types_are_conservative(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repository = Path(directory) / "repo"
+            module = repository / "module" / "only.py"
+            module.parent.mkdir(parents=True)
+            module.write_text(
+                "import adbutils\n"
+                "import logging\n"
+                "import psutil\n"
+                "import re\n"
+                "import socket\n"
+                "import subprocess\n"
+                "import threading\n"
+                "def run():\n"
+                "    class Process:\n"
+                "        def wait(self):\n"
+                "            return None\n"
+                "    def nested():\n"
+                "        return 1\n"
+                "    nested()\n"
+                "    Process().wait()\n"
+                "    with open('input.bin', 'rb') as stream:\n"
+                "        stream.read()\n"
+                "    adbutils.adb.device().shell('id')\n"
+                "    logging.StreamHandler().setFormatter(None)\n"
+                "    psutil.Process(1).wait()\n"
+                "    socket.socket().close()\n"
+                "    subprocess.Popen(['tool']).communicate()\n"
+                "    threading.Timer(1, nested).start()\n"
+                "    re.match('x', 'x').group(0)\n"
+                "    for match in re.finditer('x', 'x'):\n"
+                "        match.groups()\n"
+                "    for process in psutil.process_iter():\n"
+                "        process.cmdline()\n",
+                encoding="utf-8",
+            )
+            report = self.generate(repository)
+            by_symbol = {operation["symbol"]: operation for operation in report["operations"]}
+
+            expected = {
+                "module.only.run.nested": "SCRIPT_LANGUAGE_OR_MODULE",
+                "module.only.run.Process.wait": "SCRIPT_LANGUAGE_OR_MODULE",
+                "io.IOBase.read": "SCRIPT_LANGUAGE_OR_MODULE",
+                "adbutils.AdbDevice.shell": "HOST_BINDING_REQUIRED",
+                "logging.Handler.setFormatter": "HOST_BINDING_REQUIRED",
+                "psutil.Process.wait": "HOST_BINDING_REQUIRED",
+                "socket.socket.close": "HOST_BINDING_REQUIRED",
+                "subprocess.Popen.communicate": "HOST_BINDING_REQUIRED",
+                "threading.Timer.start": "HOST_BINDING_REQUIRED",
+                "re.Match.group": "SCRIPT_LANGUAGE_OR_MODULE",
+                "re.Match.groups": "SCRIPT_LANGUAGE_OR_MODULE",
+                "psutil.Process.cmdline": "HOST_BINDING_REQUIRED",
+            }
+            for symbol, disposition in expected.items():
+                with self.subTest(symbol=symbol):
+                    self.assertIn(symbol, by_symbol)
+                    self.assertEqual(by_symbol[symbol]["disposition"], disposition)
+                    self.assertNotIn(by_symbol[symbol]["resolution"], {"dynamic", "unresolved"})
+
     def test_fixture_discovers_registries_routes_dispatch_and_parse_errors(self) -> None:
         report = self.generate()
         symbols = {operation["symbol"] for operation in report["operations"]}

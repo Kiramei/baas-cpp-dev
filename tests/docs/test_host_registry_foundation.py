@@ -37,7 +37,7 @@ class HostRegistryFoundationTests(unittest.TestCase):
 
     def test_all_catalog_modules_and_bindings_fit_descriptor_contract(self) -> None:
         modules = self.catalog["modules"]
-        self.assertEqual(len(modules), 12)
+        self.assertEqual(len(modules), 13)
         self.assertEqual(self.catalog["api_version"], {"major": 1, "minor": 0})
         module_ids: set[str] = set()
         binding_ids: set[str] = set()
@@ -64,7 +64,7 @@ class HostRegistryFoundationTests(unittest.TestCase):
                         r"^[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)+$",
                     )
                     self.assertIn(binding["capability"], module["capabilities"])
-        self.assertEqual(descriptor_count, 39)
+        self.assertEqual(descriptor_count, 41)
 
     def test_descriptor_surface_is_metadata_only_and_immutable_after_build(self) -> None:
         descriptor = self.header.split("struct HostModuleDescriptor", 1)[1].split("};", 1)[0]

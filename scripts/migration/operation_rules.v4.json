@@ -241,9 +241,184 @@
       "id": "regular-expression-results-v3",
       "call_patterns": ["re.compile"],
       "result_type": "re.Pattern"
+    },
+    {
+      "id": "adb-device-factory-result-v4",
+      "call_patterns": ["adbutils.adb.device"],
+      "result_type": "adbutils.AdbDevice"
+    },
+    {
+      "id": "logging-handler-factory-result-v4",
+      "call_patterns": ["logging.StreamHandler"],
+      "result_type": "logging.Handler"
+    },
+    {
+      "id": "process-handle-factory-result-v4",
+      "call_patterns": ["psutil.Process"],
+      "result_type": "psutil.Process"
+    },
+    {
+      "id": "socket-handle-factory-result-v4",
+      "call_patterns": ["socket.socket"],
+      "result_type": "socket.socket"
+    },
+    {
+      "id": "subprocess-handle-factory-result-v4",
+      "call_patterns": ["subprocess.Popen"],
+      "result_type": "subprocess.Popen"
+    },
+    {
+      "id": "timer-handle-factory-result-v4",
+      "call_patterns": ["threading.Timer"],
+      "result_type": "threading.Timer"
+    },
+    {
+      "id": "regular-expression-match-results-v4",
+      "call_patterns": ["re.fullmatch", "re.match", "re.search"],
+      "result_type": "re.Match"
+    },
+    {
+      "id": "process-iterable-element-result-v4",
+      "call_patterns": ["psutil.process_iter"],
+      "element_type": "psutil.Process",
+      "result_type": "collections.abc.Iterator"
+    },
+    {
+      "id": "regex-iterable-element-result-v4",
+      "call_patterns": ["re.finditer"],
+      "element_type": "re.Match",
+      "result_type": "collections.abc.Iterator"
     }
   ],
   "rules": [
+    {
+      "cpp_host_binding": "NOT_APPLICABLE",
+      "disposition": "MIGRATION_TOOLING_ONLY",
+      "family": "tooling.updater",
+      "id": "ocr-updater-tooling-boundary-v4",
+      "migration_status": "SCOPED",
+      "owner": "Migration Tooling",
+      "parity_test_id": "NOT_APPLICABLE",
+      "reason": "OCR repository download, archive extraction, and Git mutation move to installation tooling as one boundary",
+      "source_patterns": ["core/ocr/baas_ocr_client/server_installer.py"],
+      "source_scopes": ["SCRIPT_RUNTIME"],
+      "symbol_patterns": ["*"]
+    },
+    {
+      "cpp_host_binding": "NOT_APPLICABLE",
+      "disposition": "MIGRATION_TOOLING_ONLY",
+      "family": "tooling.platform-shortcut",
+      "id": "windows-shortcut-tooling-boundary-v4",
+      "migration_status": "SCOPED",
+      "owner": "Migration Tooling",
+      "parity_test_id": "NOT_APPLICABLE",
+      "reason": "Windows shortcut resolution is bootstrap compatibility work and does not become a script or Device API",
+      "source_patterns": ["core/Baas_thread.py"],
+      "source_scopes": ["SCRIPT_RUNTIME"],
+      "symbol_patterns": ["shell.CreateShortCut", "win32com.client.Dispatch"]
+    },
+    {
+      "cpp_host_binding": "baas::script::host::DeviceHost",
+      "disposition": "HOST_BINDING_REQUIRED",
+      "family": "device.emulator-discovery",
+      "id": "emulator-registry-device-boundary-v4",
+      "migration_status": "INVENTORIED",
+      "owner": "Runtime Device",
+      "parity_test_id": "PARITY-DEVICE-HOST",
+      "reason": "emulator registry discovery is replaced by policy-scoped Device lifecycle discovery rather than exposing the Windows registry",
+      "source_patterns": ["core/device/emulator_manager/*"],
+      "source_scopes": ["SCRIPT_RUNTIME"],
+      "symbol_patterns": ["bst_read_registry_key", "winreg.*"]
+    },
+    {
+      "cpp_host_binding": "baas::script::host::DeviceHost",
+      "disposition": "HOST_BINDING_REQUIRED",
+      "family": "device.window-input",
+      "id": "window-input-device-boundary-v4",
+      "migration_status": "INVENTORIED",
+      "owner": "Runtime Device",
+      "parity_test_id": "PARITY-DEVICE-HOST",
+      "reason": "monitor geometry and mouse input calibration are internal facts of Device capture/input adapters",
+      "source_patterns": [
+        "core/device/control/pyautogui.py",
+        "core/device/window_capture/windows/window_info.py"
+      ],
+      "source_scopes": ["SCRIPT_RUNTIME"],
+      "symbol_patterns": ["get_monitor_info", "monitor_from_window", "user32.SystemParametersInfoA"]
+    },
+    {
+      "cpp_host_binding": "baas::script::host::DeviceHost",
+      "disposition": "HOST_BINDING_REQUIRED",
+      "family": "device.native-adapter",
+      "id": "nemu-native-device-boundary-v4",
+      "migration_status": "INVENTORIED",
+      "owner": "Runtime Device",
+      "parity_test_id": "PARITY-DEVICE-HOST",
+      "reason": "Nemu ctypes pointers and native buffer allocation remain wholly inside the Device adapter",
+      "source_patterns": ["core/device/nemu_client.py"],
+      "source_scopes": ["SCRIPT_RUNTIME"],
+      "symbol_patterns": [
+        "ctypes.*",
+        "dynamic:BinOp",
+        "dynamic:call-result(dynamic:BinOp)()",
+        "dynamic:call-result(ctypes.*"
+      ]
+    },
+    {
+      "cpp_host_binding": "baas::script::host::DeviceHost",
+      "disposition": "HOST_BINDING_REQUIRED",
+      "family": "device.native-adapter",
+      "id": "device-descriptor-boundary-v4",
+      "migration_status": "INVENTORIED",
+      "owner": "Runtime Device",
+      "parity_test_id": "PARITY-DEVICE-HOST",
+      "reason": "native descriptor redirection remains inside the Device adapter; scripts never receive file descriptors",
+      "source_patterns": ["core/device/nemu_client.py"],
+      "source_scopes": ["SCRIPT_RUNTIME"],
+      "symbol_patterns": ["file_err.fileno", "file_out.fileno", "io.IOBase.fileno"]
+    },
+    {
+      "cpp_host_binding": "NOT_APPLICABLE",
+      "disposition": "CPP_SERVICE_INTERNAL",
+      "family": "service.listener",
+      "id": "socket-listener-service-boundary-v4",
+      "migration_status": "SCOPED",
+      "owner": "Service Platform",
+      "parity_test_id": "NOT_APPLICABLE",
+      "reason": "listener and port-probe ownership stays in the service platform and is not granted by network.socket",
+      "source_patterns": ["core/ocr/ocr.py"],
+      "source_scopes": ["SCRIPT_RUNTIME"],
+      "symbol_patterns": ["s.bind", "socket.socket.bind"]
+    },
+    {
+      "cpp_host_binding": "NOT_APPLICABLE",
+      "disposition": "CPP_SERVICE_INTERNAL",
+      "family": "service.ipc-internal",
+      "id": "raw-ipc-service-boundary-v4",
+      "migration_status": "SCOPED",
+      "owner": "Service Platform",
+      "parity_test_id": "NOT_APPLICABLE",
+      "reason": "raw context pipes and shared-memory release are service internals rather than script-visible handles",
+      "source_patterns": ["core/exception.py", "core/ipc_manager.py"],
+      "source_scopes": ["SCRIPT_RUNTIME"],
+      "symbol_patterns": [
+        "context.send",
+        "dynamic:subscript(core.ipc_manager.SharedMemory.shm_map)._release"
+      ]
+    },
+    {
+      "cpp_host_binding": "baas::script::host::NotifyHost",
+      "disposition": "HOST_BINDING_REQUIRED",
+      "family": "notification.user",
+      "id": "notification-host-boundary-v4",
+      "migration_status": "INVENTORIED",
+      "owner": "Runtime Notification",
+      "parity_test_id": "PARITY-NOTIFY-HOST",
+      "reason": "baas/notify preserves user notification and bounded action-response behavior while platform presentation stays in its adapter",
+      "source_patterns": ["core/notification.py"],
+      "source_scopes": ["SCRIPT_RUNTIME"],
+      "symbol_patterns": ["_notify", "_toast"]
+    },
     {
       "cpp_host_binding": "baas::script::host::SchedulerHost::register_task",
       "disposition": "HOST_BINDING_REQUIRED",
@@ -336,7 +511,17 @@
       "owner": "Runtime Vision",
       "parity_test_id": "PARITY-VISION-HOST",
       "source_scopes": ["SCRIPT_RUNTIME", "GENERATED_RESOURCE"],
-      "symbol_patterns": ["core.color.*", "core.image.*", "core.picture.*", "cv2.*", "numpy.*"]
+      "symbol_patterns": [
+        "av.*",
+        "codec.decode",
+        "codec.parse",
+        "core.color.*",
+        "core.image.*",
+        "core.picture.*",
+        "cv2.*",
+        "frame.to_ndarray",
+        "numpy.*"
+      ]
     },
     {
       "cpp_host_binding": "baas::script::host::OcrHost",

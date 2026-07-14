@@ -16,6 +16,9 @@ by [`VALUE_SEMANTICS.md`](VALUE_SEMANTICS.md), and execution ownership by
 status translation and asynchronous suspension additionally compose with
 [`ERRORS_AND_CLEANUP.md`](ERRORS_AND_CLEANUP.md) ERR-016 and
 [`ASYNC_TASKS.md`](ASYNC_TASKS.md) ASY-015.
+Privileged Python ownership and the conservative static proof boundary are
+fixed by
+[`ADR-0003-privileged-operation-boundaries.md`](ADR-0003-privileged-operation-boundaries.md).
 
 `MUST`, `MUST NOT`, `SHOULD`, and `MAY` are normative. API version 1.0 remains a
 draft until implementation and parity evidence accept it; incompatible changes
@@ -157,6 +160,7 @@ materialization rules in ASY-015.
 | `baas/device` | `device_strand` | `device_id` | `device_operations` |
 | `baas/config` | `config_strand` | `config_id` | `config_read_operations` |
 | `baas/log` | `thread_safe` | none | `log_events` |
+| `baas/notify` | `context_strand` | `execution_context_id` | `notification_events` |
 | `baas/scheduler` | `context_strand` | `execution_context_id` | `scheduler_operations` |
 | `baas/resource` | `thread_safe` | `snapshot_id` | `resource_bytes` |
 | `baas/fs` | `root_strand` | `root_handle` | `filesystem_operations` |
@@ -188,7 +192,7 @@ work MUST NOT hold the device strand. Click options carry any long-click
 duration; swipe options cover scroll semantics without introducing an ambient
 gesture mode.
 
-### HST-010 — Configuration and logging contracts
+### HST-010 — Configuration, logging, and notification contracts
 
 `baas/config.snapshot` MUST return an immutable revisioned snapshot;
 `baas/config.get` reads only that snapshot; `baas/config.transact` MUST use an
@@ -197,6 +201,15 @@ expected revision, preserve unknown fields, validate atomically, and return
 task/session/config metadata supplied by the host, accept bounded structured
 fields, redact configured secrets, and enqueue to a bounded thread-safe sink.
 Scripts MUST NOT choose filesystem log destinations or forge host identity.
+`baas/notify.show` MUST emit at most one policy-approved, bounded notification
+and returns no interaction result. `baas/notify.prompt` preserves the legacy
+action-response contract: it MUST suspend cooperatively, present only the
+ordered declared actions, and return either the selected declared action as a
+`NotificationAction` map or `null` when dismissed. Platform notification UI,
+callbacks, and thread affinity belong to `NotifyHost`; scripts MUST NOT receive
+native window, callback, or notification handles. The two exports require
+distinct `notification.show` and `notification.interact` capabilities, so a
+one-way notification grant cannot manufacture an interactive prompt.
 
 ### HST-011 — Host scheduler contract and language-task separation
 
@@ -356,6 +369,7 @@ normative in `host-capabilities.v1.json`.
 | `baas/device` | `host.device.capture.v1`; `host.device.click.v1`; `host.device.swipe.v1`; `host.device.app_control.v1` |
 | `baas/config` | `host.config.snapshot.v1`; `host.config.get.v1`; `host.config.transact.v1` |
 | `baas/log` | `host.log.emit.v1(level, message, fields) -> null` |
+| `baas/notify` | `host.notify.show.v1(title, body, options) -> null`; `host.notify.prompt.v1(title, body, actions, options) -> NotificationAction?` |
 | `baas/scheduler` | `host.scheduler.register.v1`; `host.scheduler.dispatch.v1`; `host.scheduler.sleep.v1`; `host.scheduler.schedule.v1`; `host.scheduler.cancel.v1` |
 | `baas/resource` | `host.resource.resolve.v1`; `host.resource.read.v1` |
 | `baas/fs` | `host.fs.open_root.v1`; `host.fs.read.v1`; `host.fs.list.v1`; `host.fs.write_atomic.v1`; `host.fs.mutate.v1` |
