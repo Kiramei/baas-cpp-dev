@@ -33,6 +33,10 @@ an isolated prototype is not considered project completion.
   modifying its existing dirty worktree.
 - [ ] Record every discovered Python operation in `MIGRATION_MATRIX.md` with an
   owner, C++ host binding, parity test, and migration status.
+- [x] Implement an opt-in, deterministic, bounded Python parity trace foundation
+  on `feat/cpp-parity-trace` without changing the default execution path.
+- [x] Add a deterministic static migration validator for grid actions, image
+  mappings, and OCR calls, with fixture tests and real-repository reporting.
 - [ ] Capture baseline Python golden traces for representative workflows.
 - [ ] Capture baseline latency, memory, startup, throughput, and package-size
   measurements on Windows x64.
@@ -67,7 +71,9 @@ versioned compatibility contract linked from the migration matrix.
 ## Phase 2 — C++ runtime and developer tooling
 
 - [ ] Add standalone `BAAS_script_runtime` and CLI/test targets.
-- [ ] Implement UTF-8 lexer and parser with stable source diagnostics.
+- [x] Implement UTF-8 lexer with stable byte/line/column source diagnostics and
+  malformed-input recovery.
+- [~] Implement the complete parser and source-spanned immutable AST.
 - [ ] Implement values, environments, closures, recursion, collections, and
   control flow.
 - [ ] Implement modules, imports, native-function registration, and JSON bridge.

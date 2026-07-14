@@ -66,6 +66,21 @@ The Tauri changes are `src/android/pages/ConfigurationPage.tsx`,
 - Service behavior is altered through extensive monkey patching; desktop,
   service, and Android are distinct behavior profiles.
 
+The deterministic validator at `scripts/migration/validate.py` refines this
+baseline to 93 errors and 99 warnings across 123 task JSON files, 359 discovered
+grid tasks, 2,869 image mappings, and 31 OCR calls. In addition to the defects
+above it reports six dangling grid-task references, one unsupported `nothing`
+operation, and 99 empty crop-range warnings. Two consecutive real-repository
+reports produced SHA-256
+`d222ad7ef3a0530dc467c2af23b78dd900fde07e3eec61b7afcd8a35dd32cdd4`.
+
+The opt-in Python trace foundation is committed on `baas-dev` branch
+`feat/cpp-parity-trace` at `3a8f58585b69bf7cf54fe66115352b41f4094aa3`.
+It records bounded JSONL begin/end/error/cancel effects for click, swipe, and
+screenshot while preserving the disabled default path. It does not yet capture
+`co_detect`, uiautomator calls, actual asynchronous click completion, or real
+workflow golden fixtures.
+
 ## Reusable C++ inventory
 
 ### Strong reuse candidates
@@ -130,4 +145,3 @@ requirement to only the most frequent operations.
 3. Freeze service cryptographic and framing golden vectors.
 4. Establish C++ CTest, lexer diagnostics, conformance fixtures, and fake hosts.
 5. Capture Python latency, memory, startup, throughput, and package-size numbers.
-
