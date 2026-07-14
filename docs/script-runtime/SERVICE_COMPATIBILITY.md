@@ -29,10 +29,12 @@ new C++ service design is allowed to change it.
 | `POST` | `/android/toggle` | foreground notification start/stop |
 | `GET` | `/android/wiki` and `/android/wiki/proxy` | Android wiki proxy behavior |
 
-The precise audited Python route count is nine when the two wiki paths are
-grouped as one feature family. CORS, Origin, credentials, and cookie behavior
-must cover production Tauri origins and both localhost/127.0.0.1 development
-origins; an Authorization-header redesign is not wire compatible.
+The Python route inventory contains nine paths; Tauri additionally calls
+`/android/reset-auth`, so that path must be classified against conditional or
+missing backend behavior and retained as a compatibility requirement. CORS,
+Origin, credentials, and cookie behavior must cover production Tauri origins
+and both localhost/127.0.0.1 development origins; an Authorization-header
+redesign is not wire compatible.
 
 ## WebSocket surface
 
@@ -151,4 +153,3 @@ it is not replaceable with a new JSON remote protocol.
   `src-tauri/src/android_backend_service.rs`.
 - Python routes/channels: `service/api`, `service/channels`, `service/auth`, and
   `service/transport`.
-
