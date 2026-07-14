@@ -174,3 +174,48 @@ snapshot it finds 4,556 unique operations across 15,469 sites, with 4,022 still
 unclassified. Its strict gate therefore fails as intended, and Phase 0 remains
 incomplete alongside the outstanding golden-trace, performance, and smoke-test
 gates.
+
+## Host-side Python performance baseline
+
+The first repeatable host-only measurement is checked in at
+[`evidence/python-performance-baseline.json`](evidence/python-performance-baseline.json).
+It was generated from clean `baas-dev` revision
+`75bbacb545bc87e9510d85cbe8034f9180397004` with Python 3.11.9, five fresh
+serial processes per probe, three production `cafe_reward.match` calls per
+algorithm process, and a 120-second per-process timeout:
+
+```powershell
+python scripts/migration/measure_python_baseline.py `
+  --python-repo ..\baas-dev `
+  --output docs\script-runtime\evidence\python-performance-baseline.json `
+  --timeout 120
+```
+
+Windows x64 median results on the hardware above are:
+
+| Scope | Process wall | Ready RSS | Additional result |
+| --- | ---: | ---: | --- |
+| Isolated `python -I -S -c pass` empty startup | 51.638 ms | not measured | no benchmark module imports |
+| Isolated `cv2` + `numpy` import | 186.306 ms | 45,121,536 bytes | OpenCV 4.8.1 / NumPy 1.26.4 |
+| `service.app` import only | 463.945 ms | 55,029,760 bytes | `ServiceContext` remained lazy |
+| Legacy module `cafe_reward.match` algorithm process | 498.210 ms | 53,755,904 bytes | all-call median 86.511 ms / 11.559 calls/s |
+| Production service-injected `cafe_reward.match` algorithm process | 633.879 ms | 84,545,536 bytes | first call 22.425 ms; cached later calls 13.793 ms |
+
+Each repetition is a fresh interpreter process; the operating-system file cache
+was not flushed, so "fresh process" does not claim a physical cold-disk read.
+The injected-path all-call median is 14.703 ms (68.013 calls/s), consistent
+with the earlier approximately 12.8 ms warm-cache probe scale. The slower first
+call in each fresh process includes grayscale template loading and resizing.
+
+Logical sizes are 112,906,407 bytes for 3,851 Git-tracked files; 1,920,695
+bytes for 569 tracked Python source files; 373,853,150 bytes for `.venv`;
+236,263,082 bytes for `toolkit`; and 76,029,060 bytes for `src`. These are
+uncompressed logical tree sizes, not packaged installer sizes.
+
+This evidence intentionally distinguishes import readiness from full startup.
+It does not run the FastAPI lifespan, service startup, user configuration,
+device/emulator discovery or I/O, OCR initialization/inference, Tauri startup,
+or packaged-distribution measurement. The legacy CLI module result is not used
+as a proxy for the service-patched production path; both are named separately.
+Therefore this completes the bounded host/import/algorithm/package-tree subitem
+only; the broad Phase 0 performance gate remains open.

@@ -1,0 +1,640 @@
+{
+  "configuration": {
+    "algorithm_iterations_per_process": 3,
+    "max_concurrent_probe_processes": 1,
+    "os_file_cache_flushed": false,
+    "parallel_execution": false,
+    "repetitions": 5,
+    "timeout_seconds_per_process": 120.0
+  },
+  "generator_version": "1.0.0",
+  "host": {
+    "benchmark_python": ".venv/Scripts/python.exe",
+    "benchmark_python_version": "3.11.9",
+    "controller_python_version": "3.11.9",
+    "logical_cpu_count": 32,
+    "machine": "AMD64",
+    "os": "Windows",
+    "os_release": "10",
+    "physical_memory_bytes": 33406283776
+  },
+  "probes": {
+    "cv2_numpy_import": {
+      "peak_rss_bytes": {
+        "max": 45264896.0,
+        "mean": 45142835.2,
+        "median": 45121536.0,
+        "min": 45060096.0,
+        "p95_nearest_rank": 45264896.0,
+        "samples": [
+          45060096,
+          45121536,
+          45178880,
+          45264896,
+          45088768
+        ],
+        "unit": "bytes"
+      },
+      "probe_elapsed_ms": {
+        "max": 99.939,
+        "mean": 94.152,
+        "median": 93.472,
+        "min": 87.973,
+        "p95_nearest_rank": 99.939,
+        "samples": [
+          92.169,
+          87.973,
+          99.939,
+          93.472,
+          97.205
+        ],
+        "unit": "ms"
+      },
+      "process_wall_ms": {
+        "max": 230.442,
+        "mean": 191.24,
+        "median": 186.306,
+        "min": 173.493,
+        "p95_nearest_rank": 230.442,
+        "samples": [
+          230.442,
+          173.493,
+          186.306,
+          179.65,
+          186.311
+        ],
+        "unit": "ms"
+      },
+      "python_version": "3.11.9",
+      "ready_rss_bytes": {
+        "max": 45264896.0,
+        "mean": 45142835.2,
+        "median": 45121536.0,
+        "min": 45060096.0,
+        "p95_nearest_rank": 45264896.0,
+        "samples": [
+          45060096,
+          45121536,
+          45178880,
+          45264896,
+          45088768
+        ],
+        "unit": "bytes"
+      },
+      "repetitions": 5,
+      "status": "ok",
+      "versions": {
+        "cv2": "4.8.1",
+        "numpy": "1.26.4"
+      }
+    },
+    "empty_startup": {
+      "peak_rss_bytes": null,
+      "probe_elapsed_ms": null,
+      "process_wall_ms": {
+        "max": 53.405,
+        "mean": 42.354,
+        "median": 51.638,
+        "min": 25.765,
+        "p95_nearest_rank": 53.405,
+        "samples": [
+          28.958,
+          25.765,
+          53.405,
+          51.638,
+          52.002
+        ],
+        "unit": "ms"
+      },
+      "ready_rss_bytes": null,
+      "repetitions": 5,
+      "status": "ok"
+    },
+    "legacy_module_match": {
+      "algorithm_call_ms": {
+        "max": 102.122,
+        "mean": 91.031,
+        "median": 86.511,
+        "min": 84.076,
+        "p95_nearest_rank": 102.122,
+        "samples": [
+          102.122,
+          88.801,
+          95.693,
+          100.755,
+          86.511,
+          86.372,
+          99.229,
+          84.076,
+          84.707,
+          98.506,
+          84.301,
+          84.269,
+          99.37,
+          85.83,
+          84.926
+        ],
+        "unit": "ms"
+      },
+      "algorithm_iterations_per_process": 3,
+      "first_algorithm_call_ms": {
+        "max": 102.122,
+        "mean": 99.996,
+        "median": 99.37,
+        "min": 98.506,
+        "p95_nearest_rank": 102.122,
+        "samples": [
+          102.122,
+          100.755,
+          99.229,
+          98.506,
+          99.37
+        ],
+        "unit": "ms"
+      },
+      "gui_stubs_injected": true,
+      "implementation": {
+        "line": 84,
+        "module": "module.cafe_reward"
+      },
+      "input_shape": [
+        720,
+        1280,
+        3
+      ],
+      "peak_rss_bytes": {
+        "max": 104644608.0,
+        "mean": 104515993.6,
+        "median": 104493056.0,
+        "min": 104407040.0,
+        "p95_nearest_rank": 104644608.0,
+        "samples": [
+          104493056,
+          104644608,
+          104443904,
+          104407040,
+          104591360
+        ],
+        "unit": "bytes"
+      },
+      "probe_elapsed_ms": {
+        "max": 426.574,
+        "mean": 410.476,
+        "median": 406.499,
+        "min": 401.124,
+        "p95_nearest_rank": 426.574,
+        "samples": [
+          426.574,
+          406.499,
+          406.209,
+          401.124,
+          411.974
+        ],
+        "unit": "ms"
+      },
+      "process_wall_ms": {
+        "max": 519.098,
+        "mean": 499.642,
+        "median": 498.21,
+        "min": 488.536,
+        "p95_nearest_rank": 519.098,
+        "samples": [
+          519.098,
+          500.139,
+          492.227,
+          488.536,
+          498.21
+        ],
+        "unit": "ms"
+      },
+      "python_version": "3.11.9",
+      "ready_rss_bytes": {
+        "max": 53956608.0,
+        "mean": 53504409.6,
+        "median": 53755904.0,
+        "min": 52908032.0,
+        "p95_nearest_rank": 53956608.0,
+        "samples": [
+          52994048,
+          53956608,
+          53755904,
+          52908032,
+          53907456
+        ],
+        "unit": "bytes"
+      },
+      "repetitions": 5,
+      "result_checksums": [
+        18511596,
+        18511596,
+        18511596,
+        18511596,
+        18511596
+      ],
+      "result_counts": [
+        [
+          2,
+          2,
+          2
+        ],
+        [
+          2,
+          2,
+          2
+        ],
+        [
+          2,
+          2,
+          2
+        ],
+        [
+          2,
+          2,
+          2
+        ],
+        [
+          2,
+          2,
+          2
+        ]
+      ],
+      "scope": "legacy module.cafe_reward.match with test-only GUI import stubs",
+      "service_injection_applied": false,
+      "status": "ok",
+      "subsequent_algorithm_call_ms": {
+        "max": 95.693,
+        "mean": 86.549,
+        "median": 85.378,
+        "min": 84.076,
+        "p95_nearest_rank": 95.693,
+        "samples": [
+          88.801,
+          95.693,
+          86.511,
+          86.372,
+          84.076,
+          84.707,
+          84.301,
+          84.269,
+          85.83,
+          84.926
+        ],
+        "unit": "ms"
+      },
+      "template_shape": [
+        16,
+        17,
+        3
+      ],
+      "throughput_calls_per_second": {
+        "max": 11.894,
+        "mean": 11.048,
+        "median": 11.559,
+        "min": 9.792,
+        "p95_nearest_rank": 11.894,
+        "samples": [
+          9.792,
+          11.261,
+          10.45,
+          9.925,
+          11.559,
+          11.578,
+          10.078,
+          11.894,
+          11.805,
+          10.152,
+          11.862,
+          11.867,
+          10.063,
+          11.651,
+          11.775
+        ],
+        "unit": "calls/s"
+      }
+    },
+    "service_app_import": {
+      "peak_rss_bytes": {
+        "max": 55246848.0,
+        "mean": 55006822.4,
+        "median": 55029760.0,
+        "min": 54784000.0,
+        "p95_nearest_rank": 55246848.0,
+        "samples": [
+          54784000,
+          55078912,
+          54894592,
+          55029760,
+          55246848
+        ],
+        "unit": "bytes"
+      },
+      "probe_elapsed_ms": {
+        "max": 378.266,
+        "mean": 356.036,
+        "median": 353.312,
+        "min": 342.704,
+        "p95_nearest_rank": 378.266,
+        "samples": [
+          357.745,
+          348.153,
+          342.704,
+          378.266,
+          353.312
+        ],
+        "unit": "ms"
+      },
+      "process_wall_ms": {
+        "max": 492.072,
+        "mean": 467.939,
+        "median": 463.945,
+        "min": 452.872,
+        "p95_nearest_rank": 492.072,
+        "samples": [
+          467.675,
+          463.945,
+          452.872,
+          492.072,
+          463.13
+        ],
+        "unit": "ms"
+      },
+      "python_version": "3.11.9",
+      "ready_rss_bytes": {
+        "max": 55246848.0,
+        "mean": 55006822.4,
+        "median": 55029760.0,
+        "min": 54784000.0,
+        "p95_nearest_rank": 55246848.0,
+        "samples": [
+          54784000,
+          55078912,
+          54894592,
+          55029760,
+          55246848
+        ],
+        "unit": "bytes"
+      },
+      "repetitions": 5,
+      "route_count": 10,
+      "service_context_materialized": false,
+      "status": "ok"
+    },
+    "service_injected_match": {
+      "algorithm_call_ms": {
+        "max": 23.443,
+        "mean": 16.715,
+        "median": 14.703,
+        "min": 12.607,
+        "p95_nearest_rank": 23.443,
+        "samples": [
+          23.443,
+          15.011,
+          12.674,
+          21.704,
+          14.555,
+          13.03,
+          22.425,
+          14.722,
+          12.686,
+          22.267,
+          14.574,
+          12.607,
+          23.321,
+          14.703,
+          13.01
+        ],
+        "unit": "ms"
+      },
+      "algorithm_iterations_per_process": 3,
+      "first_algorithm_call_ms": {
+        "max": 23.443,
+        "mean": 22.632,
+        "median": 22.425,
+        "min": 21.704,
+        "p95_nearest_rank": 23.443,
+        "samples": [
+          23.443,
+          21.704,
+          22.425,
+          22.267,
+          23.321
+        ],
+        "unit": "ms"
+      },
+      "gui_stubs_injected": true,
+      "implementation": {
+        "line": 532,
+        "module": "service.injection"
+      },
+      "input_shape": [
+        720,
+        1280,
+        3
+      ],
+      "peak_rss_bytes": {
+        "max": 93573120.0,
+        "mean": 93236428.8,
+        "median": 93204480.0,
+        "min": 92999680.0,
+        "p95_nearest_rank": 93573120.0,
+        "samples": [
+          93118464,
+          92999680,
+          93573120,
+          93204480,
+          93286400
+        ],
+        "unit": "bytes"
+      },
+      "probe_elapsed_ms": {
+        "max": 513.431,
+        "mean": 504.375,
+        "median": 506.284,
+        "min": 488.907,
+        "p95_nearest_rank": 513.431,
+        "samples": [
+          513.431,
+          506.284,
+          508.18,
+          488.907,
+          505.072
+        ],
+        "unit": "ms"
+      },
+      "process_wall_ms": {
+        "max": 640.31,
+        "mean": 632.754,
+        "median": 633.879,
+        "min": 618.418,
+        "p95_nearest_rank": 640.31,
+        "samples": [
+          640.31,
+          639.171,
+          633.879,
+          618.418,
+          631.99
+        ],
+        "unit": "ms"
+      },
+      "python_version": "3.11.9",
+      "ready_rss_bytes": {
+        "max": 84914176.0,
+        "mean": 84577484.8,
+        "median": 84545536.0,
+        "min": 84340736.0,
+        "p95_nearest_rank": 84914176.0,
+        "samples": [
+          84459520,
+          84340736,
+          84914176,
+          84545536,
+          84627456
+        ],
+        "unit": "bytes"
+      },
+      "repetitions": 5,
+      "result_checksums": [
+        9240795,
+        9240795,
+        9240795,
+        9240795,
+        9240795
+      ],
+      "result_counts": [
+        [
+          1,
+          1,
+          1
+        ],
+        [
+          1,
+          1,
+          1
+        ],
+        [
+          1,
+          1,
+          1
+        ],
+        [
+          1,
+          1,
+          1
+        ],
+        [
+          1,
+          1,
+          1
+        ]
+      ],
+      "scope": "production service-injected cafe_reward.match with test-only GUI import stubs",
+      "service_injection_applied": true,
+      "status": "ok",
+      "subsequent_algorithm_call_ms": {
+        "max": 15.011,
+        "mean": 13.757,
+        "median": 13.793,
+        "min": 12.607,
+        "p95_nearest_rank": 15.011,
+        "samples": [
+          15.011,
+          12.674,
+          14.555,
+          13.03,
+          14.722,
+          12.686,
+          14.574,
+          12.607,
+          14.703,
+          13.01
+        ],
+        "unit": "ms"
+      },
+      "template_shape": [
+        16,
+        17,
+        3
+      ],
+      "throughput_calls_per_second": {
+        "max": 79.321,
+        "mean": 63.443,
+        "median": 68.013,
+        "min": 42.657,
+        "p95_nearest_rank": 79.321,
+        "samples": [
+          42.657,
+          66.618,
+          78.902,
+          46.074,
+          68.705,
+          76.746,
+          44.593,
+          67.926,
+          78.827,
+          44.91,
+          68.615,
+          79.321,
+          42.88,
+          68.013,
+          76.864
+        ],
+        "unit": "calls/s"
+      }
+    }
+  },
+  "repository": {
+    "clean": true,
+    "name": "baas-dev",
+    "revision": "75bbacb545bc87e9510d85cbe8034f9180397004"
+  },
+  "schema_version": 1,
+  "scope": {
+    "measured": [
+      "fresh isolated Python -I -S -c pass process startup",
+      "isolated cv2 and numpy import readiness",
+      "isolated service.app import readiness without lifespan",
+      "legacy module.cafe_reward.match algorithm with test-only GUI import stubs",
+      "production service-injected cafe_reward.match algorithm with test-only GUI import stubs",
+      "logical repository, Python source, .venv, toolkit, and src sizes"
+    ],
+    "not_measured": [
+      "FastAPI lifespan or ServiceContext.startup",
+      "device or emulator discovery and I/O",
+      "OCR initialization or inference",
+      "Tauri end-to-end startup",
+      "packaged installer or native runtime size"
+    ]
+  },
+  "sizes": {
+    ".venv": {
+      "file_count": 7490,
+      "logical_bytes": 373853150,
+      "status": "ok"
+    },
+    "git_tracked": {
+      "file_count": 3851,
+      "logical_bytes": 112906407,
+      "status": "ok"
+    },
+    "python_source_tracked": {
+      "definition": "tracked *.py excluding toolkit/ and .venv/",
+      "file_count": 569,
+      "logical_bytes": 1920695,
+      "status": "ok"
+    },
+    "src": {
+      "file_count": 3396,
+      "logical_bytes": 76029060,
+      "status": "ok"
+    },
+    "toolkit": {
+      "file_count": 5775,
+      "logical_bytes": 236263082,
+      "status": "ok"
+    }
+  },
+  "summary": {
+    "failed_probes": 0,
+    "successful_probes": 5
+  }
+}

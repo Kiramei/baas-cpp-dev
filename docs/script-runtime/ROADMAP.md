@@ -40,8 +40,12 @@ an isolated prototype is not considered project completion.
 - [x] Add a deterministic static migration validator for grid actions, image
   mappings, and OCR calls, with fixture tests and real-repository reporting.
 - [ ] Capture baseline Python golden traces for representative workflows.
-- [ ] Capture baseline latency, memory, startup, throughput, and package-size
-  measurements on Windows x64.
+- [~] Capture baseline latency, memory, startup, throughput, and package-size
+  measurements on Windows x64. Host process startup, import readiness, RSS,
+  legacy and production service-injected `cafe_reward.match`, and logical tree
+  sizes are recorded in `evidence/python-performance-baseline.json`; full service lifespan,
+  device/emulator, OCR, Tauri end-to-end, and packaged installer measurements
+  remain pending.
 - [ ] Record platform and emulator smoke-test prerequisites.
 
 Exit evidence: inventories cover all source roots, the migration matrix has no
