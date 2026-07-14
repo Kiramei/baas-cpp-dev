@@ -138,7 +138,8 @@ configures the matching preset, builds the OCR shared library, and verifies its
 ELF machine plus packaged runtime libraries. It does not launch, stop, or
 otherwise modify an emulator or connected Android device. Passing
 `-SkipRecipeExport` is safe after the current recipes are already in the local
-Conan cache.
+Conan cache. `-NdkPath <directory>` overrides automatic latest-NDK discovery;
+the hosted CI uses it to pin NDK 29.0.13846066 even if a newer NDK is present.
 
 ## Python reference and service-vector checks
 

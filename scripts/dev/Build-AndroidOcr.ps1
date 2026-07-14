@@ -6,6 +6,8 @@ param(
     [ValidateRange(1, 32)]
     [int]$Jobs = 8,
 
+    [string]$NdkPath = "",
+
     [switch]$SkipRecipeExport
 )
 
@@ -16,9 +18,15 @@ Push-Location $repoRoot
 try {
 . (Join-Path $PSScriptRoot "Enter-WindowsDevShell.ps1")
 
+if ($NdkPath) {
+    $resolvedNdk = (Resolve-Path -LiteralPath $NdkPath -ErrorAction Stop).Path
+    $env:ANDROID_NDK_LATEST_HOME = $resolvedNdk
+    $env:ANDROID_NDK_HOME = $resolvedNdk
+}
+
 if (-not $env:ANDROID_NDK_LATEST_HOME -or
     -not (Test-Path -LiteralPath $env:ANDROID_NDK_LATEST_HOME)) {
-    throw "No Android NDK was discovered. Install an SDK NDK and reactivate the development shell."
+    throw "No Android NDK was discovered. Install an SDK NDK, pass -NdkPath, and reactivate the development shell."
 }
 
 foreach ($command in @("conan", "cmake", "ninja")) {

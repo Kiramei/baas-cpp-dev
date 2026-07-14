@@ -94,8 +94,9 @@ jobs:
       - name: Build and verify OCR library
         shell: pwsh
         run: |
+          $ndk = Join-Path $env:ANDROID_HOME 'ndk\29.0.13846066'
           .\scripts\dev\Build-AndroidOcr.ps1 `
-            -Abi '${{ matrix.abi }}' -Jobs 8
+            -Abi '${{ matrix.abi }}' -Jobs 8 -NdkPath $ndk
 
       - name: Upload verified native libraries
         uses: actions/upload-artifact@v4
