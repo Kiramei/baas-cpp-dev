@@ -295,6 +295,96 @@ JsonBridgeLimits effective_host_json_limits(const SynchronousHostLimits& limits)
     return result;
 }
 
+HostValueMetrics measure_host_value(
+    const HostValue& value, const JsonBridgeLimits limits)
+{
+    HostValueMetrics metrics;
+    auto add = [](std::size_t& target, const std::size_t amount,
+                  const std::size_t maximum, const RuntimeErrorCode code) {
+        if (amount > maximum || target > maximum - amount)
+            throw RuntimeError(code, "Host conversion aggregate limit exceeded");
+        target += amount;
+    };
+    auto visit_payload = [&](const std::size_t bytes) {
+        add(metrics.total_bytes, bytes, limits.max_total_bytes,
+            RuntimeErrorCode::JsonByteLimitExceeded);
+    };
+
+    if (value.type() != HostValueType::Json) {
+        metrics.nodes = 1;
+        metrics.work = 1;
+        metrics.total_bytes = 1;
+        switch (value.type()) {
+            case HostValueType::Boolean: visit_payload(1); break;
+            case HostValueType::Integer: visit_payload(sizeof(std::int64_t)); break;
+            case HostValueType::Float: visit_payload(sizeof(double)); break;
+            case HostValueType::String: {
+                const auto bytes = std::get<std::string>(value.storage()).size();
+                add(metrics.string_bytes, bytes, limits.max_string_bytes,
+                    RuntimeErrorCode::JsonStringLimitExceeded);
+                visit_payload(bytes);
+                break;
+            }
+            default: break;
+        }
+        return metrics;
+    }
+
+    struct Pending { const JsonValue* value; std::size_t depth; };
+    std::vector<Pending> pending{{&std::get<JsonValue>(value.storage()), 1}};
+    while (!pending.empty()) {
+        const auto current = pending.back();
+        pending.pop_back();
+        if (current.depth > std::min<std::size_t>(limits.max_depth, 1024))
+            throw RuntimeError(RuntimeErrorCode::JsonDepthLimitExceeded,
+                               "Host conversion depth limit exceeded");
+        add(metrics.nodes, 1, limits.max_nodes, RuntimeErrorCode::JsonNodeLimitExceeded);
+        add(metrics.work, 1, limits.max_work, RuntimeErrorCode::JsonWorkLimitExceeded);
+        visit_payload(1);
+        switch (current.value->kind()) {
+            case JsonKind::Null: break;
+            case JsonKind::Boolean: visit_payload(1); break;
+            case JsonKind::Integer: visit_payload(sizeof(std::int64_t)); break;
+            case JsonKind::Float: visit_payload(sizeof(double)); break;
+            case JsonKind::String: {
+                const auto bytes = std::get<std::string>(current.value->value()).size();
+                add(metrics.string_bytes, bytes, limits.max_string_bytes,
+                    RuntimeErrorCode::JsonStringLimitExceeded);
+                visit_payload(bytes);
+                break;
+            }
+            case JsonKind::Array: {
+                const auto& values = std::get<JsonArray>(current.value->value());
+                add(metrics.work, values.size(), limits.max_work,
+                    RuntimeErrorCode::JsonWorkLimitExceeded);
+                if (values.size() > limits.max_nodes - std::min(metrics.nodes, limits.max_nodes))
+                    throw RuntimeError(RuntimeErrorCode::JsonNodeLimitExceeded,
+                                       "Host conversion node limit exceeded");
+                for (auto iterator = values.rbegin(); iterator != values.rend(); ++iterator)
+                    pending.push_back({&*iterator, current.depth + 1});
+                break;
+            }
+            case JsonKind::Object: {
+                const auto& entries = std::get<JsonObject>(current.value->value());
+                add(metrics.work, entries.size(), limits.max_work,
+                    RuntimeErrorCode::JsonWorkLimitExceeded);
+                if (entries.size() > limits.max_nodes - std::min(metrics.nodes, limits.max_nodes))
+                    throw RuntimeError(RuntimeErrorCode::JsonNodeLimitExceeded,
+                                       "Host conversion node limit exceeded");
+                for (auto iterator = entries.rbegin(); iterator != entries.rend(); ++iterator) {
+                    const auto key_bytes = iterator->first.size();
+                    add(metrics.string_bytes, key_bytes, limits.max_string_bytes,
+                        RuntimeErrorCode::JsonStringLimitExceeded);
+                    visit_payload(key_bytes);
+                    pending.push_back({&iterator->second, current.depth + 1});
+                }
+                break;
+            }
+        }
+    }
+    return metrics;
+}
+
 HostValue heap_to_host_value(
     const Heap& heap, const Value value, const HostValueType expected,
     const JsonBridgeLimits limits)
@@ -383,6 +473,57 @@ HostResult invoke_host_callback(
     } catch (...) {
         return HostResult::boundary_failure(HostResult::BoundaryFailure::CallbackException);
     }
+}
+
+std::vector<InMemoryLogEvent> InMemoryLogHost::events() const
+{
+    const std::scoped_lock lock(mutex_);
+    return events_;
+}
+
+HostResult InMemoryLogHost::emit(const HostCallContext&, const HostArguments& arguments)
+{
+    if (arguments.size() != 3 || !arguments[0] || !arguments[1] ||
+        arguments[0]->type() != HostValueType::String ||
+        arguments[1]->type() != HostValueType::String ||
+        (arguments[2] && (arguments[2]->type() != HostValueType::Json ||
+            std::get<JsonValue>(arguments[2]->storage()).kind() != JsonKind::Object))) {
+        return HostResult::failure({
+            HostErrorCode::InvalidArgument, "invalid in-memory log arguments", false,
+            HostEffectState::NotStarted, std::nullopt});
+    }
+    InMemoryLogEvent event;
+    event.level = std::get<std::string>(arguments[0]->storage());
+    event.message = std::get<std::string>(arguments[1]->storage());
+    if (arguments[2])
+        event.fields = std::get<JsonObject>(
+            std::get<JsonValue>(arguments[2]->storage()).value());
+    {
+        const std::scoped_lock lock(mutex_);
+        events_.push_back(std::move(event));
+    }
+    return HostResult::success();
+}
+
+SynchronousNativeBinding make_in_memory_log_binding(
+    std::shared_ptr<InMemoryLogHost> host)
+{
+    if (!host)
+        throw HostBindingError(
+            HostBindingErrorCode::MissingCallback, "in-memory log host is absent");
+    return {
+        "host.log.emit.v1",
+        {{{"level", HostValueType::String, true},
+          {"message", HostValueType::String, true},
+          {"fields", HostValueType::OrderedStringJsonMap, false}},
+         HostValueType::Null,
+         "log_events",
+         HostExecutionMode::ThreadSafe,
+         HostCancellationMode::Preflight},
+        [host = std::move(host)](
+            const HostCallContext& context, const HostArguments& arguments) {
+            return host->emit(context, arguments);
+        }};
 }
 
 }  // namespace baas::script::runtime

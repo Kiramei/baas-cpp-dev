@@ -3,10 +3,13 @@
 #include "script/Diagnostic.h"
 #include "script/SemanticAnalyzer.h"
 #include "script/runtime/ModuleSpecifier.h"
+#include "script/runtime/SynchronousHost.h"
 #include "script/runtime/ValueHeap.h"
 
 #include <cstddef>
 #include <stdexcept>
+#include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -29,6 +32,36 @@ struct EvaluatorLimits {
     std::size_t max_functions{100'000};
     std::size_t max_import_depth{128};
     std::size_t max_modules{4'096};
+};
+
+struct HostPermissionInput {
+    std::vector<HostModuleRequirement> declared_modules;
+    std::vector<std::string> declared_capabilities;
+    std::vector<std::string> policy_capabilities;
+    std::vector<std::string> platform_capabilities;
+    std::vector<std::string> task_capabilities;
+};
+
+struct EvaluatorHostLimits {
+    std::size_t max_host_modules{512};
+    std::size_t max_permission_entries{4'096};
+    std::size_t max_permission_string_bytes{4U * 1024U * 1024U};
+    std::size_t max_authorized_exports{4'096};
+    std::size_t max_host_calls{100'000};
+    std::size_t max_host_arguments{64};
+    std::size_t max_conversion_nodes{100'000};
+    std::size_t max_conversion_bytes{64U * 1024U * 1024U};
+    std::size_t max_conversion_work{500'000};
+    std::size_t max_registry_validation_work{500'000};
+};
+
+struct SynchronousHostOptions {
+    std::shared_ptr<const HostModuleRegistry> metadata;
+    std::shared_ptr<const SynchronousNativeBindingSet> bindings;
+    HostPermissionInput permissions;
+    EvaluatorHostLimits limits{};
+    // Missing scopes use max_host_calls. Duplicate scopes are rejected.
+    std::vector<std::pair<std::string, std::size_t>> budget_limits;
 };
 
 struct ModuleDiagnostic {
@@ -85,6 +118,11 @@ struct EvaluationStats {
     std::size_t collection_work{};
     std::size_t initialized_modules{};
     std::size_t created_functions{};
+    std::size_t host_authorization_attempts{};
+    std::size_t authorized_host_exports{};
+    std::size_t host_calls{};
+    std::size_t host_conversion_nodes{};
+    std::size_t host_conversion_bytes{};
 };
 
 struct EvaluationResult {
@@ -99,6 +137,13 @@ class SynchronousEvaluator final {
 public:
     explicit SynchronousEvaluator(
         std::vector<SourceModule> modules,
+        EvaluatorLimits limits = {},
+        HeapLimits heap_limits = {},
+        SemanticOptions semantic_options = {},
+        NfcPredicate is_nfc = nullptr);
+    SynchronousEvaluator(
+        std::vector<SourceModule> modules,
+        SynchronousHostOptions host_options,
         EvaluatorLimits limits = {},
         HeapLimits heap_limits = {},
         SemanticOptions semantic_options = {},
@@ -125,7 +170,8 @@ private:
         EvaluatorLimits limits,
         HeapLimits heap_limits,
         SemanticOptions semantic_options,
-        NfcPredicate is_nfc);
+        NfcPredicate is_nfc,
+        std::optional<SynchronousHostOptions> host_options);
     Impl* impl_;
 };
 

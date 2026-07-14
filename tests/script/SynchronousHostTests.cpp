@@ -250,6 +250,13 @@ void test_contract_shapes_utf8_and_strict_string_limit()
         check(error.code() == RuntimeErrorCode::TypeMismatch,
               "ordered-map shape mismatch must be a bounded type failure");
     }
+    const HostValue object(JsonValue(JsonObject{
+        {"key", JsonValue(std::int64_t{7})}}));
+    const auto object_value = host_to_heap_value(
+        heap, object, HostValueType::OrderedStringJsonMap);
+    check(heap.kind(object_value) == ValueKind::OrderedMap &&
+              heap.map_get(object_value.as_heap_ref(), "key")->as_integer() == 7,
+          "ordered-map Host storage must validate and round-trip through the shared JSON variant");
 
     SynchronousHostLimits limits;
     limits.max_string_bytes = 3;

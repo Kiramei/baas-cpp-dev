@@ -15,6 +15,7 @@
 #include <optional>
 #include <set>
 #include <string>
+#include <thread>
 #include <tuple>
 #include <type_traits>
 #include <unordered_map>
@@ -150,6 +151,33 @@ struct SynchronousEvaluator::Impl {
         std::shared_ptr<LexicalEnvironment> closure;
     };
 
+    struct NativeFunctionRecord {
+        std::uint64_t id{};
+        std::string module;
+        std::string export_name;
+        HostApiVersion selected_version{};
+        const SynchronousNativeBinding* binding{};
+    };
+
+    struct CachedHostFailure {
+        LanguageErrorCode code{LanguageErrorCode::HostInternal};
+        std::string message;
+    };
+
+    struct HostMemberRecord {
+        Value callable;
+        std::optional<Heap::RootId> callable_root;
+        std::optional<CachedHostFailure> failure;
+    };
+
+    struct HostModuleRecord {
+        std::string id;
+        HostApiVersion selected_version{};
+        Value namespace_value;
+        std::optional<Heap::RootId> namespace_root;
+        std::map<std::string, HostMemberRecord, std::less<>> members;
+    };
+
     enum class ModuleState { Uninitialized, Loading, Ready, Failed };
 
     struct ModuleRecord {
@@ -220,23 +248,34 @@ struct SynchronousEvaluator::Impl {
     Heap heap;
     std::map<std::string, std::unique_ptr<ModuleRecord>, std::less<>> modules;
     std::vector<FunctionRecord> functions;
+    std::vector<NativeFunctionRecord> native_functions;
+    std::map<std::string, HostModuleRecord, std::less<>> host_modules;
+    std::optional<SynchronousHostOptions> host_options;
+    std::map<std::string, std::size_t, std::less<>> host_budget_limits;
+    std::map<std::string, std::size_t, std::less<>> host_budget_used;
     EvaluationStats stats;
     std::string current_module;
     NfcPredicate nfc{};
     std::size_t value_stack_depth{};
     std::size_t call_depth{};
     std::size_t import_depth{};
+    std::size_t host_registry_validation_work{};
+    std::thread::id owner_thread{std::this_thread::get_id()};
+    bool host_call_active{};
 
     explicit Impl(
         std::vector<SourceModule> sources,
         EvaluatorLimits evaluator_limits,
         HeapLimits heap_limits,
         const SemanticOptions semantic_options,
-        const NfcPredicate is_nfc)
-        : limits(evaluator_limits), heap(heap_limits, is_nfc), nfc(is_nfc)
+        const NfcPredicate is_nfc,
+        std::optional<SynchronousHostOptions> synchronous_host_options)
+        : limits(evaluator_limits), heap(heap_limits, is_nfc),
+          host_options(std::move(synchronous_host_options)), nfc(is_nfc)
     {
         validate_limits();
         compile_modules(std::move(sources), semantic_options, is_nfc);
+        configure_host();
     }
 
     [[noreturn]] void fail(
@@ -255,6 +294,167 @@ struct SynchronousEvaluator::Impl {
             || limits.max_collection_work == 0 || limits.max_functions == 0
             || limits.max_import_depth == 0 || limits.max_modules == 0) {
             fail(LanguageErrorCode::ArgumentInvalid, "evaluator limits must be positive");
+        }
+    }
+
+    [[nodiscard]] static CachedHostFailure translate_registry_failure(
+        const HostRegistryError& error)
+    {
+        using enum HostRegistryErrorCode;
+        switch (error.code()) {
+            case UndeclaredModule:
+            case UndeclaredCapability:
+            case CapabilityDenied:
+                return {LanguageErrorCode::CapabilityDenied,
+                        "Host import or export is not permitted"};
+            case ModuleUnavailable:
+            case VersionIncompatible:
+                return {LanguageErrorCode::HostUnavailable,
+                        "Host module version is unavailable"};
+            case UnknownExport:
+                return {LanguageErrorCode::ModuleMemberMissing,
+                        "Host module export is absent"};
+            case ModuleVersionLimitExceeded:
+            case ExportLimitExceeded:
+            case CapabilityLimitExceeded:
+            case ImportLimitExceeded:
+            case StringBudgetExceeded:
+            case ValidationWorkLimitExceeded:
+                return {LanguageErrorCode::MemoryLimitExceeded,
+                        "Host registry validation limit exceeded"};
+            default:
+                return {LanguageErrorCode::HostValidationFailed,
+                        "Host registry input is invalid"};
+        }
+    }
+
+    void charge_host_registry_work(const std::size_t work)
+    {
+        const auto maximum = host_options->limits.max_registry_validation_work;
+        if (work > maximum || host_registry_validation_work > maximum - work)
+            fail(LanguageErrorCode::MemoryLimitExceeded,
+                 "aggregate Host registry validation work exceeded");
+        host_registry_validation_work += work;
+    }
+
+    [[nodiscard]] HostResolutionRequest host_resolution_request(
+        const std::string_view target_module = {},
+        const std::string_view target_export = {}) const
+    {
+        HostResolutionRequest request;
+        request.declared_modules = host_options->permissions.declared_modules;
+        request.declared_capabilities = host_options->permissions.declared_capabilities;
+        request.policy_capabilities = host_options->permissions.policy_capabilities;
+        request.platform_capabilities = host_options->permissions.platform_capabilities;
+        request.task_capabilities = host_options->permissions.task_capabilities;
+        request.imports.reserve(host_modules.size());
+        for (const auto& [id, ignored] : host_modules) {
+            HostImportRequest imported{id, {}};
+            if (id == target_module && !target_export.empty())
+                imported.exports.emplace_back(target_export);
+            request.imports.push_back(std::move(imported));
+        }
+        return request;
+    }
+
+    void configure_host()
+    {
+        if (!host_options) return;
+        const auto& options = *host_options;
+        if (!options.metadata || !options.bindings)
+            fail(LanguageErrorCode::ArgumentInvalid,
+                 "synchronous Host metadata and binding set are required");
+        const auto& host_limits = options.limits;
+        if (host_limits.max_host_modules == 0 ||
+            host_limits.max_permission_entries == 0 ||
+            host_limits.max_permission_string_bytes == 0 ||
+            host_limits.max_authorized_exports == 0 ||
+            host_limits.max_host_calls == 0 ||
+            host_limits.max_host_arguments == 0 ||
+            host_limits.max_conversion_nodes == 0 ||
+            host_limits.max_conversion_bytes == 0 ||
+            host_limits.max_conversion_work == 0 ||
+            host_limits.max_registry_validation_work == 0)
+            fail(LanguageErrorCode::ArgumentInvalid,
+                 "synchronous evaluator Host limits must be positive");
+
+        std::size_t permission_entries = options.permissions.declared_modules.size();
+        std::size_t permission_strings{};
+        const auto charge_permission_string = [&](const std::string_view value) {
+            if (value.size() > host_limits.max_permission_string_bytes ||
+                permission_strings > host_limits.max_permission_string_bytes - value.size())
+                fail(LanguageErrorCode::MemoryLimitExceeded,
+                     "Host permission string budget exceeded");
+            permission_strings += value.size();
+        };
+        for (const auto& requirement : options.permissions.declared_modules)
+            charge_permission_string(requirement.canonical_id);
+        const auto charge_permission_set = [&](const std::vector<std::string>& values) {
+            if (values.size() > host_limits.max_permission_entries -
+                    std::min(permission_entries, host_limits.max_permission_entries))
+                fail(LanguageErrorCode::MemoryLimitExceeded,
+                     "Host permission entry budget exceeded");
+            permission_entries += values.size();
+            for (const auto& value : values) charge_permission_string(value);
+        };
+        charge_permission_set(options.permissions.declared_capabilities);
+        charge_permission_set(options.permissions.policy_capabilities);
+        charge_permission_set(options.permissions.platform_capabilities);
+        charge_permission_set(options.permissions.task_capabilities);
+        if (permission_entries > host_limits.max_permission_entries)
+            fail(LanguageErrorCode::MemoryLimitExceeded,
+                 "Host permission entry budget exceeded");
+        if (options.budget_limits.size() > host_limits.max_permission_entries -
+                permission_entries)
+            fail(LanguageErrorCode::MemoryLimitExceeded,
+                 "Host budget entry limit exceeded");
+
+        for (const auto& [scope, maximum] : options.budget_limits) {
+            charge_permission_string(scope);
+            if (scope.empty() || !host_budget_limits.emplace(scope, maximum).second)
+                fail(LanguageErrorCode::ArgumentInvalid,
+                     "Host budget scopes must be non-empty and unique");
+        }
+
+        std::set<std::string, std::less<>> imported_host_modules;
+        for (const auto& [id, module] : modules) {
+            for (const auto& imported : module->imports) {
+                const auto specifier = validate_module_specifier(imported, nfc);
+                if (specifier.kind == ModuleKind::Host)
+                    imported_host_modules.insert(specifier.canonical_id);
+            }
+        }
+        if (imported_host_modules.size() > host_limits.max_host_modules)
+            fail(LanguageErrorCode::MemoryLimitExceeded,
+                 "Host import module limit exceeded");
+
+        for (const auto& id : imported_host_modules) {
+            HostModuleRecord module;
+            module.id = id;
+            host_modules.emplace(id, std::move(module));
+        }
+        if (host_modules.empty()) return;
+
+        HostResolution resolution;
+        try {
+            resolution = options.metadata->resolve(host_resolution_request());
+        } catch (const HostRegistryError& error) {
+            const auto translated = translate_registry_failure(error);
+            fail(translated.code, translated.message);
+        }
+        charge_host_registry_work(resolution.validation_work);
+        for (auto& [id, module] : host_modules) {
+            const auto selected = std::find_if(
+                resolution.modules.begin(), resolution.modules.end(),
+                [&](const ResolvedHostModule& candidate) {
+                    return candidate.canonical_id == id;
+                });
+            if (selected == resolution.modules.end())
+                fail(LanguageErrorCode::HostUnavailable,
+                     "Host module did not resolve to an exact version");
+            module.selected_version = selected->selected_version;
+            module.namespace_value = heap.allocate_module({id, {}});
+            module.namespace_root = heap.add_root(module.namespace_value);
         }
     }
 
@@ -732,8 +932,112 @@ struct SynchronousEvaluator::Impl {
         }
     }
 
+    [[nodiscard]] Value initialize_host_module(
+        const std::string& id, const SourceSpan import_span) const
+    {
+        if (!host_options)
+            fail(LanguageErrorCode::HostUnavailable,
+                 "Host imports are outside the synchronous evaluator boundary",
+                 import_span);
+        const auto found = host_modules.find(id);
+        if (found == host_modules.end())
+            fail(LanguageErrorCode::HostUnavailable,
+                 "Host import was not part of the validated source snapshot",
+                 import_span);
+        return found->second.namespace_value;
+    }
+
+    [[nodiscard]] Value authorize_host_member(
+        HostModuleRecord& module, const std::string_view member,
+        const SourceSpan span)
+    {
+        if (!is_public_name(member))
+            fail(LanguageErrorCode::ModuleMemberMissing,
+                 "Host module export is private or absent", span);
+        const auto cached = module.members.find(member);
+        if (cached != module.members.end()) {
+            if (cached->second.failure)
+                fail(cached->second.failure->code,
+                     cached->second.failure->message, span);
+            return cached->second.callable;
+        }
+        if (stats.host_authorization_attempts >=
+            host_options->limits.max_authorized_exports)
+            fail(LanguageErrorCode::MemoryLimitExceeded,
+                 "Host export authorization limit exceeded", span);
+        ++stats.host_authorization_attempts;
+
+        auto [entry, inserted] = module.members.try_emplace(std::string(member));
+        (void)inserted;
+        using HostMemberMap = std::map<std::string, HostMemberRecord, std::less<>>;
+        struct CacheTransaction {
+            HostMemberMap* members;
+            HostMemberMap::iterator entry;
+            bool committed{};
+            ~CacheTransaction() { if (!committed) members->erase(entry); }
+        } transaction{&module.members, entry};
+        auto cache_failure = [&](CachedHostFailure failure) -> Value {
+            entry->second.failure = std::move(failure);
+            transaction.committed = true;
+            fail(entry->second.failure->code, entry->second.failure->message, span);
+        };
+
+        HostResolution resolution;
+        try {
+            resolution = host_options->metadata->resolve(
+                host_resolution_request(module.id, member));
+        } catch (const HostRegistryError& error) {
+            return cache_failure(translate_registry_failure(error));
+        }
+        charge_host_registry_work(resolution.validation_work);
+        const auto resolved_module = std::find_if(
+            resolution.modules.begin(), resolution.modules.end(),
+            [&](const ResolvedHostModule& candidate) {
+                return candidate.canonical_id == module.id;
+            });
+        if (resolved_module == resolution.modules.end() ||
+            resolved_module->selected_version != module.selected_version)
+            return cache_failure({LanguageErrorCode::HostInternal,
+                                  "Host module resolution changed unexpectedly"});
+        const auto resolved_binding = std::find_if(
+            resolved_module->bindings.begin(), resolved_module->bindings.end(),
+            [&](const ResolvedHostBinding& candidate) {
+                return candidate.export_name == member;
+            });
+        if (resolved_binding == resolved_module->bindings.end())
+            return cache_failure({LanguageErrorCode::HostInternal,
+                                  "Host export resolution was incomplete"});
+        const auto* binding = host_options->bindings->find(resolved_binding->binding_id);
+        if (!binding)
+            return cache_failure({LanguageErrorCode::HostUnavailable,
+                                  "Host export adapter is unavailable"});
+
+        const auto id = static_cast<std::uint64_t>(native_functions.size() + 1);
+        native_functions.push_back(
+            {id, module.id, std::string(member), module.selected_version, binding});
+        try {
+            const auto callable = heap.allocate_function(
+                {CallableKind::Native, id, {}});
+            const auto root = heap.add_root(callable);
+            entry->second.callable = callable;
+            entry->second.callable_root = root;
+            transaction.committed = true;
+            ++stats.authorized_host_exports;
+            return callable;
+        } catch (...) {
+            native_functions.pop_back();
+            throw;
+        }
+    }
+
     [[nodiscard]] EvaluationResult execute(const std::string_view entry)
     {
+        if (std::this_thread::get_id() != owner_thread)
+            fail(LanguageErrorCode::HostUnavailable,
+                 "synchronous evaluator called from a non-owning thread");
+        if (host_call_active)
+            fail(LanguageErrorCode::HostUnavailable,
+                 "Host callback re-entry into the evaluator is forbidden");
         ModuleSpecifier specifier;
         try {
             specifier = validate_module_specifier(entry, nfc);
@@ -750,6 +1054,12 @@ struct SynchronousEvaluator::Impl {
     [[nodiscard]] Value module_export(
         const std::string_view module_id, const std::string_view export_name) const
     {
+        if (std::this_thread::get_id() != owner_thread)
+            fail(LanguageErrorCode::HostUnavailable,
+                 "synchronous evaluator called from a non-owning thread");
+        if (host_call_active)
+            fail(LanguageErrorCode::HostUnavailable,
+                 "Host callback re-entry into the evaluator is forbidden");
         const auto module = modules.find(module_id);
         if (module == modules.end() || module->second->state != ModuleState::Ready) {
             fail(
@@ -781,6 +1091,11 @@ struct SynchronousEvaluator::Impl {
         const std::shared_ptr<LexicalEnvironment>& environment);
     [[nodiscard]] Value invoke(
         Value callee,
+        const std::vector<CallArgument>& arguments,
+        const std::shared_ptr<LexicalEnvironment>& caller,
+        SourceSpan span);
+    [[nodiscard]] Value invoke_native(
+        const NativeFunctionRecord& function,
         const std::vector<CallArgument>& arguments,
         const std::shared_ptr<LexicalEnvironment>& caller,
         SourceSpan span);
@@ -1018,8 +1333,12 @@ Value SynchronousEvaluator::Impl::read_member(
         if (!is_public_name(member)) {
             fail(LanguageErrorCode::ModuleMemberMissing, "module export is private or absent", span);
         }
-        charge_collection(heap.module_export_count(object.as_heap_ref()), span);
         const auto metadata = heap.module_metadata(object.as_heap_ref());
+        const auto host = host_modules.find(metadata.name);
+        if (host != host_modules.end() &&
+            host->second.namespace_value == object)
+            return authorize_host_member(host->second, member, span);
+        charge_collection(metadata.exports.size(), span);
         const auto found = std::find_if(
             metadata.exports.begin(), metadata.exports.end(), [&](const auto& item) {
                 return item.first == member;
@@ -1387,6 +1706,248 @@ Value SynchronousEvaluator::Impl::evaluate_expression_impl(
     }
 }
 
+Value SynchronousEvaluator::Impl::invoke_native(
+    const NativeFunctionRecord& function,
+    const std::vector<CallArgument>& arguments,
+    const std::shared_ptr<LexicalEnvironment>& caller,
+    const SourceSpan span)
+{
+    if (std::this_thread::get_id() != owner_thread)
+        fail(LanguageErrorCode::HostUnavailable,
+             "Host binding called from a non-owning thread", span);
+    if (host_call_active)
+        fail(LanguageErrorCode::HostUnavailable,
+             "nested Host callback entry is forbidden", span);
+    if (!function.binding)
+        fail(LanguageErrorCode::HostUnavailable,
+             "Host export adapter is unavailable", span);
+    const auto& contract = function.binding->contract;
+    const auto& parameters = contract.parameters;
+    if (arguments.size() > host_options->limits.max_host_arguments)
+        fail(LanguageErrorCode::HostValidationFailed,
+             "Host call argument limit exceeded", span);
+    if (arguments.size() > std::numeric_limits<std::size_t>::max() -
+            parameters.size())
+        fail(LanguageErrorCode::MemoryLimitExceeded,
+             "Host call binding size overflow", span);
+    charge_collection(arguments.size() + parameters.size(), span);
+
+    std::vector<std::optional<std::size_t>> bound(parameters.size());
+    std::vector<std::size_t> argument_parameters;
+    argument_parameters.reserve(arguments.size());
+    std::size_t next_positional = 0;
+    for (std::size_t argument_index = 0; argument_index < arguments.size();
+         ++argument_index) {
+        const auto& argument = arguments[argument_index];
+        std::size_t parameter_index{};
+        if (argument.name) {
+            const auto found = std::find_if(
+                parameters.begin(), parameters.end(),
+                [&](const HostParameterContract& parameter) {
+                    return parameter.name == *argument.name;
+                });
+            if (found == parameters.end())
+                fail(LanguageErrorCode::CallArgumentUnknown,
+                     "named Host argument is unknown", span);
+            parameter_index = static_cast<std::size_t>(found - parameters.begin());
+        } else {
+            while (next_positional < bound.size() && bound[next_positional])
+                ++next_positional;
+            if (next_positional >= bound.size())
+                fail(LanguageErrorCode::CallArityMismatch,
+                     "too many positional Host arguments", span);
+            parameter_index = next_positional++;
+        }
+        if (bound[parameter_index])
+            fail(LanguageErrorCode::CallArgumentDuplicate,
+                 "Host parameter was supplied more than once", span);
+        bound[parameter_index] = argument_index;
+        argument_parameters.push_back(parameter_index);
+    }
+    for (std::size_t index = 0; index < parameters.size(); ++index) {
+        if (parameters[index].required && !bound[index])
+            fail(LanguageErrorCode::CallArityMismatch,
+                 "required Host argument is missing", span);
+    }
+
+    if (stats.host_calls >= host_options->limits.max_host_calls)
+        fail(LanguageErrorCode::TaskLimitExceeded,
+             "synchronous Host call limit exceeded", span);
+    const auto configured_budget = host_budget_limits.find(contract.budget_scope);
+    const auto budget_limit = configured_budget == host_budget_limits.end()
+        ? host_options->limits.max_host_calls
+        : configured_budget->second;
+    auto [budget, inserted] = host_budget_used.try_emplace(contract.budget_scope, 0);
+    (void)inserted;
+    if (budget->second >= budget_limit)
+        fail(LanguageErrorCode::TaskLimitExceeded,
+             "Host operation budget exceeded", span);
+    ++budget->second;
+    struct BudgetReservation {
+        std::size_t* used;
+        bool committed{};
+        ~BudgetReservation() { if (!committed) --*used; }
+    } reservation{&budget->second};
+
+    CallGuard call_guard(*this, span);
+    auto roots = heap.root_scope();
+    HostArguments converted(parameters.size());
+    HostValueMetrics aggregate;
+    const auto bridge_limits = effective_host_json_limits(
+        host_options->bindings->limits());
+    auto add_metrics = [&](const HostValueMetrics metrics,
+                           const bool adapter_result) {
+        const auto add = [&](std::size_t& target, const std::size_t amount,
+                             const std::size_t maximum) {
+            if (amount > maximum || target > maximum - amount)
+                fail(adapter_result ? LanguageErrorCode::HostInternal
+                                    : LanguageErrorCode::HostValidationFailed,
+                     adapter_result
+                         ? "Host result exceeded the conversion contract"
+                         : "Host arguments exceeded the aggregate conversion contract",
+                     span);
+            target += amount;
+        };
+        add(aggregate.nodes, metrics.nodes,
+            host_options->limits.max_conversion_nodes);
+        add(aggregate.total_bytes, metrics.total_bytes,
+            host_options->limits.max_conversion_bytes);
+        add(aggregate.work, metrics.work,
+            host_options->limits.max_conversion_work);
+    };
+
+    for (std::size_t index = 0; index < arguments.size(); ++index) {
+        if (aggregate.nodes >= host_options->limits.max_conversion_nodes ||
+            aggregate.total_bytes >= host_options->limits.max_conversion_bytes ||
+            aggregate.work >= host_options->limits.max_conversion_work)
+            fail(LanguageErrorCode::HostValidationFailed,
+                 "Host arguments exhausted the aggregate conversion contract", span);
+        const auto value = evaluate_expression(arguments[index].value, caller);
+        roots.add(value);
+        const auto parameter_index = argument_parameters[index];
+        try {
+            auto remaining_limits = bridge_limits;
+            remaining_limits.max_nodes = std::min(
+                remaining_limits.max_nodes,
+                host_options->limits.max_conversion_nodes - aggregate.nodes);
+            remaining_limits.max_total_bytes = std::min(
+                remaining_limits.max_total_bytes,
+                host_options->limits.max_conversion_bytes - aggregate.total_bytes);
+            remaining_limits.max_string_bytes = std::min(
+                remaining_limits.max_string_bytes,
+                remaining_limits.max_total_bytes > 1
+                    ? remaining_limits.max_total_bytes - 1 : 0);
+            remaining_limits.max_work = std::min(
+                remaining_limits.max_work,
+                host_options->limits.max_conversion_work - aggregate.work);
+            auto host_value = heap_to_host_value(
+                heap, value, parameters[parameter_index].type, remaining_limits);
+            add_metrics(measure_host_value(host_value, remaining_limits), false);
+            converted[parameter_index] = std::move(host_value);
+        } catch (const RuntimeError& error) {
+            using enum RuntimeErrorCode;
+            switch (error.code()) {
+                case TypeMismatch:
+                case InvalidUtf8:
+                case JsonCycle:
+                case JsonNonFinite:
+                case JsonUnsupported:
+                case JsonDepthLimitExceeded:
+                case JsonNodeLimitExceeded:
+                case JsonStringLimitExceeded:
+                case JsonByteLimitExceeded:
+                case JsonWorkLimitExceeded:
+                case JsonDuplicateKey:
+                    fail(LanguageErrorCode::HostValidationFailed,
+                         "Host argument does not satisfy the binding contract", span);
+                case MemoryLimitExceeded:
+                case CellLimitExceeded:
+                case SingleAllocationExceeded:
+                case StringLimitExceeded:
+                case ExternalMemoryLimitExceeded:
+                case CollectionWorkLimitExceeded:
+                    fail(LanguageErrorCode::MemoryLimitExceeded,
+                         "Host argument conversion exhausted evaluator memory", span);
+                default:
+                    fail(LanguageErrorCode::InternalInvariant,
+                         "Host argument referenced invalid evaluator state", span);
+            }
+        }
+    }
+
+    ++stats.host_calls;
+    reservation.committed = true;
+    struct ReentryGuard {
+        bool& active;
+        explicit ReentryGuard(bool& state) : active(state) { active = true; }
+        ~ReentryGuard() { active = false; }
+    } reentry_guard(host_call_active);
+    auto result = invoke_host_callback(
+        *function.binding,
+        {function.module, function.export_name, function.binding->binding_id,
+         function.selected_version, stats.host_calls},
+        converted,
+        host_options->bindings->limits());
+    if (!result.ok()) {
+        if (!result.has_error())
+            fail(translate_host_boundary_failure(result.boundary_failure()),
+                 result.boundary_failure() == HostResult::BoundaryFailure::Allocation
+                     ? "Host callback allocation failed"
+                     : "Host callback failed",
+                 span);
+        const auto translated = translate_host_error(result.error());
+        const auto effect = result.error().effect_state == HostEffectState::NotStarted
+            ? "not_started"
+            : result.error().effect_state == HostEffectState::Committed
+                ? "committed" : "unknown";
+        std::string message = "Host binding ";
+        message += function.binding->binding_id;
+        message += " failed (effect_state=";
+        message += effect;
+        message += ")";
+        if (!result.error().message.empty()) {
+            message += ": ";
+            message += result.error().message;
+        }
+        fail(translated.code, std::move(message), span);
+    }
+
+    try {
+        auto result_limits = bridge_limits;
+        result_limits.max_nodes = std::min(
+            result_limits.max_nodes,
+            host_options->limits.max_conversion_nodes - aggregate.nodes);
+        result_limits.max_total_bytes = std::min(
+            result_limits.max_total_bytes,
+            host_options->limits.max_conversion_bytes - aggregate.total_bytes);
+        result_limits.max_string_bytes = std::min(
+            result_limits.max_string_bytes,
+            result_limits.max_total_bytes > 1
+                ? result_limits.max_total_bytes - 1 : 0);
+        result_limits.max_work = std::min(
+            result_limits.max_work,
+            host_options->limits.max_conversion_work - aggregate.work);
+        const auto result_metrics = measure_host_value(
+            result.value(), result_limits);
+        add_metrics(result_metrics, true);
+        if (stats.host_conversion_nodes >
+                std::numeric_limits<std::size_t>::max() - aggregate.nodes ||
+            stats.host_conversion_bytes >
+                std::numeric_limits<std::size_t>::max() - aggregate.total_bytes)
+            fail(LanguageErrorCode::MemoryLimitExceeded,
+                 "Host conversion statistics overflowed", span);
+        stats.host_conversion_nodes += aggregate.nodes;
+        stats.host_conversion_bytes += aggregate.total_bytes;
+        return host_to_heap_value(
+            heap, result.value(), contract.result, result_limits);
+    } catch (const EvaluationError&) {
+        throw;
+    } catch (const RuntimeError&) {
+        fail(LanguageErrorCode::HostInternal,
+             "Host result does not satisfy the binding contract", span);
+    }
+}
+
 Value SynchronousEvaluator::Impl::invoke(
     const Value callee,
     const std::vector<CallArgument>& arguments,
@@ -1399,6 +1960,15 @@ Value SynchronousEvaluator::Impl::invoke(
         fail(LanguageErrorCode::NotCallable, "call target is not a function", span);
     }
     const auto metadata = heap.function_metadata(callee.as_heap_ref());
+    if (metadata.kind == CallableKind::Native) {
+        if (metadata.callable_id == 0 ||
+            metadata.callable_id > native_functions.size())
+            fail(LanguageErrorCode::InternalInvariant,
+                 "native callable metadata is not evaluator-owned", span);
+        const auto function = native_functions[
+            static_cast<std::size_t>(metadata.callable_id - 1)];
+        return invoke_native(function, arguments, caller, span);
+    }
     if (metadata.kind != CallableKind::Script || metadata.callable_id == 0 ||
         metadata.callable_id > functions.size()) {
         fail(LanguageErrorCode::InternalInvariant, "function metadata is not evaluator-owned", span);
@@ -1642,10 +2212,10 @@ SynchronousEvaluator::Impl::Flow SynchronousEvaluator::Impl::execute_statement_i
                     imported.span);
             }
             if (specifier.kind == ModuleKind::Host) {
-                fail(
-                    LanguageErrorCode::HostUnavailable,
-                    "Host imports are outside the synchronous evaluator boundary",
-                    imported.span);
+                const auto module = initialize_host_module(
+                    specifier.canonical_id, imported.span);
+                initialize_binding(environment, imported.alias, module, imported.span);
+                return {};
             }
             const auto module = initialize_module(specifier.canonical_id, imported.span);
             initialize_binding(environment, imported.alias, module, imported.span);
@@ -1670,7 +2240,21 @@ SynchronousEvaluator::SynchronousEvaluator(
     const SemanticOptions semantic_options,
     const NfcPredicate is_nfc)
     : impl_(create_impl(
-          std::move(modules), limits, heap_limits, semantic_options, is_nfc))
+          std::move(modules), limits, heap_limits, semantic_options, is_nfc,
+          std::nullopt))
+{
+}
+
+SynchronousEvaluator::SynchronousEvaluator(
+    std::vector<SourceModule> modules,
+    SynchronousHostOptions host_options,
+    const EvaluatorLimits limits,
+    const HeapLimits heap_limits,
+    const SemanticOptions semantic_options,
+    const NfcPredicate is_nfc)
+    : impl_(create_impl(
+          std::move(modules), limits, heap_limits, semantic_options, is_nfc,
+          std::move(host_options)))
 {
 }
 
@@ -1679,11 +2263,13 @@ SynchronousEvaluator::Impl* SynchronousEvaluator::create_impl(
     const EvaluatorLimits limits,
     const HeapLimits heap_limits,
     const SemanticOptions semantic_options,
-    const NfcPredicate is_nfc)
+    const NfcPredicate is_nfc,
+    std::optional<SynchronousHostOptions> host_options)
 {
     try {
         return new Impl(
-            std::move(modules), limits, heap_limits, semantic_options, is_nfc);
+            std::move(modules), limits, heap_limits, semantic_options, is_nfc,
+            std::move(host_options));
     } catch (const EvaluationCompileError&) {
         throw;
     } catch (const EvaluationError&) {

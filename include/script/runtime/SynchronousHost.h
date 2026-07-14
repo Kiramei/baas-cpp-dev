@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -201,6 +202,16 @@ struct HostErrorTranslation {
 [[nodiscard]] JsonBridgeLimits effective_host_json_limits(
     const SynchronousHostLimits& limits) noexcept;
 
+struct HostValueMetrics {
+    std::size_t nodes{};
+    std::size_t string_bytes{};
+    std::size_t total_bytes{};
+    std::size_t work{};
+};
+
+[[nodiscard]] HostValueMetrics measure_host_value(
+    const HostValue& value, JsonBridgeLimits limits = {});
+
 // Conversion owns every value crossing the callback boundary. No Heap, Value,
 // environment, raw pointer, or native descriptor is exposed to a callback.
 [[nodiscard]] HostValue heap_to_host_value(
@@ -217,5 +228,29 @@ struct HostErrorTranslation {
     const HostCallContext& context,
     const HostArguments& arguments,
     const SynchronousHostLimits& limits) noexcept;
+
+struct InMemoryLogEvent {
+    std::string level;
+    std::string message;
+    std::optional<JsonObject> fields;
+    friend bool operator==(const InMemoryLogEvent&, const InMemoryLogEvent&) = default;
+};
+
+// A deterministic test/embedder adapter for the catalog's baas/log.emit v1
+// contract. This is intentionally not the production LogHost.
+class InMemoryLogHost final {
+public:
+    [[nodiscard]] std::vector<InMemoryLogEvent> events() const;
+
+private:
+    friend SynchronousNativeBinding make_in_memory_log_binding(
+        std::shared_ptr<InMemoryLogHost> host);
+    [[nodiscard]] HostResult emit(const HostCallContext&, const HostArguments&);
+    mutable std::mutex mutex_;
+    std::vector<InMemoryLogEvent> events_;
+};
+
+[[nodiscard]] SynchronousNativeBinding make_in_memory_log_binding(
+    std::shared_ptr<InMemoryLogHost> host);
 
 }  // namespace baas::script::runtime
