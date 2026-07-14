@@ -22,6 +22,8 @@ PARSER_SOURCE_PATH = ROOT / "src" / "script" / "Parser.cpp"
 VALUE_HEADER_PATH = ROOT / "include" / "script" / "runtime" / "ValueHeap.h"
 VALUE_SOURCE_PATH = ROOT / "src" / "script" / "runtime" / "ValueHeap.cpp"
 EXECUTOR_HEADER_PATH = ROOT / "include" / "script" / "runtime" / "BoundedExecutor.h"
+ERROR_TRANSLATION_HEADER_PATH = ROOT / "include" / "script" / "runtime" / "ErrorTranslation.h"
+ERROR_TRANSLATION_SOURCE_PATH = ROOT / "src" / "script" / "runtime" / "ErrorTranslation.cpp"
 PARSER_TEST_PATH = ROOT / "tests" / "script" / "ParserTests.cpp"
 VALID_FIXTURE_PATH = ROOT / "tests" / "script" / "fixtures" / "errors_cleanup_valid.baas"
 INVALID_FIXTURE_PATH = ROOT / "tests" / "script" / "fixtures" / "errors_cleanup_invalid.baas"
@@ -168,6 +170,8 @@ class ErrorsAndCleanupSpecificationTests(unittest.TestCase):
         cls.value_header = read(VALUE_HEADER_PATH)
         cls.value_source = read(VALUE_SOURCE_PATH)
         cls.executor_header = read(EXECUTOR_HEADER_PATH)
+        cls.error_translation_header = read(ERROR_TRANSLATION_HEADER_PATH)
+        cls.error_translation_source = read(ERROR_TRANSLATION_SOURCE_PATH)
         cls.parser_tests = read(PARSER_TEST_PATH)
         cls.valid_fixture = read(VALID_FIXTURE_PATH)
         cls.invalid_fixture = read(INVALID_FIXTURE_PATH)
@@ -303,6 +307,9 @@ class ErrorsAndCleanupSpecificationTests(unittest.TestCase):
         ):
             self.assertIn(f"class {exception}", self.executor_header)
             self.assertIn(f"| `{exception}` | `{script_code}` |", self.spec)
+        self.assertIn("translate_runtime_error_code", self.error_translation_header)
+        for _, script_code in documented:
+            self.assertIn(f'{{"{script_code}",', self.error_translation_source)
 
     def test_current_error_cell_is_foundation_not_false_completion(self) -> None:
         for anchor in (
@@ -318,7 +325,8 @@ class ErrorsAndCleanupSpecificationTests(unittest.TestCase):
         ):
             self.assertFalse(path.exists(), f"update pending boundary for new implementation: {path}")
         self.assertIn("does not yet implement VM execution", self.spec)
-        self.assertIn("- [ ] Implement structured exceptions, stack traces, cancellation, and limits.", self.roadmap)
+        self.assertIn("- [~] Implement structured exceptions, stack traces, cancellation, and limits.", self.roadmap)
+        self.assertIn("Error envelopes, stack capture, VM unwinding", self.roadmap)
 
     def test_static_conformance_fixtures_and_ctest_wiring(self) -> None:
         valid_example = re.search(

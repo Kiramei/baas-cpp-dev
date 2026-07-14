@@ -376,6 +376,11 @@ boundary exists. The `runtime_code` detail preserves the exact RT name from
 | `std::bad_alloc` | `MemoryLimitExceeded` |
 | other C++ exception/status | `HostInternal` |
 
+`translate_runtime_error_code()` implements the complete allocation-free
+RT001-RT023 code/catchability subset of this table. It does not build an Error
+envelope, capture frames, translate executor/host exceptions, or unwind script
+control flow; those boundaries remain pending.
+
 ### ERR-018 — Safe serialization and observability
 
 Error-envelope serialization MUST be deterministic, non-throwing at the public

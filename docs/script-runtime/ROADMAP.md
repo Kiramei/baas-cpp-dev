@@ -130,7 +130,10 @@ VM/host-translator boundary are checked in Foundation CI.
 - [x] Implement the dependency-free ordered JSON value bridge and checked
   JSON-safe cross-context deep-copy foundation.
 - [ ] Implement modules, imports, and native-function registration.
-- [ ] Implement structured exceptions, stack traces, cancellation, and limits.
+- [~] Implement structured exceptions, stack traces, cancellation, and limits.
+  The total allocation-free RT001-RT023 language-code/catchability mapping is
+  implemented; Error envelopes, stack capture, VM unwinding, executor/host
+  translation, cancellation propagation, and execution limits remain pending.
 - [x] Implement the bounded cooperative executor, queue backpressure, task
   handles, cancellation requests, and drain/cancel-pending shutdown.
 - [ ] Integrate language-level task/future primitives with the VM and executor.
