@@ -38,8 +38,8 @@ an isolated prototype is not considered project completion.
   script/module rewrites, C++ service internals, Tauri UI replacement,
   tooling/tests, dependencies, and unresolved calls; bounded AST/type
   resolution reduced unresolved decisions from 1,842 to 1,279 without guessing
-  dynamic owners. 1,279 disposition decisions and 11 Host contracts remain
-  strict gaps. See
+  dynamic owners. All 343 Host decisions now have proposed contracts, while
+  1,279 unresolved disposition decisions remain strict gaps. See
   `OPERATION_INDEX_AUDIT.md`.
 - [x] Implement an opt-in, deterministic, bounded Python parity trace foundation
   on `feat/cpp-parity-trace` without changing the default execution path.
@@ -84,7 +84,7 @@ are recorded.
   host-error translation.
 - [x] Specify futures/tasks, cancellation, deadlines, thread-safety boundaries,
   and deterministic testing hooks.
-- [ ] Specify capability-scoped host APIs for image, OCR, device, configuration,
+- [x] Specify capability-scoped host APIs for image, OCR, device, configuration,
   logging, scheduler, resources, filesystem, and service operations.
 - [x] Specify language/runtime/API version negotiation and deprecation policy.
 - [x] Specify script/resource manifests, integrity checks, atomic updates,
@@ -114,6 +114,12 @@ VM/host-translator boundary are checked in Foundation CI.
 await/cancellation/deadline priority, context-strand and host async boundaries,
 and deterministic scheduler/clock/trace hooks; its static anchors and pending
 VM/task/host bridge boundary are checked in Foundation CI.
+`HOST_CAPABILITY_CONTRACTS.md` fixes stable module, capability, binding, value,
+error, cancellation, budget, permission, threading/strand, and parity
+responsibilities. Its schema-1 catalog maps every current Host decision and the
+eleven former taxonomy-v3 contract gaps. This completes the Phase 1 API
+specification only; every Phase 3 binding and parity implementation remains
+pending.
 
 ## Phase 2 — C++ runtime and developer tooling
 

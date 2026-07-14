@@ -322,7 +322,7 @@ class AsyncTasksSpecificationTests(unittest.TestCase):
             self.roadmap,
         )
         self.assertIn(
-            "- [ ] Specify capability-scoped host APIs for image, OCR, device, configuration,",
+            "- [x] Specify capability-scoped host APIs for image, OCR, device, configuration,",
             self.roadmap,
         )
         self.assertIn("`ASYNC_TASKS.md` defines the Task state machine", self.roadmap)

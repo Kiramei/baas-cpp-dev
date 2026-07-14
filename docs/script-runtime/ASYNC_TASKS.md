@@ -143,6 +143,13 @@ published.
 The versioned `baas/task` module MUST provide these semantics; exact host
 registration remains Phase 2 work:
 
+`baas/task` is reserved for capability-free language Task values and the table
+below. Capability-scoped automation registration, dispatch, and scheduling use
+the separate `baas/scheduler` Host module defined by
+`HOST_CAPABILITY_CONTRACTS.md`; its opaque `host<ScheduledTask>` is not a Task,
+and its `cancel(host<ScheduledTask>) -> null` MUST NOT overload, alias, or replace
+`baas/task.cancel(Task) -> bool`.
+
 | Operation | Required behavior |
 | --- | --- |
 | `spawn(async_callable, args...)` | equivalent to an eager async call in the active scope; rejects a non-async callable |
@@ -293,6 +300,11 @@ The host may work on its declared strand/pool, but completion MUST be one
 immutable status/value descriptor posted exactly once to the context strand.
 Only there may it materialize language values or ERR-003 Errors and resume a
 continuation.
+
+Asynchronous `baas/scheduler` operations follow this bridge and may publish only
+opaque `host<ScheduledTask>` handles. Language `baas/task` operations manipulate
+context-local Task values directly and MUST NOT be routed through
+`SchedulerHost`; neither handle kind may be converted to the other.
 
 Cancellation invokes an idempotent non-blocking `request_cancel`; it is advisory
 until completion/acknowledgement. A non-cancellable native operation MUST be

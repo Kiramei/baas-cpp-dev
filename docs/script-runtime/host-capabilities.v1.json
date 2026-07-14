@@ -1,0 +1,221 @@
+{
+  "api_version": {
+    "major": 1,
+    "minor": 0
+  },
+  "budget_scopes": [
+    {"budget": "config_read_operations", "scope": "host_operation"},
+    {"budget": "config_write_operations", "scope": "host_operation"},
+    {"budget": "device_operations", "scope": "host_operation"},
+    {"budget": "filesystem_bytes", "scope": "external_memory"},
+    {"budget": "filesystem_operations", "scope": "host_operation"},
+    {"budget": "log_events", "scope": "host_operation"},
+    {"budget": "network_bytes", "scope": "external_memory"},
+    {"budget": "ocr_model_bytes", "scope": "external_memory"},
+    {"budget": "ocr_work_units", "scope": "host_operation"},
+    {"budget": "process_operations", "scope": "host_operation"},
+    {"budget": "resource_bytes", "scope": "external_memory"},
+    {"budget": "resource_lookups", "scope": "host_operation"},
+    {"budget": "scheduler_operations", "scope": "host_operation"},
+    {"budget": "scheduler_registrations", "scope": "host_operation"},
+    {"budget": "service_messages", "scope": "host_operation"},
+    {"budget": "socket_operations", "scope": "host_operation"},
+    {"budget": "vision_work_units", "scope": "host_operation"}
+  ],
+  "error_codes": [
+    {"code": "HOST001_CAPABILITY_DENIED", "language_mapping": {"default": "CapabilityDenied"}, "name": "CapabilityDenied"},
+    {"code": "HOST002_INVALID_ARGUMENT", "language_mapping": {"default": "HostValidationFailed"}, "name": "HostInvalidArgument"},
+    {"code": "HOST003_CANCELLED", "language_mapping": {"default": "Cancelled"}, "name": "Cancelled"},
+    {"code": "HOST004_DEADLINE_EXCEEDED", "language_mapping": {"cases": {"call": "Timeout", "context": "DeadlineExceeded"}, "discriminator": "details.deadline_scope"}, "name": "DeadlineExceeded"},
+    {"code": "HOST005_BUDGET_EXCEEDED", "language_mapping": {"cases": {"external_memory": "MemoryLimitExceeded", "host_operation": "TaskLimitExceeded"}, "discriminator": "details.budget_scope"}, "name": "HostBudgetExceeded"},
+    {"code": "HOST006_UNAVAILABLE", "language_mapping": {"default": "HostUnavailable"}, "name": "HostUnavailable"},
+    {"code": "HOST007_IO_ERROR", "language_mapping": {"default": "HostUnavailable"}, "name": "HostIoError"},
+    {"code": "HOST008_DEVICE_DISCONNECTED", "language_mapping": {"default": "DeviceDisconnected"}, "name": "DeviceDisconnected"},
+    {"code": "HOST009_CONFIG_CONFLICT", "language_mapping": {"default": "HostValidationFailed"}, "name": "ConfigConflict"},
+    {"code": "HOST010_RESOURCE_NOT_FOUND", "language_mapping": {"default": "ResourceMissing"}, "name": "ResourceNotFound"},
+    {"code": "HOST011_MODEL_UNAVAILABLE", "language_mapping": {"default": "OcrModelUnavailable"}, "name": "OcrModelUnavailable"},
+    {"code": "HOST012_POLICY_DENIED", "language_mapping": {"default": "CapabilityDenied"}, "name": "HostPolicyDenied"},
+    {"code": "HOST013_PROTOCOL_ERROR", "language_mapping": {"default": "HostUnavailable"}, "name": "HostProtocolError"},
+    {"code": "HOST014_INTERNAL", "language_mapping": {"default": "HostInternal"}, "name": "InternalHostFailure"},
+    {"code": "HOST015_HANDLE_CLOSED", "language_mapping": {"default": "HostValidationFailed"}, "name": "HostHandleClosed"},
+    {"code": "HOST016_BACKPRESSURE", "language_mapping": {"default": "HostUnavailable"}, "name": "HostBackpressure"}
+  ],
+  "gap_resolutions": [
+    {"binding_id": "host.process.inspect.v1", "capability": "process.inspect", "legacy_rule": "process-host-gap-v2", "operation_id": "op-aebb00093f62aa31", "symbol": "psutil.Process", "taxonomy_rule": "process-host-v3"},
+    {"binding_id": "host.process.list.v1", "capability": "process.inspect", "legacy_rule": "process-host-gap-v2", "operation_id": "op-4c8a2ce2dc27e423", "symbol": "psutil.process_iter", "taxonomy_rule": "process-host-v3"},
+    {"binding_id": "host.http.request.v1", "capability": "network.http", "legacy_rule": "network-host-gap-v2", "operation_id": "op-cdc75ef6e48bfd96", "symbol": "requests.get", "taxonomy_rule": "http-host-v3"},
+    {"binding_id": "host.http.request.v1", "capability": "network.http", "legacy_rule": "network-host-gap-v2", "operation_id": "op-a5958fbf211fd3cf", "symbol": "requests.post", "taxonomy_rule": "http-host-v3"},
+    {"binding_id": "host.socket.open.v1", "capability": "network.socket", "legacy_rule": "network-host-gap-v2", "operation_id": "op-49bb09af53004a29", "symbol": "socket.socket", "taxonomy_rule": "socket-host-v3"},
+    {"binding_id": "host.process.spawn.v1", "capability": "process.spawn", "legacy_rule": "process-host-gap-v2", "operation_id": "op-a99ebc4a865d175a", "symbol": "subprocess.Popen", "taxonomy_rule": "process-host-v3"},
+    {"binding_id": "host.process.run.v1", "capability": "process.spawn", "legacy_rule": "process-host-gap-v2", "operation_id": "op-289268bbe3e5c936", "symbol": "subprocess.check_output", "taxonomy_rule": "process-host-v3"},
+    {"binding_id": "host.process.run.v1", "capability": "process.spawn", "legacy_rule": "process-host-gap-v2", "operation_id": "op-f0d262f6e29c2c90", "symbol": "subprocess.run", "taxonomy_rule": "process-host-v3"},
+    {"binding_id": "host.socket.recv.v1", "capability": "network.socket", "legacy_rule": "network-host-gap-v2", "operation_id": "op-96a7854dbf227e4e", "symbol": "socket.socket.recv", "taxonomy_rule": "socket-host-v3"},
+    {"binding_id": "host.socket.send.v1", "capability": "network.socket", "legacy_rule": "network-host-gap-v2", "operation_id": "op-158dcb9d554cf9bf", "symbol": "socket.socket.send", "taxonomy_rule": "socket-host-v3"},
+    {"binding_id": "host.socket.set_blocking.v1", "capability": "network.socket", "legacy_rule": "network-host-gap-v2", "operation_id": "op-ee53939b067f3ccd", "symbol": "socket.socket.setblocking", "taxonomy_rule": "socket-host-v3"}
+  ],
+  "modules": [
+    {
+      "bindings": [
+        {"budget": "vision_work_units", "cancellation": "cooperative", "capability": "vision.analyze", "errors": ["HOST002_INVALID_ARGUMENT", "HOST003_CANCELLED", "HOST004_DEADLINE_EXCEEDED", "HOST005_BUDGET_EXCEEDED", "HOST010_RESOURCE_NOT_FOUND", "HOST014_INTERNAL"], "export": "match", "id": "host.vision.match.v1", "parameters": [{"name": "image", "required": true, "type": "host<Image>"}, {"name": "template", "required": true, "type": "host<Resource>"}, {"name": "options", "required": false, "type": "ordered-map"}], "parity_test": "PARITY-VISION-HOST", "returns": "ordered-map<MatchResult>|null"},
+        {"budget": "vision_work_units", "cancellation": "cooperative", "capability": "vision.analyze", "errors": ["HOST002_INVALID_ARGUMENT", "HOST003_CANCELLED", "HOST004_DEADLINE_EXCEEDED", "HOST005_BUDGET_EXCEEDED", "HOST014_INTERNAL"], "export": "detect", "id": "host.vision.detect.v1", "parameters": [{"name": "image", "required": true, "type": "host<Image>"}, {"name": "rules", "required": true, "type": "list<ordered-map>"}, {"name": "options", "required": false, "type": "ordered-map"}], "parity_test": "PARITY-VISION-HOST", "returns": "list<ordered-map<Detection>>"},
+        {"budget": "vision_work_units", "cancellation": "cooperative", "capability": "vision.analyze", "errors": ["HOST002_INVALID_ARGUMENT", "HOST003_CANCELLED", "HOST004_DEADLINE_EXCEEDED", "HOST005_BUDGET_EXCEEDED", "HOST014_INTERNAL"], "export": "color", "id": "host.vision.color.v1", "parameters": [{"name": "image", "required": true, "type": "host<Image>"}, {"name": "feature", "required": true, "type": "ordered-map"}, {"name": "options", "required": false, "type": "ordered-map"}], "parity_test": "PARITY-VISION-HOST", "returns": "bool"}
+      ],
+      "capabilities": ["vision.analyze"],
+      "concurrency": {"mode": "bounded_cpu_pool", "strand_key": "none"},
+      "cpp_interfaces": ["baas::script::host::VisionHost"],
+      "default_budget": "vision_work_units",
+      "id": "baas/vision"
+    },
+    {
+      "bindings": [
+        {"budget": "ocr_model_bytes", "cancellation": "cooperative", "capability": "ocr.model", "errors": ["HOST003_CANCELLED", "HOST004_DEADLINE_EXCEEDED", "HOST005_BUDGET_EXCEEDED", "HOST010_RESOURCE_NOT_FOUND", "HOST011_MODEL_UNAVAILABLE", "HOST014_INTERNAL"], "export": "load_model", "id": "host.ocr.load_model.v1", "parameters": [{"name": "resource_id", "required": true, "type": "string"}, {"name": "options", "required": false, "type": "ordered-map"}], "parity_test": "PARITY-OCR-HOST", "returns": "host<OcrModel>"},
+        {"budget": "ocr_work_units", "cancellation": "cooperative", "capability": "ocr.infer", "errors": ["HOST002_INVALID_ARGUMENT", "HOST003_CANCELLED", "HOST004_DEADLINE_EXCEEDED", "HOST005_BUDGET_EXCEEDED", "HOST011_MODEL_UNAVAILABLE", "HOST014_INTERNAL"], "export": "recognize", "id": "host.ocr.recognize.v1", "parameters": [{"name": "model", "required": true, "type": "host<OcrModel>"}, {"name": "image", "required": true, "type": "host<Image>"}, {"name": "region", "required": false, "type": "ordered-map<Rect>"}, {"name": "options", "required": false, "type": "ordered-map"}], "parity_test": "PARITY-OCR-HOST", "returns": "list<ordered-map<OcrLine>>"}
+      ],
+      "capabilities": ["ocr.infer", "ocr.model"],
+      "concurrency": {"mode": "bounded_cpu_pool", "strand_key": "model_id"},
+      "cpp_interfaces": ["baas::script::host::OcrHost"],
+      "default_budget": "ocr_work_units",
+      "id": "baas/ocr"
+    },
+    {
+      "bindings": [
+        {"budget": "device_operations", "cancellation": "cooperative", "capability": "device.capture", "errors": ["HOST002_INVALID_ARGUMENT", "HOST003_CANCELLED", "HOST004_DEADLINE_EXCEEDED", "HOST005_BUDGET_EXCEEDED", "HOST008_DEVICE_DISCONNECTED", "HOST014_INTERNAL"], "export": "capture", "id": "host.device.capture.v1", "parameters": [{"name": "device", "required": true, "type": "host<Device>"}, {"name": "options", "required": false, "type": "ordered-map"}], "parity_test": "PARITY-DEVICE-HOST", "returns": "host<Image>"},
+        {"budget": "device_operations", "cancellation": "cooperative", "capability": "device.input", "errors": ["HOST002_INVALID_ARGUMENT", "HOST003_CANCELLED", "HOST004_DEADLINE_EXCEEDED", "HOST005_BUDGET_EXCEEDED", "HOST008_DEVICE_DISCONNECTED", "HOST014_INTERNAL"], "export": "click", "id": "host.device.click.v1", "parameters": [{"name": "device", "required": true, "type": "host<Device>"}, {"name": "point", "required": true, "type": "ordered-map<Point>"}, {"name": "options", "required": false, "type": "ordered-map"}], "parity_test": "PARITY-DEVICE-HOST", "returns": "null"},
+        {"budget": "device_operations", "cancellation": "cooperative", "capability": "device.input", "errors": ["HOST002_INVALID_ARGUMENT", "HOST003_CANCELLED", "HOST004_DEADLINE_EXCEEDED", "HOST005_BUDGET_EXCEEDED", "HOST008_DEVICE_DISCONNECTED", "HOST014_INTERNAL"], "export": "swipe", "id": "host.device.swipe.v1", "parameters": [{"name": "device", "required": true, "type": "host<Device>"}, {"name": "from", "required": true, "type": "ordered-map<Point>"}, {"name": "to", "required": true, "type": "ordered-map<Point>"}, {"name": "options", "required": false, "type": "ordered-map"}], "parity_test": "PARITY-DEVICE-HOST", "returns": "null"},
+        {"budget": "device_operations", "cancellation": "cooperative", "capability": "device.lifecycle", "errors": ["HOST002_INVALID_ARGUMENT", "HOST003_CANCELLED", "HOST004_DEADLINE_EXCEEDED", "HOST005_BUDGET_EXCEEDED", "HOST008_DEVICE_DISCONNECTED", "HOST014_INTERNAL"], "export": "app_control", "id": "host.device.app_control.v1", "parameters": [{"name": "device", "required": true, "type": "host<Device>"}, {"name": "action", "required": true, "type": "string"}, {"name": "package", "required": true, "type": "string"}, {"name": "options", "required": false, "type": "ordered-map"}], "parity_test": "PARITY-DEVICE-HOST", "returns": "ordered-map"}
+      ],
+      "capabilities": ["device.capture", "device.input", "device.lifecycle"],
+      "concurrency": {"mode": "device_strand", "strand_key": "device_id"},
+      "cpp_interfaces": ["baas::script::host::DeviceHost"],
+      "default_budget": "device_operations",
+      "id": "baas/device"
+    },
+    {
+      "bindings": [
+        {"budget": "config_read_operations", "cancellation": "preflight", "capability": "config.read", "errors": ["HOST002_INVALID_ARGUMENT", "HOST005_BUDGET_EXCEEDED", "HOST006_UNAVAILABLE", "HOST014_INTERNAL"], "export": "snapshot", "id": "host.config.snapshot.v1", "parameters": [{"name": "config", "required": true, "type": "host<Config>"}], "parity_test": "PARITY-CONFIG-HOST", "returns": "host<ConfigSnapshot>"},
+        {"budget": "config_read_operations", "cancellation": "preflight", "capability": "config.read", "errors": ["HOST002_INVALID_ARGUMENT", "HOST005_BUDGET_EXCEEDED", "HOST015_HANDLE_CLOSED"], "export": "get", "id": "host.config.get.v1", "parameters": [{"name": "snapshot", "required": true, "type": "host<ConfigSnapshot>"}, {"name": "path", "required": true, "type": "string"}, {"name": "default", "required": false, "type": "json"}], "parity_test": "PARITY-CONFIG-HOST", "returns": "json"},
+        {"budget": "config_write_operations", "cancellation": "cooperative", "capability": "config.write", "errors": ["HOST002_INVALID_ARGUMENT", "HOST003_CANCELLED", "HOST004_DEADLINE_EXCEEDED", "HOST005_BUDGET_EXCEEDED", "HOST009_CONFIG_CONFLICT", "HOST014_INTERNAL"], "export": "transact", "id": "host.config.transact.v1", "parameters": [{"name": "config", "required": true, "type": "host<Config>"}, {"name": "expected_revision", "required": true, "type": "int"}, {"name": "patch", "required": true, "type": "ordered-map"}], "parity_test": "PARITY-CONFIG-HOST", "returns": "ordered-map<ConfigCommit>"}
+      ],
+      "capabilities": ["config.read", "config.write"],
+      "concurrency": {"mode": "config_strand", "strand_key": "config_id"},
+      "cpp_interfaces": ["baas::script::host::ConfigHost"],
+      "default_budget": "config_read_operations",
+      "id": "baas/config"
+    },
+    {
+      "bindings": [
+        {"budget": "log_events", "cancellation": "preflight", "capability": "log.emit", "errors": ["HOST002_INVALID_ARGUMENT", "HOST005_BUDGET_EXCEEDED", "HOST016_BACKPRESSURE", "HOST014_INTERNAL"], "export": "emit", "id": "host.log.emit.v1", "parameters": [{"name": "level", "required": true, "type": "string"}, {"name": "message", "required": true, "type": "string"}, {"name": "fields", "required": false, "type": "ordered-map<string,json>"}], "parity_test": "PARITY-LOG-EVENT", "returns": "null"}
+      ],
+      "capabilities": ["log.emit"],
+      "concurrency": {"mode": "thread_safe", "strand_key": "none"},
+      "cpp_interfaces": ["baas::script::host::LogHost"],
+      "default_budget": "log_events",
+      "id": "baas/log"
+    },
+    {
+      "bindings": [
+        {"budget": "scheduler_registrations", "cancellation": "preflight", "capability": "scheduler.register", "errors": ["HOST002_INVALID_ARGUMENT", "HOST005_BUDGET_EXCEEDED", "HOST014_INTERNAL"], "export": "register", "id": "host.scheduler.register.v1", "parameters": [{"name": "task_id", "required": true, "type": "string"}, {"name": "metadata", "required": true, "type": "ordered-map"}], "parity_test": "PARITY-TASK-REGISTRY", "returns": "null"},
+        {"budget": "scheduler_operations", "cancellation": "cooperative", "capability": "scheduler.dispatch", "errors": ["HOST002_INVALID_ARGUMENT", "HOST003_CANCELLED", "HOST004_DEADLINE_EXCEEDED", "HOST005_BUDGET_EXCEEDED", "HOST006_UNAVAILABLE", "HOST014_INTERNAL"], "export": "dispatch", "id": "host.scheduler.dispatch.v1", "parameters": [{"name": "action", "required": true, "type": "string"}, {"name": "arguments", "required": false, "type": "ordered-map"}], "parity_test": "PARITY-TASK-ACTION", "returns": "json"},
+        {"budget": "scheduler_operations", "cancellation": "cooperative", "capability": "scheduler.schedule", "errors": ["HOST003_CANCELLED", "HOST004_DEADLINE_EXCEEDED", "HOST005_BUDGET_EXCEEDED", "HOST016_BACKPRESSURE"], "export": "sleep", "id": "host.scheduler.sleep.v1", "parameters": [{"name": "duration_ms", "required": true, "type": "int"}], "parity_test": "PARITY-SCHEDULER-HOST", "returns": "null"},
+        {"budget": "scheduler_operations", "cancellation": "cooperative", "capability": "scheduler.schedule", "errors": ["HOST002_INVALID_ARGUMENT", "HOST003_CANCELLED", "HOST004_DEADLINE_EXCEEDED", "HOST005_BUDGET_EXCEEDED", "HOST016_BACKPRESSURE", "HOST014_INTERNAL"], "export": "schedule", "id": "host.scheduler.schedule.v1", "parameters": [{"name": "task_id", "required": true, "type": "string"}, {"name": "options", "required": false, "type": "ordered-map"}], "parity_test": "PARITY-SCHEDULER-HOST", "returns": "host<ScheduledTask>"},
+        {"budget": "scheduler_operations", "cancellation": "preflight", "capability": "scheduler.schedule", "errors": ["HOST002_INVALID_ARGUMENT", "HOST005_BUDGET_EXCEEDED", "HOST015_HANDLE_CLOSED"], "export": "cancel", "id": "host.scheduler.cancel.v1", "parameters": [{"name": "scheduled_task", "required": true, "type": "host<ScheduledTask>"}, {"name": "reason", "required": false, "type": "string"}], "parity_test": "PARITY-SCHEDULER-HOST", "returns": "null"}
+      ],
+      "capabilities": ["scheduler.dispatch", "scheduler.register", "scheduler.schedule"],
+      "concurrency": {"mode": "context_strand", "strand_key": "execution_context_id"},
+      "cpp_interfaces": ["baas::script::host::SchedulerHost"],
+      "default_budget": "scheduler_operations",
+      "id": "baas/scheduler"
+    },
+    {
+      "bindings": [
+        {"budget": "resource_lookups", "cancellation": "preflight", "capability": "resource.read", "errors": ["HOST002_INVALID_ARGUMENT", "HOST005_BUDGET_EXCEEDED", "HOST010_RESOURCE_NOT_FOUND", "HOST014_INTERNAL"], "export": "resolve", "id": "host.resource.resolve.v1", "parameters": [{"name": "resource_id", "required": true, "type": "string"}, {"name": "locale", "required": false, "type": "string"}], "parity_test": "PARITY-RESOURCE-HOST", "returns": "host<Resource>"},
+        {"budget": "resource_bytes", "cancellation": "cooperative", "capability": "resource.read", "errors": ["HOST003_CANCELLED", "HOST004_DEADLINE_EXCEEDED", "HOST005_BUDGET_EXCEEDED", "HOST010_RESOURCE_NOT_FOUND", "HOST015_HANDLE_CLOSED"], "export": "read", "id": "host.resource.read.v1", "parameters": [{"name": "resource", "required": true, "type": "host<Resource>"}, {"name": "max_bytes", "required": true, "type": "int"}], "parity_test": "PARITY-RESOURCE-HOST", "returns": "bytes"}
+      ],
+      "capabilities": ["resource.read"],
+      "concurrency": {"mode": "thread_safe", "strand_key": "snapshot_id"},
+      "cpp_interfaces": ["baas::script::host::ResourceHost"],
+      "default_budget": "resource_bytes",
+      "id": "baas/resource"
+    },
+    {
+      "bindings": [
+        {"budget": "filesystem_operations", "cancellation": "preflight", "capability": "filesystem.read", "errors": ["HOST001_CAPABILITY_DENIED", "HOST002_INVALID_ARGUMENT", "HOST005_BUDGET_EXCEEDED", "HOST012_POLICY_DENIED", "HOST014_INTERNAL"], "export": "open_root", "id": "host.fs.open_root.v1", "parameters": [{"name": "root_id", "required": true, "type": "string"}], "parity_test": "PARITY-RESOURCE-HOST", "returns": "host<FilesystemRoot>"},
+        {"budget": "filesystem_bytes", "cancellation": "cooperative", "capability": "filesystem.read", "errors": ["HOST002_INVALID_ARGUMENT", "HOST003_CANCELLED", "HOST004_DEADLINE_EXCEEDED", "HOST005_BUDGET_EXCEEDED", "HOST007_IO_ERROR", "HOST012_POLICY_DENIED"], "export": "read", "id": "host.fs.read.v1", "parameters": [{"name": "root", "required": true, "type": "host<FilesystemRoot>"}, {"name": "path", "required": true, "type": "string"}, {"name": "max_bytes", "required": true, "type": "int"}], "parity_test": "PARITY-RESOURCE-HOST", "returns": "bytes"},
+        {"budget": "filesystem_operations", "cancellation": "cooperative", "capability": "filesystem.read", "errors": ["HOST002_INVALID_ARGUMENT", "HOST003_CANCELLED", "HOST004_DEADLINE_EXCEEDED", "HOST005_BUDGET_EXCEEDED", "HOST007_IO_ERROR", "HOST012_POLICY_DENIED"], "export": "list", "id": "host.fs.list.v1", "parameters": [{"name": "root", "required": true, "type": "host<FilesystemRoot>"}, {"name": "path", "required": true, "type": "string"}, {"name": "options", "required": false, "type": "ordered-map"}], "parity_test": "PARITY-RESOURCE-HOST", "returns": "list<ordered-map<FilesystemEntry>>"},
+        {"budget": "filesystem_bytes", "cancellation": "cooperative", "capability": "filesystem.write", "errors": ["HOST002_INVALID_ARGUMENT", "HOST003_CANCELLED", "HOST004_DEADLINE_EXCEEDED", "HOST005_BUDGET_EXCEEDED", "HOST007_IO_ERROR", "HOST012_POLICY_DENIED"], "export": "write_atomic", "id": "host.fs.write_atomic.v1", "parameters": [{"name": "root", "required": true, "type": "host<FilesystemRoot>"}, {"name": "path", "required": true, "type": "string"}, {"name": "data", "required": true, "type": "bytes"}, {"name": "options", "required": false, "type": "ordered-map"}], "parity_test": "PARITY-RESOURCE-HOST", "returns": "null"},
+        {"budget": "filesystem_operations", "cancellation": "cooperative", "capability": "filesystem.write", "errors": ["HOST002_INVALID_ARGUMENT", "HOST003_CANCELLED", "HOST004_DEADLINE_EXCEEDED", "HOST005_BUDGET_EXCEEDED", "HOST007_IO_ERROR", "HOST012_POLICY_DENIED"], "export": "mutate", "id": "host.fs.mutate.v1", "parameters": [{"name": "root", "required": true, "type": "host<FilesystemRoot>"}, {"name": "operation", "required": true, "type": "string"}, {"name": "source", "required": true, "type": "string"}, {"name": "destination", "required": false, "type": "string"}], "parity_test": "PARITY-RESOURCE-HOST", "returns": "null"}
+      ],
+      "capabilities": ["filesystem.read", "filesystem.write"],
+      "concurrency": {"mode": "root_strand", "strand_key": "root_handle"},
+      "cpp_interfaces": ["baas::script::host::ResourceHost"],
+      "default_budget": "filesystem_operations",
+      "id": "baas/fs"
+    },
+    {
+      "bindings": [
+        {"budget": "service_messages", "cancellation": "preflight", "capability": "service.event", "errors": ["HOST001_CAPABILITY_DENIED", "HOST002_INVALID_ARGUMENT", "HOST005_BUDGET_EXCEEDED", "HOST006_UNAVAILABLE", "HOST016_BACKPRESSURE", "HOST014_INTERNAL"], "export": "publish", "id": "host.service.publish.v1", "parameters": [{"name": "event", "required": true, "type": "string"}, {"name": "payload", "required": true, "type": "json"}], "parity_test": "PARITY-SERVICE-HOST", "returns": "null"},
+        {"budget": "service_messages", "cancellation": "cooperative", "capability": "service.request", "errors": ["HOST001_CAPABILITY_DENIED", "HOST002_INVALID_ARGUMENT", "HOST003_CANCELLED", "HOST004_DEADLINE_EXCEEDED", "HOST005_BUDGET_EXCEEDED", "HOST006_UNAVAILABLE", "HOST013_PROTOCOL_ERROR", "HOST016_BACKPRESSURE", "HOST014_INTERNAL"], "export": "request", "id": "host.service.request.v1", "parameters": [{"name": "operation", "required": true, "type": "string"}, {"name": "payload", "required": true, "type": "json"}, {"name": "options", "required": false, "type": "ordered-map"}], "parity_test": "PARITY-SERVICE-HOST", "returns": "json"}
+      ],
+      "capabilities": ["service.event", "service.request"],
+      "concurrency": {"mode": "session_strand", "strand_key": "service_session_id"},
+      "cpp_interfaces": ["baas::script::host::ServiceHost"],
+      "default_budget": "service_messages",
+      "id": "baas/service"
+    },
+    {
+      "bindings": [
+        {"budget": "process_operations", "cancellation": "cooperative", "capability": "process.inspect", "errors": ["HOST001_CAPABILITY_DENIED", "HOST002_INVALID_ARGUMENT", "HOST003_CANCELLED", "HOST004_DEADLINE_EXCEEDED", "HOST005_BUDGET_EXCEEDED", "HOST006_UNAVAILABLE", "HOST012_POLICY_DENIED", "HOST014_INTERNAL"], "export": "list", "id": "host.process.list.v1", "parameters": [{"name": "filter", "required": false, "type": "ordered-map"}], "parity_test": "PARITY-PROCESS-HOST", "returns": "list<ordered-map<ProcessInfo>>"},
+        {"budget": "process_operations", "cancellation": "cooperative", "capability": "process.inspect", "errors": ["HOST001_CAPABILITY_DENIED", "HOST002_INVALID_ARGUMENT", "HOST003_CANCELLED", "HOST004_DEADLINE_EXCEEDED", "HOST005_BUDGET_EXCEEDED", "HOST006_UNAVAILABLE", "HOST012_POLICY_DENIED", "HOST014_INTERNAL"], "export": "inspect", "id": "host.process.inspect.v1", "parameters": [{"name": "pid", "required": true, "type": "int"}, {"name": "fields", "required": false, "type": "list<string>"}], "parity_test": "PARITY-PROCESS-HOST", "returns": "ordered-map<ProcessInfo>"},
+        {"budget": "process_operations", "cancellation": "cooperative", "capability": "process.spawn", "errors": ["HOST001_CAPABILITY_DENIED", "HOST002_INVALID_ARGUMENT", "HOST003_CANCELLED", "HOST004_DEADLINE_EXCEEDED", "HOST005_BUDGET_EXCEEDED", "HOST006_UNAVAILABLE", "HOST007_IO_ERROR", "HOST012_POLICY_DENIED", "HOST014_INTERNAL"], "export": "run", "id": "host.process.run.v1", "parameters": [{"name": "program_id", "required": true, "type": "string"}, {"name": "arguments", "required": true, "type": "list<string>"}, {"name": "options", "required": false, "type": "ordered-map"}], "parity_test": "PARITY-PROCESS-HOST", "returns": "ordered-map<ProcessResult>"},
+        {"budget": "process_operations", "cancellation": "cooperative", "capability": "process.spawn", "errors": ["HOST001_CAPABILITY_DENIED", "HOST002_INVALID_ARGUMENT", "HOST003_CANCELLED", "HOST004_DEADLINE_EXCEEDED", "HOST005_BUDGET_EXCEEDED", "HOST006_UNAVAILABLE", "HOST007_IO_ERROR", "HOST012_POLICY_DENIED", "HOST014_INTERNAL"], "export": "spawn", "id": "host.process.spawn.v1", "parameters": [{"name": "program_id", "required": true, "type": "string"}, {"name": "arguments", "required": true, "type": "list<string>"}, {"name": "options", "required": false, "type": "ordered-map"}], "parity_test": "PARITY-PROCESS-HOST", "returns": "host<Process>"},
+        {"budget": "process_operations", "cancellation": "cooperative", "capability": "process.spawn", "errors": ["HOST002_INVALID_ARGUMENT", "HOST003_CANCELLED", "HOST004_DEADLINE_EXCEEDED", "HOST005_BUDGET_EXCEEDED", "HOST006_UNAVAILABLE", "HOST007_IO_ERROR", "HOST015_HANDLE_CLOSED"], "export": "wait", "id": "host.process.wait.v1", "parameters": [{"name": "process", "required": true, "type": "host<Process>"}, {"name": "timeout_ms", "required": false, "type": "int"}], "parity_test": "PARITY-PROCESS-HOST", "returns": "ordered-map<ProcessResult>"},
+        {"budget": "process_operations", "cancellation": "cooperative", "capability": "process.spawn", "errors": ["HOST002_INVALID_ARGUMENT", "HOST003_CANCELLED", "HOST004_DEADLINE_EXCEEDED", "HOST005_BUDGET_EXCEEDED", "HOST006_UNAVAILABLE", "HOST012_POLICY_DENIED", "HOST015_HANDLE_CLOSED"], "export": "terminate", "id": "host.process.terminate.v1", "parameters": [{"name": "process", "required": true, "type": "host<Process>"}, {"name": "mode", "required": false, "type": "string"}], "parity_test": "PARITY-PROCESS-HOST", "returns": "null"}
+      ],
+      "capabilities": ["process.inspect", "process.spawn"],
+      "concurrency": {"mode": "bounded_io_pool", "strand_key": "process_handle_when_present"},
+      "cpp_interfaces": ["baas::script::host::ProcessHost"],
+      "default_budget": "process_operations",
+      "id": "baas/process"
+    },
+    {
+      "bindings": [
+        {"budget": "network_bytes", "cancellation": "cooperative", "capability": "network.http", "errors": ["HOST001_CAPABILITY_DENIED", "HOST002_INVALID_ARGUMENT", "HOST003_CANCELLED", "HOST004_DEADLINE_EXCEEDED", "HOST005_BUDGET_EXCEEDED", "HOST006_UNAVAILABLE", "HOST007_IO_ERROR", "HOST012_POLICY_DENIED", "HOST013_PROTOCOL_ERROR", "HOST014_INTERNAL"], "export": "request", "id": "host.http.request.v1", "parameters": [{"name": "method", "required": true, "type": "string"}, {"name": "url", "required": true, "type": "string"}, {"name": "headers", "required": false, "type": "ordered-map<string,string>"}, {"name": "body", "required": false, "type": "bytes|null"}, {"name": "options", "required": false, "type": "ordered-map"}], "parity_test": "PARITY-HTTP-HOST", "returns": "ordered-map<HttpResponse>"}
+      ],
+      "capabilities": ["network.http"],
+      "concurrency": {"mode": "bounded_io_pool", "strand_key": "request_id"},
+      "cpp_interfaces": ["baas::script::host::HttpHost"],
+      "default_budget": "network_bytes",
+      "id": "baas/http"
+    },
+    {
+      "bindings": [
+        {"budget": "socket_operations", "cancellation": "cooperative", "capability": "network.socket", "errors": ["HOST001_CAPABILITY_DENIED", "HOST002_INVALID_ARGUMENT", "HOST003_CANCELLED", "HOST004_DEADLINE_EXCEEDED", "HOST005_BUDGET_EXCEEDED", "HOST006_UNAVAILABLE", "HOST007_IO_ERROR", "HOST012_POLICY_DENIED", "HOST014_INTERNAL"], "export": "open", "id": "host.socket.open.v1", "parameters": [{"name": "endpoint", "required": true, "type": "ordered-map<Endpoint>"}, {"name": "options", "required": false, "type": "ordered-map"}], "parity_test": "PARITY-SOCKET-HOST", "returns": "host<Socket>"},
+        {"budget": "network_bytes", "cancellation": "cooperative", "capability": "network.socket", "errors": ["HOST002_INVALID_ARGUMENT", "HOST003_CANCELLED", "HOST004_DEADLINE_EXCEEDED", "HOST005_BUDGET_EXCEEDED", "HOST007_IO_ERROR", "HOST012_POLICY_DENIED", "HOST015_HANDLE_CLOSED"], "export": "recv", "id": "host.socket.recv.v1", "parameters": [{"name": "socket", "required": true, "type": "host<Socket>"}, {"name": "max_bytes", "required": true, "type": "int"}], "parity_test": "PARITY-SOCKET-HOST", "returns": "bytes"},
+        {"budget": "network_bytes", "cancellation": "cooperative", "capability": "network.socket", "errors": ["HOST002_INVALID_ARGUMENT", "HOST003_CANCELLED", "HOST004_DEADLINE_EXCEEDED", "HOST005_BUDGET_EXCEEDED", "HOST007_IO_ERROR", "HOST012_POLICY_DENIED", "HOST015_HANDLE_CLOSED"], "export": "send", "id": "host.socket.send.v1", "parameters": [{"name": "socket", "required": true, "type": "host<Socket>"}, {"name": "data", "required": true, "type": "bytes"}], "parity_test": "PARITY-SOCKET-HOST", "returns": "int"},
+        {"budget": "socket_operations", "cancellation": "preflight", "capability": "network.socket", "errors": ["HOST002_INVALID_ARGUMENT", "HOST005_BUDGET_EXCEEDED", "HOST012_POLICY_DENIED", "HOST015_HANDLE_CLOSED"], "export": "set_blocking", "id": "host.socket.set_blocking.v1", "parameters": [{"name": "socket", "required": true, "type": "host<Socket>"}, {"name": "enabled", "required": true, "type": "bool"}], "parity_test": "PARITY-SOCKET-HOST", "returns": "null"},
+        {"budget": "socket_operations", "cancellation": "preflight", "capability": "network.socket", "errors": ["HOST002_INVALID_ARGUMENT", "HOST005_BUDGET_EXCEEDED", "HOST015_HANDLE_CLOSED"], "export": "close", "id": "host.socket.close.v1", "parameters": [{"name": "socket", "required": true, "type": "host<Socket>"}], "parity_test": "PARITY-SOCKET-HOST", "returns": "null"}
+      ],
+      "capabilities": ["network.socket"],
+      "concurrency": {"mode": "handle_strand", "strand_key": "socket_handle"},
+      "cpp_interfaces": ["baas::script::host::SocketHost"],
+      "default_budget": "socket_operations",
+      "id": "baas/socket"
+    }
+  ],
+  "schema_version": 1,
+  "status": "specified_not_implemented",
+  "taxonomy_mappings": [
+    {"cpp_binding": "baas::script::host::SchedulerHost::register_task", "families": ["task.scheduler"], "modules": ["baas/scheduler"], "parity_test": "PARITY-TASK-REGISTRY", "rule": "task-registry-v2"},
+    {"cpp_binding": "baas::script::host::SchedulerHost::dispatch", "families": ["task.action"], "modules": ["baas/scheduler"], "parity_test": "PARITY-TASK-ACTION", "rule": "task-action-dispatch-v2"},
+    {"cpp_binding": "baas::script::host::DeviceHost", "families": ["device.input-capture"], "modules": ["baas/device"], "parity_test": "PARITY-DEVICE-HOST", "rule": "device-host-v2"},
+    {"cpp_binding": "baas::script::host::VisionHost", "families": ["image.detect"], "modules": ["baas/vision"], "parity_test": "PARITY-VISION-HOST", "rule": "vision-host-v2"},
+    {"cpp_binding": "baas::script::host::OcrHost", "families": ["ocr.inference"], "modules": ["baas/ocr"], "parity_test": "PARITY-OCR-HOST", "rule": "ocr-host-v2"},
+    {"cpp_binding": "baas::script::host::ConfigHost", "families": ["config.state"], "modules": ["baas/config"], "parity_test": "PARITY-CONFIG-HOST", "rule": "config-host-v2"},
+    {"cpp_binding": "baas::script::host::LogHost", "families": ["log.event"], "modules": ["baas/log"], "parity_test": "PARITY-LOG-EVENT", "rule": "logging-host-v2"},
+    {"cpp_binding": "baas::script::host::SchedulerHost", "families": ["task.scheduler-thread"], "modules": ["baas/scheduler"], "parity_test": "PARITY-SCHEDULER-HOST", "rule": "scheduler-host-v2"},
+    {"cpp_binding": "baas::script::host::ResourceHost", "families": ["resource.filesystem"], "modules": ["baas/resource", "baas/fs"], "parity_test": "PARITY-RESOURCE-HOST", "rule": "resource-host-v2"},
+    {"cpp_binding": "baas::script::host::ProcessHost", "families": ["system.process"], "modules": ["baas/process"], "parity_test": "PARITY-PROCESS-HOST", "rule": "process-host-v3"},
+    {"cpp_binding": "baas::script::host::HttpHost", "families": ["network.http"], "modules": ["baas/http"], "parity_test": "PARITY-HTTP-HOST", "rule": "http-host-v3"},
+    {"cpp_binding": "baas::script::host::SocketHost", "families": ["network.socket"], "modules": ["baas/socket"], "parity_test": "PARITY-SOCKET-HOST", "rule": "socket-host-v3"}
+  ]
+}

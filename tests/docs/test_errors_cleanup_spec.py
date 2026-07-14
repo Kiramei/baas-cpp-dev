@@ -392,7 +392,7 @@ class ErrorsAndCleanupSpecificationTests(unittest.TestCase):
             self.roadmap,
         )
         self.assertIn(
-            "- [ ] Specify capability-scoped host APIs for image, OCR, device, configuration,",
+            "- [x] Specify capability-scoped host APIs for image, OCR, device, configuration,",
             self.roadmap,
         )
         self.assertIn("`ERRORS_AND_CLEANUP.md` defines compile/runtime error separation", self.roadmap)

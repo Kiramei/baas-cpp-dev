@@ -245,7 +245,7 @@
   ],
   "rules": [
     {
-      "cpp_host_binding": "baas::script::host::TaskRegistry::register_task",
+      "cpp_host_binding": "baas::script::host::SchedulerHost::register_task",
       "disposition": "HOST_BINDING_REQUIRED",
       "family": "task.scheduler",
       "id": "task-registry-v2",
@@ -256,7 +256,7 @@
       "symbol_patterns": ["registry:core.Baas_thread.func_dict:*"]
     },
     {
-      "cpp_host_binding": "baas::script::host::TaskActionHost::dispatch",
+      "cpp_host_binding": "baas::script::host::SchedulerHost::dispatch",
       "disposition": "HOST_BINDING_REQUIRED",
       "family": "task.action",
       "id": "task-action-dispatch-v2",
@@ -405,10 +405,13 @@
       ]
     },
     {
+      "cpp_host_binding": "baas::script::host::ProcessHost",
       "disposition": "HOST_BINDING_REQUIRED",
       "family": "system.process",
-      "id": "process-host-gap-v2",
-      "migration_status": "BINDING_REQUIRED",
+      "id": "process-host-v3",
+      "migration_status": "INVENTORIED",
+      "owner": "Runtime Privileged I/O",
+      "parity_test_id": "PARITY-PROCESS-HOST",
       "source_scopes": ["SCRIPT_RUNTIME", "GENERATED_RESOURCE"],
       "symbol_patterns": ["os.popen", "os.system", "psutil.*", "subprocess.*"]
     },
@@ -422,6 +425,28 @@
       "parity_test_id": "LANGUAGE-CONFORMANCE",
       "source_scopes": ["SCRIPT_RUNTIME", "GENERATED_RESOURCE"],
       "symbol_patterns": ["requests.Response.*", "requests.exceptions.*"]
+    },
+    {
+      "cpp_host_binding": "baas::script::host::HttpHost",
+      "disposition": "HOST_BINDING_REQUIRED",
+      "family": "network.http",
+      "id": "http-host-v3",
+      "migration_status": "INVENTORIED",
+      "owner": "Runtime Privileged I/O",
+      "parity_test_id": "PARITY-HTTP-HOST",
+      "source_scopes": ["SCRIPT_RUNTIME", "GENERATED_RESOURCE"],
+      "symbol_patterns": ["requests.delete", "requests.get", "requests.head", "requests.options", "requests.patch", "requests.post", "requests.put", "requests.request"]
+    },
+    {
+      "cpp_host_binding": "baas::script::host::SocketHost",
+      "disposition": "HOST_BINDING_REQUIRED",
+      "family": "network.socket",
+      "id": "socket-host-v3",
+      "migration_status": "INVENTORIED",
+      "owner": "Runtime Privileged I/O",
+      "parity_test_id": "PARITY-SOCKET-HOST",
+      "source_scopes": ["SCRIPT_RUNTIME", "GENERATED_RESOURCE"],
+      "symbol_patterns": ["socket.*"]
     },
     {
       "disposition": "HOST_BINDING_REQUIRED",

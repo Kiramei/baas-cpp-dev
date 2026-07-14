@@ -169,12 +169,12 @@ class OperationIndexTests(unittest.TestCase):
 
         process = self.scope_decision(by_symbol["subprocess.run"], "SCRIPT_RUNTIME")
         self.assertEqual(process["disposition"], "HOST_BINDING_REQUIRED")
-        self.assertEqual(
-            process["host_binding_gap_fields"],
-            ["cpp_host_binding", "owner", "parity_test_id"],
-        )
+        self.assertEqual(process["host_binding_gap_fields"], [])
+        self.assertEqual(process["cpp_host_binding"], "baas::script::host::ProcessHost")
+        self.assertEqual(process["owner"], "Runtime Privileged I/O")
+        self.assertEqual(process["parity_test_id"], "PARITY-PROCESS-HOST")
         self.assertGreater(report["summary"]["unresolved_disposition_scope_decisions"], 0)
-        self.assertGreater(report["summary"]["host_binding_gaps"], 0)
+        self.assertEqual(report["summary"]["host_binding_gaps"], 0)
 
     def test_fixture_discovers_registries_routes_dispatch_and_parse_errors(self) -> None:
         report = self.generate()
@@ -212,7 +212,7 @@ class OperationIndexTests(unittest.TestCase):
         self.assertEqual(report["schema_version"], 2)
         self.assertEqual(report["identity_version"], 1)
 
-    def test_strict_fails_for_unresolved_disposition_host_gap_and_parse_error(self) -> None:
+    def test_strict_fails_for_unresolved_disposition_and_parse_error(self) -> None:
         process = subprocess.run(
             [
                 sys.executable,
@@ -230,7 +230,7 @@ class OperationIndexTests(unittest.TestCase):
         self.assertEqual(process.returncode, 1, process.stderr)
         report = json.loads(process.stdout)
         self.assertGreater(report["summary"]["unresolved_disposition_scope_decisions"], 0)
-        self.assertGreater(report["summary"]["host_binding_gaps"], 0)
+        self.assertEqual(report["summary"]["host_binding_gaps"], 0)
         self.assertEqual(report["summary"]["parse_errors"], 1)
 
     def test_strict_succeeds_for_fully_classified_fixture(self) -> None:
@@ -265,7 +265,7 @@ class OperationIndexTests(unittest.TestCase):
     def test_strict_reports_unresolved_and_host_binding_gaps_independently(self) -> None:
         cases = (
             (
-                "import subprocess\nsubprocess.run(['tool'])\n",
+                "import aiohttp\naiohttp.get('https://example.invalid')\n",
                 0,
                 1,
             ),

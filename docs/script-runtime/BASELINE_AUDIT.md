@@ -172,7 +172,7 @@ The deterministic static operation index is recorded in
 linked from the generated section of `MIGRATION_MATRIX.md`. At the audited
 snapshot taxonomy v3 preserves 15,469 sites as 4,319 unique operations and
 4,908 operation/source-scope decisions. It records 1,279 unresolved
-dispositions and 11 unassigned Host contracts separately. Its strict gate
+dispositions and zero unassigned Host contracts separately. Its strict gate
 therefore fails as intended, and Phase 0 remains incomplete alongside the
 outstanding golden-trace, performance, and smoke-test gates.
 

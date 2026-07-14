@@ -246,7 +246,9 @@ foundation does not provide JSON text parsing or serialization.
 ## 12. Versioned host modules
 
 The full intended host surface is declared from the first stable API even when
-adapters are implemented incrementally:
+adapters are implemented incrementally. Normative signatures, capability IDs,
+errors, budgets, threading, and parity ownership for the Phase 1 surface are in
+`HOST_CAPABILITY_CONTRACTS.md` and `host-capabilities.v1.json`:
 
 | Module | Responsibility |
 | --- | --- |
@@ -255,10 +257,16 @@ adapters are implemented incrementally:
 | `baas/random` | injected deterministic jitter/randomness |
 | `baas/config` | immutable snapshots and atomic validated transactions |
 | `baas/resource` | locale/activity-aware immutable resources and hashes |
+| `baas/fs` | privileged policy-rooted filesystem reads and atomic mutations |
 | `baas/device` | capture, click/swipe/long-click/scroll, app lifecycle |
 | `baas/vision` | RGB/template/search helpers and ordered detect/reaction |
 | `baas/ocr` | model lifecycle and OCR variants/options |
-| `baas/task` | structured concurrency, scheduler state, retry/cancellation |
+| `baas/task` | capability-free structured concurrency and language Task operations |
+| `baas/scheduler` | capability-scoped automation registration, dispatch, and scheduling |
+| `baas/service` | bounded symbolic in-process service events and requests |
+| `baas/process` | privileged allowlisted process inspection and execution |
+| `baas/http` | privileged policy-checked HTTP requests |
+| `baas/socket` | privileged policy-checked opaque stream sockets |
 | `baas/notify` | user notifications and push adapters |
 | `baas/trace` | deterministic fixture references and observable host effects |
 

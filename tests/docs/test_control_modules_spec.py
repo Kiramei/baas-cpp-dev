@@ -349,7 +349,7 @@ class ControlAndModulesSpecificationTests(unittest.TestCase):
             self.roadmap,
         )
         self.assertIn(
-            "- [ ] Specify capability-scoped host APIs for image, OCR, device, configuration,",
+            "- [x] Specify capability-scoped host APIs for image, OCR, device, configuration,",
             self.roadmap,
         )
         self.assertIn("`CONTROL_FLOW_AND_MODULES.md` defines source-order lexical bindings", self.roadmap)

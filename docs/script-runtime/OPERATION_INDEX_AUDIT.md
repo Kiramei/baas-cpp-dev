@@ -22,7 +22,7 @@ python scripts\migration\operation_index.py `
 ```
 
 The first command returned 0. The strict command returned 1 because unresolved
-dispositions and unassigned Host contracts remain. Two normal generations and
+dispositions remain. Two normal generations and
 the strict report were byte-identical.
 
 ## Taxonomy v3 resolution boundary
@@ -88,12 +88,12 @@ The source-scope split was 560 legacy-GUI, 520 C++-service, 402 script-runtime,
 | Unresolved disposition decisions | 1,279 across 1,170 operations |
 | Unresolved observed sites | 2,302 |
 | Host-binding-required decisions | 343 |
-| Host contract gaps | 11 |
+| Host contract gaps | 0 |
 | Dynamic operations retained | 257 |
 | Parse errors | 0 |
 | Source snapshot SHA-256 | `76f974d77e7c63034296acefb86a707e150c68602db007f4dbec891c66f712ec` |
-| Rules SHA-256 | `d8dbb97b8bfe63d392a20bb4ee0fdc073f94e5beb0980e6c8fc70bd74ba477eb` |
-| JSON report SHA-256 | `9249cb288b78fb4503409fba94f330bf6f95a8ab0ecdf386e982e26fc91f9684` |
+| Rules SHA-256 | `c11ed5063538348a7f8c6f248864414579d8073fb68a8203c1916c4cfa371247` |
+| JSON report SHA-256 | `29b5765efa0721d53835b5e06df356b811ac1ca3398175c0bb13b1dd3eaac09f` |
 
 ## Before/after unresolved inventory
 
@@ -126,16 +126,18 @@ migration-tooling decisions.
 | `EXTERNAL_DEPENDENCY` | 10 | 11 |
 | `UNRESOLVED` | 1,279 | 2,302 |
 
-## Strict gaps and Phase 0 gate
+## Assigned Host contracts and Phase 0 gate
 
-The eight v2 Host gaps remain: `psutil.Process`, `psutil.process_iter`,
+The eight v2 Host gaps were `psutil.Process`, `psutil.process_iter`,
 `requests.get`, `requests.post`, `socket.socket`, `subprocess.Popen`,
 `subprocess.check_output`, and `subprocess.run`. Proven socket annotations also
-expose three previously hidden capabilities: `socket.socket.recv`,
-`socket.socket.send`, and `socket.socket.setblocking`. They remain explicit
-unassigned Host contracts rather than being relabeled as completed work.
+exposed three additional capabilities: `socket.socket.recv`,
+`socket.socket.send`, and `socket.socket.setblocking`.
+`HOST_CAPABILITY_CONTRACTS.md` now assigns them stable Process, HTTP, and Socket
+capabilities, proposed C++ interface identities, owners, and parity test IDs.
+All remain `INVENTORIED`; no binding or parity implementation is claimed.
 
 Strict mode independently checks unresolved dispositions, Host contract gaps,
 and parse failures. It therefore remains non-zero with 1,279 unresolved
-decisions and 11 Host gaps. Phase 0 remains incomplete. The generated matrix is
+decisions and zero Host contract gaps. Phase 0 remains incomplete. The generated matrix is
 an authoritative work queue, not proof that bindings or parity tests exist.
