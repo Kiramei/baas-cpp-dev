@@ -25,7 +25,7 @@ The first command returns 0. The strict command returns 1 because unresolved
 dispositions remain. Two normal generations and the strict report are
 byte-identical.
 
-## Taxonomy v4 resolution and privileged boundary
+## Taxonomy v4 and generator 4.1 resolution
 
 Schema v2 and identity version 1 remain unchanged. The bounded static
 owner-resolution pass runs before source-scope disposition defaults. It accepts
@@ -53,6 +53,15 @@ their existing Vision, Device, and Scheduler Host ownership. The rule is
 restricted to `module/*` plus an enumerated symbol list; it is not a receiver
 suffix heuristic and does not classify an identical unknown call in `core/*`.
 
+Generator 4.1 propagates container element types only when they are proven by
+a concrete generic annotation, a homogeneous literal, or an exact factory rule
+such as `str.split`. It also recognizes positive `type(value) is ConcreteType`
+and `type(value) == ConcreteType` guards. Element facts participate in the same
+branch-state intersection as value types, so they do not escape a guarded branch
+or survive an ambiguous control-flow merge. This resolves the typed `main.py`
+argument conversion and merges equivalent operation identities without adding a
+symbol-tail heuristic.
+
 Unknown call results, subscripts, ambiguous unions, rebinding across possible
 control-flow paths, `getattr` with runtime names, and untyped parameters remain
 dynamic or unresolved. Module export discovery is AST-only; external wildcard
@@ -73,8 +82,8 @@ decisions. Notification retains the language-level `baas/notify` action and
 response contract through `NotifyHost`; only platform callbacks and UI remain
 inside the adapter.
 
-All 15,469 observed sites are preserved. Hardened v4 aggregates them into 4,363
-operations and 4,989 operation/source decisions. Compared with the checked-in
+All 15,469 observed sites are preserved. Generator 4.1 aggregates them into 4,340
+operations and 4,965 operation/source decisions. Compared with the checked-in
 v4 baseline, 3,916 operation IDs remain shared, 403 less-specific identities
 retire, and 447 proven identities are created. One operation can now have more
 than one decision in the same source scope when exact per-file evidence gives
@@ -110,46 +119,46 @@ The source-scope split was 560 legacy-GUI, 520 C++-service, 402 script-runtime,
 | --- | --- |
 | `baas-dev` commit | `75bbacb545bc87e9510d85cbe8034f9180397004` |
 | Python source files | 569 |
-| Unique operations | 4,363 |
+| Unique operations | 4,340 |
 | Observed operation sites | 15,469 |
-| Operation/source decisions | 4,989 |
-| Unresolved disposition decisions | 119 across 119 operations |
-| Unresolved observed sites | 183 |
-| Host-binding-required decisions | 357 |
+| Operation/source decisions | 4,965 |
+| Unresolved disposition decisions | 109 across 109 operations |
+| Unresolved observed sites | 171 |
+| Host-binding-required decisions | 358 |
 | Host contract gaps | 0 |
-| Dynamic operations retained | 258 |
+| Dynamic operations retained | 254 |
 | Parse errors | 0 |
 | Source snapshot SHA-256 | `76f974d77e7c63034296acefb86a707e150c68602db007f4dbec891c66f712ec` |
-| Rules SHA-256 | `e2d100f2858cbb04052c63fecaa5a8f4173a98c73da9ec3b9b631e58720797cb` |
-| JSON report SHA-256 | `76a55fa58770484478348aecaa01c39f5875a42bf981689ac557a6b45f278208` |
+| Rules SHA-256 | `632b722ccee4973ed1d34e92b9ab3388b44d2dc57fba33e1358e3e363dbee0cd` |
+| JSON report SHA-256 | `402a65eb843632b9cde6080bd4a3509e6afa17e94d4fa88b378f18f6b12ffcd2` |
 
 ## Before/after unresolved inventory
 
-| Measure | Taxonomy v2 | Taxonomy v3 | v4 baseline | Hardened v4 | Audited modules | hardened→audited |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| Unresolved decisions | 1,842 | 1,279 | 240 | 183 | 119 | -64 |
-| Unresolved observed sites | 3,467 | 2,302 | 378 | 304 | 183 | -121 |
-| Operations with unresolved disposition | 1,649 | 1,170 | 240 | 183 | 119 | -64 |
-| Static unresolved decisions | 1,512 | 1,008 | 167 | 116 | 76 | -40 |
-| Dynamic unresolved decisions | 330 | 271 | 73 | 67 | 43 | -24 |
-| Dynamic operations | 296 | 257 | 257 | 258 | 258 | 0 |
+| Measure | Taxonomy v2 | Taxonomy v3 | v4 baseline | Hardened v4 | Audited modules | Generator 4.1 | audited→4.1 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Unresolved decisions | 1,842 | 1,279 | 240 | 183 | 119 | 109 | -10 |
+| Unresolved observed sites | 3,467 | 2,302 | 378 | 304 | 183 | 171 | -12 |
+| Operations with unresolved disposition | 1,649 | 1,170 | 240 | 183 | 119 | 109 | -10 |
+| Static unresolved decisions | 1,512 | 1,008 | 167 | 116 | 76 | 69 | -7 |
+| Dynamic unresolved decisions | 330 | 271 | 73 | 67 | 43 | 40 | -3 |
+| Dynamic operations | 296 | 257 | 257 | 258 | 258 | 254 | -4 |
 
-The remaining 119 decisions are all script-runtime calls: 71 member, 42
-chained, 5 name, and 1 dynamic decision (76 statically unresolved and 43
+The remaining 109 decisions are all `core/*` script-runtime calls: 64 member, 39
+chained, 5 name, and 1 dynamic decision (69 statically unresolved and 40
 dynamic). No unresolved call was assigned from a symbol-tail guess.
 
 ## Disposition inventory
 
 | Disposition | Decisions | Observed sites |
 | --- | ---: | ---: |
-| `HOST_BINDING_REQUIRED` | 357 | 1,995 |
-| `SCRIPT_LANGUAGE_OR_MODULE` | 888 | 3,094 |
-| `CPP_SERVICE_INTERNAL` | 1,259 | 3,438 |
-| `TAURI_UI_REPLACED` | 1,476 | 4,298 |
-| `MIGRATION_TOOLING_ONLY` | 549 | 1,541 |
+| `HOST_BINDING_REQUIRED` | 358 | 1,996 |
+| `SCRIPT_LANGUAGE_OR_MODULE` | 884 | 3,105 |
+| `CPP_SERVICE_INTERNAL` | 1,256 | 3,438 |
+| `TAURI_UI_REPLACED` | 1,469 | 4,298 |
+| `MIGRATION_TOOLING_ONLY` | 548 | 1,541 |
 | `TEST_ONLY` | 335 | 914 |
 | `EXTERNAL_DEPENDENCY` | 6 | 6 |
-| `UNRESOLVED` | 119 | 183 |
+| `UNRESOLVED` | 109 | 171 |
 
 ## Assigned contracts and Phase 0 gate
 
@@ -160,6 +169,6 @@ shortcut, and updater work outside the script Host surface. All Host decisions
 remain `INVENTORIED`; no binding or parity implementation is claimed.
 
 Strict mode independently checks unresolved dispositions, Host contract gaps,
-and parse failures. It therefore remains non-zero with 119 unresolved decisions
+and parse failures. It therefore remains non-zero with 109 unresolved decisions
 and zero Host contract gaps. Phase 0 remains incomplete. The generated matrix
 is an authoritative work queue, not proof that bindings or parity tests exist.

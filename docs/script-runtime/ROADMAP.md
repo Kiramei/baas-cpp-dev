@@ -33,14 +33,14 @@ an isolated prototype is not considered project completion.
   modifying its existing dirty worktree.
 - [~] Record every discovered Python operation in `MIGRATION_MATRIX.md` with an
   owner, C++ host binding, parity test, and migration status.
-  Taxonomy v4 preserves all 15,469 sites as 4,363 operations and 4,989
+  Taxonomy v4 with generator 4.1 preserves all 15,469 sites as 4,340 operations and 4,965
   operation/source-scope decisions. It separates script Host requirements,
   script/module rewrites, C++ service internals, Tauri UI replacement,
   tooling/tests, dependencies, and unresolved calls. Bounded AST/type
   resolution plus authoritative source-and-symbol boundaries reduced unresolved
-  decisions from 1,842 to 119 without guessing script-runtime owners. All 357
-  Host decisions now have proposed contracts, while the remaining 119
-  script-runtime disposition decisions remain strict gaps. Privileged Windows,
+  decisions from 1,842 to 109 without guessing script-runtime owners. All 358
+  Host decisions now have proposed contracts, while the remaining 109 `core/*`
+  disposition decisions remain strict gaps. Privileged Windows,
   notification, IPC, updater, listener/descriptor, and codec ownership is fixed
   by `ADR-0003-privileged-operation-boundaries.md`. See
   `OPERATION_INDEX_AUDIT.md`.

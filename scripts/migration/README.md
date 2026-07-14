@@ -53,10 +53,11 @@ and host-binding-gap counts separately. For `service/`, `gui/`, `tests/`,
 `deploy/`, and `develop_tools/`, the source root itself fixes the migration
 boundary, so unresolved receiver ownership no longer creates a false
 disposition gap. Dynamic/unresolved calls under the script runtime remain
-unresolved unless an explicit rule proves their boundary. v3 owner inference resolves only concrete
-annotations, local constructors, literal/container assignments, positive
-`isinstance` branches, AST-visible wildcard exports, and exact return-type
-rules retained in `operation_rules.v4.json`.
+unresolved unless an explicit rule proves their boundary. Generator 4.1 owner
+inference resolves only concrete annotations, local constructors,
+literal/container assignments, positive `isinstance` or exact `type(x) is T`
+branches, proven container element types, AST-visible wildcard exports, and
+exact return-type rules retained in `operation_rules.v4.json`.
 
 Schema v2 retains operation identity version 1. Unchanged
 `(kind, call_form, symbol)` identities therefore keep their existing IDs;
