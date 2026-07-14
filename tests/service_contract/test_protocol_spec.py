@@ -210,6 +210,7 @@ class ServiceProtocolSpecTests(unittest.TestCase):
         self.assertEqual(
             workflow.count("docs/script-runtime/SERVICE_HEALTH_READINESS.md"), 2
         )
+        self.assertIn("BAAS_service_health_foundation_tests", workflow)
 
 
 if __name__ == "__main__":
