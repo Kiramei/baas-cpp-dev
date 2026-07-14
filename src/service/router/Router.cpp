@@ -1,5 +1,6 @@
 #include "service/router/Router.h"
 
+#include <cstdint>
 #include <stdexcept>
 #include <utility>
 
@@ -20,6 +21,53 @@ static_assert(response_budget_error.size() <= minimum_response_budget);
                        : static_cast<char>('A' + (value - 10U));
 }
 
+[[nodiscard]] bool is_valid_utf8(const std::string_view value) noexcept
+{
+    std::size_t index = 0;
+    while (index < value.size()) {
+        const auto lead = static_cast<unsigned char>(value[index]);
+        if (lead < 0x80U) {
+            ++index;
+            continue;
+        }
+
+        std::size_t continuation_count = 0;
+        std::uint32_t code_point = 0;
+        std::uint32_t minimum = 0;
+        if ((lead & 0xE0U) == 0xC0U) {
+            continuation_count = 1;
+            code_point = lead & 0x1FU;
+            minimum = 0x80U;
+        } else if ((lead & 0xF0U) == 0xE0U) {
+            continuation_count = 2;
+            code_point = lead & 0x0FU;
+            minimum = 0x800U;
+        } else if ((lead & 0xF8U) == 0xF0U) {
+            continuation_count = 3;
+            code_point = lead & 0x07U;
+            minimum = 0x10000U;
+        } else {
+            return false;
+        }
+        if (index + continuation_count >= value.size()) {
+            return false;
+        }
+        for (std::size_t offset = 1; offset <= continuation_count; ++offset) {
+            const auto continuation = static_cast<unsigned char>(value[index + offset]);
+            if ((continuation & 0xC0U) != 0x80U) {
+                return false;
+            }
+            code_point = (code_point << 6U) | (continuation & 0x3FU);
+        }
+        if (code_point < minimum || code_point > 0x10FFFFU
+            || (code_point >= 0xD800U && code_point <= 0xDFFFU)) {
+            return false;
+        }
+        index += continuation_count + 1;
+    }
+    return true;
+}
+
 [[nodiscard]] std::string json_string(const std::string_view value)
 {
     std::string output;
@@ -35,7 +83,7 @@ static_assert(response_budget_error.size() <= minimum_response_budget);
         case '\r': output += "\\r"; break;
         case '\t': output += "\\t"; break;
         default:
-            if (byte < 0x20U || byte >= 0x80U) {
+            if (byte < 0x20U) {
                 output += "\\u00";
                 output.push_back(hex_digit((byte >> 4U) & 0x0FU));
                 output.push_back(hex_digit(byte & 0x0FU));
@@ -71,6 +119,9 @@ Router::Router(ServiceInfo service, const SizeBudget budget, ShutdownIntent* shu
 {
     if (service_.name.empty() || service_.version.empty()) {
         throw std::invalid_argument("service name and version must not be empty");
+    }
+    if (!is_valid_utf8(service_.name) || !is_valid_utf8(service_.version)) {
+        throw std::invalid_argument("service name and version must be valid UTF-8");
     }
     if (budget_.max_method_bytes == 0 || budget_.max_path_bytes == 0
         || budget_.max_request_body_bytes == 0

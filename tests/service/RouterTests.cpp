@@ -97,9 +97,10 @@ void test_json_escaping_is_transport_independent_and_safe()
     const service_router::Router router{{"B\nAAS", version}};
     const auto response = router.handle({"GET", "/api/v1/version", {}});
     check(response.status == 200, "escaped version response must remain valid");
-    check(response.body
-              == R"({"api_version":1,"ok":true,"service":"B\nAAS","version":"v\"\\\n\u0001\u00C3\u00A9"})",
-          "quotes, controls, slashes, and non-ASCII bytes must be JSON escaped");
+    const auto expected = std::string{R"({"api_version":1,"ok":true,"service":"B\nAAS","version":"v\"\\\n\u0001)"}
+        + "\xC3\xA9" + R"("})";
+    check(response.body == expected,
+          "quotes and controls must be escaped while valid UTF-8 keeps its meaning");
 }
 
 void test_request_and_response_budgets()
@@ -172,6 +173,14 @@ void test_invalid_construction_is_rejected()
         empty_service_rejected = true;
     }
     check(empty_service_rejected, "empty service metadata must be rejected");
+
+    bool invalid_utf8_rejected = false;
+    try {
+        [[maybe_unused]] const service_router::Router invalid{{"BAAS", "\xC0\xAF"}};
+    } catch (const std::invalid_argument&) {
+        invalid_utf8_rejected = true;
+    }
+    check(invalid_utf8_rejected, "invalid UTF-8 service metadata must be rejected");
 
     bool small_response_budget_rejected = false;
     try {

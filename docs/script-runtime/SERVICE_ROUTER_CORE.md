@@ -34,9 +34,10 @@ Errors use one stable shape:
 }
 ```
 
-Service metadata is JSON escaped without a third-party JSON dependency.
-Control characters and non-ASCII bytes are escaped, so injected metadata
-cannot break the response JSON.
+Service metadata is validated as UTF-8 and JSON escaped without a third-party
+JSON dependency. Control characters are escaped while valid multi-byte text is
+preserved byte-for-byte, so injected metadata cannot break the response JSON
+or silently change Unicode meaning.
 
 ## Budgets
 
