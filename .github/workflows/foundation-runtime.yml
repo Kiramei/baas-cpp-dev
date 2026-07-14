@@ -1,7 +1,7 @@
 name: Foundation runtime CI
 
-# This is a focused host foundation gate. Android, sanitizers, fuzzing, service
-# sockets/crypto, and full application/OCR builds remain separate future gates.
+# This is a focused host foundation gate. Android, sanitizers, fuzzing, live
+# service sockets, and full application/OCR builds remain separate future gates.
 on:
   workflow_dispatch:
   push:
@@ -80,6 +80,16 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
+      - name: Set up Python for service vectors
+        if: matrix.build_type == 'Debug'
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install service-vector dependencies
+        if: matrix.build_type == 'Debug'
+        run: python -m pip install --disable-pip-version-check cryptography PyNaCl
+
       - name: Report bundled toolchain
         run: |
           cmake --version
@@ -95,3 +105,7 @@ jobs:
 
       - name: Run foundation tests
         run: ctest --test-dir build/foundation --build-config ${{ matrix.build_type }} --output-on-failure --timeout 120
+
+      - name: Verify checked-in service vectors
+        if: matrix.build_type == 'Debug'
+        run: python -m unittest discover -s tests/service_contract -p "test_*.py" -v

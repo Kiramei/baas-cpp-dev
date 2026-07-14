@@ -167,9 +167,9 @@ emulator, and installation no longer requires Python for normal operation.
 
 ## Phase 6 — Platforms, performance, and CI/CD
 
-- [ ] Windows x64 build, unit, parity, service, performance, and smoke pipelines.
+- [~] Windows x64 build, unit, parity, service, performance, and smoke pipelines.
 - [ ] Android arm64-v8a/x86_64 build and emulator smoke pipelines.
-- [ ] Linux x64 and macOS arm64 build/test pipelines for supported components.
+- [~] Linux x64 and macOS arm64 build/test pipelines for supported components.
 - [ ] Cache Conan dependencies and allocate build parallelism without
   oversubscribing concurrent agent jobs.
 - [ ] Add race, sanitizer, fuzz, malformed-script, and resource-corruption jobs.
@@ -179,6 +179,14 @@ emulator, and installation no longer requires Python for normal operation.
   long-running stability.
 
 Exit evidence: required platform matrix is green and performance budgets pass.
+
+Foundation evidence: `.github/workflows/foundation-runtime.yml` defines a
+six-case Windows/Ubuntu/macOS Debug/Release matrix for the five standalone
+script/service foundation targets. Debug jobs also validate the checked-in
+service vectors. The exact Windows commands passed locally for both build
+types (5/5 CTest targets each), and all 14 service-vector tests passed. The
+hosted Linux/macOS jobs, full application/parity/service smoke coverage,
+Android, performance budgets, sanitizers, fuzzing, and caches remain pending.
 
 ## Phase 7 — Release, documentation, and completion audit
 
