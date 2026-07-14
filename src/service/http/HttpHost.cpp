@@ -196,6 +196,9 @@ public:
             );
         };
         adapter_.install(*server);
+        // Allocate the bind address before a listener thread exists. This
+        // keeps native allocation failure from stranding a launch waiter.
+        const std::string loopback_address{http_host_loopback_address};
 
         auto launch = std::make_shared<ListenerLaunch>();
         auto* const listening_server = server.get();
@@ -259,11 +262,27 @@ public:
             return {false, HttpHostStartError::listener_start_failed, 0};
         }
 
-        const int bound_port = config_.port == 0
-            ? server->bind_to_any_port(std::string{http_host_loopback_address})
-            : (server->bind_to_port(
-                   std::string{http_host_loopback_address}, config_.port
-               ) ? static_cast<int>(config_.port) : -1);
+        int bound_port = -1;
+        try {
+            bound_port = config_.port == 0
+                ? server->bind_to_any_port(loopback_address)
+                : (server->bind_to_port(loopback_address, config_.port)
+                       ? static_cast<int>(config_.port)
+                       : -1);
+        } catch (...) {
+            if (!cancel_listener_launch(launch)) {
+                record_start_failure_noexcept(
+                    HttpHostStartError::listener_start_failed,
+                    "failed to join listener after HTTP bind exception"
+                );
+                return {false, HttpHostStartError::listener_start_failed, 0};
+            }
+            record_start_failure_noexcept(
+                HttpHostStartError::bind_failed,
+                "cpp-httplib threw while binding the loopback HTTP port"
+            );
+            return {false, HttpHostStartError::bind_failed, 0};
+        }
         if (bound_port <= 0
             || bound_port > static_cast<int>(std::numeric_limits<std::uint16_t>::max())) {
             if (!cancel_listener_launch(launch)) {
