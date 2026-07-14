@@ -164,3 +164,13 @@ requirement to only the most frequent operations.
 3. Freeze service cryptographic and framing golden vectors.
 4. Establish C++ CTest, lexer diagnostics, conformance fixtures, and fake hosts.
 5. Capture Python latency, memory, startup, throughput, and package-size numbers.
+
+## Operation-level index follow-up
+
+The deterministic static operation index is recorded in
+[`OPERATION_INDEX_AUDIT.md`](OPERATION_INDEX_AUDIT.md), with full JSON evidence
+linked from the generated section of `MIGRATION_MATRIX.md`. At the audited
+snapshot it finds 4,556 unique operations across 15,469 sites, with 4,022 still
+unclassified. Its strict gate therefore fails as intended, and Phase 0 remains
+incomplete alongside the outstanding golden-trace, performance, and smoke-test
+gates.

@@ -31,8 +31,10 @@ an isolated prototype is not considered project completion.
   targets in `baas-cpp-dev`.
 - [x] Inventory the current `baas-tauri` process and service contract without
   modifying its existing dirty worktree.
-- [ ] Record every discovered Python operation in `MIGRATION_MATRIX.md` with an
+- [~] Record every discovered Python operation in `MIGRATION_MATRIX.md` with an
   owner, C++ host binding, parity test, and migration status.
+  The generated operation index tracks every discovered item, but 4,022 remain
+  explicitly `UNCLASSIFIED`; see `OPERATION_INDEX_AUDIT.md`.
 - [x] Implement an opt-in, deterministic, bounded Python parity trace foundation
   on `feat/cpp-parity-trace` without changing the default execution path.
 - [x] Add a deterministic static migration validator for grid actions, image

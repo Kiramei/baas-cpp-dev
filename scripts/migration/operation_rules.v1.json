@@ -1,0 +1,153 @@
+{
+  "rules": [
+    {
+      "cpp_host_binding": "baas::script::host::TaskRegistry::register_task",
+      "family": "task.scheduler",
+      "id": "task-registry-v1",
+      "migration_status": "INVENTORIED",
+      "owner": "Runtime Scheduling",
+      "parity_test_id": "PARITY-TASK-REGISTRY",
+      "symbol_patterns": ["registry:core.Baas_thread.func_dict:*"]
+    },
+    {
+      "cpp_host_binding": "baas::script::host::TaskActionHost::dispatch",
+      "family": "task.action",
+      "id": "task-action-dispatch-v1",
+      "migration_status": "INVENTORIED",
+      "owner": "Runtime Scheduling",
+      "parity_test_id": "PARITY-TASK-ACTION",
+      "symbol_patterns": ["dispatch:operation:*"]
+    },
+    {
+      "cpp_host_binding": "baas::service::TransportRegistry::open_channel",
+      "family": "service.transport",
+      "id": "service-channel-registry-v1",
+      "migration_status": "INVENTORIED",
+      "owner": "Service Platform",
+      "parity_test_id": "PARITY-SERVICE-CHANNEL",
+      "symbol_patterns": ["registry:service.transport.pipe_server._HANDLERS:*"]
+    },
+    {
+      "cpp_host_binding": "baas::service::Router::dispatch",
+      "family": "service.transport",
+      "id": "service-route-v1",
+      "migration_status": "INVENTORIED",
+      "owner": "Service Platform",
+      "parity_test_id": "PARITY-SERVICE-ROUTE",
+      "symbol_patterns": ["route:*"]
+    },
+    {
+      "cpp_host_binding": "baas::service::CommandDispatcher::dispatch",
+      "family": "service.transport",
+      "id": "service-command-dispatch-v1",
+      "migration_status": "INVENTORIED",
+      "owner": "Service Platform",
+      "parity_test_id": "PARITY-SERVICE-COMMAND",
+      "symbol_patterns": ["dispatch:command:*", "dispatch:channel:*", "dispatch:msg_type:*", "dispatch:req_type:*"]
+    },
+    {
+      "cpp_host_binding": "baas::script::host::DeviceHost",
+      "family": "device.input-capture",
+      "id": "device-host-v1",
+      "migration_status": "INVENTORIED",
+      "owner": "Runtime Device",
+      "parity_test_id": "PARITY-DEVICE-HOST",
+      "symbol_patterns": [
+        "core.device.*",
+        "self.check_atx*",
+        "self.check_resolution*",
+        "self.click*",
+        "self.control.*",
+        "self.get_screenshot_array",
+        "self.normalize_screenshot",
+        "self.screenshot.*",
+        "self.start_emulator*",
+        "self.swipe*",
+        "self.u2_*",
+        "self.update_screenshot_array",
+        "service.remote.scrcpy.*"
+      ]
+    },
+    {
+      "cpp_host_binding": "baas::script::host::VisionHost",
+      "family": "image.detect",
+      "id": "vision-host-v1",
+      "migration_status": "INVENTORIED",
+      "owner": "Runtime Vision",
+      "parity_test_id": "PARITY-VISION-HOST",
+      "symbol_patterns": ["core.color.*", "core.image.*", "core.picture.*", "cv2.*", "numpy.*"]
+    },
+    {
+      "cpp_host_binding": "baas::script::host::OcrHost",
+      "family": "ocr.inference",
+      "id": "ocr-host-v1",
+      "migration_status": "INVENTORIED",
+      "owner": "Runtime OCR",
+      "parity_test_id": "PARITY-OCR-HOST",
+      "symbol_patterns": ["core.ocr.*", "self.ocr.*", "service.ocr.*"]
+    },
+    {
+      "cpp_host_binding": "baas::script::host::ConfigHost",
+      "family": "config.state",
+      "id": "config-host-v1",
+      "migration_status": "INVENTORIED",
+      "owner": "Runtime Configuration",
+      "parity_test_id": "PARITY-CONFIG-HOST",
+      "symbol_patterns": ["core.config.*", "self.config.*", "self.config_set.*", "context.config_manager.*", "service.conf.*"]
+    },
+    {
+      "cpp_host_binding": "baas::script::host::LogHost",
+      "family": "log.event",
+      "id": "logging-host-v1",
+      "migration_status": "INVENTORIED",
+      "owner": "Runtime Observability",
+      "parity_test_id": "PARITY-LOG-EVENT",
+      "symbol_patterns": ["_logger.*", "logger.*", "logging.*", "self.logger.*"]
+    },
+    {
+      "cpp_host_binding": "baas::script::host::SchedulerHost",
+      "family": "task.scheduler-thread",
+      "id": "scheduler-host-v1",
+      "migration_status": "INVENTORIED",
+      "owner": "Runtime Scheduling",
+      "parity_test_id": "PARITY-SCHEDULER-HOST",
+      "symbol_patterns": ["asyncio.*", "concurrent.futures.*", "core.scheduler.*", "self.scheduler.*", "threading.*", "time.sleep"]
+    },
+    {
+      "cpp_host_binding": "baas::service::ProtocolHost",
+      "family": "service.transport-auth",
+      "id": "service-host-v1",
+      "migration_status": "INVENTORIED",
+      "owner": "Service Platform",
+      "parity_test_id": "PARITY-SERVICE-PROTOCOL",
+      "source_patterns": ["service/*", "service/**/*", "main.service.py"],
+      "symbol_patterns": [
+        "context.auth_manager.*",
+        "context.runtime.*",
+        "endpoint.*",
+        "requests.*",
+        "websocket.*",
+        "websockets.*"
+      ]
+    },
+    {
+      "cpp_host_binding": "baas::script::host::ResourceHost",
+      "family": "resource.filesystem-json",
+      "id": "resource-host-v1",
+      "migration_status": "INVENTORIED",
+      "owner": "Runtime Resources",
+      "parity_test_id": "PARITY-RESOURCE-HOST",
+      "symbol_patterns": ["builtins.open", "glob.*", "importlib.*", "json.*", "os.path.*", "pathlib.*", "shutil.*"]
+    },
+    {
+      "cpp_host_binding": "baas::script::runtime::ValueIntrinsic",
+      "family": "language.intrinsic",
+      "id": "language-builtins-v1",
+      "migration_status": "INVENTORIED",
+      "owner": "Script Runtime",
+      "parity_test_id": "PARITY-LANGUAGE-INTRINSIC",
+      "symbol_patterns": ["builtins.*", "collections.*", "copy.*", "itertools.*", "math.*", "operator.*"]
+    }
+  ],
+  "rules_version": 1
+}
