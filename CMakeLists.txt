@@ -155,7 +155,7 @@ file(
 
 # The script runtime is an independent library and must not leak into the
 # legacy application's globbed core sources.
-list(FILTER BAAS_CORE_SOURCES EXCLUDE REGEX "/src/script/[^/]+\\.cpp$")
+list(FILTER BAAS_CORE_SOURCES EXCLUDE REGEX "/src/script/.*\\.cpp$")
 
 if(TARGET_OS_NAME STREQUAL "Windows")
     list(REMOVE_ITEM BAAS_CORE_SOURCES "${CMAKE_CURRENT_LIST_DIR}/src/simdutf.cpp")

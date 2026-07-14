@@ -1,11 +1,14 @@
 include_guard(GLOBAL)
 
+find_package(Threads REQUIRED)
+
 add_library(
         BAAS_script_runtime
         STATIC
         "${BAAS_PROJECT_PATH}/src/script/Lexer.cpp"
         "${BAAS_PROJECT_PATH}/src/script/Parser.cpp"
         "${BAAS_PROJECT_PATH}/src/script/Token.cpp"
+        "${BAAS_PROJECT_PATH}/src/script/runtime/BoundedExecutor.cpp"
 )
 
 target_compile_features(BAAS_script_runtime PUBLIC cxx_std_20)
@@ -14,6 +17,7 @@ target_include_directories(
         PUBLIC
         "${BAAS_PROJECT_PATH}/include"
 )
+target_link_libraries(BAAS_script_runtime PUBLIC Threads::Threads)
 
 if(MSVC)
     # Script source is UTF-8 by definition. Propagate the input character set to
@@ -40,4 +44,13 @@ if(BUILD_SCRIPT_TESTS)
     target_compile_features(BAAS_script_parser_tests PRIVATE cxx_std_20)
     target_link_libraries(BAAS_script_parser_tests PRIVATE BAAS_script_runtime)
     add_test(NAME BAAS_script_parser_tests COMMAND BAAS_script_parser_tests)
+
+    add_executable(
+            BAAS_script_executor_tests
+            "${BAAS_PROJECT_PATH}/tests/script/BoundedExecutorTests.cpp"
+    )
+    target_compile_features(BAAS_script_executor_tests PRIVATE cxx_std_20)
+    target_link_libraries(BAAS_script_executor_tests PRIVATE BAAS_script_runtime)
+    add_test(NAME BAAS_script_executor_tests COMMAND BAAS_script_executor_tests)
+    set_tests_properties(BAAS_script_executor_tests PROPERTIES TIMEOUT 60)
 endif()
