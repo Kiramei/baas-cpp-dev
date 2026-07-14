@@ -37,9 +37,9 @@ an isolated prototype is not considered project completion.
   operation/source-scope decisions. It separates script Host requirements,
   script/module rewrites, C++ service internals, Tauri UI replacement,
   tooling/tests, dependencies, and unresolved calls. Bounded AST/type
-  resolution plus authoritative non-script source boundaries reduced unresolved
-  decisions from 1,842 to 183 without guessing script-runtime owners. All 349
-  Host decisions now have proposed contracts, while the remaining 183
+  resolution plus authoritative source-and-symbol boundaries reduced unresolved
+  decisions from 1,842 to 119 without guessing script-runtime owners. All 357
+  Host decisions now have proposed contracts, while the remaining 119
   script-runtime disposition decisions remain strict gaps. Privileged Windows,
   notification, IPC, updater, listener/descriptor, and codec ownership is fixed
   by `ADR-0003-privileged-operation-boundaries.md`. See

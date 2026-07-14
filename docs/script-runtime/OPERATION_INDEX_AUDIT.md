@@ -45,6 +45,14 @@ socket, subprocess, timer, and regular-expression factories; proven
 `io.IOBase` context-manager targets; and exact iterable element rules for
 `psutil.process_iter` and `re.finditer`.
 
+The audited-module pass then resolves only exact receiver operations whose
+meaning was checked at the pinned Python revision. Module-local text,
+collection, and class behavior remains in the script layer, while NumPy array
+reductions, the `self.u2()` pinch operation, and the thread result queue retain
+their existing Vision, Device, and Scheduler Host ownership. The rule is
+restricted to `module/*` plus an enumerated symbol list; it is not a receiver
+suffix heuristic and does not classify an identical unknown call in `core/*`.
+
 Unknown call results, subscripts, ambiguous unions, rebinding across possible
 control-flow paths, `getattr` with runtime names, and untyped parameters remain
 dynamic or unresolved. Module export discovery is AST-only; external wildcard
@@ -105,43 +113,43 @@ The source-scope split was 560 legacy-GUI, 520 C++-service, 402 script-runtime,
 | Unique operations | 4,363 |
 | Observed operation sites | 15,469 |
 | Operation/source decisions | 4,989 |
-| Unresolved disposition decisions | 183 across 183 operations |
-| Unresolved observed sites | 304 |
-| Host-binding-required decisions | 349 |
+| Unresolved disposition decisions | 119 across 119 operations |
+| Unresolved observed sites | 183 |
+| Host-binding-required decisions | 357 |
 | Host contract gaps | 0 |
 | Dynamic operations retained | 258 |
 | Parse errors | 0 |
 | Source snapshot SHA-256 | `76f974d77e7c63034296acefb86a707e150c68602db007f4dbec891c66f712ec` |
-| Rules SHA-256 | `0a6bf758119537353c3e17926409a0bf1d273098e721fe6b2f573242d3bb7573` |
-| JSON report SHA-256 | `c6223ebdf1117963834c56751815a6fff835378b2b59939049ca84891518598c` |
+| Rules SHA-256 | `e2d100f2858cbb04052c63fecaa5a8f4173a98c73da9ec3b9b631e58720797cb` |
+| JSON report SHA-256 | `76a55fa58770484478348aecaa01c39f5875a42bf981689ac557a6b45f278208` |
 
 ## Before/after unresolved inventory
 
-| Measure | Taxonomy v2 | Taxonomy v3 | v4 baseline | Hardened v4 | baseline→hardened |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| Unresolved decisions | 1,842 | 1,279 | 240 | 183 | -57 |
-| Unresolved observed sites | 3,467 | 2,302 | 378 | 304 | -74 |
-| Operations with unresolved disposition | 1,649 | 1,170 | 240 | 183 | -57 |
-| Static unresolved decisions | 1,512 | 1,008 | 167 | 116 | -51 |
-| Dynamic unresolved decisions | 330 | 271 | 73 | 67 | -6 |
-| Dynamic operations | 296 | 257 | 257 | 258 | +1 |
+| Measure | Taxonomy v2 | Taxonomy v3 | v4 baseline | Hardened v4 | Audited modules | hardened→audited |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Unresolved decisions | 1,842 | 1,279 | 240 | 183 | 119 | -64 |
+| Unresolved observed sites | 3,467 | 2,302 | 378 | 304 | 183 | -121 |
+| Operations with unresolved disposition | 1,649 | 1,170 | 240 | 183 | 119 | -64 |
+| Static unresolved decisions | 1,512 | 1,008 | 167 | 116 | 76 | -40 |
+| Dynamic unresolved decisions | 330 | 271 | 73 | 67 | 43 | -24 |
+| Dynamic operations | 296 | 257 | 257 | 258 | 258 | 0 |
 
-The remaining 183 decisions are all script-runtime calls: 111 member, 65
-chained, 5 name, and 2 dynamic decisions (116 statically unresolved and 67
+The remaining 119 decisions are all script-runtime calls: 71 member, 42
+chained, 5 name, and 1 dynamic decision (76 statically unresolved and 43
 dynamic). No unresolved call was assigned from a symbol-tail guess.
 
 ## Disposition inventory
 
 | Disposition | Decisions | Observed sites |
 | --- | ---: | ---: |
-| `HOST_BINDING_REQUIRED` | 349 | 1,985 |
-| `SCRIPT_LANGUAGE_OR_MODULE` | 832 | 2,983 |
+| `HOST_BINDING_REQUIRED` | 357 | 1,995 |
+| `SCRIPT_LANGUAGE_OR_MODULE` | 888 | 3,094 |
 | `CPP_SERVICE_INTERNAL` | 1,259 | 3,438 |
 | `TAURI_UI_REPLACED` | 1,476 | 4,298 |
 | `MIGRATION_TOOLING_ONLY` | 549 | 1,541 |
 | `TEST_ONLY` | 335 | 914 |
 | `EXTERNAL_DEPENDENCY` | 6 | 6 |
-| `UNRESOLVED` | 183 | 304 |
+| `UNRESOLVED` | 119 | 183 |
 
 ## Assigned contracts and Phase 0 gate
 
@@ -152,6 +160,6 @@ shortcut, and updater work outside the script Host surface. All Host decisions
 remain `INVENTORIED`; no binding or parity implementation is claimed.
 
 Strict mode independently checks unresolved dispositions, Host contract gaps,
-and parse failures. It therefore remains non-zero with 183 unresolved decisions
+and parse failures. It therefore remains non-zero with 119 unresolved decisions
 and zero Host contract gaps. Phase 0 remains incomplete. The generated matrix
 is an authoritative work queue, not proof that bindings or parity tests exist.

@@ -289,7 +289,7 @@ class HostCapabilityContractTests(unittest.TestCase):
             for decision in operation["scope_decisions"]:
                 if decision["disposition"] == "HOST_BINDING_REQUIRED":
                     host_decisions.append((operation, decision))
-        self.assertEqual(len(host_decisions), 349)
+        self.assertEqual(len(host_decisions), 357)
         self.assertEqual(
             {decision["classification_rule"] for _, decision in host_decisions},
             set(mappings),
