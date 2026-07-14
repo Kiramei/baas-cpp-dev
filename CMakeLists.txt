@@ -81,9 +81,15 @@ option(BUILD_BAAS_AW_CHECKER    "build BAAS Auto Fight Workflow Checker" OFF)
 option(BUILD_BAAS_NMS_BENCHMARK "Build BAAS vs OpenCV dnn NMS Google Benchmark executable" OFF)
 option(BUILD_SCRIPT_RUNTIME     "Build the standalone BAAS script runtime" OFF)
 option(BUILD_SCRIPT_TESTS       "Build native tests for the BAAS script runtime" OFF)
+option(BUILD_SERVICE_PROTOCOL   "Build the standalone BAAS service protocol library" OFF)
+option(BUILD_SERVICE_PROTOCOL_TESTS "Build native tests for the BAAS service protocol" OFF)
 
 if(BUILD_SCRIPT_TESTS AND NOT BUILD_SCRIPT_RUNTIME)
     set(BUILD_SCRIPT_RUNTIME ON CACHE BOOL "Build the standalone BAAS script runtime" FORCE)
+endif()
+
+if(BUILD_SERVICE_PROTOCOL_TESTS AND NOT BUILD_SERVICE_PROTOCOL)
+    set(BUILD_SERVICE_PROTOCOL ON CACHE BOOL "Build the standalone BAAS service protocol library" FORCE)
 endif()
 
 check_app_options(
@@ -153,9 +159,10 @@ file(
         ${CMAKE_CURRENT_LIST_DIR}/src/*.cpp
 )
 
-# The script runtime is an independent library and must not leak into the
-# legacy application's globbed core sources.
+# Standalone libraries must not leak into the legacy application's globbed
+# core sources.
 list(FILTER BAAS_CORE_SOURCES EXCLUDE REGEX "/src/script/.*\\.cpp$")
+list(FILTER BAAS_CORE_SOURCES EXCLUDE REGEX "/src/service/protocol/.*\\.cpp$")
 
 if(TARGET_OS_NAME STREQUAL "Windows")
     list(REMOVE_ITEM BAAS_CORE_SOURCES "${CMAKE_CURRENT_LIST_DIR}/src/simdutf.cpp")
@@ -190,6 +197,10 @@ endif()
 
 if(BUILD_SCRIPT_RUNTIME)
     include("${CMAKE_CURRENT_LIST_DIR}/cmake/ScriptRuntime.cmake")
+endif()
+
+if(BUILD_SERVICE_PROTOCOL)
+    include("${CMAKE_CURRENT_LIST_DIR}/cmake/ServiceProtocol.cmake")
 endif()
 
 add_library(
