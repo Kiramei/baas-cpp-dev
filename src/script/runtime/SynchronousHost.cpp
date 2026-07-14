@@ -290,6 +290,35 @@ LanguageErrorCode translate_host_boundary_failure(
         : LanguageErrorCode::HostInternal;
 }
 
+LanguageErrorCode translate_host_result_runtime_error(
+    const RuntimeErrorCode code) noexcept
+{
+    using enum RuntimeErrorCode;
+    switch (code) {
+        case TypeMismatch:
+        case InvalidUtf8:
+        case JsonCycle:
+        case JsonNonFinite:
+        case JsonUnsupported:
+        case JsonDepthLimitExceeded:
+        case JsonNodeLimitExceeded:
+        case JsonStringLimitExceeded:
+        case JsonByteLimitExceeded:
+        case JsonWorkLimitExceeded:
+        case JsonDuplicateKey:
+            return LanguageErrorCode::HostInternal;
+        case MemoryLimitExceeded:
+        case CellLimitExceeded:
+        case SingleAllocationExceeded:
+        case StringLimitExceeded:
+        case ExternalMemoryLimitExceeded:
+        case CollectionWorkLimitExceeded:
+            return LanguageErrorCode::MemoryLimitExceeded;
+        default:
+            return LanguageErrorCode::InternalInvariant;
+    }
+}
+
 JsonBridgeLimits effective_host_json_limits(const SynchronousHostLimits& limits) noexcept
 {
     auto result = limits.json_limits;

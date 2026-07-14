@@ -465,6 +465,47 @@ void test_owner_thread_and_reentry_guards()
           "Host callbacks must not re-enter the owning evaluator");
 }
 
+void test_result_heap_memory_failure_remains_terminal()
+{
+    runtime::SynchronousNativeBinding binding;
+    binding.binding_id = "host.log.text.v1";
+    binding.contract = {
+        {{"level", runtime::HostValueType::String, true},
+         {"message", runtime::HostValueType::String, true}},
+        runtime::HostValueType::String,
+        "log_events",
+        runtime::HostExecutionMode::ThreadSafe,
+        runtime::HostCancellationMode::Preflight};
+    binding.callback = [](const runtime::HostCallContext&,
+                          const runtime::HostArguments&) {
+        return runtime::HostResult::success(
+            runtime::HostValue(std::string(2'048, 'r')));
+    };
+    runtime::SynchronousHostLimits host_limits;
+    host_limits.max_string_bytes = 4'096;
+    auto bindings = std::make_shared<const runtime::SynchronousNativeBindingSet>(
+        std::vector<runtime::SynchronousNativeBinding>{std::move(binding)},
+        host_limits);
+    auto options = log_options(bindings);
+    options.metadata = std::make_shared<const runtime::HostModuleRegistry>(
+        std::vector<runtime::HostModuleDescriptor>{{
+            "baas/log", {1, 0},
+            {{"text", "host.log.text.v1", "log.emit"}}}});
+    runtime::HeapLimits heap_limits;
+    heap_limits.max_string_bytes = 1'024;
+    runtime::SynchronousEvaluator evaluator(
+        {{"main",
+          "import \"baas/log\" as log; log.text(\"i\", \"m\");\n"}},
+        options,
+        {},
+        heap_limits);
+    expect_error(runtime::LanguageErrorCode::MemoryLimitExceeded,
+        [&] { static_cast<void>(evaluator.execute("main")); },
+        "real heap StringLimitExceeded during Host result publication must remain terminal memory exhaustion");
+    check(evaluator.stats().host_calls == 1,
+          "result publication failure occurs only after one successful callback result");
+}
+
 }  // namespace
 
 int main()
@@ -478,6 +519,7 @@ int main()
         test_budget_failure_cache_and_exception_translation();
         test_cache_transaction_permission_preflight_and_failure_cache();
         test_owner_thread_and_reentry_guards();
+        test_result_heap_memory_failure_remains_terminal();
     } catch (const std::exception& error) {
         std::cerr << "UNCAUGHT: " << error.what() << '\n';
         return EXIT_FAILURE;

@@ -112,6 +112,47 @@ void test_error_taxonomy_and_total_translation()
           "out-of-range Host status must map safely to HostInternal");
 }
 
+void test_result_runtime_error_translation()
+{
+    for (const auto code : {
+             RuntimeErrorCode::TypeMismatch,
+             RuntimeErrorCode::InvalidUtf8,
+             RuntimeErrorCode::JsonCycle,
+             RuntimeErrorCode::JsonNonFinite,
+             RuntimeErrorCode::JsonUnsupported,
+             RuntimeErrorCode::JsonDepthLimitExceeded,
+             RuntimeErrorCode::JsonNodeLimitExceeded,
+             RuntimeErrorCode::JsonStringLimitExceeded,
+             RuntimeErrorCode::JsonByteLimitExceeded,
+             RuntimeErrorCode::JsonWorkLimitExceeded,
+             RuntimeErrorCode::JsonDuplicateKey}) {
+        check(translate_host_result_runtime_error(code) == LanguageErrorCode::HostInternal,
+              "invalid successful Host results must translate to HostInternal");
+    }
+    for (const auto code : {
+             RuntimeErrorCode::MemoryLimitExceeded,
+             RuntimeErrorCode::CellLimitExceeded,
+             RuntimeErrorCode::SingleAllocationExceeded,
+             RuntimeErrorCode::StringLimitExceeded,
+             RuntimeErrorCode::ExternalMemoryLimitExceeded,
+             RuntimeErrorCode::CollectionWorkLimitExceeded}) {
+        check(translate_host_result_runtime_error(code) ==
+                  LanguageErrorCode::MemoryLimitExceeded,
+              "terminal heap failures while publishing Host results must remain memory errors");
+    }
+    for (const auto code : {
+             RuntimeErrorCode::CrossHeapReference,
+             RuntimeErrorCode::StaleReference,
+             RuntimeErrorCode::CellKindMismatch,
+             RuntimeErrorCode::HeapTornDown,
+             RuntimeErrorCode::IndexOutOfRange,
+             RuntimeErrorCode::ReleaseQueueLimitExceeded}) {
+        check(translate_host_result_runtime_error(code) ==
+                  LanguageErrorCode::InternalInvariant,
+              "invalid evaluator state while publishing Host results must remain internal");
+    }
+}
+
 void test_immutable_binding_set_validation()
 {
     auto callback = [](const HostCallContext&, const HostArguments&) {
@@ -284,6 +325,7 @@ void test_contract_shapes_utf8_and_strict_string_limit()
 int main()
 {
     test_error_taxonomy_and_total_translation();
+    test_result_runtime_error_translation();
     test_immutable_binding_set_validation();
     test_owning_scalar_and_json_conversion();
     test_guarded_callback_result_and_exception_redaction();

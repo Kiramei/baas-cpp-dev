@@ -1945,9 +1945,15 @@ Value SynchronousEvaluator::Impl::invoke_native(
             heap, result.value(), contract.result, result_limits);
     } catch (const EvaluationError&) {
         throw;
-    } catch (const RuntimeError&) {
-        fail(LanguageErrorCode::HostInternal,
-             "Host result does not satisfy the binding contract", span);
+    } catch (const RuntimeError& error) {
+        const auto translated = translate_host_result_runtime_error(error.code());
+        fail(translated,
+             translated == LanguageErrorCode::MemoryLimitExceeded
+                 ? "Host result publication exhausted evaluator memory"
+                 : translated == LanguageErrorCode::InternalInvariant
+                     ? "Host result referenced invalid evaluator state"
+                     : "Host result does not satisfy the binding contract",
+             span);
     }
 }
 

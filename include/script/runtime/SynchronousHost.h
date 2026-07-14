@@ -199,6 +199,8 @@ struct HostErrorTranslation {
 [[nodiscard]] HostErrorTranslation translate_host_error(const HostError& error) noexcept;
 [[nodiscard]] LanguageErrorCode translate_host_boundary_failure(
     HostResult::BoundaryFailure failure) noexcept;
+[[nodiscard]] LanguageErrorCode translate_host_result_runtime_error(
+    RuntimeErrorCode code) noexcept;
 [[nodiscard]] JsonBridgeLimits effective_host_json_limits(
     const SynchronousHostLimits& limits) noexcept;
 
