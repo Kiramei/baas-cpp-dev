@@ -1,0 +1,911 @@
+{
+  "generator_version": "1.0.0",
+  "limits": {
+    "max_evidence_bytes": 262144,
+    "max_record_bytes": 65536,
+    "max_records_per_workflow": 64,
+    "max_workflows": 8
+  },
+  "schema": "baas.python-golden-traces",
+  "schema_version": 1,
+  "scope": {
+    "executed": [
+      "configuration snapshot, JSON Patch persistence, and update push",
+      "service-injected offline image template matching",
+      "scheduler queue rebuild and heartbeat ordering",
+      "grid-action dispatch through the traced click host facade"
+    ],
+    "not_executed": [
+      "device, emulator, ADB, scrcpy, Nemu, or uiautomator I/O",
+      "OCR initialization or inference",
+      "network access or remote repository operations",
+      "FastAPI service lifespan or WebSocket/pipe transport",
+      "Tauri integration or packaged application startup"
+    ]
+  },
+  "source": {
+    "production_commit": "75bbacb545bc87e9510d85cbe8034f9180397004",
+    "repository": "Kiramei/baas-dev",
+    "runtime": {
+      "cv2": "4.8.1",
+      "numpy": "1.26.4",
+      "python": "3.11.9"
+    },
+    "trace_checkout_clean": true,
+    "trace_commit": "3a8f58585b69bf7cf54fe66115352b41f4094aa3",
+    "trace_parent_verified": true
+  },
+  "summary": {
+    "categories": [
+      "configuration",
+      "image_matching",
+      "operation_orchestration",
+      "scheduling"
+    ],
+    "record_count": 30,
+    "workflow_count": 4,
+    "workflow_ids": [
+      "configuration.snapshot_patch",
+      "image.cafe_match",
+      "scheduler.queue_rebuild",
+      "orchestration.grid_actions"
+    ],
+    "workflows_sha256": "d5db0c4be8999893c406af68e4cc16ff9e81becd1a48542bf5cb6dee465d5462"
+  },
+  "workflows": [
+    {
+      "boundary": "service.conf.ConfigManager filesystem snapshot/JSON Patch/push",
+      "category": "configuration",
+      "entrypoint": "service.conf.manager.ConfigManager.apply_patch",
+      "id": "configuration.snapshot_patch",
+      "offline": true,
+      "records": [
+        {
+          "event": "session.start",
+          "monotonic_ns": 1000,
+          "payload": {
+            "clock": {
+              "id": "golden.step-clock.v1",
+              "monotonic_injected": true,
+              "wall_injected": true
+            },
+            "metadata": {
+              "fixture": "configuration.snapshot_patch",
+              "offline": true
+            },
+            "rng": {
+              "id": "golden.no-rng.v1",
+              "injected": true
+            },
+            "wall_time_ns": 1700000000000000000
+          },
+          "schema": "baas.parity-trace",
+          "schema_version": 1,
+          "seq": 1,
+          "session_id": "golden-configuration.snapshot_patch",
+          "task_id": "configuration.snapshot_patch"
+        },
+        {
+          "event": "host.begin",
+          "monotonic_ns": 1010,
+          "payload": {
+            "metadata": null,
+            "operation": "config.snapshot",
+            "operation_id": "op-1",
+            "params": {
+              "resource": "config",
+              "resource_id": "fixture_config"
+            }
+          },
+          "schema": "baas.parity-trace",
+          "schema_version": 1,
+          "seq": 2,
+          "session_id": "golden-configuration.snapshot_patch",
+          "task_id": "configuration.snapshot_patch"
+        },
+        {
+          "event": "host.end",
+          "monotonic_ns": 1020,
+          "payload": {
+            "duration_ns": 10,
+            "operation": "config.snapshot",
+            "operation_id": "op-1",
+            "result": {
+              "data": {
+                "credentials": {
+                  "api_token": "<redacted>"
+                },
+                "difficulty": 1,
+                "name": "Golden Fixture",
+                "server": "CN-official",
+                "unknown_extension": {
+                  "preserve": true
+                }
+              },
+              "timestamp": 1700000000000.0
+            }
+          },
+          "schema": "baas.parity-trace",
+          "schema_version": 1,
+          "seq": 3,
+          "session_id": "golden-configuration.snapshot_patch",
+          "task_id": "configuration.snapshot_patch"
+        },
+        {
+          "event": "host.begin",
+          "monotonic_ns": 1030,
+          "payload": {
+            "metadata": null,
+            "operation": "config.apply_patch",
+            "operation_id": "op-2",
+            "params": {
+              "operations": [
+                {
+                  "op": "replace",
+                  "path": "/difficulty",
+                  "value": 3
+                },
+                {
+                  "op": "add",
+                  "path": "/new_option",
+                  "value": [
+                    "a",
+                    "b"
+                  ]
+                }
+              ],
+              "resource": "config",
+              "resource_id": "fixture_config",
+              "timestamp": 1700000000000.0
+            }
+          },
+          "schema": "baas.parity-trace",
+          "schema_version": 1,
+          "seq": 4,
+          "session_id": "golden-configuration.snapshot_patch",
+          "task_id": "configuration.snapshot_patch"
+        },
+        {
+          "event": "host.end",
+          "monotonic_ns": 1040,
+          "payload": {
+            "duration_ns": 10,
+            "operation": "config.apply_patch",
+            "operation_id": "op-2",
+            "result": {
+              "data": {
+                "credentials": {
+                  "api_token": "<redacted>"
+                },
+                "difficulty": 3,
+                "name": "Golden Fixture",
+                "new_option": [
+                  "a",
+                  "b"
+                ],
+                "server": "CN-official",
+                "unknown_extension": {
+                  "preserve": true
+                }
+              },
+              "persisted_equals_snapshot": true,
+              "push": {
+                "ops": [
+                  {
+                    "op": "replace",
+                    "path": "/difficulty",
+                    "value": 3
+                  },
+                  {
+                    "op": "add",
+                    "path": "/new_option",
+                    "value": [
+                      "a",
+                      "b"
+                    ]
+                  }
+                ],
+                "origin": "frontend",
+                "resource": "config",
+                "resource_id": "fixture_config",
+                "timestamp": 1700000001000.0,
+                "type": "patch"
+              },
+              "timestamp": 1700000001000.0,
+              "unknown_field_retained": true
+            }
+          },
+          "schema": "baas.parity-trace",
+          "schema_version": 1,
+          "seq": 5,
+          "session_id": "golden-configuration.snapshot_patch",
+          "task_id": "configuration.snapshot_patch"
+        },
+        {
+          "event": "task.result",
+          "monotonic_ns": 1050,
+          "payload": {
+            "metadata": {
+              "new_option": [
+                "a",
+                "b"
+              ],
+              "patched_difficulty": 3,
+              "unknown_field_retained": true
+            }
+          },
+          "schema": "baas.parity-trace",
+          "schema_version": 1,
+          "seq": 6,
+          "session_id": "golden-configuration.snapshot_patch",
+          "task_id": "configuration.snapshot_patch"
+        },
+        {
+          "event": "session.end",
+          "monotonic_ns": 1060,
+          "payload": {
+            "dropped_events": 0,
+            "write_errors": 0
+          },
+          "schema": "baas.parity-trace",
+          "schema_version": 1,
+          "seq": 7,
+          "session_id": "golden-configuration.snapshot_patch",
+          "task_id": "configuration.snapshot_patch"
+        }
+      ],
+      "summary": {
+        "event_counts": {
+          "host.begin": 2,
+          "host.end": 2,
+          "session.end": 1,
+          "session.start": 1,
+          "task.result": 1
+        },
+        "operations": [
+          "config.apply_patch",
+          "config.snapshot"
+        ],
+        "record_count": 7,
+        "records_sha256": "0587bde2ead5faea55a2e402f21033f4590e4672b904e647b007ab89ba94f771"
+      }
+    },
+    {
+      "boundary": "production service-injected OpenCV template matching",
+      "category": "image_matching",
+      "entrypoint": "service.injection._patch_cafe_reward -> module.cafe_reward.match",
+      "id": "image.cafe_match",
+      "offline": true,
+      "records": [
+        {
+          "event": "session.start",
+          "monotonic_ns": 2000,
+          "payload": {
+            "clock": {
+              "id": "golden.step-clock.v1",
+              "monotonic_injected": true,
+              "wall_injected": true
+            },
+            "metadata": {
+              "fixture": "image.cafe_match",
+              "offline": true
+            },
+            "rng": {
+              "id": "golden.no-rng.v1",
+              "injected": true
+            },
+            "wall_time_ns": 1700000000000000000
+          },
+          "schema": "baas.parity-trace",
+          "schema_version": 1,
+          "seq": 1,
+          "session_id": "golden-image.cafe_match",
+          "task_id": "image.cafe_match"
+        },
+        {
+          "event": "host.begin",
+          "monotonic_ns": 2010,
+          "payload": {
+            "metadata": null,
+            "operation": "image.cafe_reward.match",
+            "operation_id": "op-1",
+            "params": {
+              "algorithm": "service-injected",
+              "image": {
+                "$type": "image",
+                "dtype": "uint8",
+                "fixture_ref": "fixtures/cafe-composite-v1",
+                "sha256": "5153eae029ba6f06e06e54ced5db9da97631feabba1554bce1eea3b9efe1e998",
+                "shape": [
+                  720,
+                  1280,
+                  3
+                ],
+                "size_bytes": 2764800
+              },
+              "template": {
+                "$type": "image",
+                "dtype": "uint8",
+                "fixture_ref": "src/images/CN/cafe/happy_face1.png",
+                "sha256": "3b13a1e5a3e79fb2d7c044f807bb497686f523645b39d8b1c5514bab299bf5aa",
+                "shape": [
+                  16,
+                  17,
+                  3
+                ],
+                "size_bytes": 816
+              }
+            }
+          },
+          "schema": "baas.parity-trace",
+          "schema_version": 1,
+          "seq": 2,
+          "session_id": "golden-image.cafe_match",
+          "task_id": "image.cafe_match"
+        },
+        {
+          "event": "host.end",
+          "monotonic_ns": 2020,
+          "payload": {
+            "duration_ns": 10,
+            "operation": "image.cafe_reward.match",
+            "operation_id": "op-1",
+            "result": {
+              "matches": [
+                [
+                  308,
+                  265
+                ]
+              ],
+              "service_injection_marker": true
+            }
+          },
+          "schema": "baas.parity-trace",
+          "schema_version": 1,
+          "seq": 3,
+          "session_id": "golden-image.cafe_match",
+          "task_id": "image.cafe_match"
+        },
+        {
+          "event": "task.result",
+          "monotonic_ns": 2030,
+          "payload": {
+            "metadata": {
+              "expected_match": [
+                308,
+                266
+              ],
+              "expected_match_present": true,
+              "input_shape": [
+                720,
+                1280,
+                3
+              ],
+              "match_count": 1,
+              "template_shape": [
+                16,
+                17,
+                3
+              ]
+            }
+          },
+          "schema": "baas.parity-trace",
+          "schema_version": 1,
+          "seq": 4,
+          "session_id": "golden-image.cafe_match",
+          "task_id": "image.cafe_match"
+        },
+        {
+          "event": "session.end",
+          "monotonic_ns": 2040,
+          "payload": {
+            "dropped_events": 0,
+            "write_errors": 0
+          },
+          "schema": "baas.parity-trace",
+          "schema_version": 1,
+          "seq": 5,
+          "session_id": "golden-image.cafe_match",
+          "task_id": "image.cafe_match"
+        }
+      ],
+      "summary": {
+        "event_counts": {
+          "host.begin": 1,
+          "host.end": 1,
+          "session.end": 1,
+          "session.start": 1,
+          "task.result": 1
+        },
+        "operations": [
+          "image.cafe_reward.match"
+        ],
+        "record_count": 5,
+        "records_sha256": "bc394fe885c2ebbb67fca718ddf482109b520ea0246a7923f29005dd6e8dc600"
+      }
+    },
+    {
+      "boundary": "core scheduler event-file filtering, ordering, and heartbeat",
+      "category": "scheduling",
+      "entrypoint": "core.scheduler.Scheduler.heartbeat",
+      "id": "scheduler.queue_rebuild",
+      "offline": true,
+      "records": [
+        {
+          "event": "session.start",
+          "monotonic_ns": 3000,
+          "payload": {
+            "clock": {
+              "id": "golden.step-clock.v1",
+              "monotonic_injected": true,
+              "wall_injected": true
+            },
+            "metadata": {
+              "fixture": "scheduler.queue_rebuild",
+              "offline": true
+            },
+            "rng": {
+              "id": "golden.no-rng.v1",
+              "injected": true
+            },
+            "wall_time_ns": 1700000000000000000
+          },
+          "schema": "baas.parity-trace",
+          "schema_version": 1,
+          "seq": 1,
+          "session_id": "golden-scheduler.queue_rebuild",
+          "task_id": "scheduler.queue_rebuild"
+        },
+        {
+          "event": "host.begin",
+          "monotonic_ns": 3010,
+          "payload": {
+            "metadata": null,
+            "operation": "scheduler.queue_rebuild",
+            "operation_id": "op-1",
+            "params": {
+              "passes": 2
+            }
+          },
+          "schema": "baas.parity-trace",
+          "schema_version": 1,
+          "seq": 2,
+          "session_id": "golden-scheduler.queue_rebuild",
+          "task_id": "scheduler.queue_rebuild"
+        },
+        {
+          "event": "host.end",
+          "monotonic_ns": 3020,
+          "payload": {
+            "duration_ns": 10,
+            "operation": "scheduler.queue_rebuild",
+            "operation_id": "op-1",
+            "result": {
+              "queue": [
+                {
+                  "current_task": "task_a",
+                  "post_task": [],
+                  "pre_task": []
+                },
+                {
+                  "current_task": "task_b",
+                  "post_task": [],
+                  "pre_task": []
+                }
+              ],
+              "waiting": [
+                "Task A",
+                "Task B"
+              ]
+            }
+          },
+          "schema": "baas.parity-trace",
+          "schema_version": 1,
+          "seq": 3,
+          "session_id": "golden-scheduler.queue_rebuild",
+          "task_id": "scheduler.queue_rebuild"
+        },
+        {
+          "event": "host.begin",
+          "monotonic_ns": 3030,
+          "payload": {
+            "metadata": null,
+            "operation": "scheduler.heartbeat",
+            "operation_id": "op-2",
+            "params": {}
+          },
+          "schema": "baas.parity-trace",
+          "schema_version": 1,
+          "seq": 4,
+          "session_id": "golden-scheduler.queue_rebuild",
+          "task_id": "scheduler.queue_rebuild"
+        },
+        {
+          "event": "host.end",
+          "monotonic_ns": 3040,
+          "payload": {
+            "duration_ns": 10,
+            "operation": "scheduler.heartbeat",
+            "operation_id": "op-2",
+            "result": {
+              "remaining": [
+                "Task B"
+              ],
+              "selected": {
+                "current_task": "task_a",
+                "post_task": [],
+                "pre_task": []
+              },
+              "signals": [
+                [
+                  "Task A",
+                  "Task B"
+                ]
+              ]
+            }
+          },
+          "schema": "baas.parity-trace",
+          "schema_version": 1,
+          "seq": 5,
+          "session_id": "golden-scheduler.queue_rebuild",
+          "task_id": "scheduler.queue_rebuild"
+        },
+        {
+          "event": "task.result",
+          "monotonic_ns": 3050,
+          "payload": {
+            "metadata": {
+              "remaining": [
+                "Task B"
+              ],
+              "selected": "task_a",
+              "signals": [
+                [
+                  "Task A",
+                  "Task B"
+                ]
+              ]
+            }
+          },
+          "schema": "baas.parity-trace",
+          "schema_version": 1,
+          "seq": 6,
+          "session_id": "golden-scheduler.queue_rebuild",
+          "task_id": "scheduler.queue_rebuild"
+        },
+        {
+          "event": "session.end",
+          "monotonic_ns": 3060,
+          "payload": {
+            "dropped_events": 0,
+            "write_errors": 0
+          },
+          "schema": "baas.parity-trace",
+          "schema_version": 1,
+          "seq": 7,
+          "session_id": "golden-scheduler.queue_rebuild",
+          "task_id": "scheduler.queue_rebuild"
+        }
+      ],
+      "summary": {
+        "event_counts": {
+          "host.begin": 2,
+          "host.end": 2,
+          "session.end": 1,
+          "session.start": 1,
+          "task.result": 1
+        },
+        "operations": [
+          "scheduler.heartbeat",
+          "scheduler.queue_rebuild"
+        ],
+        "record_count": 7,
+        "records_sha256": "4ca26dd36eb8d76b12e26af70b88df5a724ed78d663d9f43ee73573a74c13bd0"
+      }
+    },
+    {
+      "boundary": "real grid-action dispatcher crossing the traced click facade into a deterministic host double",
+      "category": "operation_orchestration",
+      "entrypoint": "module.explore_tasks.task_utils.run_task_action",
+      "id": "orchestration.grid_actions",
+      "offline": true,
+      "records": [
+        {
+          "event": "session.start",
+          "monotonic_ns": 4000,
+          "payload": {
+            "clock": {
+              "id": "golden.step-clock.v1",
+              "monotonic_injected": true,
+              "wall_injected": true
+            },
+            "metadata": {
+              "fixture": "orchestration.grid_actions",
+              "offline": true
+            },
+            "rng": {
+              "id": "golden.no-rng.v1",
+              "injected": true
+            },
+            "wall_time_ns": 1700000000000000000
+          },
+          "schema": "baas.parity-trace",
+          "schema_version": 1,
+          "seq": 1,
+          "session_id": "golden-orchestration.grid_actions",
+          "task_id": "orchestration.grid_actions"
+        },
+        {
+          "event": "host.begin",
+          "monotonic_ns": 4010,
+          "payload": {
+            "metadata": null,
+            "operation": "orchestration.run_task_action",
+            "operation_id": "op-1",
+            "params": {
+              "actions": [
+                {
+                  "description": "fixture click",
+                  "p": [
+                    320,
+                    240
+                  ],
+                  "t": "click"
+                },
+                {
+                  "p": [
+                    600,
+                    350
+                  ],
+                  "t": "choose_and_change"
+                }
+              ]
+            }
+          },
+          "schema": "baas.parity-trace",
+          "schema_version": 1,
+          "seq": 2,
+          "session_id": "golden-orchestration.grid_actions",
+          "task_id": "orchestration.grid_actions"
+        },
+        {
+          "event": "host.begin",
+          "monotonic_ns": 4020,
+          "payload": {
+            "metadata": null,
+            "operation": "baas.click",
+            "operation_id": "op-2",
+            "params": {
+              "count": 1,
+              "duration": 0,
+              "rate": 0,
+              "wait_over": true,
+              "x": 320,
+              "y": 240
+            }
+          },
+          "schema": "baas.parity-trace",
+          "schema_version": 1,
+          "seq": 3,
+          "session_id": "golden-orchestration.grid_actions",
+          "task_id": "orchestration.grid_actions"
+        },
+        {
+          "event": "host.end",
+          "monotonic_ns": 4030,
+          "payload": {
+            "duration_ns": 10,
+            "operation": "baas.click",
+            "operation_id": "op-2",
+            "result": {
+              "scheduled": false
+            }
+          },
+          "schema": "baas.parity-trace",
+          "schema_version": 1,
+          "seq": 4,
+          "session_id": "golden-orchestration.grid_actions",
+          "task_id": "orchestration.grid_actions"
+        },
+        {
+          "event": "host.begin",
+          "monotonic_ns": 4040,
+          "payload": {
+            "metadata": null,
+            "operation": "baas.click",
+            "operation_id": "op-3",
+            "params": {
+              "count": 1,
+              "duration": 0.3,
+              "rate": 0,
+              "wait_over": true,
+              "x": 600,
+              "y": 350
+            }
+          },
+          "schema": "baas.parity-trace",
+          "schema_version": 1,
+          "seq": 5,
+          "session_id": "golden-orchestration.grid_actions",
+          "task_id": "orchestration.grid_actions"
+        },
+        {
+          "event": "host.end",
+          "monotonic_ns": 4050,
+          "payload": {
+            "duration_ns": 10,
+            "operation": "baas.click",
+            "operation_id": "op-3",
+            "result": {
+              "scheduled": false
+            }
+          },
+          "schema": "baas.parity-trace",
+          "schema_version": 1,
+          "seq": 6,
+          "session_id": "golden-orchestration.grid_actions",
+          "task_id": "orchestration.grid_actions"
+        },
+        {
+          "event": "host.begin",
+          "monotonic_ns": 4060,
+          "payload": {
+            "metadata": null,
+            "operation": "baas.click",
+            "operation_id": "op-4",
+            "params": {
+              "count": 1,
+              "duration": 1,
+              "rate": 0,
+              "wait_over": true,
+              "x": 500,
+              "y": 350
+            }
+          },
+          "schema": "baas.parity-trace",
+          "schema_version": 1,
+          "seq": 7,
+          "session_id": "golden-orchestration.grid_actions",
+          "task_id": "orchestration.grid_actions"
+        },
+        {
+          "event": "host.end",
+          "monotonic_ns": 4070,
+          "payload": {
+            "duration_ns": 10,
+            "operation": "baas.click",
+            "operation_id": "op-4",
+            "result": {
+              "scheduled": false
+            }
+          },
+          "schema": "baas.parity-trace",
+          "schema_version": 1,
+          "seq": 8,
+          "session_id": "golden-orchestration.grid_actions",
+          "task_id": "orchestration.grid_actions"
+        },
+        {
+          "event": "host.end",
+          "monotonic_ns": 4080,
+          "payload": {
+            "duration_ns": 70,
+            "operation": "orchestration.run_task_action",
+            "operation_id": "op-1",
+            "result": {
+              "interval_changes": [
+                1,
+                0.25
+              ],
+              "log_messages": [
+                [
+                  "info",
+                  "------Starting actions. Total actions: 2------"
+                ],
+                [
+                  "info",
+                  "[-]Current formation : 2"
+                ],
+                [
+                  "info",
+                  "-->Action 1:Click @ (320, 240)->info:fixture click\n"
+                ],
+                [
+                  "info",
+                  "[-]Current formation : 2"
+                ],
+                [
+                  "info",
+                  "-->Action 2:Exchange formation @ (600, 350)\n"
+                ]
+              ],
+              "physical_clicks": [
+                {
+                  "count": 1,
+                  "duration": 0,
+                  "rate": 0,
+                  "wait_over": true,
+                  "x": 320,
+                  "y": 240
+                },
+                {
+                  "count": 1,
+                  "duration": 0.3,
+                  "rate": 0,
+                  "wait_over": true,
+                  "x": 600,
+                  "y": 350
+                },
+                {
+                  "count": 1,
+                  "duration": 1,
+                  "rate": 0,
+                  "wait_over": true,
+                  "x": 500,
+                  "y": 350
+                }
+              ],
+              "popup_calls": [
+                false
+              ]
+            }
+          },
+          "schema": "baas.parity-trace",
+          "schema_version": 1,
+          "seq": 9,
+          "session_id": "golden-orchestration.grid_actions",
+          "task_id": "orchestration.grid_actions"
+        },
+        {
+          "event": "task.result",
+          "monotonic_ns": 4090,
+          "payload": {
+            "metadata": {
+              "interval_changes": [
+                1,
+                0.25
+              ],
+              "physical_click_count": 3,
+              "popup_calls": [
+                false
+              ]
+            }
+          },
+          "schema": "baas.parity-trace",
+          "schema_version": 1,
+          "seq": 10,
+          "session_id": "golden-orchestration.grid_actions",
+          "task_id": "orchestration.grid_actions"
+        },
+        {
+          "event": "session.end",
+          "monotonic_ns": 4100,
+          "payload": {
+            "dropped_events": 0,
+            "write_errors": 0
+          },
+          "schema": "baas.parity-trace",
+          "schema_version": 1,
+          "seq": 11,
+          "session_id": "golden-orchestration.grid_actions",
+          "task_id": "orchestration.grid_actions"
+        }
+      ],
+      "summary": {
+        "event_counts": {
+          "host.begin": 4,
+          "host.end": 4,
+          "session.end": 1,
+          "session.start": 1,
+          "task.result": 1
+        },
+        "operations": [
+          "baas.click",
+          "orchestration.run_task_action"
+        ],
+        "record_count": 11,
+        "records_sha256": "d7a38f08aef0873a5c8fb784c5e8879cb07a0220a00653b437e41cad882210fc"
+      }
+    }
+  ]
+}

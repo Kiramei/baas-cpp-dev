@@ -43,7 +43,11 @@ an isolated prototype is not considered project completion.
   on `feat/cpp-parity-trace` without changing the default execution path.
 - [x] Add a deterministic static migration validator for grid actions, image
   mappings, and OCR calls, with fixture tests and real-repository reporting.
-- [ ] Capture baseline Python golden traces for representative workflows.
+- [x] Capture baseline Python golden traces for representative workflows.
+  `PYTHON_GOLDEN_TRACES.md` records four deterministic offline workflows across
+  configuration, image matching, scheduling, and operation orchestration with
+  pinned source commits, bounded/redacted evidence, and a rebuilding `--check`.
+  Device, OCR, service, Tauri, and Python-to-C++ replay parity remain pending.
 - [~] Capture baseline latency, memory, startup, throughput, and package-size
   measurements on Windows x64. Host process startup, import readiness, RSS,
   legacy and production service-injected `cafe_reward.match`, and logical tree

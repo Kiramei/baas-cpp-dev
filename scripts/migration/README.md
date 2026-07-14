@@ -96,3 +96,25 @@ are deterministic, but timing/RSS samples naturally vary. A missing dependency
 or failed probe is recorded with a diagnostic and makes the command return 1;
 invalid setup returns 2. Every repetition is a new interpreter process, but
 the command does not flush the operating-system file cache.
+
+## Representative Python golden traces
+
+`capture_python_golden_traces.py` executes four pinned, offline workflows from
+the clean `baas-dev` opt-in trace revision: configuration snapshot/patch,
+service-injected image matching, scheduler queue/heartbeat, and grid-action
+dispatch through the traced click facade. Device, OCR, network, service
+lifespan, and Tauri paths are not executed.
+
+```powershell
+python scripts/migration/capture_python_golden_traces.py `
+  --python-repo ..\.worktrees\baas-dev-parity-trace `
+  --python-executable ..\baas-dev\.venv\Scripts\python.exe `
+  --output docs\script-runtime\evidence\python-golden-traces.json `
+  --check
+```
+
+The source must be clean at trace commit `3a8f58585b69bf7cf54fe66115352b41f4094aa3`,
+whose parent is production commit `75bbacb545bc87e9510d85cbe8034f9180397004`.
+The strict schema enforces workflow/category coverage, trace pairing/order,
+redaction, hashes, and hard output bounds. `--check` is read-only and reports
+the first differing JSON Pointer. See `docs/script-runtime/PYTHON_GOLDEN_TRACES.md`.

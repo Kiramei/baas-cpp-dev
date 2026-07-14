@@ -36,6 +36,8 @@ on:
       - 'docs/script-runtime/PLATFORM_SMOKE_PREREQUISITES.md'
       - 'docs/script-runtime/evidence/platform_smoke_prerequisites.windows.json'
       - 'docs/DEVELOPMENT_ENVIRONMENT.md'
+      - 'docs/script-runtime/PYTHON_GOLDEN_TRACES.md'
+      - 'docs/script-runtime/evidence/python-golden-traces.json'
   pull_request:
     branches:
       - main
@@ -72,6 +74,8 @@ on:
       - 'docs/script-runtime/PLATFORM_SMOKE_PREREQUISITES.md'
       - 'docs/script-runtime/evidence/platform_smoke_prerequisites.windows.json'
       - 'docs/DEVELOPMENT_ENVIRONMENT.md'
+      - 'docs/script-runtime/PYTHON_GOLDEN_TRACES.md'
+      - 'docs/script-runtime/evidence/python-golden-traces.json'
 
 permissions:
   contents: read
