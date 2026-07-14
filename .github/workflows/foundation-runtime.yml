@@ -49,6 +49,7 @@ on:
       - 'docs/script-runtime/PYTHON_SERVICE_PERFORMANCE_BASELINE.md'
       - 'docs/script-runtime/evidence/python-service-performance-baseline.json'
       - 'docs/script-runtime/SERVICE_ROUTER_CORE.md'
+      - 'docs/script-runtime/SERVICE_HEALTH_READINESS.md'
       - 'docs/script-runtime/SERVICE_HTTPLIB_ADAPTER.md'
       - 'docs/script-runtime/SERVICE_ORIGIN_POLICY.md'
   pull_request:
@@ -100,6 +101,7 @@ on:
       - 'docs/script-runtime/PYTHON_SERVICE_PERFORMANCE_BASELINE.md'
       - 'docs/script-runtime/evidence/python-service-performance-baseline.json'
       - 'docs/script-runtime/SERVICE_ROUTER_CORE.md'
+      - 'docs/script-runtime/SERVICE_HEALTH_READINESS.md'
       - 'docs/script-runtime/SERVICE_HTTPLIB_ADAPTER.md'
       - 'docs/script-runtime/SERVICE_ORIGIN_POLICY.md'
 

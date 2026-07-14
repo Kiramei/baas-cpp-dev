@@ -16,6 +16,7 @@ ROUTER_SOURCE_PATH = ROOT / "src" / "service" / "router" / "Router.cpp"
 ROUTER_CORE_SPEC_PATH = ROOT / "docs" / "script-runtime" / "SERVICE_ROUTER_CORE.md"
 HTTP_HOST_SPEC_PATH = ROOT / "docs" / "script-runtime" / "SERVICE_HTTPLIB_ADAPTER.md"
 ORIGIN_POLICY_SPEC_PATH = ROOT / "docs" / "script-runtime" / "SERVICE_ORIGIN_POLICY.md"
+HEALTH_READINESS_SPEC_PATH = ROOT / "docs" / "script-runtime" / "SERVICE_HEALTH_READINESS.md"
 
 
 class ServiceProtocolSpecTests(unittest.TestCase):
@@ -33,6 +34,7 @@ class ServiceProtocolSpecTests(unittest.TestCase):
         cls.router_core_spec = ROUTER_CORE_SPEC_PATH.read_text(encoding="utf-8")
         cls.http_host_spec = HTTP_HOST_SPEC_PATH.read_text(encoding="utf-8")
         cls.origin_policy_spec = ORIGIN_POLICY_SPEC_PATH.read_text(encoding="utf-8")
+        cls.health_readiness_spec = HEALTH_READINESS_SPEC_PATH.read_text(encoding="utf-8")
 
     def test_every_tagged_json_example_is_valid_object(self) -> None:
         self.assertGreaterEqual(len(self.examples), 8)
@@ -117,6 +119,16 @@ class ServiceProtocolSpecTests(unittest.TestCase):
         self.assertIn("does not derive readiness", self.router_core_spec)
         for field in ("statuses", "auth.initialized", "auth.pwd_epoch", "auth.server_sign_public_key"):
             self.assertIn(field, self.router_core_spec)
+        for state in ("starting", "ready", "failed"):
+            self.assertIn(state, self.health_readiness_spec)
+        for code in (
+            "health_starting",
+            "health_failed",
+            "health_provider_failed",
+            "invalid_health_snapshot",
+            "response_too_large",
+        ):
+            self.assertIn(code, self.health_readiness_spec)
 
     def test_required_optional_and_missing_classes_are_present(self) -> None:
         self.assertGreater(self.spec.count("[REQUIRED]"), 35)
@@ -142,10 +154,10 @@ class ServiceProtocolSpecTests(unittest.TestCase):
         ):
             self.assertIn(implemented, self.http_host_spec)
         for remaining in (
-            "real runtime/auth provider",
+            "real runtime/auth subsystem owners",
             "authentication, cookie, TLS, WebSocket Origin, and LAN-exposure policy",
             "complete graceful in-flight",
-            "baas-tauri contract sharing and end-to-end testing",
+            "Tauri probe and pipe-mode dynamic HTTP address",
         ):
             self.assertIn(remaining, self.http_host_spec)
         for boundary in (
@@ -171,6 +183,9 @@ class ServiceProtocolSpecTests(unittest.TestCase):
         self.assertEqual(workflow.count(watched_path), 2)
         self.assertEqual(
             workflow.count("docs/script-runtime/SERVICE_ORIGIN_POLICY.md"), 2
+        )
+        self.assertEqual(
+            workflow.count("docs/script-runtime/SERVICE_HEALTH_READINESS.md"), 2
         )
 
 

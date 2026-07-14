@@ -245,7 +245,10 @@ returns `{ok:true, expires_at}` and sets `baas_remember` as HttpOnly,
 
 **[REQUIRED]** `/health` MUST remain callable before authentication. Readiness
 MUST be false or the endpoint unavailable until required persistent state is
-loaded; a listening socket alone is not readiness.
+loaded; a listening socket alone is not readiness. The C++ foundation now
+models `starting | ready | failed` atomically with its public runtime/auth
+snapshot: starting and failed are 503, and only ready retains the observed 200
+body. Real runtime/auth owner wiring remains missing.
 
 ### 6.2 HTTP status and body compatibility
 
@@ -257,6 +260,7 @@ loaded; a listening socket alone is not readiness.
 | `404` | Non-loopback caller, non-Android conditional route, or missing resource; intentionally avoids exposing protected route existence |
 | `502` | Wiki upstream failure |
 | `500` | Unhandled internal failure |
+| `503` | C++ foundation health is starting, failed, unavailable, or its provider failed |
 
 FastAPI validation/error bodies use a `detail` field, while some business
 responses use `status` and `error`. **[REQUIRED]** A v1 replacement MUST retain
@@ -600,8 +604,10 @@ regenerated silently.
 
 **[MISSING]** Windows ACL verification, dynamic-port persistence, stale PID,
 crash/restart, port conflict, multi-instance, tray exit, and graceful-shutdown
-tests are pending. Desktop launch paths still include Python-specific process
-assumptions.
+tests are pending. The C++ health foundation covers its owner plus HTTP
+stop/restart/port lifecycle, but the Tauri probe and pipe-mode dynamic HTTP
+address are not wired. Desktop launch paths still include Python-specific
+process assumptions.
 
 ## 12. Security boundaries
 
@@ -675,7 +681,7 @@ defined.
 | [REQUIRED] | Canonical JSON/base64url/control/HKDF/X25519/Ed25519/Argon2 vectors | Python-generated checked-in fixture; C++ crypto not implemented |
 | [MISSING] | Deterministic secretstream header/ciphertext cross-language vector | RNG injection/captured fixture absent |
 | [MISSING] | Password, remember, epoch, persistent key, expiry, restart vectors | Not covered by current fixture |
-| [MISSING] | Complete HTTP route/status/body parity including reset-auth | C++ has an owned loopback host and injected `/health` shape, but no real runtime/auth provider wiring or shared route suite, and one route is absent in Python |
+| [MISSING] | Complete HTTP route/status/body parity including reset-auth | C++ has an owned readiness provider and `/health` lifecycle, but no real runtime/auth owner wiring or shared route suite, and one route is absent in Python |
 | [MISSING] | Provider/sync/trigger/remote shared contract suite | Inventoried only; focused tests incomplete |
 | [MISSING] | Bounded queues, overload, timeout, cancellation, load gates | Policy constants and tests absent |
 | [MISSING] | Live Windows pipe and Unix socket interoperability/fuzz | Framing unit tests only |

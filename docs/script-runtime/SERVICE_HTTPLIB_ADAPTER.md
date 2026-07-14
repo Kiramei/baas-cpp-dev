@@ -29,9 +29,10 @@ connection metadata when it serializes the response; those are transport
 framing, not Router headers.
 
 The mapped paths are intentionally unversioned. `/health` carries the Router's
-explicitly injected `statuses` and auth snapshot. The host does not invent a
-runtime/auth provider or treat a bound socket as readiness; without injected
-health state the Router returns 503. `/version` and `/shutdown` are foundation
+explicitly injected `statuses` and auth snapshot. The host does not treat a
+bound socket as readiness: an owned `HealthReadinessOwner` can return 503 while
+the listener is running, and only its `ready` state returns 200. Without
+injected health state the Router returns 503. `/version` and `/shutdown` are foundation
 extensions rather than frozen required v1 routes. The adapter performs no
 version negotiation, and `/api/v1/*` is not accepted.
 
@@ -46,11 +47,11 @@ Installing the adapter replaces the server error handler and is therefore an
 exclusive server-configuration operation.
 
 `HttpHost` closes that lifetime gap for its installed server: it owns the
-Router, adapter, cpp-httplib Server, listener thread, and shared owners for an
-optional dynamic health provider and shutdown intent. Member destruction order
-keeps the provider/intent alive until after all handlers, the adapter, and the
-Router are gone. A caller cannot pass an already assembled Router with hidden
-non-owning pointers into the host.
+Router, adapter, cpp-httplib Server, listener thread, and shutdown intent owner.
+The Router directly retains the optional health provider shared owner. Member
+destruction order keeps every dependency alive until all handlers are gone. A
+caller cannot pass an already assembled Router with hidden non-owning provider
+pointers into the host.
 
 ## Owned loopback lifecycle
 
@@ -78,7 +79,10 @@ This stop/drain/join sequence is covered by the lifecycle tests.
 `stop()` is `noexcept`: cpp-httplib and thread-join failures are caught and
 recorded in failed state instead of escaping. A stop requested reentrantly from
 a host request worker closes the listener but defers join to the owner, avoiding
-a worker joining itself through cpp-httplib's pool shutdown. If an exceptional
+a worker joining itself through cpp-httplib's pool shutdown. The host records
+that accept-stop was requested or that `listen_after_bind()` already returned,
+so a deferred/repeated owner stop never calls cpp-httplib `Server::stop()` twice
+for the same listening socket. This latch resets before every new start. If an exceptional
 cleanup cannot prove the listener is joined, destruction retains the complete
 implementation ownership graph rather than destroying live Router/adapter/
 provider references or invoking a joinable `std::thread` destructor. This rare
@@ -151,7 +155,8 @@ The tests have three layers:
   responses, then calls `stop()` and joins the listener thread. CTest has a
   15-second outer timeout;
 - the owned-host suite covers repeated start/stop, ephemeral and fixed ports,
-  fixed-port conflict and recovery, concurrent health bounded by workers,
+  fixed-port conflict and recovery, starting/ready/failed readiness across
+  stop/restart and the current ephemeral port, concurrent health bounded by workers,
   transactional listener-thread failure, stop during an in-flight request,
   deferred reentrant stop, destructor/provider lifetime, oversized queue
   configuration, and a deterministic one-worker/one-waiting-request queue
@@ -163,14 +168,16 @@ OCR, Python service, or Tauri process is used by this test.
 
 ## Still incomplete
 
-- a real runtime/auth provider wired to persistent production owners;
+- real runtime/auth subsystem owners wired into `HealthReadinessOwner`;
 - authentication, cookie, TLS, WebSocket Origin, and LAN-exposure policy;
 - complete graceful in-flight cancellation/deadline/response semantics;
 - bounded total connections, global memory/rate backpressure, and load evidence;
 - logging, metrics, task/config/resource routes, and BPIP integration;
-- baas-tauri contract sharing and end-to-end testing.
+- the Tauri probe and pipe-mode dynamic HTTP address, contract sharing, and
+  end-to-end testing.
 
 The existing injected Router shutdown intent is mapped like any other route;
 it does not automatically call `HttpHost::stop()` or terminate the process.
 Therefore this is not a claim of production authentication, complete graceful
-shutdown, runtime readiness, high-load capacity, or Tauri integration.
+shutdown, real runtime/auth integration, high-load capacity, or Tauri
+integration.
