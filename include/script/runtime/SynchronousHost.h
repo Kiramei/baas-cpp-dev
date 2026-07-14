@@ -47,7 +47,15 @@ struct HostError {
     std::optional<JsonValue> details;
 };
 
-enum class HostValueType : std::uint8_t { Null, Boolean, Integer, Float, String, Json };
+enum class HostValueType : std::uint8_t {
+    Null,
+    Boolean,
+    Integer,
+    Float,
+    String,
+    Json,
+    OrderedStringJsonMap,
+};
 
 class HostValue final {
 public:
@@ -71,16 +79,22 @@ private:
 
 class HostResult final {
 public:
+    enum class BoundaryFailure : std::uint8_t { None, Allocation, CallbackException };
+
     static HostResult success(HostValue value = {});
-    static HostResult failure(HostError error);
+    static HostResult failure(HostError error) noexcept;
+    static HostResult boundary_failure(BoundaryFailure failure) noexcept;
 
     [[nodiscard]] bool ok() const noexcept;
+    [[nodiscard]] bool has_error() const noexcept;
     [[nodiscard]] const HostValue& value() const;
     [[nodiscard]] const HostError& error() const;
+    [[nodiscard]] BoundaryFailure boundary_failure() const noexcept;
 
 private:
-    explicit HostResult(std::variant<HostValue, HostError> state) : state_(std::move(state)) {}
-    std::variant<HostValue, HostError> state_;
+    explicit HostResult(std::variant<HostValue, HostError, BoundaryFailure> state)
+        : state_(std::move(state)) {}
+    std::variant<HostValue, HostError, BoundaryFailure> state_;
 };
 
 struct HostParameterContract {
@@ -182,6 +196,10 @@ struct HostErrorTranslation {
 };
 
 [[nodiscard]] HostErrorTranslation translate_host_error(const HostError& error) noexcept;
+[[nodiscard]] LanguageErrorCode translate_host_boundary_failure(
+    HostResult::BoundaryFailure failure) noexcept;
+[[nodiscard]] JsonBridgeLimits effective_host_json_limits(
+    const SynchronousHostLimits& limits) noexcept;
 
 // Conversion owns every value crossing the callback boundary. No Heap, Value,
 // environment, raw pointer, or native descriptor is exposed to a callback.

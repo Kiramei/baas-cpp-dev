@@ -39,7 +39,7 @@ SynchronousNativeBinding log_binding(SynchronousHostCallback callback)
         "host.log.emit.v1",
         {{{"level", HostValueType::String, true},
           {"message", HostValueType::String, true},
-          {"fields", HostValueType::Json, false}},
+          {"fields", HostValueType::OrderedStringJsonMap, false}},
          HostValueType::Null,
          "log_events",
          HostExecutionMode::ThreadSafe,
@@ -146,6 +146,11 @@ void test_immutable_binding_set_validation()
     check_binding_error(HostBindingErrorCode::DuplicateParameter,
         [&] { SynchronousNativeBindingSet ignored({duplicate_parameter}); },
         "duplicate parameter names must be rejected before publication");
+    auto invalid_order = log_binding(callback);
+    invalid_order.contract.parameters.push_back({"required_late", HostValueType::String, true});
+    check_binding_error(HostBindingErrorCode::InvalidParameter,
+        [&] { SynchronousNativeBindingSet ignored({invalid_order}); },
+        "required parameters must not follow optional parameters");
 }
 
 void test_owning_scalar_and_json_conversion()
@@ -201,32 +206,70 @@ void test_guarded_callback_result_and_exception_redaction()
         return HostResult::success(HostValue("wrong"));
     });
     const auto invalid = invoke_host_callback(wrong_result, context, arguments, limits);
-    check(!invalid.ok() && invalid.error().code == HostErrorCode::Internal &&
-              invalid.error().message.find("invalid result") != std::string::npos,
+    check(!invalid.ok() && !invalid.has_error() &&
+              invalid.boundary_failure() == HostResult::BoundaryFailure::CallbackException,
           "adapter result contract violations must become safe HostInternal");
 
     auto throwing = log_binding([](const HostCallContext&, const HostArguments&) -> HostResult {
         throw std::runtime_error("secret credential and command line");
     });
     const auto redacted = invoke_host_callback(throwing, context, arguments, limits);
-    check(!redacted.ok() && redacted.error().code == HostErrorCode::Internal &&
-              redacted.error().message.find("secret") == std::string::npos,
+    check(!redacted.ok() && !redacted.has_error() &&
+              translate_host_boundary_failure(redacted.boundary_failure()) ==
+                  LanguageErrorCode::HostInternal,
           "std::exception diagnostics must not cross the Host ABI");
 
     auto allocation = log_binding([](const HostCallContext&, const HostArguments&) -> HostResult {
         throw std::bad_alloc();
     });
     const auto allocation_error = invoke_host_callback(allocation, context, arguments, limits);
-    check(!allocation_error.ok() && allocation_error.error().code == HostErrorCode::Internal,
-          "callback bad_alloc must be contained by the native guard");
+    check(!allocation_error.ok() && !allocation_error.has_error() &&
+              translate_host_boundary_failure(allocation_error.boundary_failure()) ==
+                  LanguageErrorCode::MemoryLimitExceeded,
+          "callback bad_alloc must be contained and deterministically map to MemoryLimitExceeded");
 
     auto invalid_error = log_binding([](const HostCallContext&, const HostArguments&) {
         return HostResult::failure({HostErrorCode::Internal, std::string(5'000, 'x'), false,
                                     HostEffectState::Unknown, std::nullopt});
     });
     const auto sanitized = invoke_host_callback(invalid_error, context, arguments, limits);
-    check(!sanitized.ok() && sanitized.error().message.size() < 5'000,
+    check(!sanitized.ok() && !sanitized.has_error() &&
+              sanitized.boundary_failure() == HostResult::BoundaryFailure::CallbackException,
           "oversized adapter messages must be replaced, not forwarded");
+}
+
+void test_contract_shapes_utf8_and_strict_string_limit()
+{
+    Heap heap;
+    const auto scalar = Value(std::int64_t{1});
+    try {
+        (void)heap_to_host_value(
+            heap, scalar, HostValueType::OrderedStringJsonMap);
+        check(false, "log fields must reject scalar JSON before callback entry");
+    } catch (const RuntimeError& error) {
+        check(error.code() == RuntimeErrorCode::TypeMismatch,
+              "ordered-map shape mismatch must be a bounded type failure");
+    }
+
+    SynchronousHostLimits limits;
+    limits.max_string_bytes = 3;
+    limits.json_limits.max_string_bytes = 100;
+    check(effective_host_json_limits(limits).max_string_bytes == 3,
+          "Host conversion must use the stricter duplicate string limit");
+    limits.max_string_bytes = 100;
+    limits.json_limits.max_string_bytes = 2;
+    check(effective_host_json_limits(limits).max_string_bytes == 2,
+          "JSON bridge limit must narrow the outer Host string limit");
+
+    const HostCallContext context{"baas/log", "emit", "host.log.emit.v1", {1, 0}, 1};
+    HostArguments arguments{HostValue("info"), HostValue("message"), std::nullopt};
+    auto invalid_utf8 = log_binding([](const HostCallContext&, const HostArguments&) {
+        return HostResult::failure({HostErrorCode::Internal, std::string("\xC0\xAF", 2), false,
+                                    HostEffectState::Unknown, std::nullopt});
+    });
+    const auto result = invoke_host_callback(invalid_utf8, context, arguments, limits);
+    check(!result.ok() && !result.has_error(),
+          "invalid UTF-8 safe messages must not cross the native guard");
 }
 
 }  // namespace
@@ -237,6 +280,7 @@ int main()
     test_immutable_binding_set_validation();
     test_owning_scalar_and_json_conversion();
     test_guarded_callback_result_and_exception_redaction();
+    test_contract_shapes_utf8_and_strict_string_limit();
     if (failures != 0) {
         std::cerr << failures << " synchronous Host test(s) failed\n";
         return EXIT_FAILURE;

@@ -22,7 +22,32 @@ namespace {
 
 [[nodiscard]] bool valid_value_type(const HostValueType type) noexcept
 {
-    return type >= HostValueType::Null && type <= HostValueType::Json;
+    return type >= HostValueType::Null && type <= HostValueType::OrderedStringJsonMap;
+}
+
+[[nodiscard]] bool valid_utf8(const std::string_view value) noexcept
+{
+    for (std::size_t offset = 0; offset < value.size();) {
+        const auto first = static_cast<unsigned char>(value[offset]);
+        std::size_t width{};
+        std::uint32_t scalar{};
+        if (first <= 0x7F) { width = 1; scalar = first; }
+        else if (first >= 0xC2 && first <= 0xDF) { width = 2; scalar = first & 0x1FU; }
+        else if (first >= 0xE0 && first <= 0xEF) { width = 3; scalar = first & 0x0FU; }
+        else if (first >= 0xF0 && first <= 0xF4) { width = 4; scalar = first & 0x07U; }
+        else return false;
+        if (width > value.size() - offset) return false;
+        for (std::size_t index = 1; index < width; ++index) {
+            const auto next = static_cast<unsigned char>(value[offset + index]);
+            if ((next & 0xC0U) != 0x80U) return false;
+            scalar = (scalar << 6U) | (next & 0x3FU);
+        }
+        if ((width == 2 && scalar < 0x80U) || (width == 3 && scalar < 0x800U) ||
+            (width == 4 && scalar < 0x10000U) || scalar > 0x10FFFFU ||
+            (scalar >= 0xD800U && scalar <= 0xDFFFU)) return false;
+        offset += width;
+    }
+    return true;
 }
 
 [[nodiscard]] bool valid_identifier(const std::string_view value) noexcept
@@ -34,15 +59,6 @@ namespace {
               character == '_' || character == '-')) return false;
     }
     return true;
-}
-
-[[nodiscard]] HostError internal_error(const char* message) noexcept
-{
-    try {
-        return {HostErrorCode::Internal, message, false, HostEffectState::Unknown, std::nullopt};
-    } catch (...) {
-        return {};
-    }
 }
 
 [[nodiscard]] std::optional<std::string_view> detail_string(
@@ -72,11 +88,17 @@ namespace {
     const HostValue& value, const HostValueType expected,
     const JsonBridgeLimits limits) noexcept
 {
+    if (expected == HostValueType::OrderedStringJsonMap) {
+        return value.type() == HostValueType::Json &&
+            std::get<JsonValue>(value.storage()).kind() == JsonKind::Object &&
+            validate_json(std::get<JsonValue>(value.storage()), limits);
+    }
     if (value.type() != expected) return false;
     if (expected == HostValueType::Float)
         return std::isfinite(std::get<double>(value.storage()));
     if (expected == HostValueType::String)
-        return std::get<std::string>(value.storage()).size() <= limits.max_string_bytes;
+        return std::get<std::string>(value.storage()).size() <= limits.max_string_bytes &&
+            valid_utf8(std::get<std::string>(value.storage()));
     if (expected == HostValueType::Json)
         return validate_json(std::get<JsonValue>(value.storage()), limits);
     return true;
@@ -115,17 +137,30 @@ HostValueType HostValue::type() const noexcept
 
 HostResult HostResult::success(HostValue value)
 {
-    return HostResult(std::variant<HostValue, HostError>(std::in_place_index<0>, std::move(value)));
+    return HostResult(std::variant<HostValue, HostError, BoundaryFailure>(
+        std::in_place_index<0>, std::move(value)));
 }
 
-HostResult HostResult::failure(HostError error)
+HostResult HostResult::failure(HostError error) noexcept
 {
-    return HostResult(std::variant<HostValue, HostError>(std::in_place_index<1>, std::move(error)));
+    return HostResult(std::variant<HostValue, HostError, BoundaryFailure>(
+        std::in_place_index<1>, std::move(error)));
+}
+
+HostResult HostResult::boundary_failure(const BoundaryFailure failure) noexcept
+{
+    return HostResult(std::variant<HostValue, HostError, BoundaryFailure>(
+        std::in_place_index<2>, failure));
 }
 
 bool HostResult::ok() const noexcept { return state_.index() == 0; }
+bool HostResult::has_error() const noexcept { return state_.index() == 1; }
 const HostValue& HostResult::value() const { return std::get<HostValue>(state_); }
 const HostError& HostResult::error() const { return std::get<HostError>(state_); }
+HostResult::BoundaryFailure HostResult::boundary_failure() const noexcept
+{
+    return state_.index() == 2 ? std::get<BoundaryFailure>(state_) : BoundaryFailure::None;
+}
 
 SynchronousNativeBindingSet::SynchronousNativeBindingSet(
     std::vector<SynchronousNativeBinding> bindings, const SynchronousHostLimits limits)
@@ -164,6 +199,7 @@ SynchronousNativeBindingSet::SynchronousNativeBindingSet(
         total_parameters += binding.contract.parameters.size();
 
         std::unordered_set<std::string_view> names;
+        bool saw_optional = false;
         auto add_string = [&](const std::string_view value) {
             if (value.size() > limits.max_string_bytes ||
                 value.size() > limits.max_total_string_bytes -
@@ -178,6 +214,9 @@ SynchronousNativeBindingSet::SynchronousNativeBindingSet(
                 throw HostBindingError(HostBindingErrorCode::WorkLimitExceeded, "synchronous Host validation work exceeded");
             if (!valid_identifier(parameter.name) || !valid_value_type(parameter.type))
                 throw HostBindingError(HostBindingErrorCode::InvalidParameter, "invalid synchronous Host parameter");
+            if (saw_optional && parameter.required)
+                throw HostBindingError(HostBindingErrorCode::InvalidParameter, "required Host parameter follows an optional parameter");
+            saw_optional = saw_optional || !parameter.required;
             if (!names.insert(parameter.name).second)
                 throw HostBindingError(HostBindingErrorCode::DuplicateParameter, "duplicate synchronous Host parameter");
             add_string(parameter.name);
@@ -241,6 +280,21 @@ HostErrorTranslation translate_host_error(const HostError& error) noexcept
     return {};
 }
 
+LanguageErrorCode translate_host_boundary_failure(
+    const HostResult::BoundaryFailure failure) noexcept
+{
+    return failure == HostResult::BoundaryFailure::Allocation
+        ? LanguageErrorCode::MemoryLimitExceeded
+        : LanguageErrorCode::HostInternal;
+}
+
+JsonBridgeLimits effective_host_json_limits(const SynchronousHostLimits& limits) noexcept
+{
+    auto result = limits.json_limits;
+    result.max_string_bytes = std::min(result.max_string_bytes, limits.max_string_bytes);
+    return result;
+}
+
 HostValue heap_to_host_value(
     const Heap& heap, const Value value, const HostValueType expected,
     const JsonBridgeLimits limits)
@@ -269,6 +323,12 @@ HostValue heap_to_host_value(
             break;
         case HostValueType::Json:
             return HostValue(heap_value_to_json(heap, value, limits));
+        case HostValueType::OrderedStringJsonMap: {
+            auto converted = heap_value_to_json(heap, value, limits);
+            if (converted.kind() != JsonKind::Object)
+                throw RuntimeError(RuntimeErrorCode::TypeMismatch, "Host argument must be an ordered map");
+            return HostValue(std::move(converted));
+        }
     }
     throw RuntimeError(RuntimeErrorCode::TypeMismatch, "Host argument type does not match the binding contract");
 }
@@ -286,6 +346,8 @@ Value host_to_heap_value(
         case HostValueType::Float: return Value(std::get<double>(value.storage()));
         case HostValueType::String: return heap.allocate_string(std::get<std::string>(value.storage()));
         case HostValueType::Json: return json_to_heap_value(heap, std::get<JsonValue>(value.storage()), limits);
+        case HostValueType::OrderedStringJsonMap:
+            return json_to_heap_value(heap, std::get<JsonValue>(value.storage()), limits);
     }
     throw RuntimeError(RuntimeErrorCode::TypeMismatch, "invalid Host result contract");
 }
@@ -297,25 +359,29 @@ HostResult invoke_host_callback(
     try {
         if (binding.contract.execution != HostExecutionMode::ThreadSafe ||
             binding.contract.cancellation != HostCancellationMode::Preflight)
-            return HostResult::failure(internal_error("unsupported synchronous Host execution contract"));
+            return HostResult::boundary_failure(HostResult::BoundaryFailure::CallbackException);
         auto result = binding.callback(context, arguments);
         if (result.ok()) {
-            if (!validate_host_value(result.value(), binding.contract.result, limits.json_limits))
-                return HostResult::failure(internal_error("Host callback returned an invalid result"));
+            if (!validate_host_value(
+                    result.value(), binding.contract.result, effective_host_json_limits(limits)))
+                return HostResult::boundary_failure(HostResult::BoundaryFailure::CallbackException);
             return result;
         }
+        if (!result.has_error()) return result;
         const auto& error = result.error();
         if (!valid_enum(error.code) || !valid_effect(error.effect_state) ||
             error.message.size() > limits.max_safe_message_bytes ||
-            (error.details && !validate_json(*error.details, limits.json_limits)))
-            return HostResult::failure(internal_error("Host callback returned an invalid error"));
+            !valid_utf8(error.message) ||
+            (error.details && !validate_json(
+                *error.details, effective_host_json_limits(limits))))
+            return HostResult::boundary_failure(HostResult::BoundaryFailure::CallbackException);
         return result;
     } catch (const std::bad_alloc&) {
-        return HostResult::failure(internal_error("Host callback allocation failed"));
+        return HostResult::boundary_failure(HostResult::BoundaryFailure::Allocation);
     } catch (const std::exception&) {
-        return HostResult::failure(internal_error("Host callback failed"));
+        return HostResult::boundary_failure(HostResult::BoundaryFailure::CallbackException);
     } catch (...) {
-        return HostResult::failure(internal_error("Host callback failed"));
+        return HostResult::boundary_failure(HostResult::BoundaryFailure::CallbackException);
     }
 }
 
