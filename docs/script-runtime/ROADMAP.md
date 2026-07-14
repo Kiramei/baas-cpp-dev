@@ -58,8 +58,8 @@ unclassified operation families, and baseline commands/results are recorded.
   and deterministic testing hooks.
 - [ ] Specify capability-scoped host APIs for image, OCR, device, configuration,
   logging, scheduler, resources, filesystem, and service operations.
-- [ ] Specify language/runtime/API version negotiation and deprecation policy.
-- [ ] Specify script/resource manifests, integrity checks, atomic updates,
+- [x] Specify language/runtime/API version negotiation and deprecation policy.
+- [x] Specify script/resource manifests, integrity checks, atomic updates,
   rollback, and cache layout.
 - [ ] Publish conformance examples and a normative test corpus.
 - [ ] Resolve implementation ADRs (AST versus bytecode, ownership/GC strategy,
@@ -67,6 +67,10 @@ unclassified operation families, and baseline commands/results are recorded.
 
 Exit evidence: reviewed specification, accepted ADRs, parser fixtures, and a
 versioned compatibility contract linked from the migration matrix.
+
+Draft contract evidence: `PACKAGE_VERSIONING.md` defines independent language,
+host API, manifest, and package versions plus detached signatures, capability
+resolution, immutable cache snapshots, atomic activation, and rollback gates.
 
 ## Phase 2 — C++ runtime and developer tooling
 

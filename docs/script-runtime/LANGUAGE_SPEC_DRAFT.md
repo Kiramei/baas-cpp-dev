@@ -19,7 +19,8 @@ access.
 
 Files use the `.baas` suffix. Package manifests select the language version,
 host API version, entrypoint, required capabilities, resources, and integrity
-hashes.
+hashes. The concrete negotiation, manifest, detached-signature, atomic
+activation, rollback, and cache rules are defined in `PACKAGE_VERSIONING.md`.
 
 ## 2. Source text and diagnostics
 
@@ -269,4 +270,3 @@ service.
 - cancellation/deadline/task/budget tests.
 - deterministic clock/RNG/fake-host trace tests.
 - Python golden parity tests for each migration-matrix operation.
-
