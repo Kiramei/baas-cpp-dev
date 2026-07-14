@@ -217,15 +217,15 @@ Exit evidence: required platform matrix is green and performance budgets pass.
 
 Foundation evidence: `.github/workflows/foundation-runtime.yml` defines a
 six-case Windows/Ubuntu/macOS Debug/Release matrix that builds the script
-checker plus seven standalone script/service test executables and runs nine
+checker plus eight standalone script/service test executables and runs ten
 CTest cases. Debug jobs also validate the checked-in
 service vectors. The exact Windows commands passed locally for both build
 types after the value-heap addition: all six CTest targets passed 20 repeated
 Debug runs and one complete Release run; all 14 service-vector tests also
 passed before the protocol-spec additions. The current Debug jobs also run the
 service protocol/vector suite and the standard-library migration/baseline tool
-suite. After adding the syntax checker, the current Windows Debug suite passed
-all nine CTest cases for 20 consecutive runs and Release passed 9/9 once. The
+suite. After adding the JSON bridge, the current Windows Debug suite passed all
+ten CTest cases for 20 consecutive runs and Release passed 10/10 once. The
 hosted Linux/macOS jobs, full application/parity/service smoke coverage,
 Android, performance budgets, sanitizers, fuzzing, and caches remain pending.
 

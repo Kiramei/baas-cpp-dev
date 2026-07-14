@@ -57,8 +57,8 @@ python --version
 
 ## Build the dependency-free foundation
 
-Lexer/parser/semantic/syntax-check/runtime-executor/value-heap and BPIP framing
-targets do not require the full application dependency graph:
+Lexer/parser/semantic/syntax-check/runtime-executor/value-heap/JSON-bridge and
+BPIP framing targets do not require the full application dependency graph:
 
 ```powershell
 cmake -S . -B build\foundation -G Ninja `
@@ -115,18 +115,24 @@ configured or green.
 
 ## Python reference and service-vector checks
 
-The authoritative Python suite and production-anchored service vectors use the
-sibling Python environment:
+The repository-local `.venv` is configured with `fastapi`, `cryptography`, and
+`PyNaCl` in addition to the C++ build helpers. These packages are needed when
+the production-anchored service vectors import the sibling service. Recreate
+that portion of the environment with:
+
+```powershell
+python -m pip install fastapi cryptography PyNaCl
+```
+
+The authoritative Python suite can still use the sibling Python environment:
 
 ```powershell
 Push-Location ..\baas-dev
 .\.venv\Scripts\python.exe -m pytest tests -q -rs
 Pop-Location
 
-..\baas-dev\.venv\Scripts\python.exe `
-  -m unittest discover -s tests\service_contract -p "test_*.py" -v
-..\baas-dev\.venv\Scripts\python.exe `
-  scripts\service_contract\generate_vectors.py --check
+python -m unittest discover -s tests\service_contract -p "test_*.py" -v
+python scripts\service_contract\generate_vectors.py --check
 ```
 
 Do not run an unscoped `pytest` from `baas-dev`: that repository currently has
