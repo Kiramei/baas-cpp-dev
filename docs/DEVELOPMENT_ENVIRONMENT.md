@@ -28,6 +28,8 @@ The repository-local environment currently resolves:
 | Python | 3.11.9 in `.venv` |
 | Conan | 2.30.0 in `.venv` |
 | Git | 2.54.0.windows.1 |
+| JDK | Eclipse Temurin 17.0.19 |
+| Android SDK | API 36, NDK 29.0.13846066, emulator, platform tools |
 
 The local Python and Conan state is isolated in `.venv` and `.conan2`; the
 activation script sets `CONAN_HOME` to the latter.
@@ -49,7 +51,8 @@ Set-Location D:\WorkSpace\pro\BAAS\baas-cpp-dev
 ```
 
 This imports the x64 MSVC environment, prepends the repository Python, bundled
-CMake, and Ninja tools to `PATH`, and sets `BAAS_CPP_DEV_ROOT`. Activation only
+CMake/Ninja, JDK, and Android SDK tools to `PATH`, and sets
+`BAAS_CPP_DEV_ROOT`, `CONAN_HOME`, and `ANDROID_SDK_ROOT`. Activation only
 changes the current PowerShell process.
 
 Verify it with:

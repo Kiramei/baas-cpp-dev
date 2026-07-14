@@ -30,7 +30,37 @@ foreach ($line in $environmentLines) {
 $cmakeRoot = Join-Path $vsPath "Common7\IDE\CommonExtensions\Microsoft\CMake"
 $cmakeBin = Join-Path $cmakeRoot "CMake\bin"
 $ninjaBin = Join-Path $cmakeRoot "Ninja"
-$env:Path = "$venvScripts;$cmakeBin;$ninjaBin;$env:Path"
+$toolPaths = @($venvScripts, $cmakeBin, $ninjaBin)
+
+$javaHome = $env:JAVA_HOME
+if (-not $javaHome) {
+    $javaHome = [Environment]::GetEnvironmentVariable("JAVA_HOME", "Machine")
+}
+if ($javaHome -and (Test-Path -LiteralPath (Join-Path $javaHome "bin\java.exe"))) {
+    $env:JAVA_HOME = $javaHome
+    $toolPaths += Join-Path $javaHome "bin"
+}
+
+$androidSdk = $env:ANDROID_SDK_ROOT
+if (-not $androidSdk) {
+    $androidSdk = $env:ANDROID_HOME
+}
+if (-not $androidSdk -and $env:LOCALAPPDATA) {
+    $candidate = Join-Path $env:LOCALAPPDATA "Android\Sdk"
+    if (Test-Path -LiteralPath $candidate) {
+        $androidSdk = $candidate
+    }
+}
+if ($androidSdk -and (Test-Path -LiteralPath $androidSdk)) {
+    $env:ANDROID_SDK_ROOT = $androidSdk
+    $toolPaths += @(
+        (Join-Path $androidSdk "platform-tools"),
+        (Join-Path $androidSdk "emulator"),
+        (Join-Path $androidSdk "cmdline-tools\latest\bin")
+    )
+}
+
+$env:Path = (($toolPaths | Where-Object { Test-Path -LiteralPath $_ }) -join ";") + ";$env:Path"
 $env:CONAN_HOME = Join-Path $repoRoot ".conan2"
 $env:BAAS_CPP_DEV_ROOT = $repoRoot
 

@@ -102,18 +102,18 @@ class SmokePrerequisiteTests(unittest.TestCase):
         self.assertFalse(CHECKER.strict_failure(evidence))
         self.assertEqual(evidence["profiles"], [{"id": "linux-foundation", "status": "not_run"}])
 
-    def test_committed_windows_evidence_is_sanitized_and_incomplete(self) -> None:
+    def test_committed_windows_evidence_is_sanitized_ready_and_not_run(self) -> None:
         evidence = json.loads(EVIDENCE_PATH.read_text(encoding="utf-8"))
         self.assertEqual(evidence["schema_version"], 1)
         self.assertEqual(evidence["host"], {"arch": "x86_64", "os": "windows"})
-        self.assertGreater(evidence["summary"]["status_counts"]["missing"], 0)
+        self.assertEqual(evidence["summary"]["status_counts"]["missing"], 0)
         self.assertGreater(evidence["summary"]["status_counts"]["not_run"], 0)
         rendered = EVIDENCE_PATH.read_text(encoding="utf-8")
         self.assertNotRegex(rendered, r"[A-Za-z]:[\\/]")
         self.assertNotIn("Kiramei", rendered)
         self.assertEqual(
             evidence["summary"]["status_counts"],
-            {"available": 43, "discovered": 17, "missing": 6, "not_run": 16},
+            {"available": 49, "discovered": 17, "missing": 0, "not_run": 16},
         )
 
     def test_only_phase_zero_prerequisite_item_is_completed(self) -> None:

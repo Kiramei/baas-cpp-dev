@@ -117,9 +117,9 @@ At the time of the observation:
 | Android SDK/NDK | available | platform 36, NDK 29.0 beta 3, Clang 21, both API 26 ABI wrappers |
 | Android command tools | available | adb 1.0.41, emulator 36.6.11, sdkmanager executable |
 | Android Rust targets | available | `aarch64-linux-android` and `x86_64-linux-android` |
-| JDK 17+ | missing | neither PATH/JAVA_HOME nor the checked Android Studio JBR locations supplied Java |
-| Android 36 system images | missing | neither arm64-v8a nor x86_64 image was installed |
-| Android 36 AVDs | missing | neither required ABI had an AVD configuration |
+| JDK 17+ | available | Eclipse Temurin 17.0.19 is discovered through `JAVA_HOME`/PATH |
+| Android 36 system images | available | default arm64-v8a and x86_64 images are installed |
+| Android 36 AVDs | available | dedicated `baas_api36_arm64` and `baas_api36_x86_64` configurations exist |
 | Windows foundation/desktop smoke | not_run | checker does not build or launch |
 | Android emulator/foreground/JNI smoke | not_run | checker does not operate a device |
 | Linux/macOS hosted foundation | not_run | the audited host was Windows |
@@ -192,9 +192,29 @@ must prove current-user-only access.
 
 ## 6. Future Android build and emulator commands
 
-Installing the missing JDK/images and creating AVDs is an explicit operator
-step outside the checker. Do not make the checker call `sdkmanager`,
-`avdmanager`, or accept licenses.
+The audited host now has JDK 17, both default Android 36 system images, and
+dedicated AVD configurations. Provisioning remains an explicit operator step
+outside the checker: do not make the checker call `sdkmanager`, `avdmanager`,
+or accept licenses.
+
+The audited host was provisioned with these explicit commands (the Android SDK
+licenses were already accepted):
+
+```powershell
+winget install --id EclipseAdoptium.Temurin.17.JDK --exact --silent `
+  --accept-package-agreements --accept-source-agreements
+
+sdkmanager "system-images;android-36;default;arm64-v8a" `
+  "system-images;android-36;default;x86_64"
+
+'no' | avdmanager create avd --name baas_api36_arm64 `
+  --package "system-images;android-36;default;arm64-v8a" --device pixel_6
+'no' | avdmanager create avd --name baas_api36_x86_64 `
+  --package "system-images;android-36;default;x86_64" --device pixel_6
+```
+
+These commands modify the operator's JDK/Android SDK/AVD installation and are
+not CI validation commands. The read-only checker verifies their result.
 
 After those prerequisites are supplied, first run both strict profiles:
 
@@ -292,7 +312,7 @@ codes. The current Windows record leaves both hosted profiles `not_run`.
 
 This inventory completes only the Phase 0 task to record platform and emulator
 smoke prerequisites. It does not complete the Phase 0 exit criteria because
-golden traces, performance baselines, and operation classification remain open.
+performance baselines and operation classification remain open.
 It does not change any Phase 6 platform pipeline item. Windows desktop pipe,
 Android builds/emulators, JNI/foreground lifecycle, and hosted runtime evidence
 remain missing or `not_run` until their future commands execute successfully.

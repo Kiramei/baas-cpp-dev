@@ -1,11 +1,11 @@
 {
   "checks": [
     {
-      "evidence": "no Android 36 AVD configuration declares arm64-v8a",
+      "evidence": "an Android 36 AVD configuration declares arm64-v8a",
       "id": "android.avd",
       "profile": "android-arm64",
       "requirement": "required",
-      "status": "missing"
+      "status": "available"
     },
     {
       "evidence": "Android NDK discovered",
@@ -45,11 +45,11 @@
       "status": "available"
     },
     {
-      "evidence": "no installed Android 36 system image declares arm64-v8a",
+      "evidence": "an installed Android 36 system image declares arm64-v8a",
       "id": "android.system_image",
       "profile": "android-arm64",
       "requirement": "required",
-      "status": "missing"
+      "status": "available"
     },
     {
       "evidence": "Android arm64-v8a OCR CMake preset declared",
@@ -148,7 +148,7 @@
       "version": "2.30.0"
     },
     {
-      "evidence": "Android emulator executable discovered via platform installation",
+      "evidence": "Android emulator executable discovered via PATH",
       "id": "tool.emulator",
       "profile": "android-arm64",
       "requirement": "required",
@@ -156,11 +156,12 @@
       "version": "36.6.11.0"
     },
     {
-      "evidence": "JDK 17+ executable was not discovered",
+      "evidence": "JDK executable discovered via PATH",
       "id": "tool.java",
       "profile": "android-arm64",
       "requirement": "required",
-      "status": "missing"
+      "status": "available",
+      "version": "17.0.19"
     },
     {
       "evidence": "Ninja executable discovered via PATH",
@@ -179,18 +180,19 @@
       "version": "1.96.1"
     },
     {
-      "evidence": "Android sdkmanager executable discovered via platform installation",
+      "evidence": "Android sdkmanager executable discovered via PATH",
       "id": "tool.sdkmanager",
       "profile": "android-arm64",
       "requirement": "required",
-      "status": "available"
+      "status": "available",
+      "version": "20.0"
     },
     {
-      "evidence": "no Android 36 AVD configuration declares x86_64",
+      "evidence": "an Android 36 AVD configuration declares x86_64",
       "id": "android.avd",
       "profile": "android-x86_64",
       "requirement": "required",
-      "status": "missing"
+      "status": "available"
     },
     {
       "evidence": "Android NDK discovered",
@@ -230,11 +232,11 @@
       "status": "available"
     },
     {
-      "evidence": "no installed Android 36 system image declares x86_64",
+      "evidence": "an installed Android 36 system image declares x86_64",
       "id": "android.system_image",
       "profile": "android-x86_64",
       "requirement": "required",
-      "status": "missing"
+      "status": "available"
     },
     {
       "evidence": "Android x86_64 OCR CMake preset declared",
@@ -333,7 +335,7 @@
       "version": "2.30.0"
     },
     {
-      "evidence": "Android emulator executable discovered via platform installation",
+      "evidence": "Android emulator executable discovered via PATH",
       "id": "tool.emulator",
       "profile": "android-x86_64",
       "requirement": "required",
@@ -341,11 +343,12 @@
       "version": "36.6.11.0"
     },
     {
-      "evidence": "JDK 17+ executable was not discovered",
+      "evidence": "JDK executable discovered via PATH",
       "id": "tool.java",
       "profile": "android-x86_64",
       "requirement": "required",
-      "status": "missing"
+      "status": "available",
+      "version": "17.0.19"
     },
     {
       "evidence": "Ninja executable discovered via PATH",
@@ -364,11 +367,12 @@
       "version": "1.96.1"
     },
     {
-      "evidence": "Android sdkmanager executable discovered via platform installation",
+      "evidence": "Android sdkmanager executable discovered via PATH",
       "id": "tool.sdkmanager",
       "profile": "android-x86_64",
       "requirement": "required",
-      "status": "available"
+      "status": "available",
+      "version": "20.0"
     },
     {
       "evidence": "requires linux host; current host is windows/x86_64",
@@ -621,11 +625,11 @@
     },
     {
       "id": "android-arm64",
-      "status": "missing"
+      "status": "not_run"
     },
     {
       "id": "android-x86_64",
-      "status": "missing"
+      "status": "not_run"
     },
     {
       "id": "linux-foundation",
@@ -649,9 +653,9 @@
   "summary": {
     "checks": 82,
     "status_counts": {
-      "available": 43,
+      "available": 49,
       "discovered": 17,
-      "missing": 6,
+      "missing": 0,
       "not_run": 16
     }
   }

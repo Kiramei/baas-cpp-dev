@@ -56,8 +56,9 @@ an isolated prototype is not considered project completion.
   remain pending.
 - [x] Record platform and emulator smoke-test prerequisites.
   `PLATFORM_SMOKE_PREREQUISITES.md` and its deterministic read-only checker
-  record the profiles, current Windows availability, missing Android JDK/images/
-  AVDs, and exact future smoke evidence; no platform smoke is claimed.
+  record the profiles and exact future smoke evidence. JDK 17, both Android 36
+  images, and dedicated arm64/x86_64 AVD configurations are now available, but
+  no platform runtime smoke is claimed.
 
 Exit evidence: inventories cover all source roots, the migration matrix has no
 unresolved disposition or Host-contract gaps, and baseline commands/results
