@@ -46,6 +46,10 @@ The complete Draft 0.1 lexical and syntactic grammar is defined in
 
 ## 3. Values
 
+The normative value, conversion, equality, collection, mutability, heap, and
+JSON rules are defined in `VALUE_SEMANTICS.md`. The remainder of this section
+is a summary and must be read consistently with that contract.
+
 The required value set is:
 
 - `null`;
@@ -70,8 +74,9 @@ operand is float. There is no implicit string-to-number conversion.
 
 Maps preserve insertion order because Python `co_detect` reaction order is
 observable. Equality is value/structural equality for primitive values, lists,
-and maps (cycle-aware), and identity equality for functions, tasks, modules,
-and host handles. `is` tests identity, including `value is null`.
+and maps (cycle-aware), and identity equality for functions, modules, errors,
+tasks, and host handles. `is` tests representation identity, including
+`value is null`.
 
 Truthiness is compatible with migration needs: `null`, `false`, numeric zero,
 empty string, empty list, and empty map are false; other values are true.
@@ -212,10 +217,13 @@ thread primitives.
 
 ## 11. JSON interoperation
 
-JSON null/bool/number/string/array/object map to the corresponding language
-values. Objects preserve key insertion order. Conversion rejects functions,
-tasks, host handles, non-finite floats, and cyclic values with a source-aware
-error. Unknown configuration keys and original scalar types are preserved.
+The normative in-memory JSON model, limits, rejection rules, and cross-context
+copy semantics are defined in `VALUE_SEMANTICS.md`. JSON null, Boolean, signed
+int64, finite binary64, valid UTF-8 string, array, and unique-key ordered object
+map to the corresponding language values without scalar coercion. Conversion
+rejects cycles, non-finite floats, duplicate JSON object keys, and functions,
+modules, errors, tasks, and host handles with stable runtime errors. This
+foundation does not provide JSON text parsing or serialization.
 
 ## 12. Versioned host modules
 

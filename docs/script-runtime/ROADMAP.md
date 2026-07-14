@@ -64,7 +64,7 @@ are recorded.
 - [x] Write the Draft 0.1 lexical/syntactic grammar and source encoding rules,
   including UTF-8/BOM recovery, exact literals/operators, precedence, and
   contextual restrictions in `LANGUAGE_GRAMMAR.md`.
-- [ ] Specify value types, equality, conversions, collections, mutability, and
+- [x] Specify value types, equality, conversions, collections, mutability, and
   JSON interoperation.
 - [ ] Specify lexical scope, functions, closures, recursion, loops, branching,
   non-local control flow, and module loading sufficient for Turing completeness.
@@ -87,6 +87,9 @@ versioned compatibility contract linked from the migration matrix.
 Draft contract evidence: `PACKAGE_VERSIONING.md` defines independent language,
 host API, manifest, and package versions plus detached signatures, capability
 resolution, immutable cache snapshots, atomic activation, and rollback gates.
+`VALUE_SEMANTICS.md` defines the normative value, numeric, equality,
+collection, mutability, heap-isolation, JSON, budget, and RT001-RT023 contract;
+its required clauses and implementation anchors are checked in Foundation CI.
 
 ## Phase 2 — C++ runtime and developer tooling
 
