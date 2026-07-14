@@ -4,6 +4,7 @@ add_library(
         BAAS_script_runtime
         STATIC
         "${BAAS_PROJECT_PATH}/src/script/Lexer.cpp"
+        "${BAAS_PROJECT_PATH}/src/script/Parser.cpp"
         "${BAAS_PROJECT_PATH}/src/script/Token.cpp"
 )
 
@@ -25,10 +26,18 @@ endif()
 if(BUILD_SCRIPT_TESTS)
     include(CTest)
     add_executable(
-            BAAS_script_runtime_tests
+            BAAS_script_lexer_tests
             "${BAAS_PROJECT_PATH}/tests/script/LexerTests.cpp"
     )
-    target_compile_features(BAAS_script_runtime_tests PRIVATE cxx_std_20)
-    target_link_libraries(BAAS_script_runtime_tests PRIVATE BAAS_script_runtime)
-    add_test(NAME BAAS_script_runtime_tests COMMAND BAAS_script_runtime_tests)
+    target_compile_features(BAAS_script_lexer_tests PRIVATE cxx_std_20)
+    target_link_libraries(BAAS_script_lexer_tests PRIVATE BAAS_script_runtime)
+    add_test(NAME BAAS_script_lexer_tests COMMAND BAAS_script_lexer_tests)
+
+    add_executable(
+            BAAS_script_parser_tests
+            "${BAAS_PROJECT_PATH}/tests/script/ParserTests.cpp"
+    )
+    target_compile_features(BAAS_script_parser_tests PRIVATE cxx_std_20)
+    target_link_libraries(BAAS_script_parser_tests PRIVATE BAAS_script_runtime)
+    add_test(NAME BAAS_script_parser_tests COMMAND BAAS_script_parser_tests)
 endif()
