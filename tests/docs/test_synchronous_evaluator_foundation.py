@@ -57,7 +57,7 @@ class SynchronousEvaluatorFoundationTest(unittest.TestCase):
     def test_roadmap_does_not_overclaim_production_vm_or_host_support(self) -> None:
         self.assertIn("bounded synchronous AST evaluator", ROADMAP)
         self.assertIn("production VM execution remain pending", ROADMAP)
-        self.assertIn("every real Host adapter remain pending", ROADMAP)
+        self.assertIn("the remaining real Host adapters remain\n  pending", ROADMAP)
         self.assertIn("SynchronousHostOptions", HEADER)
         self.assertIn("authorize_host_member", SOURCE)
         self.assertIn("test_capability_adapter_and_syntax_gates_precede_arguments", HOST_TESTS)

@@ -9,7 +9,7 @@ tooling/tests, dependencies, and unresolved expressions remain distinct.
 | Domain | Python source/operation | Current C++ capability | Planned script API | Parity evidence | Status |
 | --- | --- | --- | --- | --- | --- |
 | Language semantics | 109 module files: 749 `if`, 177 `for`, 71 `while`, functions/callbacks, ordered maps, slices, comprehensions | No general runtime | Core language draft | Conformance corpus pending | Inventoried |
-| Logging | 333 module `info`, 97 `warning`, 20 `error`; service streams scoped structured logs | Existing spdlog logger | `baas/log` host module | Golden event trace pending | Inventoried |
+| Logging | 333 module `info`, 97 `warning`, 20 `error`; service streams scoped structured logs | Existing spdlog logger plus bounded `QueuedLogHost`/`BAASLoggerLogSink` bridge | `baas/log` host module | Live activation, metadata parity, and golden event trace pending | Foundation implemented; activation/parity pending |
 | Configuration | 97-field user config, 25-field static config, event and setup schemas; unknown fields must survive | JSON pointer based config classes | `baas/config` snapshot/transaction API | Round-trip and conflict parity pending | Inventoried |
 | Resources | 2,961 PNG, 130 JSON, 253 generated coordinate modules; locale/activity dynamic imports | CMake resource fetch and image cache | `baas/resource` immutable snapshots | Validator/manifest/update tests pending | Inventoried |
 | Screenshot | Cached screenshot, 0.3 s throttle, 1280x720 ratio; ADB/Nemu/u2/scrcpy/desktop backends | ADB/scrcpy and Windows Nemu/ldopengl | `baas/device.capture` | Image/hash/timing parity pending | Inventoried |

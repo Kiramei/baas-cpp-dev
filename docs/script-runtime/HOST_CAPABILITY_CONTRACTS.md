@@ -1,10 +1,11 @@
 # Capability-scoped Host API Contract (Draft 0.1)
 
-Status: Host contracts specified; real adapters not implemented. This document
-fixes the Phase 1 contract surface. A metadata-only registry and a bounded
-synchronous `baas/log.emit` conformance bridge exist; no production named
-adapter or parity implementation is claimed.
-Most catalog Host APIs therefore remain specified, not implemented.
+Status: Host contracts specified; the bounded LogHost production foundation is
+implemented, while live activation and the remaining real adapters are not.
+This document fixes the Phase 1 contract surface. A metadata-only registry,
+synchronous `baas/log.emit` bridge, queued LogHost, and BAASLogger sink exist;
+no package activation or parity completion is claimed. Most catalog Host APIs
+therefore remain specified, not implemented.
 
 The normative machine catalog is
 [`host-capabilities.v1.json`](host-capabilities.v1.json). Taxonomy coverage is
@@ -353,10 +354,14 @@ The transitional evaluator preserves safe binding identity and `effect_state`
 in `EvaluationError` text, but does not claim the pending ERR-003 heap-Error
 unwinder.
 
-The only executable catalog vertical slice is `host.log.emit.v1(level:string,
+The executable catalog vertical slice is `host.log.emit.v1(level:string,
 message:string, fields?:ordered-map<string,json>) -> null`, capability
-`log.emit`, budget `log_events`, through `InMemoryLogHost`. It is deterministic
-test/embedder evidence, not a real logging service adapter.
+`log.emit`, budget `log_events`. `InMemoryLogHost` remains deterministic test
+evidence. `QueuedLogHost` adds the bounded ordered queue, immutable host identity,
+recursive secret redaction, stable backpressure, and sink-failure containment;
+`BAASLoggerLogSink` is the primary application's real logger adapter. Live
+package activation and execution-context identity injection remain pending; see
+`LOG_HOST.md`.
 
 Registry failures use the following stable foundation codes. They are package
 validation results, not adapter `HOSTnnn` statuses and not proof that a Host
@@ -415,8 +420,9 @@ normative in `host-capabilities.v1.json`.
 ## Explicitly pending implementation evidence
 
 The production adapter set and metadata registry do not define or invoke
-`ProcessHost`, `HttpHost`, `SocketHost`, `ServiceHost`, a production `LogHost`,
-or any other real named adapter. Bytes,
+`ProcessHost`, `HttpHost`, `SocketHost`, `ServiceHost`, or the other real named
+adapters. `QueuedLogHost` and `BAASLoggerLogSink` are implemented foundations,
+but live package/task composition is not. Bytes,
 typed generational `host<T>`, async completion, cooperative cancellation,
 bounded pools, keyed strands, production VM registration, full manifest
 activation, ERR-003 unwinding, and Python-versus-C++ parity remain pending until

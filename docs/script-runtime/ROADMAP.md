@@ -157,7 +157,8 @@ pending.
   dispatches explicitly tagged native functions through a bounded scalar/JSON
   ABI, and executes the in-memory `baas/log.emit` conformance slice. Manifest
   activation, the production loader, general native catalog registration,
-  bytes/typed handles/async/strands, and every real Host adapter remain pending.
+  bytes/typed handles/async/strands, and the remaining real Host adapters remain
+  pending.
 - [~] Implement structured exceptions, stack traces, cancellation, and limits.
   The total allocation-free RT001-RT023 language-code/catchability mapping is
   implemented from the stable `LanguageErrorCode` table, semantic analysis
@@ -224,7 +225,13 @@ imports, structured unwinding, and async execution remain pending.
 
 ## Phase 3 — Host bindings and Python behavior parity
 
-- [ ] Bind logging and structured events.
+- [~] Bind logging and structured events. `QueuedLogHost` now provides a
+  bounded ordered worker queue, host-owned task/session/config identity,
+  recursive secret redaction, stable backpressure/shutdown semantics, and
+  asynchronous sink-failure containment. `BAASLoggerLogSink` compiles and links
+  the fixed-key structured JSON bridge into `BAAS_APP`. Live package activation,
+  real execution-context identity propagation, service log streaming, Python
+  parity, and Tauri end-to-end display remain pending; see `LOG_HOST.md`.
 - [ ] Bind configuration, schema validation, and persistence.
 - [ ] Bind resource lookup, image loading, and versioned manifests.
 - [ ] Bind screenshot acquisition and image processing.

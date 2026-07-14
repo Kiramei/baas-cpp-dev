@@ -159,7 +159,7 @@ class HostRegistryFoundationTests(unittest.TestCase):
         self.assertIn("BAAS_script_host_registry_tests", self.workflow)
         self.assertIn("- [~] Implement modules, imports, and native-function registration.", self.roadmap)
         self.assertIn("- [~] Add host capability permissions and thread-safety declarations.", self.roadmap)
-        self.assertIn("every real Host adapter remain pending", self.roadmap)
+        self.assertIn("the remaining real Host adapters remain\n  pending", self.roadmap)
         self.assertIn("do not define or invoke", self.host_spec)
         self.assertIn("remain pending", self.host_spec)
 

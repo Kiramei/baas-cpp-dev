@@ -15,9 +15,10 @@ implemented by the checked-in parser, immutable AST, and lexical semantic
 analyzer. `SynchronousEvaluator` is a bounded deterministic AST conformance
 oracle for the synchronous subset described below. Bytecode, the production
 VM/loader and async execution remain pending. A bounded synchronous conformance
-bridge implements only the catalog `baas/log.emit` shape with an in-memory
-adapter; every real Host adapter remains pending. Normative rules for the wider
-boundaries are requirements, not completion claims.
+bridge implements the catalog `baas/log.emit` shape with deterministic
+in-memory evidence and a bounded queued production adapter foundation. Live
+application activation and the other Host adapters remain pending. Normative
+rules for the wider boundaries are requirements, not completion claims.
 
 ## Normative clauses
 
@@ -480,14 +481,17 @@ task intersection before evaluating call arguments. Native functions retain
 side-table ID. `SynchronousNativeBindingSet` remains separate from the
 metadata-only `HostModuleRegistry`; it accepts only `thread_safe` + `preflight`
 callbacks and owning scalar/JSON-safe values. The executable catalog slice is
-`host.log.emit.v1` through `InMemoryLogHost`, which is test/embedder evidence and
-MUST NOT be described as the production LogHost.
+`host.log.emit.v1` through `InMemoryLogHost` for test/embedder evidence and
+through `QueuedLogHost` plus the application-owned `BAASLoggerLogSink` for the
+production adapter foundation. It MUST NOT be described as live application
+activation until a real execution context supplies identity and owns the
+binding.
 
 The repository does not yet implement the bytecode/compiler/production VM,
 structured throw/catch/defer unwinding, async/task execution, manifest
 activation/signature verification, general native catalog registration, bytes,
 typed generational Host handles, cooperative cancellation, pools/strands, or
-real adapters. These items MUST remain pending in Phase 2 until executable
+the remaining real adapters. These items MUST remain pending in Phase 2 until executable
 conformance evidence exists. Completing this normative Phase 1 specification
 MUST NOT be described as completing the VM, module loader, Turing-machine
 fixture execution, the general conformance corpus, or Phase 1 as a whole.

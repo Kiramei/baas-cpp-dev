@@ -438,7 +438,7 @@ class HostCapabilityContractTests(unittest.TestCase):
             self.roadmap,
         )
         self.assertIn("`HOST_CAPABILITY_CONTRACTS.md` fixes stable module", self.roadmap)
-        self.assertIn("- [ ] Bind logging and structured events.", self.roadmap)
+        self.assertIn("- [~] Bind logging and structured events.", self.roadmap)
         self.assertIn("- [~] Add host capability permissions and thread-safety declarations.", self.roadmap)
         self.assertIn("- [ ] Add Python-versus-C++ golden parity tests", self.roadmap)
         self.assertIn("specified, not implemented", self.spec)
