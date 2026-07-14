@@ -39,6 +39,8 @@ on:
       - 'docs/DEVELOPMENT_ENVIRONMENT.md'
       - 'docs/script-runtime/PYTHON_GOLDEN_TRACES.md'
       - 'docs/script-runtime/evidence/python-golden-traces.json'
+      - 'docs/script-runtime/PYTHON_SERVICE_PERFORMANCE_BASELINE.md'
+      - 'docs/script-runtime/evidence/python-service-performance-baseline.json'
   pull_request:
     branches:
       - main
@@ -78,6 +80,8 @@ on:
       - 'docs/DEVELOPMENT_ENVIRONMENT.md'
       - 'docs/script-runtime/PYTHON_GOLDEN_TRACES.md'
       - 'docs/script-runtime/evidence/python-golden-traces.json'
+      - 'docs/script-runtime/PYTHON_SERVICE_PERFORMANCE_BASELINE.md'
+      - 'docs/script-runtime/evidence/python-service-performance-baseline.json'
 
 permissions:
   contents: read

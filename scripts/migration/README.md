@@ -84,6 +84,35 @@ explicit `--repetitions` and `--algorithm-iterations` values override either
 mode. The benchmark Python defaults to `.venv/Scripts/python.exe` on Windows or
 `.venv/bin/python` on POSIX and can be set with `--python-executable`.
 
+The service extension is captured separately so the original timing samples
+remain byte-for-byte unchanged. It measures the production `/health` route by
+a direct in-process ASGI call, with a temporary service root and guards against
+lifespan, OCR/core initialization, background data initialization, and outbound
+`requests` HTTP:
+
+```powershell
+python scripts/migration/measure_python_service_baseline.py `
+  --python-repo ..\baas-dev `
+  --output docs\script-runtime\evidence\python-service-performance-baseline.json `
+  --repetitions 5 `
+  --request-iterations 50 `
+  --timeout 60
+```
+
+The production lifespan and Uvicorn listener are structured `skipped` results,
+because audited startup initializes OCR/core state, watchers, update work, and
+a data-initialization thread. The service extension never treats ASGI
+request-scope teardown as production shutdown. Validate only the committed
+schema and safety boundary with:
+
+```powershell
+python scripts/migration/measure_python_service_baseline.py `
+  --check-evidence docs\script-runtime\evidence\python-service-performance-baseline.json
+```
+
+CI runs mocked controller/schema tests and does not execute or threshold the
+performance measurements.
+
 The `process_wall_ms` metric includes interpreter creation and process exit.
 The empty-startup probe is exactly `python -I -S -c pass`, so it has no in-child
 timer or RSS field. For the other probes, `probe_elapsed_ms` begins inside the

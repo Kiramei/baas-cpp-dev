@@ -51,9 +51,14 @@ an isolated prototype is not considered project completion.
 - [~] Capture baseline latency, memory, startup, throughput, and package-size
   measurements on Windows x64. Host process startup, import readiness, RSS,
   legacy and production service-injected `cafe_reward.match`, and logical tree
-  sizes are recorded in `evidence/python-performance-baseline.json`; full service lifespan,
-  device/emulator, OCR, Tauri end-to-end, and packaged installer measurements
-  remain pending.
+  sizes are recorded in `evidence/python-performance-baseline.json`. A safe
+  direct in-process ASGI `/health` baseline adds readiness, RSS, request
+  throughput, and request-scope teardown in
+  `evidence/python-service-performance-baseline.json`. The audited full service lifespan
+  initializes OCR/core state, watchers, update work, and a background data
+  thread, so it and real service shutdown remain explicitly skipped. Localhost
+  server transport, device/emulator, OCR, Tauri end-to-end, and packaged
+  installer measurements remain pending.
 - [x] Record platform and emulator smoke-test prerequisites.
   `PLATFORM_SMOKE_PREREQUISITES.md` and its deterministic read-only checker
   record the profiles and exact future smoke evidence. JDK 17, both Android 36
