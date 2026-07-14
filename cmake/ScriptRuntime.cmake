@@ -8,6 +8,7 @@ add_library(
         "${BAAS_PROJECT_PATH}/src/script/Lexer.cpp"
         "${BAAS_PROJECT_PATH}/src/script/Parser.cpp"
         "${BAAS_PROJECT_PATH}/src/script/SemanticAnalyzer.cpp"
+        "${BAAS_PROJECT_PATH}/src/script/SyntaxCheck.cpp"
         "${BAAS_PROJECT_PATH}/src/script/Token.cpp"
         "${BAAS_PROJECT_PATH}/src/script/runtime/BoundedExecutor.cpp"
         "${BAAS_PROJECT_PATH}/src/script/runtime/ValueHeap.cpp"
@@ -27,6 +28,20 @@ if(MSVC)
     target_compile_options(BAAS_script_runtime PUBLIC /utf-8 PRIVATE /W4 /permissive-)
 else()
     target_compile_options(BAAS_script_runtime PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+
+if(BUILD_SCRIPT_TOOLS)
+    add_executable(
+            BAAS_script_check
+            "${BAAS_PROJECT_PATH}/apps/script_check/main.cpp"
+    )
+    target_compile_features(BAAS_script_check PRIVATE cxx_std_20)
+    target_link_libraries(BAAS_script_check PRIVATE BAAS_script_runtime)
+    if(MSVC)
+        target_compile_options(BAAS_script_check PRIVATE /W4 /permissive-)
+    else()
+        target_compile_options(BAAS_script_check PRIVATE -Wall -Wextra -Wpedantic)
+    endif()
 endif()
 
 if(BUILD_SCRIPT_TESTS)
@@ -72,4 +87,24 @@ if(BUILD_SCRIPT_TESTS)
     target_link_libraries(BAAS_script_value_heap_tests PRIVATE BAAS_script_runtime)
     add_test(NAME BAAS_script_value_heap_tests COMMAND BAAS_script_value_heap_tests)
     set_tests_properties(BAAS_script_value_heap_tests PROPERTIES TIMEOUT 60)
+
+    add_executable(
+            BAAS_script_syntax_check_tests
+            "${BAAS_PROJECT_PATH}/tests/script/SyntaxCheckTests.cpp"
+    )
+    target_compile_features(BAAS_script_syntax_check_tests PRIVATE cxx_std_20)
+    target_link_libraries(BAAS_script_syntax_check_tests PRIVATE BAAS_script_runtime)
+    add_test(NAME BAAS_script_syntax_check_tests COMMAND BAAS_script_syntax_check_tests)
+
+    if(BUILD_SCRIPT_TOOLS)
+        add_test(
+                NAME BAAS_script_check_valid_cli
+                COMMAND BAAS_script_check --json "${BAAS_PROJECT_PATH}/tests/script/fixtures/valid.baas"
+        )
+        add_test(
+                NAME BAAS_script_check_invalid_cli
+                COMMAND BAAS_script_check --json "${BAAS_PROJECT_PATH}/tests/script/fixtures/invalid.baas"
+        )
+        set_tests_properties(BAAS_script_check_invalid_cli PROPERTIES WILL_FAIL TRUE)
+    endif()
 endif()

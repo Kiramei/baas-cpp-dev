@@ -82,8 +82,9 @@ resolution, immutable cache snapshots, atomic activation, and rollback gates.
 
 ## Phase 2 — C++ runtime and developer tooling
 
-- [~] Add standalone `BAAS_script_runtime` and CLI/test targets. The library
-  and focused CTest targets exist; the executable CLI remains pending.
+- [~] Add standalone `BAAS_script_runtime` and CLI/test targets. The library,
+  focused CTest targets, and non-executing `BAAS_script_check` CLI exist; the
+  script execution CLI remains pending.
 - [x] Implement UTF-8 lexer with stable byte/line/column source diagnostics and
   malformed-input recovery.
 - [x] Implement the complete parser and source-spanned immutable AST.
@@ -99,8 +100,10 @@ resolution, immutable cache snapshots, atomic activation, and rollback gates.
 - [x] Implement the bounded cooperative executor, queue backpressure, task
   handles, cancellation requests, and drain/cancel-pending shutdown.
 - [ ] Integrate language-level task/future primitives with the VM and executor.
-- [ ] Provide formatter/linter, syntax checker, language-server path, and script
-  package validator.
+- [~] Provide formatter/linter, syntax checker, language-server path, and script
+  package validator. The bounded multi-file/stdin syntax and lexical-semantic
+  checker is implemented; formatter, linter policy, LSP, and package validator
+  remain pending.
 - [ ] Add unit, conformance, property, fuzz, sanitizer, and leak tests.
 - [ ] Add benchmarks for parse, load, dispatch, and hot-loop execution.
 
@@ -204,14 +207,16 @@ emulator, and installation no longer requires Python for normal operation.
 Exit evidence: required platform matrix is green and performance budgets pass.
 
 Foundation evidence: `.github/workflows/foundation-runtime.yml` defines a
-six-case Windows/Ubuntu/macOS Debug/Release matrix for the six standalone
-script/service foundation targets. Debug jobs also validate the checked-in
+six-case Windows/Ubuntu/macOS Debug/Release matrix that builds the script
+checker plus seven standalone script/service test executables and runs nine
+CTest cases. Debug jobs also validate the checked-in
 service vectors. The exact Windows commands passed locally for both build
 types after the value-heap addition: all six CTest targets passed 20 repeated
 Debug runs and one complete Release run; all 14 service-vector tests also
 passed before the protocol-spec additions. The current Debug jobs also run the
 service protocol/vector suite and the standard-library migration/baseline tool
-suite. The
+suite. After adding the syntax checker, the current Windows Debug suite passed
+all nine CTest cases for 20 consecutive runs and Release passed 9/9 once. The
 hosted Linux/macOS jobs, full application/parity/service smoke coverage,
 Android, performance budgets, sanitizers, fuzzing, and caches remain pending.
 

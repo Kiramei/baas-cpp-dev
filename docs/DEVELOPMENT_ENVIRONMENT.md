@@ -57,14 +57,15 @@ python --version
 
 ## Build the dependency-free foundation
 
-Lexer/parser/semantic/runtime-executor/value-heap and BPIP framing targets do
-not require the full application dependency graph:
+Lexer/parser/semantic/syntax-check/runtime-executor/value-heap and BPIP framing
+targets do not require the full application dependency graph:
 
 ```powershell
 cmake -S . -B build\foundation -G Ninja `
   -DCMAKE_BUILD_TYPE=Debug `
   -DBUILD_TESTING=ON `
   -DBUILD_SCRIPT_TESTS=ON `
+  -DBUILD_SCRIPT_TOOLS=ON `
   -DBUILD_SERVICE_PROTOCOL_TESTS=ON `
   -DBUILD_APP_BAAS=OFF `
   -DBUILD_APP_ISA=OFF `
@@ -76,6 +77,16 @@ cmake -S . -B build\foundation -G Ninja `
 cmake --build build\foundation --parallel 8
 ctest --test-dir build\foundation --output-on-failure --timeout 120
 ```
+
+Validate one or more draft scripts without executing them:
+
+```powershell
+build\foundation\bin\BAAS_script_check.exe --json path\to\task.baas
+```
+
+The checker returns 0 for valid input, 1 for language diagnostics, and 2 for
+invocation or I/O failure. `--max-bytes`, `--max-ast-nodes`, and `--max-depth`
+bound hostile input; `-` reads standard input once.
 
 The same targets are checked by `.github/workflows/foundation-runtime.yml` on
 Windows, Ubuntu, and macOS in Debug and Release. Hosted non-Windows results are
