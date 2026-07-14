@@ -21,44 +21,56 @@ python scripts\migration\operation_index.py `
   --strict
 ```
 
-The first command returned 0. The strict command returned 1 because unresolved
-dispositions remain. Two normal generations and
-the strict report were byte-identical.
+The first command returns 0. The strict command returns 1 because unresolved
+dispositions remain. Two normal generations and the strict report are
+byte-identical.
 
-## Taxonomy v4 resolution boundary
+## Taxonomy v4 resolution and privileged boundary
 
-Schema v2 and identity version 1 remain unchanged. Taxonomy v3 added a bounded
-static owner-resolution pass before the existing source-scope disposition
-rules. It accepts only facts visible in the AST or exact rules in
-`operation_rules.v4.json`:
+Schema v2 and identity version 1 remain unchanged. The bounded static
+owner-resolution pass runs before source-scope disposition defaults. It accepts
+only facts visible in the AST or exact rules in `operation_rules.v4.json`:
 
 - absolute and relative imports, aliases, local wildcard exports, definitions,
   and conservative lexical rebinding/branch merges;
 - declared concrete annotations, local class constructors, literal/container
   types, `*args`, `**kwargs`, exact destructuring, and positive `isinstance`
   narrowing inside the guarded branch;
-- exact constructor, factory-return, and property-return rules for selected
-  builtins and standard-library APIs, plus `requests.Response`.
+- exact constructor, factory-return, property-return, context-manager-return,
+  and iterable-element rules.
+
+The hardened v4 pass adds only source-provable facts: lexical nested definitions
+in evaluation order; exact returns for selected device, logging, process,
+socket, subprocess, timer, and regular-expression factories; proven
+`io.IOBase` context-manager targets; and exact iterable element rules for
+`psutil.process_iter` and `re.finditer`.
 
 Unknown call results, subscripts, ambiguous unions, rebinding across possible
 control-flow paths, `getattr` with runtime names, and untyped parameters remain
 dynamic or unresolved. Module export discovery is AST-only; external wildcard
-imports are not expanded. No naming heuristic such as assuming every `config`
-is a dictionary is used.
+imports are not expanded. Receiver suffixes and final identifier segments are
+never ownership evidence.
 
-Taxonomy v4 keeps those conservative owner facts, but recognizes that five
-non-script source scopes already fix the migration boundary independently of
-receiver ownership: C++ service, legacy GUI/Tauri replacement, tests,
-deployment tooling, and migration tooling. Explicit symbol rules still win;
-otherwise dynamic/unresolved calls in those scopes receive the same scoped
-disposition as resolved calls. Script-runtime dynamic/unresolved calls remain
-strict gaps because they may require a Host binding or language/module rewrite.
+Five non-script source scopes already fix the migration boundary independently
+of receiver ownership: C++ service, legacy GUI/Tauri replacement, tests,
+deployment tooling, and migration tooling. Script-runtime dynamic/unresolved
+calls remain strict gaps unless an explicit source-and-symbol boundary applies.
+Source-qualified rules are classified per file before equal conclusions are
+aggregated, so an unrelated `obj.bind`, `obj.fileno`, `obj.extractall`, or
+dynamic expression in another file cannot inherit authority.
 
-All 15,469 observed sites are preserved. v4 aggregates them into 4,319
-operations and 4,908 operation/source-scope decisions. Of the v2 IDs, 4,020
-remain shared with byte-identical identities and no shared ID changed meaning;
-525 old unresolved identities were retired and 299 proven identities were
-created.
+`ADR-0003-privileged-operation-boundaries.md` records the high-priority
+Windows, notification, IPC, updater, listener/descriptor, and video codec
+decisions. Notification retains the language-level `baas/notify` action and
+response contract through `NotifyHost`; only platform callbacks and UI remain
+inside the adapter.
+
+All 15,469 observed sites are preserved. Hardened v4 aggregates them into 4,363
+operations and 4,989 operation/source decisions. Compared with the checked-in
+v4 baseline, 3,916 operation IDs remain shared, 403 less-specific identities
+retire, and 447 proven identities are created. One operation can now have more
+than one decision in the same source scope when exact per-file evidence gives
+different owners; only those decisions receive a deterministic ID suffix.
 
 ## v2 unresolved baseline analysis
 
@@ -90,61 +102,56 @@ The source-scope split was 560 legacy-GUI, 520 C++-service, 402 script-runtime,
 | --- | --- |
 | `baas-dev` commit | `75bbacb545bc87e9510d85cbe8034f9180397004` |
 | Python source files | 569 |
-| Unique operations | 4,319 |
+| Unique operations | 4,363 |
 | Observed operation sites | 15,469 |
-| Operation/source-scope decisions | 4,908 |
-| Unresolved disposition decisions | 240 across 240 operations |
-| Unresolved observed sites | 378 |
-| Host-binding-required decisions | 343 |
+| Operation/source decisions | 4,989 |
+| Unresolved disposition decisions | 183 across 183 operations |
+| Unresolved observed sites | 304 |
+| Host-binding-required decisions | 349 |
 | Host contract gaps | 0 |
-| Dynamic operations retained | 257 |
+| Dynamic operations retained | 258 |
 | Parse errors | 0 |
 | Source snapshot SHA-256 | `76f974d77e7c63034296acefb86a707e150c68602db007f4dbec891c66f712ec` |
-| Rules SHA-256 | `2014c887cf17eaed2f9c0d613270f79c22434080cc0232fdafd8a1d7601d0689` |
-| JSON report SHA-256 | `90544bd2ffb57024bc3b0830fb3621ceb2479be5b15779d3de16f7bfeba970a3` |
+| Rules SHA-256 | `0a6bf758119537353c3e17926409a0bf1d273098e721fe6b2f573242d3bb7573` |
+| JSON report SHA-256 | `c6223ebdf1117963834c56751815a6fff835378b2b59939049ca84891518598c` |
 
 ## Before/after unresolved inventory
 
-| Measure | Taxonomy v2 | Taxonomy v3 | Taxonomy v4 | v3→v4 delta |
-| --- | ---: | ---: | ---: | ---: |
-| Unresolved decisions | 1,842 | 1,279 | 240 | -1,039 |
-| Unresolved observed sites | 3,467 | 2,302 | 378 | -1,924 |
-| Operations with unresolved disposition | 1,649 | 1,170 | 240 | -930 |
-| Static unresolved decisions | 1,512 | 1,008 | 167 | -841 |
-| Dynamic unresolved decisions | 330 | 271 | 73 | -198 |
-| Dynamic operations | 296 | 257 | 257 | 0 |
+| Measure | Taxonomy v2 | Taxonomy v3 | v4 baseline | Hardened v4 | baseline→hardened |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Unresolved decisions | 1,842 | 1,279 | 240 | 183 | -57 |
+| Unresolved observed sites | 3,467 | 2,302 | 378 | 304 | -74 |
+| Operations with unresolved disposition | 1,649 | 1,170 | 240 | 183 | -57 |
+| Static unresolved decisions | 1,512 | 1,008 | 167 | 116 | -51 |
+| Dynamic unresolved decisions | 330 | 271 | 73 | 67 | -6 |
+| Dynamic operations | 296 | 257 | 257 | 258 | +1 |
 
-The v3 dynamic reduction was limited to call results whose exact return type
-was proven. The v4 reduction does not claim new receiver knowledge; it assigns
-only the already-authoritative non-script migration boundary. The remaining
-240 decisions are all script-runtime calls: 153 member, 70 chained, 14 name,
-and 3 dynamic decisions (167 statically unresolved and 73 dynamic).
+The remaining 183 decisions are all script-runtime calls: 111 member, 65
+chained, 5 name, and 2 dynamic decisions (116 statically unresolved and 67
+dynamic). No unresolved call was assigned from a symbol-tail guess.
 
 ## Disposition inventory
 
 | Disposition | Decisions | Observed sites |
 | --- | ---: | ---: |
-| `HOST_BINDING_REQUIRED` | 343 | 1,994 |
-| `SCRIPT_LANGUAGE_OR_MODULE` | 814 | 3,080 |
-| `CPP_SERVICE_INTERNAL` | 1,255 | 3,435 |
+| `HOST_BINDING_REQUIRED` | 349 | 1,985 |
+| `SCRIPT_LANGUAGE_OR_MODULE` | 832 | 2,983 |
+| `CPP_SERVICE_INTERNAL` | 1,259 | 3,438 |
 | `TAURI_UI_REPLACED` | 1,476 | 4,298 |
-| `MIGRATION_TOOLING_ONLY` | 453 | 1,359 |
-| `TEST_ONLY` | 317 | 914 |
-| `EXTERNAL_DEPENDENCY` | 10 | 11 |
-| `UNRESOLVED` | 240 | 378 |
+| `MIGRATION_TOOLING_ONLY` | 549 | 1,541 |
+| `TEST_ONLY` | 335 | 914 |
+| `EXTERNAL_DEPENDENCY` | 6 | 6 |
+| `UNRESOLVED` | 183 | 304 |
 
-## Assigned Host contracts and Phase 0 gate
+## Assigned contracts and Phase 0 gate
 
-The eight v2 Host gaps were `psutil.Process`, `psutil.process_iter`,
-`requests.get`, `requests.post`, `socket.socket`, `subprocess.Popen`,
-`subprocess.check_output`, and `subprocess.run`. Proven socket annotations also
-exposed three additional capabilities: `socket.socket.recv`,
-`socket.socket.send`, and `socket.socket.setblocking`.
-`HOST_CAPABILITY_CONTRACTS.md` now assigns them stable Process, HTTP, and Socket
-capabilities, proposed C++ interface identities, owners, and parity test IDs.
-All remain `INVENTORIED`; no binding or parity implementation is claimed.
+The eleven taxonomy-v3 Process, HTTP, and Socket gaps retain stable capability,
+proposed C++ interface, owner, and parity identities. Hardened v4 additionally
+assigns Device and Notify Host contracts while keeping listener, raw IPC,
+shortcut, and updater work outside the script Host surface. All Host decisions
+remain `INVENTORIED`; no binding or parity implementation is claimed.
 
 Strict mode independently checks unresolved dispositions, Host contract gaps,
-and parse failures. It therefore remains non-zero with 240 unresolved
-decisions and zero Host contract gaps. Phase 0 remains incomplete. The generated matrix is
-an authoritative work queue, not proof that bindings or parity tests exist.
+and parse failures. It therefore remains non-zero with 183 unresolved decisions
+and zero Host contract gaps. Phase 0 remains incomplete. The generated matrix
+is an authoritative work queue, not proof that bindings or parity tests exist.
