@@ -25,11 +25,11 @@ an isolated prototype is not considered project completion.
 ## Phase 0 — Baseline and authoritative inventories
 
 - [x] Create a dedicated foundation branch.
-- [~] Inventory Python modules, automation operations, dynamic language use,
+- [x] Inventory Python modules, automation operations, dynamic language use,
   service endpoints, tests, and resources in `baas-dev`.
-- [~] Inventory reusable C++ capabilities, platform guards, tests, and build
+- [x] Inventory reusable C++ capabilities, platform guards, tests, and build
   targets in `baas-cpp-dev`.
-- [~] Inventory the current `baas-tauri` process and service contract without
+- [x] Inventory the current `baas-tauri` process and service contract without
   modifying its existing dirty worktree.
 - [ ] Record every discovered Python operation in `MIGRATION_MATRIX.md` with an
   owner, C++ host binding, parity test, and migration status.
@@ -177,4 +177,3 @@ requirement completion audit has no missing or indirect evidence.
   dependency compilation is active; otherwise divide cores across independent
   worktrees and set explicit `--parallel` limits.
 - Record peak memory and reduce concurrency before paging or thermal throttling.
-
