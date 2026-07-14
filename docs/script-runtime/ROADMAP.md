@@ -261,6 +261,10 @@ suite. After adding the JSON bridge, the current Windows Debug suite passed all
 ten CTest cases for 20 consecutive runs and Release passed 10/10 once. The
 hosted Linux/macOS jobs, full application/parity/service smoke coverage,
 Android, performance budgets, sanitizers, fuzzing, and caches remain pending.
+The separate `android-ocr-foundation.yml` matrix now cross-builds and verifies
+the current repository's OCR shared libraries for arm64-v8a and x86_64 with
+NDK 29 and ABI-scoped Conan caches. Hosted execution and emulator load/OCR/APK
+smoke evidence remain pending, so the combined Android checklist stays open.
 
 ## Phase 7 — Release, documentation, and completion audit
 

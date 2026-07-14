@@ -259,6 +259,12 @@ cmake --preset conan-android-clang-release-ocr-x86_64
 cmake --build --preset conan-android-clang-release-ocr-x86_64
 ```
 
+`.github/workflows/android-ocr-foundation.yml` runs the same verified wrapper
+on `windows-latest` as an arm64-v8a/x86_64 matrix with a pinned NDK and
+ABI-specific Conan cache, then uploads the packaged native libraries. This is a
+cross-build gate only; it does not claim emulator boot, load, OCR inference, or
+Tauri APK smoke coverage.
+
 These commands build OCR libraries; they do not prove Tauri APK packaging or a
 native BAAS service. For the current Tauri Android application, the existing
 debug entrypoints are:

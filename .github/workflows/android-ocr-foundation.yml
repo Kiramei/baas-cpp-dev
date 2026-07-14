@@ -1,0 +1,106 @@
+name: Android OCR foundation
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/android-ocr-foundation.yml'
+      - 'CMakeLists.txt'
+      - 'CMakePresets.json'
+      - 'cmake/**'
+      - 'deploy/conan/**'
+      - 'include/**'
+      - 'src/**'
+      - 'apps/ocr_server/**'
+      - 'scripts/dev/Build-AndroidOcr.ps1'
+      - 'scripts/dev/Enter-WindowsDevShell.ps1'
+  pull_request:
+    branches:
+      - main
+    types:
+      - opened
+      - synchronize
+      - reopened
+    paths:
+      - '.github/workflows/android-ocr-foundation.yml'
+      - 'CMakeLists.txt'
+      - 'CMakePresets.json'
+      - 'cmake/**'
+      - 'deploy/conan/**'
+      - 'include/**'
+      - 'src/**'
+      - 'apps/ocr_server/**'
+      - 'scripts/dev/Build-AndroidOcr.ps1'
+      - 'scripts/dev/Enter-WindowsDevShell.ps1'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-ocr-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  cross-build:
+    name: Android ${{ matrix.abi }}
+    runs-on: windows-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        abi:
+          - arm64-v8a
+          - x86_64
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install pinned Android NDK
+        shell: pwsh
+        run: |
+          $sdkmanager = Get-Command sdkmanager.bat -ErrorAction Stop
+          & $sdkmanager.Source 'ndk;29.0.13846066'
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Could not install Android NDK 29.0.13846066.'
+          }
+
+      - name: Create repository Python environment
+        shell: pwsh
+        run: |
+          python -m venv .venv
+          .\.venv\Scripts\python.exe -m pip install `
+            --disable-pip-version-check conan==2.30.0
+
+      - name: Cache Conan packages
+        uses: actions/cache@v4
+        with:
+          path: .conan2
+          key: android-${{ matrix.abi }}-ndk29-conan230-${{ hashFiles('deploy/conan/**', 'CMakePresets.json') }}
+          restore-keys: |
+            android-${{ matrix.abi }}-ndk29-conan230-
+
+      - name: Build and verify OCR library
+        shell: pwsh
+        run: |
+          .\scripts\dev\Build-AndroidOcr.ps1 `
+            -Abi '${{ matrix.abi }}' -Jobs 8
+
+      - name: Upload verified native libraries
+        uses: actions/upload-artifact@v4
+        with:
+          name: baas-ocr-android-${{ matrix.abi }}
+          if-no-files-found: error
+          retention-days: 14
+          path: build/conan-android-clang-release-ocr-${{ matrix.abi }}/bin/lib/${{ matrix.abi }}/*.so
