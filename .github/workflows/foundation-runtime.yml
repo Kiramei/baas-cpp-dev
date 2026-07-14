@@ -21,6 +21,7 @@ on:
       - 'tests/service/**'
       - 'scripts/service_contract/**'
       - 'scripts/platform/**'
+      - 'scripts/dev/**'
       - 'tests/service_contract/**'
       - 'scripts/migration/**'
       - 'tests/platform/**'
@@ -32,6 +33,7 @@ on:
       - 'docs/script-runtime/SERVICE_PROTOCOL_V1.md'
       - 'docs/script-runtime/PLATFORM_SMOKE_PREREQUISITES.md'
       - 'docs/script-runtime/evidence/platform_smoke_prerequisites.windows.json'
+      - 'docs/DEVELOPMENT_ENVIRONMENT.md'
   pull_request:
     branches:
       - main
@@ -53,6 +55,7 @@ on:
       - 'tests/service/**'
       - 'scripts/service_contract/**'
       - 'scripts/platform/**'
+      - 'scripts/dev/**'
       - 'tests/service_contract/**'
       - 'scripts/migration/**'
       - 'tests/platform/**'
@@ -64,6 +67,7 @@ on:
       - 'docs/script-runtime/SERVICE_PROTOCOL_V1.md'
       - 'docs/script-runtime/PLATFORM_SMOKE_PREREQUISITES.md'
       - 'docs/script-runtime/evidence/platform_smoke_prerequisites.windows.json'
+      - 'docs/DEVELOPMENT_ENVIRONMENT.md'
 
 permissions:
   contents: read

@@ -125,7 +125,7 @@ At the time of the observation:
 | Linux/macOS hosted foundation | not_run | the audited host was Windows |
 
 An ordinary unactivated shell did not expose CMake, Ninja, Conan, or MSVC on
-PATH. `. .\.local\Enter-DevShell.ps1` supplies those tools for the current
+PATH. `. .\scripts\dev\Enter-WindowsDevShell.ps1` supplies those tools for the current
 process. That shell activation is therefore part of Windows reproduction; the
 committed evidence does not encode its machine-specific location.
 
@@ -136,7 +136,7 @@ committed evidence does not encode its machine-specific location.
 These commands are safe to run once the prerequisite checker is strict-green:
 
 ```powershell
-. .\.local\Enter-DevShell.ps1
+. .\scripts\dev\Enter-WindowsDevShell.ps1
 python scripts\platform\check_smoke_prerequisites.py `
   --profile windows-foundation --strict `
   --output build\evidence\windows-foundation.json
@@ -199,7 +199,7 @@ step outside the checker. Do not make the checker call `sdkmanager`,
 After those prerequisites are supplied, first run both strict profiles:
 
 ```powershell
-. .\.local\Enter-DevShell.ps1
+. .\scripts\dev\Enter-WindowsDevShell.ps1
 python scripts\platform\check_smoke_prerequisites.py `
   --profile android-arm64 --strict `
   --output build\evidence\android-arm64-prerequisites.json

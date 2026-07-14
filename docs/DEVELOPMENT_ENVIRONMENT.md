@@ -34,11 +34,18 @@ activation script sets `CONAN_HOME` to the latter.
 
 ## Activate a shell
 
-In PowerShell:
+Initialize the repository-local environment once in PowerShell:
 
 ```powershell
 Set-Location D:\WorkSpace\pro\BAAS\baas-cpp-dev
-. .\.local\Enter-DevShell.ps1
+.\scripts\dev\Initialize-WindowsEnvironment.ps1
+```
+
+Then activate each shell:
+
+```powershell
+Set-Location D:\WorkSpace\pro\BAAS\baas-cpp-dev
+. .\scripts\dev\Enter-WindowsDevShell.ps1
 ```
 
 This imports the x64 MSVC environment, prepends the repository Python, bundled
@@ -115,13 +122,13 @@ configured or green.
 
 ## Python reference and service-vector checks
 
-The repository-local `.venv` is configured with `fastapi`, `cryptography`, and
-`PyNaCl` in addition to the C++ build helpers. These packages are needed when
-the production-anchored service vectors import the sibling service. Recreate
-that portion of the environment with:
+The repository-local `.venv` is configured from
+`scripts/dev/requirements-foundation.txt`. It includes `fastapi`,
+`cryptography`, and `PyNaCl`, which are needed when the production-anchored
+service vectors import the sibling service. Refresh it with:
 
 ```powershell
-python -m pip install fastapi cryptography PyNaCl
+.\scripts\dev\Initialize-WindowsEnvironment.ps1
 ```
 
 The authoritative Python suite can still use the sibling Python environment:
