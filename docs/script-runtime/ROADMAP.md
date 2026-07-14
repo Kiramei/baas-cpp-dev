@@ -209,9 +209,11 @@ Python fallback is needed for migrated representative workflows.
 Exit evidence: contract suite and Tauri end-to-end workflows pass under load.
 
 Transport-independent routing foundation: `BAAS_service_router` now provides
-dependency-free, in-memory v1 health/version routing, exact method/path
-matching, bounded request/response bodies, uniform JSON-safe errors, and an
-injectable shutdown intent. It opens no listener and performs no shutdown.
+dependency-free, in-memory routing on the frozen unversioned `/health` path,
+exact method/path matching, bounded request/response bodies, uniform JSON-safe
+errors, and foundation-only `/version`/`/shutdown` extensions. The production
+`/health` status/auth payload and remaining required v1 routes are still
+missing. It opens no listener and performs no shutdown.
 `SERVICE_ROUTER_CORE.md` records the boundary and tests; the `cpp-httplib`
 adapter, authentication, bounded concurrency, real graceful shutdown, and
 Tauri integration remain required, so the broader checklist item stays open.

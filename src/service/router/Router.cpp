@@ -8,9 +8,9 @@ namespace baas::service::router {
 namespace {
 
 constexpr std::size_t minimum_response_budget = 128;
-constexpr std::string_view health_path = "/api/v1/health";
-constexpr std::string_view version_path = "/api/v1/version";
-constexpr std::string_view shutdown_path = "/api/v1/shutdown";
+constexpr std::string_view health_path = "/health";
+constexpr std::string_view version_path = "/version";
+constexpr std::string_view shutdown_path = "/shutdown";
 constexpr std::string_view response_budget_error =
     R"({"error":{"code":"response_too_large","message":"response exceeds configured budget","status":500},"ok":false})";
 static_assert(response_budget_error.size() <= minimum_response_budget);

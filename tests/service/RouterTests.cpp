@@ -53,14 +53,14 @@ void test_health_and_version_routes()
 {
     const service_router::Router router{{"BAAS Service", "1.2.3"}};
 
-    const auto health = router.handle({"GET", "/api/v1/health", {}});
+    const auto health = router.handle({"GET", "/health", {}});
     check(health.status == 200, "health must return 200");
     check(health.body == R"({"api_version":1,"ok":true,"status":"healthy"})",
           "health response must be stable versioned JSON");
     check(header(health, "Content-Type") == "application/json; charset=utf-8",
           "health must be JSON UTF-8");
 
-    const auto version = router.handle({"GET", "/api/v1/version", {}});
+    const auto version = router.handle({"GET", "/version", {}});
     check(version.status == 200, "version must return 200");
     check(version.body
               == R"({"api_version":1,"ok":true,"service":"BAAS Service","version":"1.2.3"})",
@@ -71,31 +71,33 @@ void test_exact_method_and_path_matching()
 {
     const service_router::Router router{{"BAAS", "dev"}};
 
-    const auto missing = router.handle({"GET", "/api/v1/missing", {}});
+    const auto missing = router.handle({"GET", "/missing", {}});
     check(missing.status == 404, "unknown exact path must return 404");
     check(missing.body
               == R"({"error":{"code":"route_not_found","message":"no route matches the request path","status":404},"ok":false})",
           "not-found error model must be exact JSON");
 
-    const auto method = router.handle({"POST", "/api/v1/health", {}});
+    const auto method = router.handle({"POST", "/health", {}});
     check(method.status == 405, "known path with wrong method must return 405");
     check(header(method, "Allow") == "GET", "405 must expose the allowed method");
     check(method.body.find(R"("code":"method_not_allowed")") != std::string::npos,
           "405 must use the shared error model");
 
-    check(router.handle({"GET", "api/v1/health", {}}).status == 400,
+    check(router.handle({"GET", "health", {}}).status == 400,
           "relative paths must be rejected");
-    check(router.handle({"GET", "/api/v1/health?verbose=1", {}}).status == 400,
+    check(router.handle({"GET", "/health?verbose=1", {}}).status == 400,
           "adapter must pass a normalized path without query text");
-    check(router.handle({"get", "/api/v1/health", {}}).status == 405,
+    check(router.handle({"get", "/health", {}}).status == 405,
           "method matching must remain exact and adapter-owned");
+    check(router.handle({"GET", "/api/v1/health", {}}).status == 404,
+          "invented version-prefixed routes must not masquerade as frozen HTTP v1");
 }
 
 void test_json_escaping_is_transport_independent_and_safe()
 {
     const std::string version{"v\"\\\n\x01\xC3\xA9"};
     const service_router::Router router{{"B\nAAS", version}};
-    const auto response = router.handle({"GET", "/api/v1/version", {}});
+    const auto response = router.handle({"GET", "/version", {}});
     check(response.status == 200, "escaped version response must remain valid");
     const auto expected = std::string{R"({"api_version":1,"ok":true,"service":"B\nAAS","version":"v\"\\\n\u0001)"}
         + "\xC3\xA9" + R"("})";
@@ -112,16 +114,16 @@ void test_request_and_response_budgets()
     budget.max_response_body_bytes = 128;
     const service_router::Router router{{"BAAS", std::string(200, 'v')}, budget};
 
-    const auto method = router.handle({"DELETE", "/api/v1/health", {}});
+    const auto method = router.handle({"DELETE", "/health", {}});
     check(method.status == 400 && method.body.find("method_too_large") != std::string::npos,
           "oversized method must be rejected before routing");
     const auto path = router.handle({"GET", std::string(21, '/'), {}});
     check(path.status == 414 && path.body.find("path_too_large") != std::string::npos,
           "oversized path must return 414");
-    const auto request = router.handle({"GET", "/api/v1/health", "12345"});
+    const auto request = router.handle({"GET", "/health", "12345"});
     check(request.status == 413 && request.body.find("request_too_large") != std::string::npos,
           "oversized request body must return 413");
-    const auto response = router.handle({"GET", "/api/v1/version", {}});
+    const auto response = router.handle({"GET", "/version", {}});
     check(response.status == 500, "oversized generated response must be contained");
     check(response.body
               == R"({"error":{"code":"response_too_large","message":"response exceeds configured budget","status":500},"ok":false})",
@@ -134,7 +136,7 @@ void test_shutdown_intent_is_injected_and_does_not_terminate()
 {
     RecordingShutdown accepted{service_router::ShutdownDecision::accepted};
     const service_router::Router accepting{{"BAAS", "dev"}, {}, &accepted};
-    const auto accepted_response = accepting.handle({"POST", "/api/v1/shutdown", {}});
+    const auto accepted_response = accepting.handle({"POST", "/shutdown", {}});
     check(accepted_response.status == 202, "accepted shutdown intent must return 202");
     check(accepted_response.body == R"({"accepted":true,"api_version":1,"ok":true})",
           "accepted shutdown intent must have stable JSON");
@@ -142,16 +144,16 @@ void test_shutdown_intent_is_injected_and_does_not_terminate()
 
     RecordingShutdown rejected{service_router::ShutdownDecision::rejected};
     const service_router::Router rejecting{{"BAAS", "dev"}, {}, &rejected};
-    const auto rejected_response = rejecting.handle({"POST", "/api/v1/shutdown", {}});
+    const auto rejected_response = rejecting.handle({"POST", "/shutdown", {}});
     check(rejected_response.status == 409
               && rejected_response.body.find("shutdown_rejected") != std::string::npos,
           "rejected shutdown intent must remain an explicit conflict");
     check(rejected.calls == 1, "rejected shutdown intent must be invoked exactly once");
 
     const service_router::Router unavailable{{"BAAS", "dev"}};
-    check(unavailable.handle({"POST", "/api/v1/shutdown", {}}).status == 503,
+    check(unavailable.handle({"POST", "/shutdown", {}}).status == 503,
           "missing shutdown intent must return 503");
-    check(accepting.handle({"GET", "/api/v1/shutdown", {}}).status == 405,
+    check(accepting.handle({"GET", "/shutdown", {}}).status == 405,
           "wrong shutdown method must not invoke the intent");
     check(accepted.calls == 1, "wrong method must not request shutdown");
 
@@ -159,7 +161,7 @@ void test_shutdown_intent_is_injected_and_does_not_terminate()
     bounded_budget.max_request_body_bytes = 4;
     RecordingShutdown bounded_intent{service_router::ShutdownDecision::accepted};
     const service_router::Router bounded{{"BAAS", "dev"}, bounded_budget, &bounded_intent};
-    check(bounded.handle({"POST", "/api/v1/shutdown", "12345"}).status == 413,
+    check(bounded.handle({"POST", "/shutdown", "12345"}).status == 413,
           "oversized shutdown body must be rejected before the intent");
     check(bounded_intent.calls == 0, "request budget must contain shutdown side effects");
 }

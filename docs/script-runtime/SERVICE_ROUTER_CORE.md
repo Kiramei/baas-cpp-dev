@@ -7,13 +7,23 @@ loop, or terminate a process.
 
 ## Implemented boundary
 
-The exact v1 routes are:
+The implemented foundation routes are:
 
 | Method | Path | Result |
 | --- | --- | --- |
-| `GET` | `/api/v1/health` | Stable health JSON with `api_version: 1` |
-| `GET` | `/api/v1/version` | Injected service name/version plus API version |
-| `POST` | `/api/v1/shutdown` | Requests an injected shutdown intent |
+| `GET` | `/health` | Frozen v1 path with a temporary foundation-only body |
+| `GET` | `/version` | Foundation extension exposing injected metadata |
+| `POST` | `/shutdown` | Foundation extension requesting an injected shutdown intent |
+
+HTTP v1 paths are intentionally unversioned. `/api/v1/health` and other
+invented version-prefixed aliases return `404`; protocol version negotiation
+belongs to the authenticated channel handshake, not the HTTP path.
+
+Only the `/health` path matches the frozen required v1 surface. Its current
+small body exercises routing and budgets but is not yet payload-compatible:
+production parity still requires `statuses` plus `auth.initialized`,
+`auth.pwd_epoch`, and `auth.server_sign_public_key`. `/version` and `/shutdown`
+are foundation extensions, not observed Python/Tauri v1 endpoints.
 
 Paths and methods are matched exactly. The future transport adapter must pass
 an absolute normalized path without query or fragment text and must preserve
@@ -84,9 +94,10 @@ ctest --test-dir build/service-router --build-config Debug `
   --output-on-failure -R BAAS_service_router_tests
 ```
 
-The tests cover versioned success routes, exact method/path matching, uniform
-errors, JSON escaping, every size budget, and accepted/rejected/unavailable
-shutdown intents.
+The tests cover the unversioned health path, extension routes, rejection of an
+invented `/api/v1/health` alias, exact method/path matching, uniform errors,
+JSON escaping, every size budget, and accepted/rejected/unavailable shutdown
+intents.
 
 ## Explicitly not implemented
 
@@ -95,6 +106,8 @@ shutdown intents.
 - bounded connection/worker concurrency, backpressure, or overload behavior;
 - real process shutdown, task draining, restart, or port-conflict behavior;
 - task/config/resource APIs, BPIP integration, or Tauri contract/E2E tests.
+- the production-compatible `/health` status/auth payload and the remaining
+  required unversioned HTTP routes.
 
 Consequently the Phase 4 `cpp-httplib` checklist item remains open. This core
 is only the independently testable routing boundary that a later adapter can
