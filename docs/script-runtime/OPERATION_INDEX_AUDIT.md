@@ -25,31 +25,56 @@ The first command returned 0. The strict command returned 1 because unresolved
 dispositions and unassigned Host contracts remain. Two normal generations and
 the strict report were byte-identical.
 
-## Schema v2 and identity stability
+## Taxonomy v3 resolution boundary
 
-Schema v2 keeps every discovered call, registry, route, and dispatch operation,
-but separates two concepts previously conflated as `UNCLASSIFIED`:
+Schema v2 and identity version 1 remain unchanged. Taxonomy v3 adds a bounded
+static owner-resolution pass before the existing source-scope disposition
+rules. It accepts only facts visible in the AST or exact rules in
+`operation_rules.v3.json`:
 
-- `source_scope` describes where a call occurs: script runtime, generated
-  resources, C++ service migration, legacy GUI, tests, migration tooling, or
-  deployment tooling;
-- `disposition` describes what migration boundary applies:
-  `HOST_BINDING_REQUIRED`, `SCRIPT_LANGUAGE_OR_MODULE`,
-  `CPP_SERVICE_INTERNAL`, `TAURI_UI_REPLACED`, `MIGRATION_TOOLING_ONLY`,
-  `TEST_ONLY`, `EXTERNAL_DEPENDENCY`, or `UNRESOLVED`.
+- absolute and relative imports, aliases, local wildcard exports, definitions,
+  and conservative lexical rebinding/branch merges;
+- declared concrete annotations, local class constructors, literal/container
+  types, `*args`, `**kwargs`, exact destructuring, and positive `isinstance`
+  narrowing inside the guarded branch;
+- exact constructor, factory-return, and property-return rules for selected
+  builtins and standard-library APIs, plus `requests.Response`.
 
-One operation can occur in several source scopes, so JSON and the generated
-matrix contain stable `operation-id@SOURCE_SCOPE` decisions. Dynamic/chained
-expressions and statically unknown owners remain `UNRESOLVED` even in GUI,
-test, and tooling directories. A directory name alone never closes a dynamic
-or security-sensitive migration decision.
+Unknown call results, subscripts, ambiguous unions, rebinding across possible
+control-flow paths, `getattr` with runtime names, and untyped parameters remain
+dynamic or unresolved. Module export discovery is AST-only; external wildcard
+imports are not expanded. No naming heuristic such as assuming every `config`
+is a dictionary is used.
 
-The report has schema version 2 but retains identity version 1. Of the 4,556 v1
-identities, 4,448 remain byte-for-byte identical and retain the same ID. No
-shared identity changed ID. Correct absolute/relative alias resolution plus
-conservative branch/rebinding merges retired 108 incorrect identities and
-produced 97 corrected identities, yielding 4,545 unique operations without
-changing the 15,469 observed sites.
+All 15,469 observed sites are preserved. v3 aggregates them into 4,319
+operations and 4,908 operation/source-scope decisions. Of the v2 IDs, 4,020
+remain shared with byte-identical identities and no shared ID changed meaning;
+525 old unresolved identities were retired and 299 proven identities were
+created.
+
+## v2 unresolved baseline analysis
+
+The v2 starting point was 1,842 unresolved decisions across 3,467 observed
+sites. Its rule and call-form split was:
+
+| Dimension | v2 decisions | v2 sites |
+| --- | ---: | ---: |
+| `unresolved-expression-v2` | 1,512 | 2,884 |
+| `dynamic-expression-v2` | 330 | 583 |
+| member | 1,425 | — |
+| chained | 323 | — |
+| name | 87 | — |
+| dynamic | 7 | — |
+
+The largest unresolved member families by observed site were `get` (329),
+`append` (203), `addWidget` (111), `split` (99), `strip` (85), `replace` (77),
+`startswith` (60), `setattr` (60), `tr` (57), `exists` (54), `lower` (53), and
+`connect` (53). This separated provable container/string/path operations from
+still-unknown GUI owners, pytest fixtures, configuration objects, and runtime
+call results.
+
+The source-scope split was 560 legacy-GUI, 520 C++-service, 402 script-runtime,
+163 test, 149 deployment-tooling, and 48 migration-tooling decisions.
 
 ## Snapshot and deterministic evidence
 
@@ -57,62 +82,60 @@ changing the 15,469 observed sites.
 | --- | --- |
 | `baas-dev` commit | `75bbacb545bc87e9510d85cbe8034f9180397004` |
 | Python source files | 569 |
-| Unique operations | 4,545 |
+| Unique operations | 4,319 |
 | Observed operation sites | 15,469 |
-| Operation/source-scope decisions | 5,128 |
-| Unresolved disposition decisions | 1,842 across 1,649 operations |
-| Host-binding-required decisions | 328 |
-| Host contract gaps | 8 |
-| Dynamic operations retained | 296 |
+| Operation/source-scope decisions | 4,908 |
+| Unresolved disposition decisions | 1,279 across 1,170 operations |
+| Unresolved observed sites | 2,302 |
+| Host-binding-required decisions | 343 |
+| Host contract gaps | 11 |
+| Dynamic operations retained | 257 |
 | Parse errors | 0 |
 | Source snapshot SHA-256 | `76f974d77e7c63034296acefb86a707e150c68602db007f4dbec891c66f712ec` |
-| Rules SHA-256 | `37dee8eea0163fc3e93e15dd9a37b31e7bd0e4a7531026ba61393c283d7ef431` |
-| JSON report SHA-256 | `9a476f1662b98ec8c2200f7dbddb6dc80058194733e1d10f23d1e08dcb448be6` |
+| Rules SHA-256 | `d8dbb97b8bfe63d392a20bb4ee0fdc073f94e5beb0980e6c8fc70bd74ba477eb` |
+| JSON report SHA-256 | `9249cb288b78fb4503409fba94f330bf6f95a8ab0ecdf386e982e26fc91f9684` |
 
-## Source-scope inventory
+## Before/after unresolved inventory
 
-| Source scope | Decisions | Observed sites | Meaning |
-| --- | ---: | ---: | --- |
-| `SCRIPT_RUNTIME` | 1,508 | 5,463 | Python automation/runtime requiring Host, language, module, or dependency decisions |
-| `CPP_SERVICE` | 1,331 | 3,435 | Python service implementation to migrate inside the C++ service |
-| `LEGACY_GUI` | 1,498 | 4,298 | Legacy PyQt/UI implementation replaced at the Tauri boundary when statically resolved |
-| `TEST` | 324 | 914 | Python-only test/support evidence when statically resolved |
-| `DEPLOYMENT_TOOLING` | 342 | 1,045 | Packaging/deployment-only code when statically resolved |
-| `MIGRATION_TOOLING` | 125 | 314 | Developer/migration tools when statically resolved |
+| Measure | Taxonomy v2 | Taxonomy v3 | Delta |
+| --- | ---: | ---: | ---: |
+| Unresolved decisions | 1,842 | 1,279 | -563 |
+| Unresolved observed sites | 3,467 | 2,302 | -1,165 |
+| Operations with unresolved disposition | 1,649 | 1,170 | -479 |
+| Static unresolved decisions | 1,512 | 1,008 | -504 |
+| Dynamic unresolved decisions | 330 | 271 | -59 |
+| Dynamic operations | 296 | 257 | -39 |
 
-The 253 generated `src` Python files contain data declarations but no indexed
-calls, so they contribute to the source inventory without a scope decision.
+The dynamic reduction is limited to call results whose exact return type is
+now proven by a v3 rule; genuinely runtime-dependent forms remain unresolved.
+The remaining v3 call-form split is 925 member, 264 chained, 83 name, and 7
+dynamic decisions. The remaining source-scope split is 471 legacy-GUI, 335
+C++-service, 240 script-runtime, 108 deployment-tooling, 96 test, and 29
+migration-tooling decisions.
 
 ## Disposition inventory
 
-| Disposition | Decisions | Observed sites | Interpretation |
-| --- | ---: | ---: | --- |
-| `HOST_BINDING_REQUIRED` | 328 | 1,946 | Script-visible capability crossing a C++ Host boundary |
-| `SCRIPT_LANGUAGE_OR_MODULE` | 768 | 2,813 | Language intrinsic, standard library behavior, or script/module rewrite; not a fabricated Host API |
-| `CPP_SERVICE_INTERNAL` | 811 | 2,399 | C++ service implementation detail, not a script Host binding |
-| `TAURI_UI_REPLACED` | 938 | 3,311 | Statically resolved legacy GUI work owned by the Tauri replacement boundary |
-| `MIGRATION_TOOLING_ONLY` | 270 | 1,025 | Resolved deployment/developer tooling outside production script execution |
-| `TEST_ONLY` | 161 | 497 | Resolved Python test/support operation |
-| `EXTERNAL_DEPENDENCY` | 10 | 11 | Dependency replacement decision remains, without inventing a C++ binding |
-| `UNRESOLVED` | 1,842 | 3,467 | Dynamic, rebound, shadowed, or otherwise unknown call owner |
-
-Broad v1 rules for `builtins`, `json`, and similar standard-library operations
-no longer manufacture Host bindings. Direct device libraries such as
-`adbutils`, `uiautomator2`, `pyautogui`, and `mss` are explicitly routed to the
-DeviceHost. Process/network calls are security-sensitive Host candidates and
-remain gaps until their contract is assigned.
+| Disposition | Decisions | Observed sites |
+| --- | ---: | ---: |
+| `HOST_BINDING_REQUIRED` | 343 | 1,994 |
+| `SCRIPT_LANGUAGE_OR_MODULE` | 814 | 3,080 |
+| `CPP_SERVICE_INTERNAL` | 920 | 2,819 |
+| `TAURI_UI_REPLACED` | 1,005 | 3,499 |
+| `MIGRATION_TOOLING_ONLY` | 316 | 1,127 |
+| `TEST_ONLY` | 221 | 637 |
+| `EXTERNAL_DEPENDENCY` | 10 | 11 |
+| `UNRESOLVED` | 1,279 | 2,302 |
 
 ## Strict gaps and Phase 0 gate
 
-The eight Host contract gaps are `psutil.Process`, `psutil.process_iter`,
+The eight v2 Host gaps remain: `psutil.Process`, `psutil.process_iter`,
 `requests.get`, `requests.post`, `socket.socket`, `subprocess.Popen`,
-`subprocess.check_output`, and `subprocess.run`. They have an explicit
-`HOST_BINDING_REQUIRED` disposition but intentionally retain unassigned Host
-binding, owner, and parity fields. The other 320 Host decisions have proposed
-contracts only; `INVENTORIED` does not mean implemented or parity-complete.
+`subprocess.check_output`, and `subprocess.run`. Proven socket annotations also
+expose three previously hidden capabilities: `socket.socket.recv`,
+`socket.socket.send`, and `socket.socket.setblocking`. They remain explicit
+unassigned Host contracts rather than being relabeled as completed work.
 
 Strict mode independently checks unresolved dispositions, Host contract gaps,
-and parse failures. It therefore remains non-zero with 1,842 unresolved
-scope decisions and eight Host gaps. Phase 0 remains incomplete alongside the
-golden-trace, full performance, and smoke-test gates. The generated matrix is
+and parse failures. It therefore remains non-zero with 1,279 unresolved
+decisions and 11 Host gaps. Phase 0 remains incomplete. The generated matrix is
 an authoritative work queue, not proof that bindings or parity tests exist.

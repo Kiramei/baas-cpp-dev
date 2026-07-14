@@ -25,11 +25,11 @@ from typing import Any, Iterable
 
 SCHEMA_VERSION = 2
 IDENTITY_VERSION = 1
-GENERATOR_VERSION = "2.0.0"
-RULES_VERSION = 2
+GENERATOR_VERSION = "3.0.0"
+RULES_VERSION = 3
 BEGIN_MARKER = "<!-- BEGIN GENERATED OPERATION INDEX -->"
 END_MARKER = "<!-- END GENERATED OPERATION INDEX -->"
-DEFAULT_RULES = Path(__file__).with_name("operation_rules.v2.json")
+DEFAULT_RULES = Path(__file__).with_name("operation_rules.v3.json")
 IGNORED_DIRECTORIES = frozenset(
     {
         ".git",
@@ -75,6 +75,24 @@ def module_name(relative_path: str) -> str:
     if parts[-1] == "__init__":
         parts.pop()
     return ".".join(parts) or "__root__"
+
+
+def import_from_base(current_package: str, node: ast.ImportFrom) -> str | None:
+    if node.level == 0:
+        return node.module or ""
+    package = current_package.split(".") if current_package else []
+    ascend = node.level - 1
+    if ascend >= len(package) and ascend:
+        return None
+    prefix = package[: len(package) - ascend] if ascend else package
+    if node.module:
+        prefix.extend(node.module.split("."))
+    return ".".join(prefix)
+
+
+def module_package(filename: str, source_module: str) -> str:
+    package_init = filename == "__init__.py" or filename.endswith("/__init__.py")
+    return source_module if package_init else source_module.rpartition(".")[0]
 
 
 def relative(path: Path, root: Path) -> str:
@@ -138,6 +156,13 @@ class ParseFailure:
         if self.line is not None:
             result["line"] = self.line
         return result
+
+
+@dataclass(frozen=True)
+class ParsedModule:
+    filename: str
+    source_module: str
+    tree: ast.Module
 
 
 class DefinitionCollector(ast.NodeVisitor):
@@ -214,6 +239,7 @@ class LocalBindingCollector(ast.NodeVisitor):
 class ScopeFrame:
     kind: str
     aliases: dict[str, str]
+    value_types: dict[str, str]
     local_names: set[str]
     global_names: set[str]
     nonlocal_names: set[str]
@@ -226,17 +252,20 @@ class OperationVisitor(ast.NodeVisitor):
         source_module: str,
         definitions: dict[str, str],
         tree: ast.Module,
+        rules: "RuleSet",
+        known_classes: set[str],
+        module_exports: dict[str, dict[str, str]],
     ) -> None:
         self.filename = filename
         self.source_module = source_module
         self.definitions = definitions
+        self.rules = rules
+        self.known_classes = known_classes
+        self.module_exports = module_exports
         self.observations: list[Observation] = []
         self.scope: list[str] = []
-        package_init = filename == "__init__.py" or filename.endswith("/__init__.py")
-        self.current_package = (
-            source_module if package_init else source_module.rpartition(".")[0]
-        )
-        self.frames = [ScopeFrame("module", {}, set(), set(), set())]
+        self.current_package = module_package(filename, source_module)
+        self.frames = [ScopeFrame("module", {}, {}, set(), set(), set())]
         self.awaited_calls = {
             id(node.value)
             for node in ast.walk(tree)
@@ -301,11 +330,21 @@ class OperationVisitor(ast.NodeVisitor):
             local_names.add(node.args.kwarg.arg)
         local_names.difference_update(bindings.globals)
         local_names.difference_update(bindings.nonlocals)
+        argument_types: dict[str, str] = {}
+        for argument in [*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs]:
+            value_type = self._annotation_type(argument.annotation)
+            if value_type is not None:
+                argument_types[argument.arg] = value_type
+        if node.args.vararg:
+            argument_types[node.args.vararg.arg] = "builtins.tuple"
+        if node.args.kwarg:
+            argument_types[node.args.kwarg.arg] = "builtins.dict"
         self.scope.append(node.name)
         self.frames.append(
             ScopeFrame(
                 "function",
                 {},
+                argument_types,
                 local_names,
                 bindings.globals,
                 bindings.nonlocals,
@@ -324,7 +363,7 @@ class OperationVisitor(ast.NodeVisitor):
         for keyword in node.keywords:
             self.visit(keyword.value)
         self.scope.append(node.name)
-        self.frames.append(ScopeFrame("class", {}, set(), set(), set()))
+        self.frames.append(ScopeFrame("class", {}, {}, set(), set(), set()))
         for statement in node.body:
             self.visit(statement)
         self.frames.pop()
@@ -342,7 +381,18 @@ class OperationVisitor(ast.NodeVisitor):
         for default in [*node.args.defaults, *node.args.kw_defaults]:
             if default is not None:
                 self.visit(default)
-        self.frames.append(ScopeFrame("function", {}, local_names, set(), set()))
+        argument_types: dict[str, str] = {}
+        for argument in [*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs]:
+            value_type = self._annotation_type(argument.annotation)
+            if value_type is not None:
+                argument_types[argument.arg] = value_type
+        if node.args.vararg:
+            argument_types[node.args.vararg.arg] = "builtins.tuple"
+        if node.args.kwarg:
+            argument_types[node.args.kwarg.arg] = "builtins.dict"
+        self.frames.append(
+            ScopeFrame("function", {}, argument_types, local_names, set(), set())
+        )
         self.visit(node.body)
         self.frames.pop()
 
@@ -358,21 +408,15 @@ class OperationVisitor(ast.NodeVisitor):
             return
         for item in node.names:
             if item.name == "*":
+                for name, target in sorted(self.module_exports.get(base, {}).items()):
+                    if not name.startswith("_"):
+                        self._bind_alias(name, target)
                 continue
             target = f"{base}.{item.name}" if base else item.name
             self._bind_alias(item.asname or item.name, target)
 
     def _import_from_base(self, node: ast.ImportFrom) -> str | None:
-        if node.level == 0:
-            return node.module or ""
-        package = self.current_package.split(".") if self.current_package else []
-        ascend = node.level - 1
-        if ascend >= len(package) and ascend:
-            return None
-        prefix = package[: len(package) - ascend] if ascend else package
-        if node.module:
-            prefix.extend(node.module.split("."))
-        return ".".join(prefix)
+        return import_from_base(self.current_package, node)
 
     def _target_frame(self, name: str) -> ScopeFrame:
         current = self.frames[-1]
@@ -388,15 +432,20 @@ class OperationVisitor(ast.NodeVisitor):
         frame = self._target_frame(name)
         frame.local_names.add(name)
         frame.aliases[name] = target
+        frame.value_types.pop(name, None)
 
-    def _bind_unresolved(self, name: str) -> None:
+    def _bind_unresolved(self, name: str, value_type: str | None = None) -> None:
         frame = self._target_frame(name)
         frame.local_names.add(name)
         frame.aliases.pop(name, None)
+        if value_type is None:
+            frame.value_types.pop(name, None)
+        else:
+            frame.value_types[name] = value_type
 
-    def _bind_target(self, node: ast.AST) -> None:
+    def _bind_target(self, node: ast.AST, value_type: str | None = None) -> None:
         if isinstance(node, ast.Name):
-            self._bind_unresolved(node.id)
+            self._bind_unresolved(node.id, value_type)
         elif isinstance(node, (ast.List, ast.Tuple)):
             for item in node.elts:
                 self._bind_target(item)
@@ -414,11 +463,227 @@ class OperationVisitor(ast.NodeVisitor):
                 return True, None
         return False, None
 
+    def _lookup_value_type(self, name: str) -> str | None:
+        inside_function = any(frame.kind == "function" for frame in self.frames[1:])
+        for frame in reversed(self.frames):
+            if inside_function and frame.kind == "class":
+                continue
+            if name in frame.value_types:
+                return frame.value_types[name]
+            if name in frame.local_names:
+                return None
+        return None
+
+    def _annotation_type(self, node: ast.AST | None) -> str | None:
+        if node is None:
+            return None
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            try:
+                node = ast.parse(node.value, mode="eval").body
+            except SyntaxError:
+                return None
+        if isinstance(node, ast.Tuple):
+            value_types = {self._annotation_type(item) for item in node.elts}
+            value_types.discard(None)
+            return next(iter(value_types)) if len(value_types) == 1 else None
+        if isinstance(node, ast.Subscript):
+            owner, _, resolution = self.resolve_expression(node.value)
+            normalized = {
+                "typing.Dict": "builtins.dict",
+                "typing.FrozenSet": "builtins.frozenset",
+                "typing.List": "builtins.list",
+                "typing.Set": "builtins.set",
+                "typing.Tuple": "builtins.tuple",
+            }.get(owner, owner)
+            if resolution in {"resolved", "builtin"} and normalized in {
+                "builtins.dict",
+                "builtins.frozenset",
+                "builtins.list",
+                "builtins.set",
+                "builtins.tuple",
+            }:
+                return normalized
+            return None
+        owner, _, resolution = self.resolve_expression(node)
+        if resolution in {"resolved", "builtin"}:
+            normalized = {
+                "typing.Dict": "builtins.dict",
+                "typing.FrozenSet": "builtins.frozenset",
+                "typing.List": "builtins.list",
+                "typing.Set": "builtins.set",
+                "typing.Tuple": "builtins.tuple",
+            }.get(owner, owner)
+            if normalized.startswith("typing."):
+                return None
+            return normalized
+        return None
+
+    def infer_value_type(self, node: ast.AST | None) -> str | None:
+        if node is None:
+            return None
+        literal_types: tuple[tuple[type[ast.AST], str], ...] = (
+            (ast.List, "builtins.list"),
+            (ast.ListComp, "builtins.list"),
+            (ast.Dict, "builtins.dict"),
+            (ast.DictComp, "builtins.dict"),
+            (ast.Set, "builtins.set"),
+            (ast.SetComp, "builtins.set"),
+            (ast.Tuple, "builtins.tuple"),
+            (ast.GeneratorExp, "types.GeneratorType"),
+            (ast.JoinedStr, "builtins.str"),
+        )
+        for node_type, value_type in literal_types:
+            if isinstance(node, node_type):
+                return value_type
+        if isinstance(node, ast.Constant):
+            if node.value is None:
+                return None
+            return f"builtins.{type(node.value).__name__}"
+        if isinstance(node, ast.Name):
+            return self._lookup_value_type(node.id)
+        if isinstance(node, ast.IfExp):
+            body_type = self.infer_value_type(node.body)
+            return body_type if body_type == self.infer_value_type(node.orelse) else None
+        if isinstance(node, ast.UnaryOp):
+            if isinstance(node.op, ast.Not):
+                return "builtins.bool"
+            operand_type = self.infer_value_type(node.operand)
+            if isinstance(node.op, (ast.UAdd, ast.USub)) and operand_type in {
+                "builtins.complex",
+                "builtins.float",
+                "builtins.int",
+            }:
+                return operand_type
+            if isinstance(node.op, ast.Invert) and operand_type == "builtins.int":
+                return operand_type
+            return None
+        if isinstance(node, ast.BinOp):
+            left_type = self.infer_value_type(node.left)
+            right_type = self.infer_value_type(node.right)
+            if isinstance(node.op, ast.Div) and left_type == "pathlib.Path":
+                return "pathlib.Path"
+            if (
+                isinstance(node.op, ast.Add)
+                and left_type == right_type
+                and left_type
+                in {
+                    "builtins.bytearray",
+                    "builtins.bytes",
+                    "builtins.complex",
+                    "builtins.float",
+                    "builtins.int",
+                    "builtins.list",
+                    "builtins.str",
+                    "builtins.tuple",
+                }
+            ):
+                return left_type
+            numeric = {"builtins.complex", "builtins.float", "builtins.int"}
+            if isinstance(node.op, ast.Div) and left_type in numeric and right_type in numeric:
+                return (
+                    "builtins.complex"
+                    if "builtins.complex" in {left_type, right_type}
+                    else "builtins.float"
+                )
+            if (
+                isinstance(node.op, (ast.Sub, ast.Mult))
+                and left_type == right_type
+                and left_type in numeric
+            ):
+                return left_type
+            if (
+                isinstance(node.op, ast.FloorDiv)
+                and left_type == right_type
+                and left_type in {"builtins.float", "builtins.int"}
+            ):
+                return left_type
+            if isinstance(node.op, ast.Mod) and left_type == "builtins.str":
+                return left_type
+            if (
+                isinstance(node.op, ast.Mod)
+                and left_type == right_type
+                and left_type in {"builtins.float", "builtins.int"}
+            ):
+                return left_type
+            if (
+                isinstance(node.op, (ast.BitAnd, ast.BitOr, ast.BitXor))
+                and left_type == right_type
+                and left_type in {"builtins.int", "builtins.set", "builtins.frozenset"}
+            ):
+                return left_type
+            return None
+        if isinstance(node, ast.Call):
+            symbol, _, resolution = self.resolve_expression(node.func)
+            if resolution not in {"resolved", "builtin", "inferred", "structural"}:
+                return None
+            if symbol in self.known_classes:
+                return symbol
+            if symbol == "os.getenv":
+                default = node.args[1] if len(node.args) > 1 else None
+                if default is None:
+                    default = next(
+                        (item.value for item in node.keywords if item.arg == "default"),
+                        None,
+                    )
+                if self.infer_value_type(default) == "builtins.str":
+                    return "builtins.str"
+            return self.rules.infer_call_type(symbol)
+        if isinstance(node, ast.Attribute):
+            owner_type = self.infer_value_type(node.value)
+            if owner_type is not None:
+                return self.rules.infer_attribute_type(f"{owner_type}.{node.attr}")
+        return None
+
+    def _bind_assignment_target(self, target: ast.AST, value: ast.AST | None) -> None:
+        if (
+            isinstance(target, (ast.List, ast.Tuple))
+            and isinstance(value, (ast.List, ast.Tuple))
+            and len(target.elts) == len(value.elts)
+        ):
+            for target_item, value_item in zip(target.elts, value.elts):
+                self._bind_assignment_target(target_item, value_item)
+            return
+        self._bind_target(target, self.infer_value_type(value))
+
+    def _iter_element_type(self, node: ast.AST) -> str | None:
+        if isinstance(node, (ast.List, ast.Set, ast.Tuple)) and node.elts:
+            types = {self.infer_value_type(item) for item in node.elts}
+            return next(iter(types)) if len(types) == 1 else None
+        if isinstance(node, ast.Call):
+            symbol, _, resolution = self.resolve_expression(node.func)
+            if resolution in {"resolved", "builtin"} and symbol == "builtins.range":
+                return "builtins.int"
+            if resolution in {"resolved", "builtin"} and symbol == "builtins.enumerate":
+                return "builtins.tuple"
+        return None
+
+    def _isinstance_narrowings(self, node: ast.AST) -> dict[str, str]:
+        if isinstance(node, ast.BoolOp) and isinstance(node.op, ast.And):
+            result: dict[str, str] = {}
+            for value in node.values:
+                result.update(self._isinstance_narrowings(value))
+            return result
+        if not (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "isinstance"
+            and len(node.args) == 2
+            and isinstance(node.args[0], ast.Name)
+        ):
+            return {}
+        value_type = self._annotation_type(node.args[1])
+        return {node.args[0].id: value_type} if value_type is not None else {}
+
+    def _apply_value_types(self, values: dict[str, str]) -> None:
+        for name, value_type in values.items():
+            self._bind_unresolved(name, value_type)
+
     def _snapshot_frames(self) -> list[ScopeFrame]:
         return [
             ScopeFrame(
                 frame.kind,
                 dict(frame.aliases),
+                dict(frame.value_types),
                 set(frame.local_names),
                 set(frame.global_names),
                 set(frame.nonlocal_names),
@@ -435,6 +700,7 @@ class OperationVisitor(ast.NodeVisitor):
             ScopeFrame(
                 frame.kind,
                 dict(frame.aliases),
+                dict(frame.value_types),
                 set(frame.local_names),
                 set(frame.global_names),
                 set(frame.nonlocal_names),
@@ -456,6 +722,14 @@ class OperationVisitor(ast.NodeVisitor):
                 ScopeFrame(
                     frames[0].kind,
                     common_aliases,
+                    {
+                        name: value_type
+                        for name, value_type in frames[0].value_types.items()
+                        if all(
+                            frame.value_types.get(name) == value_type
+                            for frame in frames[1:]
+                        )
+                    },
                     set().union(*(frame.local_names for frame in frames)),
                     set().union(*(frame.global_names for frame in frames)),
                     set().union(*(frame.nonlocal_names for frame in frames)),
@@ -469,7 +743,7 @@ class OperationVisitor(ast.NodeVisitor):
                 self._record_registry(target.id, node.value, node)
         self.visit(node.value)
         for target in node.targets:
-            self._bind_target(target)
+            self._bind_assignment_target(target, node.value)
             self.visit(target)
 
     def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
@@ -478,7 +752,8 @@ class OperationVisitor(ast.NodeVisitor):
         self.visit(node.annotation)
         if node.value is not None:
             self.visit(node.value)
-        self._bind_target(node.target)
+        value_type = self._annotation_type(node.annotation) or self.infer_value_type(node.value)
+        self._bind_target(node.target, value_type)
         self.visit(node.target)
 
     def visit_AugAssign(self, node: ast.AugAssign) -> None:
@@ -488,7 +763,7 @@ class OperationVisitor(ast.NodeVisitor):
 
     def visit_NamedExpr(self, node: ast.NamedExpr) -> None:
         self.visit(node.value)
-        self._bind_target(node.target)
+        self._bind_assignment_target(node.target, node.value)
 
     def visit_Delete(self, node: ast.Delete) -> None:
         for target in node.targets:
@@ -499,6 +774,11 @@ class OperationVisitor(ast.NodeVisitor):
         initial = self._snapshot_frames()
         states: list[list[ScopeFrame]] = []
         self._restore_frames(initial)
+        narrowings = self._isinstance_narrowings(node.test)
+        for item in ast.walk(node.test):
+            if isinstance(item, ast.Name) and isinstance(item.ctx, ast.Store):
+                narrowings.pop(item.id, None)
+        self._apply_value_types(narrowings)
         for statement in node.body:
             self.visit(statement)
         states.append(self._snapshot_frames())
@@ -511,15 +791,65 @@ class OperationVisitor(ast.NodeVisitor):
     def visit_For(self, node: ast.For) -> None:
         self.visit(node.iter)
         zero_iterations = self._snapshot_frames()
-        self._bind_target(node.target)
+        self._bind_target(node.target, self._iter_element_type(node.iter))
         for statement in node.body:
             self.visit(statement)
         one_or_more_iterations = self._snapshot_frames()
         self._merge_frame_states([zero_iterations, one_or_more_iterations])
+        before_else = self._snapshot_frames()
         for statement in node.orelse:
             self.visit(statement)
+        self._merge_frame_states([before_else, self._snapshot_frames()])
 
     visit_AsyncFor = visit_For
+
+    def visit_While(self, node: ast.While) -> None:
+        self.visit(node.test)
+        zero_iterations = self._snapshot_frames()
+        for statement in node.body:
+            self.visit(statement)
+        one_or_more_iterations = self._snapshot_frames()
+        self._merge_frame_states([zero_iterations, one_or_more_iterations])
+        before_else = self._snapshot_frames()
+        for statement in node.orelse:
+            self.visit(statement)
+        self._merge_frame_states([before_else, self._snapshot_frames()])
+
+    def _bind_match_pattern(self, node: ast.pattern) -> None:
+        if isinstance(node, ast.MatchAs):
+            if node.pattern is not None:
+                self._bind_match_pattern(node.pattern)
+            if node.name is not None:
+                self._bind_unresolved(node.name)
+        elif isinstance(node, ast.MatchStar):
+            if node.name is not None:
+                self._bind_unresolved(node.name, "builtins.list")
+        elif isinstance(node, ast.MatchMapping):
+            for pattern in node.patterns:
+                self._bind_match_pattern(pattern)
+            if node.rest is not None:
+                self._bind_unresolved(node.rest, "builtins.dict")
+        elif isinstance(node, (ast.MatchSequence, ast.MatchOr)):
+            for pattern in node.patterns:
+                self._bind_match_pattern(pattern)
+        elif isinstance(node, ast.MatchClass):
+            for pattern in [*node.patterns, *node.kwd_patterns]:
+                self._bind_match_pattern(pattern)
+
+    def visit_Match(self, node: ast.Match) -> None:
+        self.visit(node.subject)
+        initial = self._snapshot_frames()
+        states = [initial]
+        for case in node.cases:
+            self._restore_frames(initial)
+            self.visit(case.pattern)
+            self._bind_match_pattern(case.pattern)
+            if case.guard is not None:
+                self.visit(case.guard)
+            for statement in case.body:
+                self.visit(statement)
+            states.append(self._snapshot_frames())
+        self._merge_frame_states(states)
 
     def visit_Try(self, node: ast.Try) -> None:
         initial = self._snapshot_frames()
@@ -544,7 +874,11 @@ class OperationVisitor(ast.NodeVisitor):
         for item in node.items:
             self.visit(item.context_expr)
             if item.optional_vars is not None:
-                self._bind_target(item.optional_vars)
+                context_type = self.infer_value_type(item.context_expr)
+                self._bind_target(
+                    item.optional_vars,
+                    context_type if context_type == "io.IOBase" else None,
+                )
         for statement in node.body:
             self.visit(statement)
 
@@ -554,7 +888,7 @@ class OperationVisitor(ast.NodeVisitor):
         if node.type is not None:
             self.visit(node.type)
         if node.name:
-            self._bind_unresolved(node.name)
+            self._bind_unresolved(node.name, self._annotation_type(node.type))
         for statement in node.body:
             self.visit(statement)
 
@@ -573,11 +907,11 @@ class OperationVisitor(ast.NodeVisitor):
         for generator in generators:
             collector.visit(generator.target)
         local_names.update(collector.names)
-        self.frames.append(ScopeFrame("comprehension", {}, local_names, set(), set()))
+        self.frames.append(ScopeFrame("comprehension", {}, {}, local_names, set(), set()))
         for index, generator in enumerate(generators):
             if index:
                 self.visit(generator.iter)
-            self._bind_target(generator.target)
+            self._bind_target(generator.target, self._iter_element_type(generator.iter))
             for condition in generator.ifs:
                 self.visit(condition)
         for value in values:
@@ -693,6 +1027,9 @@ class OperationVisitor(ast.NodeVisitor):
             bound, alias = self._lookup_alias(node.id)
             if alias is not None:
                 return alias, "alias", "resolved"
+            value_type = self._lookup_value_type(node.id)
+            if value_type is not None:
+                return value_type, "instance", "inferred"
             if bound:
                 return node.id, "name", "unresolved"
             if node.id in self.definitions:
@@ -704,6 +1041,9 @@ class OperationVisitor(ast.NodeVisitor):
         if isinstance(node, ast.Attribute):
             if isinstance(node.value, ast.Call) and self._is_super_call(node.value):
                 return f"super().{node.attr}", "super", "structural"
+            owner_type = self.infer_value_type(node.value)
+            if owner_type is not None:
+                return f"{owner_type}.{node.attr}", "instance-member", "inferred"
             base, base_form, base_resolution = self.resolve_expression(node.value)
             if base.startswith("dynamic:"):
                 return f"{base}.{node.attr}", "chained", "dynamic"
@@ -711,8 +1051,16 @@ class OperationVisitor(ast.NodeVisitor):
                 return f"self.{node.attr}", "self", "structural"
             if base.startswith("self."):
                 return f"{base}.{node.attr}", "self", "structural"
+            if base_form == "name" and base == "cls":
+                return f"cls.{node.attr}", "cls", "structural"
+            if base.startswith("cls."):
+                return f"{base}.{node.attr}", "cls", "structural"
             if base_form in {"alias", "alias-member"}:
                 return f"{base}.{node.attr}", "alias-member", "resolved"
+            if base_form == "instance":
+                return f"{base}.{node.attr}", "instance-member", "inferred"
+            if base_form == "instance-member":
+                return f"dynamic:attribute-result({base}).{node.attr}", "chained", "dynamic"
             if base_form == "chained" or "()" in base:
                 return f"{base}.{node.attr}", "chained", base_resolution
             return f"{base}.{node.attr}", "member", base_resolution
@@ -724,6 +1072,9 @@ class OperationVisitor(ast.NodeVisitor):
                 if isinstance(attribute, ast.Constant) and isinstance(attribute.value, str):
                     return f"dynamic:getattr({owner},{attribute.value})", "dynamic", "dynamic"
                 return f"dynamic:getattr({owner},?)", "dynamic", "dynamic"
+            value_type = self.infer_value_type(node)
+            if value_type is not None:
+                return value_type, "instance", "inferred"
             inner, _, _ = self.resolve_expression(node.func)
             return f"dynamic:call-result({inner})()", "chained", "dynamic"
 
@@ -732,6 +1083,9 @@ class OperationVisitor(ast.NodeVisitor):
             return f"dynamic:subscript({owner})", "dynamic", "dynamic"
         if isinstance(node, ast.Lambda):
             return "dynamic:lambda", "dynamic", "dynamic"
+        value_type = self.infer_value_type(node)
+        if value_type is not None:
+            return value_type, "instance", "inferred"
         return f"dynamic:{node.__class__.__name__}", "dynamic", "dynamic"
 
     @staticmethod
@@ -808,8 +1162,55 @@ class RuleSet:
                 raise ValueError(f"rule {rule['id']} has invalid disposition")
             if not isinstance(rule["symbol_patterns"], list) or not rule["symbol_patterns"]:
                 raise ValueError(f"rule {rule['id']} requires symbol_patterns")
+        value_type_rules = document.get("value_type_rules")
+        if not isinstance(value_type_rules, list):
+            raise ValueError("value_type_rules must be an array")
+        type_rule_identifiers: set[str] = set()
+        for index, rule in enumerate(value_type_rules):
+            if not isinstance(rule, dict) or not {"id", "result_type"}.issubset(rule):
+                raise ValueError(f"value type rule {index} is missing required fields")
+            if rule["id"] in type_rule_identifiers:
+                raise ValueError(f"duplicate value type rule id: {rule['id']}")
+            type_rule_identifiers.add(rule["id"])
+            call_patterns = rule.get("call_patterns")
+            attribute_patterns = rule.get("attribute_patterns")
+            if not call_patterns and not attribute_patterns:
+                raise ValueError(
+                    f"value type rule {rule['id']} requires call_patterns or attribute_patterns"
+                )
+            for field, patterns in (
+                ("call_patterns", call_patterns),
+                ("attribute_patterns", attribute_patterns),
+            ):
+                if patterns is not None and (
+                    not isinstance(patterns, list)
+                    or not patterns
+                    or not all(isinstance(pattern, str) for pattern in patterns)
+                ):
+                    raise ValueError(f"value type rule {rule['id']} has invalid {field}")
+            if not isinstance(rule["result_type"], str) or not rule["result_type"]:
+                raise ValueError(f"value type rule {rule['id']} has invalid result_type")
         self.source_scope_rules = scope_rules
         self.rules = rules
+        self.value_type_rules = value_type_rules
+
+    def infer_call_type(self, symbol: str) -> str | None:
+        for rule in self.value_type_rules:
+            if any(
+                fnmatch.fnmatchcase(symbol, pattern)
+                for pattern in rule.get("call_patterns", [])
+            ):
+                return symbol if rule["result_type"] == "$callable" else rule["result_type"]
+        return None
+
+    def infer_attribute_type(self, symbol: str) -> str | None:
+        for rule in self.value_type_rules:
+            if any(
+                fnmatch.fnmatchcase(symbol, pattern)
+                for pattern in rule.get("attribute_patterns", [])
+            ):
+                return symbol if rule["result_type"] == "$attribute" else rule["result_type"]
+        return None
 
     def source_scope(self, filename: str) -> str:
         matches = [
@@ -837,7 +1238,7 @@ class RuleSet:
         ):
             return disposition_result(
                 "UNRESOLVED",
-                "dynamic-expression-v2",
+                "dynamic-expression-v3",
                 "dynamic expression cannot be resolved statically",
             )
         if source_scope == "UNRESOLVED_SOURCE":
@@ -870,7 +1271,7 @@ class RuleSet:
         if resolution == "unresolved":
             return disposition_result(
                 "UNRESOLVED",
-                "unresolved-expression-v2",
+                "unresolved-expression-v3",
                 "call owner cannot be resolved statically",
             )
 
@@ -956,6 +1357,107 @@ def disposition_result(
     }
 
 
+def collect_known_classes(parsed_modules: list[ParsedModule]) -> set[str]:
+    result: set[str] = set()
+
+    def collect(statements: list[ast.stmt], prefix: str) -> None:
+        for statement in statements:
+            if isinstance(statement, ast.ClassDef):
+                symbol = f"{prefix}.{statement.name}"
+                result.add(symbol)
+                collect(statement.body, symbol)
+
+    for parsed in parsed_modules:
+        collect(parsed.tree.body, parsed.source_module)
+    return result
+
+
+def collect_module_exports(
+    parsed_modules: list[ParsedModule],
+) -> dict[str, dict[str, str]]:
+    exports: dict[str, dict[str, str]] = {}
+    explicit_exports: dict[str, set[str] | None] = {}
+    unknown_explicit_exports: set[str] = set()
+
+    for parsed in parsed_modules:
+        module_exports: dict[str, str] = {}
+        selected: set[str] | None = None
+        package = module_package(parsed.filename, parsed.source_module)
+        for statement in parsed.tree.body:
+            if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                module_exports[statement.name] = f"{parsed.source_module}.{statement.name}"
+            elif isinstance(statement, ast.Import):
+                for item in statement.names:
+                    local = item.asname or item.name.split(".")[0]
+                    module_exports[local] = item.name if item.asname else local
+            elif isinstance(statement, ast.ImportFrom):
+                base = import_from_base(package, statement)
+                if base is None:
+                    continue
+                for item in statement.names:
+                    if item.name == "*":
+                        continue
+                    else:
+                        module_exports[item.asname or item.name] = (
+                            f"{base}.{item.name}" if base else item.name
+                        )
+            elif isinstance(statement, (ast.Assign, ast.AnnAssign)):
+                targets = (
+                    statement.targets if isinstance(statement, ast.Assign) else [statement.target]
+                )
+                value = statement.value
+                bindings = LocalBindingCollector()
+                bindings.visit(statement)
+                for name in bindings.names:
+                    module_exports.pop(name, None)
+                for target in targets:
+                    if isinstance(target, ast.Name):
+                        if target.id == "__all__" and isinstance(value, (ast.List, ast.Tuple)):
+                            names = [
+                                item.value
+                                for item in value.elts
+                                if isinstance(item, ast.Constant) and isinstance(item.value, str)
+                            ]
+                            if len(names) == len(value.elts):
+                                selected = set(names)
+                                unknown_explicit_exports.discard(parsed.source_module)
+                            else:
+                                selected = None
+                                unknown_explicit_exports.add(parsed.source_module)
+                        elif target.id == "__all__":
+                            selected = None
+                            unknown_explicit_exports.add(parsed.source_module)
+            else:
+                bindings = LocalBindingCollector()
+                bindings.visit(statement)
+                for name in bindings.names:
+                    module_exports.pop(name, None)
+                if "__all__" in bindings.names or any(
+                    isinstance(item, ast.Name) and item.id == "__all__"
+                    for item in ast.walk(statement)
+                ):
+                    selected = None
+                    unknown_explicit_exports.add(parsed.source_module)
+        exports[parsed.source_module] = module_exports
+        explicit_exports[parsed.source_module] = selected
+
+    def visible_exports(module: str) -> dict[str, str]:
+        if module in unknown_explicit_exports:
+            return {}
+        selected = explicit_exports.get(module)
+        if selected is None:
+            return exports.get(module, {})
+        return {
+            name: symbol
+            for name, symbol in exports.get(module, {}).items()
+            if name in selected
+        }
+
+    for module in explicit_exports:
+        exports[module] = dict(visible_exports(module))
+    return exports
+
+
 class OperationIndexer:
     def __init__(self, root: Path, rules: RuleSet) -> None:
         self.root = root
@@ -969,6 +1471,7 @@ class OperationIndexer:
         }
         observations: list[Observation] = []
         failures: list[ParseFailure] = []
+        parsed_modules: list[ParsedModule] = []
         snapshot = hashlib.sha256()
         root_counts: dict[str, int] = {}
 
@@ -999,6 +1502,14 @@ class OperationIndexer:
                 continue
 
             source_module = module_name(filename)
+            parsed_modules.append(ParsedModule(filename, source_module, tree))
+
+        known_classes = collect_known_classes(parsed_modules)
+        module_exports = collect_module_exports(parsed_modules)
+        for parsed in parsed_modules:
+            filename = parsed.filename
+            source_module = parsed.source_module
+            tree = parsed.tree
             definitions = DefinitionCollector(source_module)
             definitions.visit(tree)
             visitor = OperationVisitor(
@@ -1006,6 +1517,9 @@ class OperationIndexer:
                 source_module,
                 definitions.definitions,
                 tree,
+                self.rules,
+                known_classes,
+                module_exports,
             )
             visitor.visit(tree)
             observations.extend(visitor.observations)

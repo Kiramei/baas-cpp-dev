@@ -23,7 +23,7 @@ from scripts.migration.operation_index import (
 HERE = Path(__file__).resolve().parent
 FIXTURE_REPO = HERE / "fixtures" / "operation_repo"
 INDEXER = HERE.parent / "operation_index.py"
-RULES = HERE.parent / "operation_rules.v2.json"
+RULES = HERE.parent / "operation_rules.v3.json"
 
 
 class OperationIndexTests(unittest.TestCase):
@@ -77,8 +77,7 @@ class OperationIndexTests(unittest.TestCase):
         self.assertIn("module.pkg.sub.local.go", symbols)
         self.assertIn("core.image.detect", symbols)
         self.assertIn("image.detect", symbols)
-        self.assertIn("module_picture.co_detect", symbols)
-        self.assertIn("scoped_picture.co_detect", symbols)
+        self.assertIn("builtins.object.co_detect", symbols)
         self.assertIn("conditional_alias.co_detect", symbols)
 
         resolved_image = next(
@@ -112,6 +111,45 @@ class OperationIndexTests(unittest.TestCase):
         )
         self.assertEqual(identical_branch["resolution"], "resolved")
         self.assertEqual(ambiguous_branch["resolution"], "unresolved")
+
+    def test_provable_value_types_constructors_and_star_exports_are_resolved(self) -> None:
+        report = self.generate()
+        operations = report["operations"]
+        by_symbol = {operation["symbol"]: operation for operation in operations}
+
+        inferred_symbols = {
+            "argparse.ArgumentParser.add_argument",
+            "builtins.dict.get",
+            "builtins.list.append",
+            "builtins.str.strip",
+            "io.IOBase.write",
+            "module.pkg.types.LocalWorker.run",
+            "pathlib.Path.exists",
+            "pathlib.Path.resolve",
+        }
+        self.assertTrue(inferred_symbols.issubset(by_symbol))
+        for symbol in inferred_symbols:
+            self.assertIn(by_symbol[symbol]["resolution"], {"inferred", "resolved"})
+
+        dynamic = next(
+            operation
+            for operation in operations
+            if operation["symbol"] == "dynamic:call-result(factory)().send"
+        )
+        self.assertEqual(dynamic["resolution"], "dynamic")
+        unknown_attribute = by_symbol[
+            "dynamic:attribute-result(module.pkg.types.LocalWorker.client).send"
+        ]
+        self.assertEqual(unknown_attribute["resolution"], "dynamic")
+        unresolved = next(
+            operation for operation in operations if operation["symbol"] == "candidate.get"
+        )
+        self.assertEqual(unresolved["resolution"], "unresolved")
+        self.assertEqual(by_symbol["any_value.get"]["resolution"], "unresolved")
+        self.assertEqual(by_symbol["builtins.float.as_integer_ratio"]["resolution"], "inferred")
+        self.assertEqual(by_symbol["picture.co_detect"]["resolution"], "unresolved")
+        self.assertEqual(by_symbol["Hidden"]["resolution"], "unresolved")
+        self.assertEqual(by_symbol["PrivateWorker"]["resolution"], "unresolved")
 
     def test_scope_dispositions_and_host_gaps_are_separate(self) -> None:
         report = self.generate()
