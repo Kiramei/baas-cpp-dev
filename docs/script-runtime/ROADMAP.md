@@ -204,6 +204,14 @@ allocation-free checked detail traversal, deterministic field/value ordering,
 independent depth/node/output/string/work budgets, ERR-008 truncation, and a
 non-throwing redacted fallback. It does not provide general JSON text I/O, VM
 unwinding, Host translation, or service transport integration.
+Commit `06c2378` adds the bounded synchronous AST evaluator, including lexical
+closures, recursion, collection/control-flow execution, lazy package modules,
+stable failure caching, and deterministic source/step/stack/call/collection/
+heap budgets. Commit `af4c7a2` records its explicit foundation boundary. After
+integration, the MSVC Debug and Release Foundation suites each passed 26/26,
+the normative documentation suite passed 61/61, and the Release evaluator
+passed 20 consecutive repetitions. Production bytecode/VM execution, Host
+imports, structured unwinding, and async execution remain pending.
 
 ## Phase 3 — Host bindings and Python behavior parity
 
