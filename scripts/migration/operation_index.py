@@ -25,11 +25,11 @@ from typing import Any, Iterable
 
 SCHEMA_VERSION = 2
 IDENTITY_VERSION = 1
-GENERATOR_VERSION = "3.0.0"
-RULES_VERSION = 3
+GENERATOR_VERSION = "4.0.0"
+RULES_VERSION = 4
 BEGIN_MARKER = "<!-- BEGIN GENERATED OPERATION INDEX -->"
 END_MARKER = "<!-- END GENERATED OPERATION INDEX -->"
-DEFAULT_RULES = Path(__file__).with_name("operation_rules.v3.json")
+DEFAULT_RULES = Path(__file__).with_name("operation_rules.v4.json")
 IGNORED_DIRECTORIES = frozenset(
     {
         ".git",
@@ -1233,14 +1233,6 @@ class RuleSet:
         source_scope: str,
         local_module_roots: set[str],
     ) -> dict[str, Any]:
-        if resolution == "dynamic" or (
-            call_form in {"dynamic", "chained"} and symbol.startswith("dynamic:")
-        ):
-            return disposition_result(
-                "UNRESOLVED",
-                "dynamic-expression-v3",
-                "dynamic expression cannot be resolved statically",
-            )
         if source_scope == "UNRESOLVED_SOURCE":
             return disposition_result(
                 "UNRESOLVED",
@@ -1268,13 +1260,13 @@ class RuleSet:
                 rule.get("reason", "versioned disposition rule matched"),
                 rule,
             )
-        if resolution == "unresolved":
-            return disposition_result(
-                "UNRESOLVED",
-                "unresolved-expression-v3",
-                "call owner cannot be resolved statically",
-            )
 
+        # These source roots already have an authoritative migration boundary.
+        # Resolving the Python receiver may improve implementation inventories,
+        # but cannot change which layer owns the call after migration. Apply the
+        # boundary after explicit rules and before owner-resolution fallbacks so
+        # dynamic/unresolved expressions do not manufacture false disposition
+        # gaps outside the script runtime.
         defaults = {
             "CPP_SERVICE": ("CPP_SERVICE_INTERNAL", "service.internal", "C++ Service"),
             "DEPLOYMENT_TOOLING": (
@@ -1292,11 +1284,37 @@ class RuleSet:
         }
         if source_scope in defaults:
             disposition, family, owner = defaults[source_scope]
+            unresolved_owner = resolution in {"dynamic", "unresolved"} or (
+                call_form in {"dynamic", "chained"} and symbol.startswith("dynamic:")
+            )
             return disposition_result(
                 disposition,
-                f"{source_scope.lower()}-default-v2",
-                f"resolved call belongs to the {source_scope} source scope",
+                (
+                    f"{source_scope.lower()}-boundary-v4"
+                    if unresolved_owner
+                    else f"{source_scope.lower()}-default-v2"
+                ),
+                (
+                    f"{source_scope} fixes the migration boundary independently of call ownership"
+                    if unresolved_owner
+                    else f"resolved call belongs to the {source_scope} source scope"
+                ),
                 {"family": family, "owner": owner},
+            )
+
+        if resolution == "dynamic" or (
+            call_form in {"dynamic", "chained"} and symbol.startswith("dynamic:")
+        ):
+            return disposition_result(
+                "UNRESOLVED",
+                "dynamic-expression-v3",
+                "dynamic expression cannot be resolved statically",
+            )
+        if resolution == "unresolved":
+            return disposition_result(
+                "UNRESOLVED",
+                "unresolved-expression-v3",
+                "call owner cannot be resolved statically",
             )
 
         if source_scope in {"SCRIPT_RUNTIME", "GENERATED_RESOURCE"}:

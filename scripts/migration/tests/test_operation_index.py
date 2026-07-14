@@ -23,7 +23,7 @@ from scripts.migration.operation_index import (
 HERE = Path(__file__).resolve().parent
 FIXTURE_REPO = HERE / "fixtures" / "operation_repo"
 INDEXER = HERE.parent / "operation_index.py"
-RULES = HERE.parent / "operation_rules.v3.json"
+RULES = HERE.parent / "operation_rules.v4.json"
 
 
 class OperationIndexTests(unittest.TestCase):
@@ -176,6 +176,53 @@ class OperationIndexTests(unittest.TestCase):
         self.assertGreater(report["summary"]["unresolved_disposition_scope_decisions"], 0)
         self.assertEqual(report["summary"]["host_binding_gaps"], 0)
 
+    def test_frozen_source_boundaries_do_not_require_receiver_inference(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repository = Path(directory) / "repo"
+            sources = {
+                "service/api.py": "CPP_SERVICE",
+                "gui/view.py": "LEGACY_GUI",
+                "tests/test_unknown.py": "TEST",
+                "deploy/tool.py": "DEPLOYMENT_TOOLING",
+                "develop_tools/tool.py": "MIGRATION_TOOLING",
+                "module/task.py": "SCRIPT_RUNTIME",
+            }
+            for relative in sources:
+                path = repository / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(
+                    "def run(value):\n"
+                    "    value.unknown()\n"
+                    "    getattr(value, 'dynamic_unknown')()\n",
+                    encoding="utf-8",
+                )
+
+            report = self.generate(repository)
+            expected = {
+                "CPP_SERVICE": "CPP_SERVICE_INTERNAL",
+                "LEGACY_GUI": "TAURI_UI_REPLACED",
+                "TEST": "TEST_ONLY",
+                "DEPLOYMENT_TOOLING": "MIGRATION_TOOLING_ONLY",
+                "MIGRATION_TOOLING": "MIGRATION_TOOLING_ONLY",
+                "SCRIPT_RUNTIME": "UNRESOLVED",
+            }
+            covered_scopes: set[str] = set()
+            for operation in report["operations"]:
+                if operation["resolution"] not in {"dynamic", "unresolved"}:
+                    continue
+                for decision in operation["scope_decisions"]:
+                    covered_scopes.add(decision["source_scope"])
+                    self.assertEqual(
+                        decision["disposition"],
+                        expected[decision["source_scope"]],
+                        (operation["symbol"], decision["source_scope"]),
+                    )
+                    if decision["source_scope"] != "SCRIPT_RUNTIME":
+                        self.assertTrue(
+                            decision["classification_rule"].endswith("-boundary-v4")
+                        )
+            self.assertEqual(covered_scopes, set(sources.values()))
+
     def test_fixture_discovers_registries_routes_dispatch_and_parse_errors(self) -> None:
         report = self.generate()
         symbols = {operation["symbol"] for operation in report["operations"]}
@@ -211,6 +258,8 @@ class OperationIndexTests(unittest.TestCase):
         self.assertEqual(click["id"], "op-8446093f5f2315e0")
         self.assertEqual(report["schema_version"], 2)
         self.assertEqual(report["identity_version"], 1)
+        self.assertEqual(report["generator_version"], "4.0.0")
+        self.assertEqual(report["rules"]["rules_version"], 4)
 
     def test_strict_fails_for_unresolved_disposition_and_parse_error(self) -> None:
         process = subprocess.run(

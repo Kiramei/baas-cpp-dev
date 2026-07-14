@@ -28,7 +28,7 @@ warnings fail. Bad CLI input returns exit code 2.
 `operation_index.py` is a separate Python 3.11 standard-library tool. It does
 not change the validator above. It recursively parses every BAAS Python source
 root without importing the checkout and records calls, static registries,
-route decorators, and string dispatch operations. Rule schema v3 first applies
+route decorators, and string dispatch operations. Rule schema v4 first applies
 bounded AST owner/type inference, then assigns each occurrence to a versioned
 source scope and makes a conservative disposition decision for every
 operation/scope pair. The decisions distinguish
@@ -49,12 +49,14 @@ A normal run returns zero after producing evidence even if gaps remain.
 `--strict` returns 1 when an operation/scope disposition is `UNRESOLVED`, a
 `HOST_BINDING_REQUIRED` decision lacks its proposed binding/owner/parity
 contract, or a source cannot be parsed. The JSON reports unresolved-disposition
-and host-binding-gap counts separately. Dynamic calls stay unresolved even
-when they occur below `tests/`, `gui/`, or tooling directories; source location
-alone never marks an unknown call complete. v3 resolves only concrete
+and host-binding-gap counts separately. For `service/`, `gui/`, `tests/`,
+`deploy/`, and `develop_tools/`, the source root itself fixes the migration
+boundary, so unresolved receiver ownership no longer creates a false
+disposition gap. Dynamic/unresolved calls under the script runtime remain
+unresolved unless an explicit rule proves their boundary. v3 owner inference resolves only concrete
 annotations, local constructors, literal/container assignments, positive
 `isinstance` branches, AST-visible wildcard exports, and exact return-type
-rules in `operation_rules.v3.json`.
+rules retained in `operation_rules.v4.json`.
 
 Schema v2 retains operation identity version 1. Unchanged
 `(kind, call_form, symbol)` identities therefore keep their existing IDs;

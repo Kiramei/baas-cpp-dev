@@ -25,12 +25,12 @@ The first command returned 0. The strict command returned 1 because unresolved
 dispositions remain. Two normal generations and
 the strict report were byte-identical.
 
-## Taxonomy v3 resolution boundary
+## Taxonomy v4 resolution boundary
 
-Schema v2 and identity version 1 remain unchanged. Taxonomy v3 adds a bounded
+Schema v2 and identity version 1 remain unchanged. Taxonomy v3 added a bounded
 static owner-resolution pass before the existing source-scope disposition
 rules. It accepts only facts visible in the AST or exact rules in
-`operation_rules.v3.json`:
+`operation_rules.v4.json`:
 
 - absolute and relative imports, aliases, local wildcard exports, definitions,
   and conservative lexical rebinding/branch merges;
@@ -46,7 +46,15 @@ dynamic or unresolved. Module export discovery is AST-only; external wildcard
 imports are not expanded. No naming heuristic such as assuming every `config`
 is a dictionary is used.
 
-All 15,469 observed sites are preserved. v3 aggregates them into 4,319
+Taxonomy v4 keeps those conservative owner facts, but recognizes that five
+non-script source scopes already fix the migration boundary independently of
+receiver ownership: C++ service, legacy GUI/Tauri replacement, tests,
+deployment tooling, and migration tooling. Explicit symbol rules still win;
+otherwise dynamic/unresolved calls in those scopes receive the same scoped
+disposition as resolved calls. Script-runtime dynamic/unresolved calls remain
+strict gaps because they may require a Host binding or language/module rewrite.
+
+All 15,469 observed sites are preserved. v4 aggregates them into 4,319
 operations and 4,908 operation/source-scope decisions. Of the v2 IDs, 4,020
 remain shared with byte-identical identities and no shared ID changed meaning;
 525 old unresolved identities were retired and 299 proven identities were
@@ -85,33 +93,32 @@ The source-scope split was 560 legacy-GUI, 520 C++-service, 402 script-runtime,
 | Unique operations | 4,319 |
 | Observed operation sites | 15,469 |
 | Operation/source-scope decisions | 4,908 |
-| Unresolved disposition decisions | 1,279 across 1,170 operations |
-| Unresolved observed sites | 2,302 |
+| Unresolved disposition decisions | 240 across 240 operations |
+| Unresolved observed sites | 378 |
 | Host-binding-required decisions | 343 |
 | Host contract gaps | 0 |
 | Dynamic operations retained | 257 |
 | Parse errors | 0 |
 | Source snapshot SHA-256 | `76f974d77e7c63034296acefb86a707e150c68602db007f4dbec891c66f712ec` |
-| Rules SHA-256 | `c11ed5063538348a7f8c6f248864414579d8073fb68a8203c1916c4cfa371247` |
-| JSON report SHA-256 | `29b5765efa0721d53835b5e06df356b811ac1ca3398175c0bb13b1dd3eaac09f` |
+| Rules SHA-256 | `2014c887cf17eaed2f9c0d613270f79c22434080cc0232fdafd8a1d7601d0689` |
+| JSON report SHA-256 | `90544bd2ffb57024bc3b0830fb3621ceb2479be5b15779d3de16f7bfeba970a3` |
 
 ## Before/after unresolved inventory
 
-| Measure | Taxonomy v2 | Taxonomy v3 | Delta |
-| --- | ---: | ---: | ---: |
-| Unresolved decisions | 1,842 | 1,279 | -563 |
-| Unresolved observed sites | 3,467 | 2,302 | -1,165 |
-| Operations with unresolved disposition | 1,649 | 1,170 | -479 |
-| Static unresolved decisions | 1,512 | 1,008 | -504 |
-| Dynamic unresolved decisions | 330 | 271 | -59 |
-| Dynamic operations | 296 | 257 | -39 |
+| Measure | Taxonomy v2 | Taxonomy v3 | Taxonomy v4 | v3→v4 delta |
+| --- | ---: | ---: | ---: | ---: |
+| Unresolved decisions | 1,842 | 1,279 | 240 | -1,039 |
+| Unresolved observed sites | 3,467 | 2,302 | 378 | -1,924 |
+| Operations with unresolved disposition | 1,649 | 1,170 | 240 | -930 |
+| Static unresolved decisions | 1,512 | 1,008 | 167 | -841 |
+| Dynamic unresolved decisions | 330 | 271 | 73 | -198 |
+| Dynamic operations | 296 | 257 | 257 | 0 |
 
-The dynamic reduction is limited to call results whose exact return type is
-now proven by a v3 rule; genuinely runtime-dependent forms remain unresolved.
-The remaining v3 call-form split is 925 member, 264 chained, 83 name, and 7
-dynamic decisions. The remaining source-scope split is 471 legacy-GUI, 335
-C++-service, 240 script-runtime, 108 deployment-tooling, 96 test, and 29
-migration-tooling decisions.
+The v3 dynamic reduction was limited to call results whose exact return type
+was proven. The v4 reduction does not claim new receiver knowledge; it assigns
+only the already-authoritative non-script migration boundary. The remaining
+240 decisions are all script-runtime calls: 153 member, 70 chained, 14 name,
+and 3 dynamic decisions (167 statically unresolved and 73 dynamic).
 
 ## Disposition inventory
 
@@ -119,12 +126,12 @@ migration-tooling decisions.
 | --- | ---: | ---: |
 | `HOST_BINDING_REQUIRED` | 343 | 1,994 |
 | `SCRIPT_LANGUAGE_OR_MODULE` | 814 | 3,080 |
-| `CPP_SERVICE_INTERNAL` | 920 | 2,819 |
-| `TAURI_UI_REPLACED` | 1,005 | 3,499 |
-| `MIGRATION_TOOLING_ONLY` | 316 | 1,127 |
-| `TEST_ONLY` | 221 | 637 |
+| `CPP_SERVICE_INTERNAL` | 1,255 | 3,435 |
+| `TAURI_UI_REPLACED` | 1,476 | 4,298 |
+| `MIGRATION_TOOLING_ONLY` | 453 | 1,359 |
+| `TEST_ONLY` | 317 | 914 |
 | `EXTERNAL_DEPENDENCY` | 10 | 11 |
-| `UNRESOLVED` | 1,279 | 2,302 |
+| `UNRESOLVED` | 240 | 378 |
 
 ## Assigned Host contracts and Phase 0 gate
 
@@ -138,6 +145,6 @@ capabilities, proposed C++ interface identities, owners, and parity test IDs.
 All remain `INVENTORIED`; no binding or parity implementation is claimed.
 
 Strict mode independently checks unresolved dispositions, Host contract gaps,
-and parse failures. It therefore remains non-zero with 1,279 unresolved
+and parse failures. It therefore remains non-zero with 240 unresolved
 decisions and zero Host contract gaps. Phase 0 remains incomplete. The generated matrix is
 an authoritative work queue, not proof that bindings or parity tests exist.

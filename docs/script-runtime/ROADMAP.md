@@ -33,13 +33,14 @@ an isolated prototype is not considered project completion.
   modifying its existing dirty worktree.
 - [~] Record every discovered Python operation in `MIGRATION_MATRIX.md` with an
   owner, C++ host binding, parity test, and migration status.
-  Taxonomy v3 preserves all 15,469 sites as 4,319 operations and 4,908
+  Taxonomy v4 preserves all 15,469 sites as 4,319 operations and 4,908
   operation/source-scope decisions. It separates script Host requirements,
   script/module rewrites, C++ service internals, Tauri UI replacement,
-  tooling/tests, dependencies, and unresolved calls; bounded AST/type
-  resolution reduced unresolved decisions from 1,842 to 1,279 without guessing
-  dynamic owners. All 343 Host decisions now have proposed contracts, while
-  1,279 unresolved disposition decisions remain strict gaps. See
+  tooling/tests, dependencies, and unresolved calls. Bounded AST/type
+  resolution plus authoritative non-script source boundaries reduced unresolved
+  decisions from 1,842 to 240 without guessing script-runtime owners. All 343
+  Host decisions now have proposed contracts, while the remaining 240
+  script-runtime disposition decisions remain strict gaps. See
   `OPERATION_INDEX_AUDIT.md`.
 - [x] Implement an opt-in, deterministic, bounded Python parity trace foundation
   on `feat/cpp-parity-trace` without changing the default execution path.
