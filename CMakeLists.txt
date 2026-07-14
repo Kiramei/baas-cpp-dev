@@ -79,6 +79,12 @@ option(BUILD_APP_ISA                "Build ISA  app          "  OFF)
 option(BUILD_BAAS_OCR           "build the ocr server app"               OFF)
 option(BUILD_BAAS_AW_CHECKER    "build BAAS Auto Fight Workflow Checker" OFF)
 option(BUILD_BAAS_NMS_BENCHMARK "Build BAAS vs OpenCV dnn NMS Google Benchmark executable" OFF)
+option(BUILD_SCRIPT_RUNTIME     "Build the standalone BAAS script runtime" OFF)
+option(BUILD_SCRIPT_TESTS       "Build native tests for the BAAS script runtime" OFF)
+
+if(BUILD_SCRIPT_TESTS AND NOT BUILD_SCRIPT_RUNTIME)
+    set(BUILD_SCRIPT_RUNTIME ON CACHE BOOL "Build the standalone BAAS script runtime" FORCE)
+endif()
 
 check_app_options(
         BUILD_APP_BAAS
@@ -147,6 +153,10 @@ file(
         ${CMAKE_CURRENT_LIST_DIR}/src/*.cpp
 )
 
+# The script runtime is an independent library and must not leak into the
+# legacy application's globbed core sources.
+list(FILTER BAAS_CORE_SOURCES EXCLUDE REGEX "/src/script/[^/]+\\.cpp$")
+
 if(TARGET_OS_NAME STREQUAL "Windows")
     list(REMOVE_ITEM BAAS_CORE_SOURCES "${CMAKE_CURRENT_LIST_DIR}/src/simdutf.cpp")
 endif()
@@ -176,6 +186,10 @@ endif()
 # --------------  BAAS AUTO FIGHT WORKFLOW CHECKER  ----------------
 if (BUILD_BAAS_AW_CHECKER)
     add_subdirectory(apps/BAAS_auto_fight_workflow_checker)
+endif()
+
+if(BUILD_SCRIPT_RUNTIME)
+    include("${CMAKE_CURRENT_LIST_DIR}/cmake/ScriptRuntime.cmake")
 endif()
 
 add_library(
