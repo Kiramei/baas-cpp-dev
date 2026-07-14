@@ -179,6 +179,27 @@ class PythonBaselineTests(unittest.TestCase):
         self.assertEqual(report["repository"]["revision"], "0123456789abcdef")
         self.assertEqual(report["sizes"]["src"]["logical_bytes"], 4)
 
+    def test_output_write_failure_returns_setup_exit_code(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            repo, executable = self.make_repo(root)
+            non_directory = root / "not-a-directory"
+            non_directory.write_text("occupied", encoding="utf-8")
+            code = main(
+                [
+                    "--python-repo",
+                    str(repo),
+                    "--python-executable",
+                    str(executable),
+                    "--output",
+                    str(non_directory / "report.json"),
+                    "--quick",
+                ],
+                runner=FakeRunner(),
+            )
+
+        self.assertEqual(code, 2)
+
 
 if __name__ == "__main__":
     unittest.main()

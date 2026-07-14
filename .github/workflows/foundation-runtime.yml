@@ -20,6 +20,7 @@ on:
       - 'tests/service/**'
       - 'scripts/service_contract/**'
       - 'tests/service_contract/**'
+      - 'scripts/migration/**'
       - 'docs/script-runtime/ADR-0001-runtime-architecture.md'
       - 'docs/script-runtime/ADR-0002-vm-memory-management.md'
       - 'docs/script-runtime/LANGUAGE_SPEC_DRAFT.md'
@@ -46,6 +47,7 @@ on:
       - 'tests/service/**'
       - 'scripts/service_contract/**'
       - 'tests/service_contract/**'
+      - 'scripts/migration/**'
       - 'docs/script-runtime/ADR-0001-runtime-architecture.md'
       - 'docs/script-runtime/ADR-0002-vm-memory-management.md'
       - 'docs/script-runtime/LANGUAGE_SPEC_DRAFT.md'
@@ -113,3 +115,7 @@ jobs:
       - name: Verify checked-in service vectors
         if: matrix.build_type == 'Debug'
         run: python -m unittest discover -s tests/service_contract -p "test_*.py" -v
+
+      - name: Verify migration and baseline tools
+        if: matrix.build_type == 'Debug'
+        run: python -B -m unittest discover -s scripts/migration/tests -p "test_*.py" -v

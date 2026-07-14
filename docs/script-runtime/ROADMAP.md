@@ -209,7 +209,9 @@ script/service foundation targets. Debug jobs also validate the checked-in
 service vectors. The exact Windows commands passed locally for both build
 types after the value-heap addition: all six CTest targets passed 20 repeated
 Debug runs and one complete Release run; all 14 service-vector tests also
-passed. The
+passed before the protocol-spec additions. The current Debug jobs also run the
+service protocol/vector suite and the standard-library migration/baseline tool
+suite. The
 hosted Linux/macOS jobs, full application/parity/service smoke coverage,
 Android, performance budgets, sanitizers, fuzzing, and caches remain pending.
 

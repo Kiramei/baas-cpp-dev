@@ -661,8 +661,12 @@ def main(argv: list[str] | None = None, *, runner: CommandRunner = completed_run
         return 2
     rendered = stable_json(report)
     if args.output:
-        args.output.parent.mkdir(parents=True, exist_ok=True)
-        args.output.write_text(rendered, encoding="utf-8", newline="\n")
+        try:
+            args.output.parent.mkdir(parents=True, exist_ok=True)
+            args.output.write_text(rendered, encoding="utf-8", newline="\n")
+        except OSError as error:
+            print(f"could not write measurement report: {error}", file=sys.stderr)
+            return 2
     else:
         sys.stdout.write(rendered)
     if report["summary"]["failed_probes"]:
