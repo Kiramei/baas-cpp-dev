@@ -25,6 +25,7 @@ on:
       - 'docs/script-runtime/LANGUAGE_SPEC_DRAFT.md'
       - 'docs/script-runtime/LANGUAGE_GRAMMAR.md'
       - 'docs/script-runtime/SERVICE_COMPATIBILITY.md'
+      - 'docs/script-runtime/SERVICE_PROTOCOL_V1.md'
   pull_request:
     branches:
       - main
@@ -50,6 +51,7 @@ on:
       - 'docs/script-runtime/LANGUAGE_SPEC_DRAFT.md'
       - 'docs/script-runtime/LANGUAGE_GRAMMAR.md'
       - 'docs/script-runtime/SERVICE_COMPATIBILITY.md'
+      - 'docs/script-runtime/SERVICE_PROTOCOL_V1.md'
 
 permissions:
   contents: read

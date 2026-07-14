@@ -4,6 +4,9 @@ This is the migration compatibility baseline observed in `baas-dev` and
 `baas-tauri`. It intentionally describes the existing product contract before a
 new C++ service design is allowed to change it.
 
+The normative v1 migration target is `SERVICE_PROTOCOL_V1.md`; this file remains
+the concise observed-product inventory and source map.
+
 ## Transport topology
 
 - Native Tauri defaults to `pipe`; WebUI requires WebSocket.

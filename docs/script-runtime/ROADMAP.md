@@ -143,7 +143,10 @@ Python fallback is needed for migrated representative workflows.
   header/ciphertext gate explicit.
 - [x] Implement the byte-exact BPIP v1 encoder and incremental decoder with
   fragmentation, coalescing, sticky errors, and the 64 MiB preallocation gate.
-- [ ] Define a versioned service protocol from the observed Tauri contract.
+- [~] Define a versioned service protocol from the observed Tauri contract.
+  `SERVICE_PROTOCOL_V1.md` now defines the normative v1 wire/state/security
+  contract and explicit missing gates; shared implementations and E2E evidence
+  remain pending.
 - [ ] Implement `cpp-httplib` routing, validation, JSON errors, health/version,
   graceful shutdown, and bounded concurrency.
 - [ ] Implement task submission, progress/events, cancellation, and result APIs.
