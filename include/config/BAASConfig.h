@@ -675,7 +675,7 @@ protected:
             nlohmann::json& value
     );
 
-    inline void throw_key_error(const std::string& desc)  const
+    [[noreturn]] inline void throw_key_error(const std::string& desc) const
     {
         std::string msg;
         if (!path.empty()) msg = "In Config file : [ " + path.string() + " ] : \n";
@@ -683,7 +683,7 @@ protected:
         throw KeyError(msg);
     }
 
-    inline void throw_type_error(const std::string& desc) const
+    [[noreturn]] inline void throw_type_error(const std::string& desc) const
     {
         std::string msg;
         if (!path.empty()) msg = "In Config file : [ " + path.string() + " ] : \n";
