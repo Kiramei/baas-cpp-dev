@@ -335,6 +335,59 @@ class OperationIndexTests(unittest.TestCase):
                     filename,
                 )
 
+    def test_audited_module_receivers_are_exact_and_preserve_unknown_core_calls(self) -> None:
+        cases = {
+            "module/cafe_reward.py": (
+                "def run(name, ret_queue, self):\n"
+                "    name.replace('a', 'b')\n"
+                "    ret_queue.put(1)\n"
+                "    self.u2().pinch_in(percent=50)\n",
+                {
+                    "name.replace": ("audited-module-intrinsics-v4", "SCRIPT_LANGUAGE_OR_MODULE"),
+                    "ret_queue.put": ("scheduler-host-v2", "HOST_BINDING_REQUIRED"),
+                    "dynamic:call-result(self.u2)().pinch_in": (
+                        "device-host-v2",
+                        "HOST_BINDING_REQUIRED",
+                    ),
+                },
+            ),
+            "module/total_assault.py": (
+                "def run(unable_to_fight_formation):\n"
+                "    return unable_to_fight_formation.all()\n",
+                {
+                    "unable_to_fight_formation.all": (
+                        "vision-host-v2",
+                        "HOST_BINDING_REQUIRED",
+                    )
+                },
+            ),
+        }
+        for relative, (source, expected) in cases.items():
+            with self.subTest(relative=relative), tempfile.TemporaryDirectory() as directory:
+                repository = Path(directory) / "repo"
+                path = repository / relative
+                path.parent.mkdir(parents=True)
+                path.write_text(source, encoding="utf-8")
+                report = self.generate(repository)
+                by_symbol = {item["symbol"]: item for item in report["operations"]}
+                for symbol, (rule, disposition) in expected.items():
+                    decision = self.scope_decision(by_symbol[symbol], "SCRIPT_RUNTIME")
+                    self.assertEqual(decision["classification_rule"], rule, symbol)
+                    self.assertEqual(decision["disposition"], disposition, symbol)
+
+        with tempfile.TemporaryDirectory() as directory:
+            repository = Path(directory) / "repo"
+            path = repository / "core" / "other.py"
+            path.parent.mkdir(parents=True)
+            path.write_text(
+                "def run(name):\n    return name.replace('a', 'b')\n",
+                encoding="utf-8",
+            )
+            report = self.generate(repository)
+            operation = next(item for item in report["operations"] if item["symbol"] == "name.replace")
+            decision = self.scope_decision(operation, "SCRIPT_RUNTIME")
+            self.assertEqual(decision["disposition"], "UNRESOLVED")
+
     def test_proven_factory_iteration_and_nested_definition_types_are_conservative(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             repository = Path(directory) / "repo"
