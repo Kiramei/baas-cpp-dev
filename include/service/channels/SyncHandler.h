@@ -116,6 +116,7 @@ struct ResourceStoreLimits {
     std::size_t max_subscribers{64};
     std::size_t max_patch_operations{1'024};
     std::size_t max_resource_id_bytes{256};
+    std::size_t max_origin_bytes{64};
 };
 
 struct InitialResource {
@@ -161,6 +162,8 @@ struct SyncHandlerLimits {
     std::size_t max_json_nodes{65'536};
     std::size_t max_patch_operations{1'024};
     std::size_t max_resource_id_bytes{256};
+    std::size_t max_origin_bytes{64};
+    std::size_t max_error_bytes{4U * 1'024U};
     std::size_t max_in_flight_pushes{64};
     std::size_t max_in_flight_push_bytes{4U * 1'024U * 1'024U};
 };

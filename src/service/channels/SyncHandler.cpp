@@ -1,5 +1,7 @@
 #include "service/channels/SyncHandler.h"
 
+#include "service/auth/CanonicalJson.h"
+
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
@@ -269,6 +271,11 @@ Json key_json(const ResourceKey& key)
 std::optional<Json> update_envelope(const ResourceUpdate& update,
                                     const SyncHandlerLimits& limits)
 {
+    if ((update.key.resource_id
+         && (update.key.resource_id->size() > limits.max_resource_id_bytes
+             || !auth::is_valid_utf8(*update.key.resource_id)))
+        || update.origin.size() > limits.max_origin_bytes
+        || !auth::is_valid_utf8(update.origin)) return std::nullopt;
     const JsonBounds bounds{limits.max_output_json_bytes, limits.max_json_depth, limits.max_json_nodes};
     const auto timestamp = parse_json(update.timestamp_json, bounds);
     const auto operations = parse_json(update.operations_json, bounds);
@@ -483,6 +490,9 @@ private:
                             {"resource_id", key_json(*resource_key)}, {"timestamp", *timestamp}});
         }
         const JsonBounds bounds{limits_.max_output_json_bytes, limits_.max_json_depth, limits_.max_json_nodes};
+        if (result->error.size() > limits_.max_error_bytes
+            || !auth::is_valid_utf8(result->error))
+            return status_result(ws::BusinessHandlerStatus::internal_error);
         const auto current_timestamp = parse_json(result->snapshot.timestamp_json, bounds);
         const auto data = parse_json(result->snapshot.data_json, bounds);
         if (!current_timestamp || !timestamp_value(*current_timestamp) || !data)
@@ -622,6 +632,19 @@ ResourceStoreResult<ResourcePatchResult> InMemoryResourceStore::apply_patch(
             || !split_pointer(operation.path))
             return {std::nullopt, ResourceStoreError::invalid_data};
     }
+    std::size_t operation_bytes = 2;
+    for (const auto& operation : request.operations) {
+        const std::size_t components[]{operation.op.size(), operation.path.size(),
+            operation.value_json ? operation.value_json->size() : 0, 48};
+        for (const auto component : components) {
+            if (component > impl_->limits.max_json_bytes
+                || operation_bytes > impl_->limits.max_json_bytes - component)
+                return {std::nullopt, ResourceStoreError::capacity};
+            operation_bytes += component;
+        }
+        if (operation.value_json && !parse_json(*operation.value_json, bounds))
+            return {std::nullopt, ResourceStoreError::invalid_data};
+    }
     std::string serialized_operations;
     try { serialized_operations = operations_json(request.operations).dump(); }
     catch (...) { return {std::nullopt, ResourceStoreError::invalid_data}; }
@@ -682,9 +705,14 @@ bool InMemoryResourceStore::replace_and_publish(ResourceKey key, ResourceSnapsho
                                                 std::string operations, std::string origin)
 {
     const JsonBounds bounds{impl_->limits.max_json_bytes, impl_->limits.max_json_depth, impl_->limits.max_json_nodes};
+    if ((key.resource_id
+         && (key.resource_id->size() > impl_->limits.max_resource_id_bytes
+             || !auth::is_valid_utf8(*key.resource_id)))
+        || origin.size() > impl_->limits.max_origin_bytes
+        || !auth::is_valid_utf8(origin)) return false;
     const auto parsed_operations = parse_json(operations, bounds);
-    if ((key.resource_id && key.resource_id->size() > impl_->limits.max_resource_id_bytes)
-        || !Impl::valid_snapshot(snapshot, bounds) || !parsed_operations || !parsed_operations->is_array()) return false;
+    if (!Impl::valid_snapshot(snapshot, bounds) || !parsed_operations
+        || !parsed_operations->is_array()) return false;
     {
         std::lock_guard lock(impl_->mutex);
         const auto found = impl_->resources.find(key);
@@ -700,15 +728,21 @@ SyncHandlerFactory::SyncHandlerFactory(std::shared_ptr<ResourceStore> store, Syn
 {
     if (!store_ || limits_.max_input_json_bytes == 0 || limits_.max_output_json_bytes == 0
         || limits_.max_json_depth == 0 || limits_.max_json_nodes == 0
-        || limits_.max_in_flight_pushes == 0 || limits_.max_in_flight_push_bytes == 0)
+        || limits_.max_in_flight_pushes == 0 || limits_.max_in_flight_push_bytes == 0
+        || limits_.max_resource_id_bytes == 0 || limits_.max_origin_bytes == 0
+        || limits_.max_error_bytes == 0
+        || limits_.max_resource_id_bytes > limits_.max_output_json_bytes
+        || limits_.max_origin_bytes > limits_.max_output_json_bytes
+        || limits_.max_error_bytes > limits_.max_output_json_bytes)
         throw std::invalid_argument("invalid sync handler configuration");
 }
 
-ws::BusinessHandlerCreateResult SyncHandlerFactory::create(ws::BusinessSessionContext,
+ws::BusinessHandlerCreateResult SyncHandlerFactory::create(ws::BusinessSessionContext context,
                                                            std::shared_ptr<ws::BusinessPlaintextSink> output,
                                                            std::stop_token stop)
 {
-    if (!output || stop.stop_requested()) return {nullptr, ws::BusinessHandlerCreateError::internal_error};
+    if (!output || stop.stop_requested() || context.channel != auth::BusinessChannel::sync)
+        return {nullptr, ws::BusinessHandlerCreateError::internal_error};
     try {
         return {std::make_unique<SyncHandler>(store_, std::move(output), limits_),
                 ws::BusinessHandlerCreateError::none};

@@ -103,6 +103,42 @@ private:
     bool reject_{};
 };
 
+class EmptySubscription final : public channels::ResourceSubscription {};
+
+class AdversarialStore final : public channels::ResourceStore {
+public:
+    channels::ResourceStoreResult<channels::ResourceSnapshot> config_list(std::stop_token) override
+    {
+        return {channels::ResourceSnapshot{"1", "[]"}, channels::ResourceStoreError::none};
+    }
+
+    channels::ResourceStoreResult<channels::ResourceSnapshot> pull(
+        const channels::ResourceKey&, std::stop_token) override
+    {
+        return {channels::ResourceSnapshot{"1", "{}"}, channels::ResourceStoreError::none};
+    }
+
+    channels::ResourceStoreResult<channels::ResourcePatchResult> apply_patch(
+        channels::ResourcePatchRequest, std::stop_token) override
+    {
+        return {channels::ResourcePatchResult{
+                    channels::ResourcePatchDisposition::conflict,
+                    {"1", "{}"}, conflict_error},
+                channels::ResourceStoreError::none};
+    }
+
+    channels::ResourceSubscribeResult subscribe_updates(UpdateCallback supplied) override
+    {
+        callback = std::move(supplied);
+        return {std::make_unique<EmptySubscription>(), channels::ResourceStoreError::none};
+    }
+
+    void push(channels::ResourceUpdate update) { callback(std::move(update)); }
+
+    std::string conflict_error;
+    UpdateCallback callback;
+};
+
 std::shared_ptr<channels::InMemoryResourceStore> make_store(
     channels::InMemoryResourceStore::Clock clock = [] { return 200.25; },
     channels::ResourceStoreLimits limits = {})
@@ -121,12 +157,14 @@ std::shared_ptr<channels::InMemoryResourceStore> make_store(
 }
 
 std::unique_ptr<ws::BusinessChannelHandler> make_handler(
-    const std::shared_ptr<channels::InMemoryResourceStore>& store,
+    const std::shared_ptr<channels::ResourceStore>& store,
     const std::shared_ptr<RecordingSink>& sink,
     channels::SyncHandlerLimits limits = {})
 {
     channels::SyncHandlerFactory factory(store, limits);
-    auto created = factory.create({}, sink, {});
+    ws::BusinessSessionContext context;
+    context.channel = baas::service::auth::BusinessChannel::sync;
+    auto created = factory.create(std::move(context), sink, {});
     check(static_cast<bool>(created), "handler is created");
     if (!created) return {};
     check(created.handler->ready({}).status == ws::BusinessHandlerStatus::ok,
@@ -319,6 +357,52 @@ void test_store_capacity_and_validation()
     auto subscription = store->subscribe_updates({});
     check(!subscription && subscription.error == channels::ResourceStoreError::invalid_data,
           "empty callback is rejected");
+    check(!store->replace_and_publish({channels::SyncResource::event, std::nullopt},
+                                      {"23", "{}"}, "[]", std::string(65, 'o')),
+          "backend origin is bounded before publication");
+}
+
+void test_channel_gate_and_adversarial_store_fields()
+{
+    auto regular_store = make_store();
+    auto sink = std::make_shared<RecordingSink>();
+    channels::SyncHandlerFactory factory(regular_store);
+    ws::BusinessSessionContext wrong_context;
+    wrong_context.channel = baas::service::auth::BusinessChannel::provider;
+    auto wrong = factory.create(std::move(wrong_context), sink, {});
+    check(!wrong && wrong.error == ws::BusinessHandlerCreateError::internal_error,
+          "sync factory rejects provider channel context");
+
+    auto custom = std::make_shared<AdversarialStore>();
+    auto custom_sink = std::make_shared<RecordingSink>();
+    auto handler = make_handler(custom, custom_sink);
+    if (!handler) return;
+    custom->push({{channels::SyncResource::event, std::nullopt}, "2", "[]",
+                  std::string(65, 'o')});
+    check(handler->heartbeat({}).status == ws::BusinessHandlerStatus::internal_error
+              && custom_sink->messages().empty(),
+          "oversized custom-store push origin fails before envelope construction");
+
+    auto id_store = std::make_shared<AdversarialStore>();
+    auto id_sink = std::make_shared<RecordingSink>();
+    auto id_handler = make_handler(id_store, id_sink);
+    if (id_handler) {
+        id_store->push({{channels::SyncResource::config, std::string(257, 'i')},
+                        "2", "[]", "backend"});
+        check(id_handler->heartbeat({}).status == ws::BusinessHandlerStatus::internal_error
+                  && id_sink->messages().empty(),
+              "oversized custom-store push resource id fails before envelope construction");
+    }
+
+    auto error_store = std::make_shared<AdversarialStore>();
+    error_store->conflict_error = std::string(4U * 1'024U + 1U, 'e');
+    auto error_handler = make_handler(error_store, std::make_shared<RecordingSink>());
+    if (error_handler) {
+        auto result = error_handler->input(secret(
+            R"({"type":"patch","resource":"event","timestamp":1,"ops":[]})"), false, {});
+        check(result.status == ws::BusinessHandlerStatus::internal_error && result.messages.empty(),
+              "oversized custom-store conflict error fails before response construction");
+    }
 }
 
 } // namespace
@@ -331,6 +415,7 @@ int main()
     test_atomic_timestamp_conflict();
     test_bounds_raii_and_close_race();
     test_store_capacity_and_validation();
+    test_channel_gate_and_adversarial_store_fields();
     if (failures != 0) {
         std::cerr << failures << " sync handler test(s) failed\n";
         return 1;
