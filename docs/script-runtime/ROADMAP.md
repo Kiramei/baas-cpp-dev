@@ -264,10 +264,13 @@ Python fallback is needed for migrated representative workflows.
   The transport-independent `TriggerSession` foundation now bounds live
   timestamp correlations and output, enforces single/stream terminal state and
   cancellation precedence, returns disconnect cleanup work, and coalesces each
-  BPIP JSON/binary response pair into one owning send batch. JSON envelope
-  schemas, the real command dispatcher/executor, live WebSocket/Pipe hosts,
-  deadlines, stale-task cleanup, and cross-language load/E2E remain pending; see
-  `SERVICE_TRIGGER_SESSION.md`.
+  BPIP JSON/binary response pair into one owning send batch. The bounded
+  dependency-free `TriggerEnvelope` codec now validates request schemas and
+  hostile JSON budgets, builds deterministic response envelopes, and owns exact
+  binary-size declarations including zero-byte frames. The real command
+  dispatcher/executor, live WebSocket/Pipe hosts, deadlines, stale-task cleanup,
+  and cross-language load/E2E remain pending; see
+  `SERVICE_TRIGGER_SESSION.md` and `SERVICE_TRIGGER_ENVELOPE.md`.
 - [ ] Implement configuration and resource update APIs with atomic persistence.
 - [ ] Implement authentication/origin/listen-address policy appropriate to local
   desktop and Android deployment.

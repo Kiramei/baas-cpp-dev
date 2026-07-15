@@ -124,6 +124,7 @@ std::string_view publish_error_name(const PublishError error) noexcept
         case closed: return "closed";
         case unknown_timestamp: return "unknown_timestamp";
         case command_mismatch: return "command_mismatch";
+        case response_mode_mismatch: return "response_mode_mismatch";
         case terminal_already_queued: return "terminal_already_queued";
         case single_response_must_be_terminal: return "single_response_must_be_terminal";
         case error_response_must_be_terminal: return "error_response_must_be_terminal";
@@ -205,24 +206,24 @@ CancelDecision TriggerSession::request_cancel(const Timestamp timestamp)
 std::size_t TriggerSession::batch_bytes(const OutboundBatch& batch) noexcept
 {
     std::size_t result{};
-    if (!checked_add(batch.json.size(), batch.binary.size(), result))
+    if (!checked_add(batch.json().size(), batch.binary().size(), result))
         return std::numeric_limits<std::size_t>::max();
     return result;
 }
 
 PublishResult TriggerSession::publish(OutboundBatch batch)
 {
-    if (batch.json.empty() || !is_valid_utf8(batch.json)) {
+    if (batch.json().empty() || !is_valid_utf8(batch.json())) {
         std::lock_guard lock(mutex_);
         ++publish_rejections_;
         return {PublishError::invalid_json_utf8};
     }
-    if (batch.json.size() > limits_.max_response_json_bytes) {
+    if (batch.json().size() > limits_.max_response_json_bytes) {
         std::lock_guard lock(mutex_);
         ++publish_rejections_;
         return {PublishError::json_too_large};
     }
-    if (batch.binary.size() > limits_.max_response_binary_bytes) {
+    if (batch.binary().size() > limits_.max_response_binary_bytes) {
         std::lock_guard lock(mutex_);
         ++publish_rejections_;
         return {PublishError::binary_too_large};
@@ -239,16 +240,18 @@ PublishResult TriggerSession::publish(OutboundBatch batch)
         return PublishResult{error};
     };
     if (closed_) return reject(PublishError::closed);
-    const auto iterator = entries_.find(batch.timestamp);
+    const auto iterator = entries_.find(batch.timestamp());
     if (iterator == entries_.end()) return reject(PublishError::unknown_timestamp);
     auto& entry = iterator->second;
-    if (entry.command != batch.command) return reject(PublishError::command_mismatch);
+    if (entry.command != batch.command()) return reject(PublishError::command_mismatch);
+    if (entry.response_mode != batch.response_mode())
+        return reject(PublishError::response_mode_mismatch);
     if (entry.terminal_queued) return reject(PublishError::terminal_already_queued);
-    if (entry.response_mode == ResponseMode::single && !batch.terminal)
+    if (entry.response_mode == ResponseMode::single && !batch.terminal())
         return reject(PublishError::single_response_must_be_terminal);
-    if (batch.status != ResponseStatus::ok && !batch.terminal)
+    if (batch.status() != ResponseStatus::ok && !batch.terminal())
         return reject(PublishError::error_response_must_be_terminal);
-    if (entry.cancel_requested && batch.status != ResponseStatus::cancelled)
+    if (entry.cancel_requested && batch.status() != ResponseStatus::cancelled)
         return reject(PublishError::cancellation_response_required);
     if (outbound_.size() >= limits_.max_queued_batches)
         return reject(PublishError::queue_full);
@@ -259,7 +262,7 @@ PublishResult TriggerSession::publish(OutboundBatch batch)
 
     outbound_.push_back(std::move(batch));
     queued_bytes_ += bytes;
-    if (outbound_.back().terminal) entry.terminal_queued = true;
+    if (outbound_.back().terminal()) entry.terminal_queued = true;
     ++published_batches_;
     return {};
 }
@@ -271,7 +274,7 @@ std::optional<OutboundBatch> TriggerSession::pop()
     auto result = std::move(outbound_.front());
     outbound_.pop_front();
     queued_bytes_ -= batch_bytes(result);
-    if (result.terminal) entries_.erase(result.timestamp);
+    if (result.terminal()) entries_.erase(result.timestamp());
     ++popped_batches_;
     return result;
 }

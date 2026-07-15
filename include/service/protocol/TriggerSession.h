@@ -8,9 +8,14 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace baas::service::protocol::trigger {
+
+struct CommandResponse;
+struct TriggerEnvelopeLimits;
+struct EncodeResponseResult;
 
 using Timestamp = std::uint64_t;
 inline constexpr Timestamp maximum_safe_timestamp = 9'007'199'254'740'991ULL;
@@ -76,13 +81,56 @@ enum class ResponseStatus : std::uint8_t {
 // One queue element is the indivisible send unit. A transport must serialize
 // json and the optional immediately-following binary frame while holding its
 // per-connection send lock.
-struct OutboundBatch {
-    std::string command;
-    Timestamp timestamp{};
-    ResponseStatus status{ResponseStatus::ok};
-    bool terminal{true};
-    std::string json;
-    std::vector<std::byte> binary;
+class OutboundBatch final {
+public:
+    OutboundBatch() = default;
+    OutboundBatch(const OutboundBatch&) = default;
+    OutboundBatch& operator=(const OutboundBatch&) = default;
+    OutboundBatch(OutboundBatch&&) noexcept = default;
+    OutboundBatch& operator=(OutboundBatch&&) noexcept = default;
+
+    [[nodiscard]] const std::string& command() const noexcept { return command_; }
+    [[nodiscard]] Timestamp timestamp() const noexcept { return timestamp_; }
+    [[nodiscard]] ResponseStatus status() const noexcept { return status_; }
+    [[nodiscard]] ResponseMode response_mode() const noexcept { return response_mode_; }
+    [[nodiscard]] bool terminal() const noexcept { return terminal_; }
+    [[nodiscard]] const std::string& json() const noexcept { return json_; }
+    [[nodiscard]] bool has_binary() const noexcept { return has_binary_; }
+    [[nodiscard]] const std::vector<std::byte>& binary() const noexcept { return binary_; }
+
+private:
+    OutboundBatch(
+        std::string command,
+        Timestamp timestamp,
+        ResponseStatus status,
+        ResponseMode response_mode,
+        bool terminal,
+        std::string json,
+        bool has_binary,
+        std::vector<std::byte> binary)
+        : command_(std::move(command)),
+          timestamp_(timestamp),
+          status_(status),
+          response_mode_(response_mode),
+          terminal_(terminal),
+          json_(std::move(json)),
+          has_binary_(has_binary),
+          binary_(std::move(binary))
+    {}
+
+    friend EncodeResponseResult encode_command_response(
+        CommandResponse response, TriggerEnvelopeLimits limits);
+
+    std::string command_;
+    Timestamp timestamp_{};
+    ResponseStatus status_{ResponseStatus::ok};
+    ResponseMode response_mode_{ResponseMode::single};
+    bool terminal_{true};
+    std::string json_;
+    // Distinguishes no binary frame from a declared zero-byte binary frame.
+    // TriggerEnvelope sets this flag from optional binary presence.
+    bool has_binary_{};
+    std::vector<std::byte> binary_;
 };
 
 enum class PublishError : std::uint8_t {
@@ -90,6 +138,7 @@ enum class PublishError : std::uint8_t {
     closed,
     unknown_timestamp,
     command_mismatch,
+    response_mode_mismatch,
     terminal_already_queued,
     single_response_must_be_terminal,
     error_response_must_be_terminal,

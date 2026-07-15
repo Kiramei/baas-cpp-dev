@@ -1,10 +1,12 @@
 #include "service/protocol/TriggerSession.h"
+#include "service/protocol/TriggerEnvelope.h"
 #include "service/protocol/TriggerPipeAdapter.h"
 
 #include <algorithm>
 #include <atomic>
 #include <cstddef>
 #include <iostream>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -39,10 +41,25 @@ void check(const bool condition, const std::string_view message)
     const trigger::Timestamp timestamp,
     const bool terminal = true,
     const trigger::ResponseStatus status = trigger::ResponseStatus::ok,
-    std::string json = R"({"type":"command_response","status":"ok"})"
+    std::optional<std::string> data = std::string{"{}"},
+    const trigger::ResponseMode mode = trigger::ResponseMode::single,
+    std::optional<std::vector<std::byte>> binary = std::nullopt
 )
 {
-    return {std::move(name), timestamp, status, terminal, std::move(json), {}};
+    trigger::CommandResponse value;
+    value.command = std::move(name);
+    value.timestamp = timestamp;
+    value.status = status;
+    value.response_mode = mode;
+    value.terminal = terminal;
+    value.data_json = std::move(data);
+    if (status != trigger::ResponseStatus::ok) {
+        value.error = status == trigger::ResponseStatus::cancelled ? "cancelled" : "error";
+    }
+    value.binary = std::move(binary);
+    auto encoded = trigger::encode_command_response(std::move(value));
+    if (!encoded) throw std::runtime_error("test response failed to encode");
+    return std::move(encoded.batch);
 }
 
 void test_limits_and_stable_error_names()
@@ -71,6 +88,9 @@ void test_limits_and_stable_error_names()
           "admission error names must be stable");
     check(trigger::publish_error_name(trigger::PublishError::queue_full) == "queue_full",
           "publish error names must be stable");
+    check(trigger::publish_error_name(trigger::PublishError::response_mode_mismatch)
+              == "response_mode_mismatch",
+          "response mode mismatch name must remain stable");
 }
 
 void test_admission_validation_and_correlation_reservation()
@@ -114,7 +134,7 @@ void test_admission_validation_and_correlation_reservation()
               == trigger::AdmissionError::duplicate_timestamp,
           "terminal correlation must remain reserved until the response is sent");
     const auto sent = session.pop();
-    check(sent && sent->timestamp == 10, "pop must return the oldest terminal response");
+    check(sent && sent->timestamp() == 10, "pop must return the oldest terminal response");
     check(static_cast<bool>(session.admit(command("status", 10))),
           "timestamp may be reused only after its terminal response is popped");
 
@@ -132,32 +152,35 @@ void test_streaming_order_and_atomic_binary_batch()
 
     check(static_cast<bool>(session.publish(response(
               "test_all_sha_stream", 20, false, trigger::ResponseStatus::ok,
-              R"({"type":"command_response","command":"test_all_sha_stream","status":"ok","data":{"name":"one"},"timestamp":20})"))),
+              R"({"name":"one"})", trigger::ResponseMode::stream))),
           "stream progress must be publishable without completing correlation");
 
     auto binary = response(
         "test_all_sha_stream", 20, false, trigger::ResponseStatus::ok,
-        R"({"type":"command_response","command":"test_all_sha_stream","status":"ok","data":{"binary":{"size":4}},"timestamp":20})");
-    binary.binary = {std::byte{0x00}, std::byte{0x01}, std::byte{0xFE}, std::byte{0xFF}};
+        R"({"name":"archive"})", trigger::ResponseMode::stream,
+        std::vector<std::byte>{
+            std::byte{0x00}, std::byte{0x01}, std::byte{0xFE}, std::byte{0xFF}});
     check(static_cast<bool>(session.publish(std::move(binary))),
           "JSON declaration and binary bytes must be accepted as one batch");
 
     check(static_cast<bool>(session.publish(response(
               "test_all_sha_stream", 20, true, trigger::ResponseStatus::ok,
-              R"({"type":"command_response","command":"test_all_sha_stream","status":"ok","data":{"done":true},"timestamp":20})"))),
+              R"({})", trigger::ResponseMode::stream))),
           "stream terminal response must complete the correlation");
-    check(session.publish(response("test_all_sha_stream", 20)).error
+    check(session.publish(response(
+              "test_all_sha_stream", 20, true, trigger::ResponseStatus::ok,
+              R"({})", trigger::ResponseMode::stream)).error
               == trigger::PublishError::terminal_already_queued,
           "no response may follow a queued stream terminal");
 
     const auto first = session.pop();
     const auto second = session.pop();
     const auto third = session.pop();
-    check(first && !first->terminal && first->binary.empty(),
+    check(first && !first->terminal() && first->binary().empty(),
           "first stream progress must preserve FIFO order");
-    check(second && !second->terminal && second->binary.size() == 4,
+    check(second && !second->terminal() && second->binary().size() == 4,
           "binary bytes must remain attached to their declaring JSON response");
-    check(third && third->terminal, "terminal stream result must be last");
+    check(third && third->terminal(), "terminal stream result must be last");
     check(!session.pop(), "queue must be empty after all batches are sent");
     check(session.stats().active_correlations == 0,
           "terminal pop must release the stream correlation");
@@ -166,22 +189,24 @@ void test_streaming_order_and_atomic_binary_batch()
 void test_publish_validation_backpressure_and_retry()
 {
     auto limits = trigger::TriggerSessionLimits{};
-    limits.max_response_json_bytes = 64;
+    limits.max_response_json_bytes = 256;
     limits.max_response_binary_bytes = 64;
     limits.max_queued_batches = 1;
-    limits.max_queued_bytes = 80;
+    limits.max_queued_bytes = 512;
     trigger::TriggerSession session{limits};
 
     check(static_cast<bool>(session.admit(
               command("update_to_latest_stream", 30, trigger::ResponseMode::stream))),
           "bounded stream must be admitted");
-    auto progress = response("update_to_latest_stream", 30, false);
-    progress.json = R"({"status":"ok"})";
+    auto progress = response(
+        "update_to_latest_stream", 30, false, trigger::ResponseStatus::ok,
+        R"({"progress":1})", trigger::ResponseMode::stream);
     check(static_cast<bool>(session.publish(progress)),
           "first bounded response must be queued");
 
-    auto terminal = response("update_to_latest_stream", 30);
-    terminal.json = R"({"status":"ok","data":{"done":true}})";
+    auto terminal = response(
+        "update_to_latest_stream", 30, true, trigger::ResponseStatus::ok,
+        R"({})", trigger::ResponseMode::stream);
     check(session.publish(terminal).error == trigger::PublishError::queue_full,
           "full outbound queue must report retryable backpressure");
     check(session.stats().active_correlations == 1,
@@ -193,17 +218,17 @@ void test_publish_validation_backpressure_and_retry()
     trigger::TriggerSession single;
     check(static_cast<bool>(single.admit(command("status", 31))),
           "single response command must be admitted");
-    check(single.publish(response("status", 31, false)).error
-              == trigger::PublishError::single_response_must_be_terminal,
-          "single-response commands must not emit progress frames");
+    check(single.publish(response(
+              "status", 31, false, trigger::ResponseStatus::ok, R"({})",
+              trigger::ResponseMode::stream)).error
+              == trigger::PublishError::response_mode_mismatch,
+          "response mode must match the admitted command lifecycle");
     check(single.publish(response("wrong", 31)).error
               == trigger::PublishError::command_mismatch,
           "response command must exactly echo its admitted command");
-    auto invalid_utf8 = response("status", 31);
-    invalid_utf8.json = std::string{"\xC0\xAF"};
-    check(single.publish(std::move(invalid_utf8)).error
+    check(single.publish(trigger::OutboundBatch{}).error
               == trigger::PublishError::invalid_json_utf8,
-          "invalid UTF-8 must never reach a JSON transport frame");
+          "uninitialized batches must never reach a JSON transport frame");
 }
 
 void test_cancellation_and_disconnect_cleanup()
@@ -220,7 +245,7 @@ void test_cancellation_and_disconnect_cleanup()
           "ordinary success must not race past an accepted cancellation");
     check(static_cast<bool>(session.publish(response(
               "solve", 40, true, trigger::ResponseStatus::cancelled,
-              R"({"type":"command_response","command":"solve","status":"error","error":"cancelled","timestamp":40})"))),
+              std::nullopt))),
           "only an explicit terminal cancellation may complete cancelled work");
     check(session.request_cancel(40) == trigger::CancelDecision::terminal_already_queued,
           "terminal responses close the cancellation window");
@@ -266,7 +291,7 @@ void test_concurrent_admission_and_publication()
     check(accepted == 64, "concurrent commands must publish without data races");
 
     std::vector<trigger::Timestamp> observed;
-    while (const auto batch = session.pop()) observed.push_back(batch->timestamp);
+    while (const auto batch = session.pop()) observed.push_back(batch->timestamp());
     std::sort(observed.begin(), observed.end());
     check(observed.size() == 64 && observed.front() == 1 && observed.back() == 64,
           "every concurrent terminal response must be retained exactly once");
@@ -278,13 +303,15 @@ void test_concurrent_admission_and_publication()
 
 void test_bpip_json_binary_batch_encoding()
 {
-    auto batch = response("export_config", 50);
-    batch.json = R"({"x":1})";
-    batch.binary = {std::byte{0x00}, std::byte{0x01}, std::byte{0xFE}, std::byte{0xFF}};
+    auto batch = response(
+        "export_config", 50, true, trigger::ResponseStatus::ok, R"({"x":1})",
+        trigger::ResponseMode::single,
+        std::vector<std::byte>{
+            std::byte{0x00}, std::byte{0x01}, std::byte{0xFE}, std::byte{0xFF}});
     const auto encoded = trigger::encode_pipe_batch(batch);
     check(static_cast<bool>(encoded), "valid trigger batch must encode to BPIP");
     check(encoded.bytes.size() == 2U * baas::service::protocol::bpip::header_size
-              + batch.json.size() + batch.binary.size(),
+              + batch.json().size() + batch.binary().size(),
           "coalesced BPIP batch size must include exactly two headers and payloads");
 
     baas::service::protocol::bpip::Decoder decoder;
@@ -299,12 +326,11 @@ void test_bpip_json_binary_batch_encoding()
                   == baas::service::protocol::bpip::kind_value(
                       baas::service::protocol::bpip::FrameKind::bytes),
               "trigger pipe batch must preserve the protocol frame order");
-        check(decoded.frames[1].payload == batch.binary,
+        check(decoded.frames[1].payload == batch.binary(),
               "binary frame payload must remain byte exact");
     }
 
-    auto json_only = batch;
-    json_only.binary.clear();
+    auto json_only = response("export_config", 51);
     const auto one_frame = trigger::encode_pipe_batch(json_only);
     decoder.reset();
     const auto one_decoded = decoder.feed(one_frame.bytes);
@@ -313,6 +339,15 @@ void test_bpip_json_binary_batch_encoding()
     check(trigger::encode_pipe_batch(batch, encoded.bytes.size() - 1).error
               == trigger::PipeBatchError::batch_too_large,
           "wire-size budget must reject before allocating a coalesced batch");
+
+    auto empty_binary = response(
+        "export_config", 52, true, trigger::ResponseStatus::ok, R"({})",
+        trigger::ResponseMode::single, std::vector<std::byte>{});
+    const auto empty_encoded = trigger::encode_pipe_batch(empty_binary);
+    decoder.reset();
+    const auto empty_decoded = decoder.feed(empty_encoded.bytes);
+    check(empty_decoded.frames.size() == 2 && empty_decoded.frames[1].payload.empty(),
+          "declared zero-byte binary must retain its required BYTES frame");
 }
 
 }  // namespace

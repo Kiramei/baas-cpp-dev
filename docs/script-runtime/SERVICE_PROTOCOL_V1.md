@@ -501,8 +501,11 @@ frame. Declared size MUST equal actual size.
 tests remain pending. The C++ `TriggerSession` foundation now bounds live
 correlations and output, rejects duplicate timestamps, enforces stream terminal
 state, and keeps JSON/binary output in one indivisible batch; its BPIP adapter
-emits the two frames in one owning write buffer. It does not yet parse envelopes,
-dispatch commands, or run behind a live WebSocket/Pipe channel.
+emits the two frames in one owning write buffer. `TriggerEnvelope` now parses
+bounded duplicate-free command JSON, creates session admissions, builds the
+exact response envelope, and exclusively injects verified binary sizes,
+including zero-byte frames. The C++ service does not yet dispatch commands or
+run behind a live WebSocket/Pipe trigger channel.
 
 ### 8.6 Remote
 

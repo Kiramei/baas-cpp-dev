@@ -40,35 +40,36 @@ std::string_view pipe_batch_error_name(const PipeBatchError error) noexcept
 PipeBatchEncodeResult encode_pipe_batch(
     const OutboundBatch& batch, const std::size_t max_wire_bytes)
 {
-    if (batch.json.empty()) return {{}, PipeBatchError::empty_json};
-    if (batch.json.size() > bpip::max_payload_size)
+    const bool has_binary = batch.has_binary();
+    if (batch.json().empty()) return {{}, PipeBatchError::empty_json};
+    if (batch.json().size() > bpip::max_payload_size)
         return {{}, PipeBatchError::json_payload_too_large};
-    if (batch.binary.size() > bpip::max_payload_size)
+    if (batch.binary().size() > bpip::max_payload_size)
         return {{}, PipeBatchError::binary_payload_too_large};
 
     std::size_t wire_bytes{};
-    if (!checked_add(bpip::header_size, batch.json.size(), wire_bytes))
+    if (!checked_add(bpip::header_size, batch.json().size(), wire_bytes))
         return {{}, PipeBatchError::batch_too_large};
-    if (!batch.binary.empty()) {
+    if (has_binary) {
         std::size_t binary_frame_bytes{};
-        if (!checked_add(bpip::header_size, batch.binary.size(), binary_frame_bytes)
+        if (!checked_add(bpip::header_size, batch.binary().size(), binary_frame_bytes)
             || !checked_add(wire_bytes, binary_frame_bytes, wire_bytes)) {
             return {{}, PipeBatchError::batch_too_large};
         }
     }
     if (wire_bytes > max_wire_bytes) return {{}, PipeBatchError::batch_too_large};
 
-    auto json_frame = bpip::encode_frame(bpip::FrameKind::json, bytes(batch.json));
+    auto json_frame = bpip::encode_frame(bpip::FrameKind::json, bytes(batch.json()));
     if (!json_frame) return {{}, PipeBatchError::json_payload_too_large};
 
     PipeBatchEncodeResult result;
     result.bytes.reserve(wire_bytes);
     result.bytes.insert(
         result.bytes.end(), json_frame.bytes.begin(), json_frame.bytes.end());
-    if (!batch.binary.empty()) {
+    if (has_binary) {
         const auto binary_frame = bpip::encode_frame(
             bpip::FrameKind::bytes,
-            std::span<const std::byte>{batch.binary.data(), batch.binary.size()});
+            std::span<const std::byte>{batch.binary().data(), batch.binary().size()});
         if (!binary_frame) return {{}, PipeBatchError::binary_payload_too_large};
         result.bytes.insert(
             result.bytes.end(), binary_frame.bytes.begin(), binary_frame.bytes.end());

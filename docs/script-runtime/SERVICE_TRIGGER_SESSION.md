@@ -5,9 +5,10 @@ for the v1 `trigger` business channel. It preserves the observed Python/Tauri
 `command` and `command_response` model; it does not invent REST task routes.
 
 This is a real bounded correlation and outbound-ordering layer, not a complete
-command service. JSON decoding/encoding, the command inventory dispatcher,
-executor ownership, WebSocket authentication/secretstream, and live BAAS task
-adapters remain separate required layers.
+command service. The adjacent bounded codec in `SERVICE_TRIGGER_ENVELOPE.md`
+now owns v1 JSON decoding/encoding; the command inventory dispatcher, executor
+ownership, WebSocket authentication/secretstream, and live BAAS task adapters
+remain separate required layers.
 
 ## Admission and correlation
 
@@ -41,9 +42,11 @@ and cancellation responses are always terminal. Once cancellation is accepted,
 ordinary progress/success is rejected and only an explicit terminal cancelled
 result can complete the correlation.
 
-One `OutboundBatch` contains the already serialized UTF-8
-`command_response` JSON and its optional binary bytes. This is the indivisible
-send unit. `encode_pipe_batch()` creates one owning BPIP write buffer containing
+One opaque `OutboundBatch` contains codec-produced UTF-8 `command_response` JSON,
+response mode, and optional binary bytes. Read-only access prevents callers
+from changing validated metadata. A `has_binary` bit distinguishes no binary
+from a promised zero-byte frame. This is the indivisible send unit.
+`encode_pipe_batch()` creates one owning BPIP write buffer containing
 the JSON frame followed immediately by the optional BYTES frame. A Pipe writer
 can therefore hold one connection send lock for the complete buffer; a future
 WebSocket writer must apply the same batch boundary. This preserves Tauri's
@@ -98,8 +101,6 @@ Release foundation builds.
 
 Still required before the Phase 4 task API item is complete:
 
-- a bounded schema-validating JSON envelope decoder/encoder that proves the
-  JSON fields match the separately tracked command/timestamp/binary metadata;
 - the complete table-driven command dispatcher and actual runtime/executor task
   ownership;
 - a coordinated general cancellation message or exact legacy stop-command

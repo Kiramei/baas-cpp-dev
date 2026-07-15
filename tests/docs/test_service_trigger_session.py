@@ -20,8 +20,17 @@ class ServiceTriggerSessionTests(unittest.TestCase):
         cls.pipe_source = (
             ROOT / "src/service/protocol/TriggerPipeAdapter.cpp"
         ).read_text(encoding="utf-8")
+        cls.envelope_header = (
+            ROOT / "include/service/protocol/TriggerEnvelope.h"
+        ).read_text(encoding="utf-8")
+        cls.envelope_source = (
+            ROOT / "src/service/protocol/TriggerEnvelope.cpp"
+        ).read_text(encoding="utf-8")
         cls.native_tests = (
             ROOT / "tests/service/TriggerSessionTests.cpp"
+        ).read_text(encoding="utf-8")
+        cls.envelope_tests = (
+            ROOT / "tests/service/TriggerEnvelopeTests.cpp"
         ).read_text(encoding="utf-8")
         cls.cmake = (ROOT / "cmake/ServiceProtocol.cmake").read_text(encoding="utf-8")
         cls.workflow = (
@@ -29,6 +38,9 @@ class ServiceTriggerSessionTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
         cls.spec = (
             ROOT / "docs/script-runtime/SERVICE_TRIGGER_SESSION.md"
+        ).read_text(encoding="utf-8")
+        cls.envelope_spec = (
+            ROOT / "docs/script-runtime/SERVICE_TRIGGER_ENVELOPE.md"
         ).read_text(encoding="utf-8")
         cls.protocol = (
             ROOT / "docs/script-runtime/SERVICE_PROTOCOL_V1.md"
@@ -58,7 +70,8 @@ class ServiceTriggerSessionTests(unittest.TestCase):
             "queued_bytes_exceeded",
         ):
             self.assertIn(anchor, self.header + self.source)
-        self.assertIn("if (result.terminal) entries_.erase(result.timestamp);", self.source)
+        self.assertIn("if (result.terminal()) entries_.erase(result.timestamp());", self.source)
+        self.assertIn("response_mode_mismatch", self.header + self.source)
         self.assertIn("if (!entry.terminal_queued)", self.source)
         self.assertIn("std::lock_guard lock(mutex_)", self.source)
 
@@ -70,6 +83,34 @@ class ServiceTriggerSessionTests(unittest.TestCase):
         self.assertIn("result.bytes.insert", self.pipe_source)
         self.assertIn("one coalesced trigger write", self.native_tests)
         self.assertIn("binary frame payload must remain byte exact", self.native_tests)
+        self.assertIn("has_binary", self.header + self.pipe_source)
+        self.assertIn("declared zero-byte binary", self.native_tests)
+
+    def test_bounded_envelope_codec_owns_schema_and_binary_metadata(self) -> None:
+        for anchor in (
+            "decode_command_envelope",
+            "make_admission",
+            "encode_command_response",
+            "max_depth{64}",
+            "max_nodes{65'536}",
+            "max_work{4U * 1'024U * 1'024U}",
+            "reserved_binary_field",
+        ):
+            self.assertIn(anchor, self.envelope_header)
+        self.assertIn("std::unordered_set<std::string> keys", self.envelope_source)
+        self.assertIn('data->object.emplace_back("binary"', self.envelope_source)
+        self.assertIn("response.binary->size()", self.envelope_source)
+        self.assertIn("BAAS_service_trigger_envelope_tests", self.cmake)
+        for test_name in (
+            "test_command_decode_and_compatibility",
+            "test_schema_and_json_rejections",
+            "test_parser_budgets",
+            "test_deterministic_response_encoding",
+            "test_stream_terminal_wire_binding",
+            "test_binary_metadata_and_zero_length_frame",
+            "test_response_rejections_and_session_integration",
+        ):
+            self.assertIn(test_name, self.envelope_tests)
 
     def test_native_tests_cover_lifecycle_and_concurrency(self) -> None:
         for test_name in (
@@ -89,16 +130,23 @@ class ServiceTriggerSessionTests(unittest.TestCase):
             self.workflow.count("docs/script-runtime/SERVICE_TRIGGER_SESSION.md"),
             2,
         )
+        self.assertEqual(
+            self.workflow.count("docs/script-runtime/SERVICE_TRIGGER_ENVELOPE.md"),
+            2,
+        )
         self.assertIn("BUILD_SERVICE_PROTOCOL_TESTS=ON", self.workflow)
+        self.assertIn("BAAS_service_trigger_envelope_tests", self.workflow)
         self.assertIn("- [~] Implement task submission", self.roadmap)
         for pending in (
-            "JSON decoding/encoding",
             "complete table-driven command dispatcher",
             "WebSocket and live Pipe channel hosts",
             "shared Python/C++/Tauri fixtures",
         ):
             self.assertIn(pending, self.spec)
-        self.assertIn("does not yet parse envelopes", self.protocol)
+        self.assertIn("TriggerEnvelope", self.protocol)
+        self.assertIn("does not yet dispatch commands", self.protocol)
+        self.assertIn("dependency-free JSON codec", self.envelope_spec)
+        self.assertIn("zero-length BYTES frame", self.envelope_spec)
 
 
 if __name__ == "__main__":

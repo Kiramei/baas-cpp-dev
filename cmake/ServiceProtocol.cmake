@@ -6,6 +6,7 @@ add_library(
         BAAS_service_protocol
         STATIC
         "${BAAS_PROJECT_PATH}/src/service/protocol/PipeFraming.cpp"
+        "${BAAS_PROJECT_PATH}/src/service/protocol/TriggerEnvelope.cpp"
         "${BAAS_PROJECT_PATH}/src/service/protocol/TriggerPipeAdapter.cpp"
         "${BAAS_PROJECT_PATH}/src/service/protocol/TriggerSession.cpp"
 )
@@ -18,6 +19,7 @@ target_include_directories(
 target_link_libraries(BAAS_service_protocol PUBLIC Threads::Threads)
 
 if(MSVC)
+    target_compile_options(BAAS_service_protocol PUBLIC /utf-8)
     target_compile_options(BAAS_service_protocol PRIVATE /W4 /permissive-)
 else()
     target_compile_options(BAAS_service_protocol PRIVATE -Wall -Wextra -Wpedantic)
@@ -45,6 +47,21 @@ if(BUILD_SERVICE_PROTOCOL_TESTS)
     )
     set_tests_properties(
             BAAS_service_trigger_session_tests
+            PROPERTIES TIMEOUT 30
+    )
+
+    add_executable(
+            BAAS_service_trigger_envelope_tests
+            "${BAAS_PROJECT_PATH}/tests/service/TriggerEnvelopeTests.cpp"
+    )
+    target_compile_features(BAAS_service_trigger_envelope_tests PRIVATE cxx_std_20)
+    target_link_libraries(BAAS_service_trigger_envelope_tests PRIVATE BAAS_service_protocol)
+    add_test(
+            NAME BAAS_service_trigger_envelope_tests
+            COMMAND BAAS_service_trigger_envelope_tests
+    )
+    set_tests_properties(
+            BAAS_service_trigger_envelope_tests
             PROPERTIES TIMEOUT 30
     )
 endif()
