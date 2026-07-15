@@ -5,6 +5,7 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cwctype>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -15,6 +16,13 @@
 #include <string>
 #include <thread>
 #include <vector>
+
+#if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <Windows.h>
+#endif
 
 namespace {
 
@@ -219,6 +227,125 @@ void test_path_traversal_and_symlink_rejection()
     std::filesystem::remove_all(outside);
 }
 
+#if defined(_WIN32)
+void test_windows_aliases_and_anchored_directory_handles()
+{
+    TempProject project;
+    project.add_pair("alpha", R"({"x":1})");
+    const auto moved_root = project.root.parent_path()
+        / (project.root.filename().string() + "-moved");
+    std::filesystem::remove_all(moved_root);
+    std::atomic<bool> rename_blocked{};
+    adapters::FileResourceStore store(
+        project.root,
+        dependencies({}, [&](const std::filesystem::path&) {
+            const auto config = project.root / "config";
+            const auto moved = project.root / "config-moved";
+            rename_blocked = MoveFileExW(config.c_str(), moved.c_str(), 0) == FALSE;
+            return true;
+        }));
+
+    auto case_alias = store.pull(config_key("ALPHA"), {});
+    check(!case_alias, "Windows case alias is not a second cache key");
+    for (const auto& alias : {"alpha.", "alpha ", "CON", "NUL.txt"}) {
+        auto result = store.pull(config_key(alias), {});
+        check(!result && result.error == channels::ResourceStoreError::invalid_data,
+              std::string{"Windows invalid physical alias is rejected: "} + alias);
+    }
+
+    wchar_t short_buffer[MAX_PATH]{};
+    const auto alpha = project.root / "config" / "alpha";
+    const auto short_size = GetShortPathNameW(
+        alpha.c_str(), short_buffer, static_cast<DWORD>(std::size(short_buffer)));
+    if (short_size > 0 && short_size < std::size(short_buffer)) {
+        const auto short_name = std::filesystem::path(short_buffer).filename().string();
+        if (short_name != "alpha") {
+            auto short_alias = store.pull(config_key(short_name), {});
+            check(!short_alias, "8.3 directory alias is rejected by exact handle path");
+        }
+    } else {
+        std::cout << "SKIP: 8.3 short names are unavailable on this volume\n";
+    }
+
+    const auto timestamp = timestamp_of(store, config_key());
+    auto patched = store.apply_patch(
+        replace_request(config_key(), timestamp, "/x", "2"), {});
+    check(patched && rename_blocked,
+          "anchored directory chain prevents rename during safe replacement");
+    check(Json::parse(read_bytes(alpha / "config.json"))["x"] == 2,
+          "NtSetInformationFile commits the relative replacement contents");
+    bool temporary_found{};
+    for (const auto& entry : std::filesystem::directory_iterator(alpha)) {
+        temporary_found = temporary_found
+            || entry.path().filename().string().find(".baas.tmp.")
+                != std::string::npos;
+    }
+    check(!temporary_found,
+          "handle-relative Windows replacement leaves no temporary file");
+
+    check(MoveFileExW(project.root.c_str(), moved_root.c_str(), 0) == FALSE,
+          "persistent root anchor prevents project-root rename/replacement");
+
+    TempProject cased_project;
+    cased_project.add_pair("alpha", "{}");
+    auto alternate_case = cased_project.root.native();
+    std::transform(
+        alternate_case.begin(), alternate_case.end(), alternate_case.begin(),
+        [](const wchar_t character) { return std::towlower(character); });
+    adapters::FileResourceStore cased_store(
+        std::filesystem::path(alternate_case), dependencies());
+    check(static_cast<bool>(cased_store.pull(config_key(), {})),
+          "root anchor canonicalizes caller casing before exact-path reads");
+
+    TempProject unicode_project;
+    unicode_project.add_pair("alpha", "{}");
+    const auto unicode_root = unicode_project.root.parent_path()
+        / utf8_path("baas-file-resource-store-unicode-\xe6\xb5\x8b\xe8\xaf\x95");
+    std::filesystem::remove_all(unicode_root);
+    std::filesystem::rename(unicode_project.root, unicode_root);
+    unicode_project.root = unicode_root;
+    adapters::FileResourceStore unicode_store(unicode_project.root, dependencies());
+    check(static_cast<bool>(unicode_store.pull(config_key(), {})),
+          "Unicode project roots remain valid under exact handle paths");
+}
+#else
+void test_posix_ancestor_symlink_swap_fails_closed()
+{
+    TempProject project;
+    project.add_pair("alpha", R"({"x":1})");
+    adapters::FileResourceStore store(project.root, dependencies());
+    const auto timestamp = timestamp_of(store, config_key());
+    const auto original_config = project.root / "config";
+    const auto saved_config = project.root / "config-saved";
+    const auto outside = project.root.parent_path() / "baas-file-resource-swap";
+    std::filesystem::remove_all(outside);
+    write_bytes(outside / "alpha" / "config.json", R"({"x":99})");
+    write_bytes(outside / "alpha" / "event.json", "{}");
+    std::filesystem::rename(original_config, saved_config);
+    std::filesystem::create_directory_symlink(outside, original_config);
+
+    bool constructor_rejected{};
+    try {
+        adapters::FileResourceStore fresh(project.root, dependencies());
+    } catch (const std::invalid_argument&) {
+        constructor_rejected = true;
+    }
+    check(constructor_rejected,
+          "POSIX store construction refuses a swapped config ancestor symlink");
+    check(!store.refresh_and_publish(config_key(), "filesystem"),
+          "POSIX anchored refresh refuses a swapped config ancestor symlink");
+    auto patched = store.apply_patch(
+        replace_request(config_key(), timestamp, "/x", "2"), {});
+    check(!patched && Json::parse(read_bytes(
+              outside / "alpha" / "config.json"))["x"] == 99,
+          "POSIX anchored writer never follows a swapped config ancestor");
+
+    std::filesystem::remove(original_config);
+    std::filesystem::rename(saved_config, original_config);
+    std::filesystem::remove_all(outside);
+}
+#endif
+
 void test_json_validation_and_capacity()
 {
     TempProject project;
@@ -245,8 +372,9 @@ void test_json_validation_and_capacity()
 
     channels::ResourceStoreLimits small_limits;
     small_limits.max_json_bytes = 64;
-    adapters::FileResourceStore small(project.root, dependencies(), small_limits);
-    auto large = small.pull(config_key("large"), {});
+    adapters::FileResourceStore small_store(
+        project.root, dependencies(), small_limits);
+    auto large = small_store.pull(config_key("large"), {});
     check(!large && large.error == channels::ResourceStoreError::capacity,
           "file size is rejected before unbounded JSON allocation");
 
@@ -761,6 +889,11 @@ int main()
     try {
         test_list_pull_and_resource_shapes();
         test_path_traversal_and_symlink_rejection();
+#if defined(_WIN32)
+        test_windows_aliases_and_anchored_directory_handles();
+#else
+        test_posix_ancestor_symlink_swap_fails_closed();
+#endif
         test_json_validation_and_capacity();
         test_patch_conflict_and_durable_commit();
         test_atomic_writer_failure_is_invisible();

@@ -17,6 +17,11 @@ enum class AtomicWriteResult {
 
 struct FileResourceStoreDependencies {
     using Clock = std::function<double()>;
+    // Strong commit contract: the result must describe whether replacement is
+    // already externally visible. An AtomicWriter must not throw after its
+    // commit point; post-commit flush/close failures return
+    // committed_durability_uncertain. The store conservatively interprets any
+    // exception escaping this callback as not_committed.
     using AtomicWriter = std::function<AtomicWriteResult(
         const std::filesystem::path& target,
         std::string_view bytes)>;

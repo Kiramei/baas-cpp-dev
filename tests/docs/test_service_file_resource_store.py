@@ -16,9 +16,11 @@ class ServiceFileResourceStoreDocsTests(unittest.TestCase):
 
         self.assertIn("committed_durability_uncertain", header)
         self.assertIn("FlushFileBuffers", source)
-        self.assertIn("MOVEFILE_WRITE_THROUGH", source)
+        self.assertIn("NtSetInformationFile", source)
+        self.assertIn("openat", source)
+        self.assertIn("O_NOFOLLOW", source)
         self.assertIn("::fsync(file)", source)
-        self.assertIn("::rename", source)
+        self.assertIn("::renameat", source)
         self.assertIn("callback_slot", source)
         self.assertIn("BAAS_service_file_resource_store_tests", module)
         self.assertIn(

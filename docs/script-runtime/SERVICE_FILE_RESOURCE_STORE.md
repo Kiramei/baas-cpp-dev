@@ -18,8 +18,9 @@ The config list is a sorted JSON array. An identifier is listed only when it is
 a safe direct child directory of `config` and both `config.json` and
 `event.json` are regular files. Reparse points/symlinks, traversal spellings,
 path separators, drive separators, control bytes, invalid UTF-8, and identifiers
-over the configured byte limit are rejected. Canonical containment checks keep
-all resolved paths below the configured `config` directory.
+over the configured byte limit are rejected. Windows also rejects trailing-dot,
+trailing-space, reserved-device, case, and 8.3 aliases that would address an
+existing resource with a second cache key.
 
 `setup.toml` is deliberately not parsed as JSON or reduced to ad-hoc key/value
 pairs. Its migration, projection, defaulting, and merge rules are application
@@ -44,14 +45,18 @@ immutable. Validation, patching, serialization, and update construction finish
 before the writer is invoked while the per-store state lock serializes competing
 patches.
 
-The default writer creates a unique sibling temporary file. Windows writes and
-calls `FlushFileBuffers`, then commits with `MoveFileExW` using
-`MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH`. POSIX writes, calls
-`fsync` on the file, renames it over the destination, and then calls `fsync` on
+All default reads and writes start from a persistent non-reparse/no-follow
+project-root handle. Windows opens every component relative to that handle with
+`NtCreateFile`, keeps the directory chain open without delete sharing, reads
+from the final verified regular-file handle, and commits a sibling temporary
+file with relative `NtSetInformationFile` after `FlushFileBuffers`. POSIX walks
+every component from the persistent root FD with `openat(O_NOFOLLOW)`, reads the
+final `fstat`-verified regular-file FD, writes a sibling temporary with `openat`,
+calls `fsync` on it, commits with same-directory `renameat`, and calls `fsync` on
 the parent directory. A pre-commit failure returns `not_committed`; cache and
 subscribers remain unchanged. Once replacement/rename succeeds the file is
-visible and the result is committed. A later POSIX directory open/fsync/close
-failure is reported by the injected writer contract as
+visible and the result is committed. A later POSIX directory fsync/close failure
+is reported by the injected writer contract as
 `committed_durability_uncertain`, so cache and publication still advance with
 the already-visible file instead of diverging from disk.
 
@@ -80,7 +85,9 @@ Enable `BUILD_SERVICE_FILE_RESOURCE_STORE` for the static adapter target or
 and pulls, traversal/reparse-point rejection, malformed and capacity-bounded
 JSON, patch conflicts, pre-commit writer failure, post-commit durability
 uncertainty, concurrent patches, subscription barriers and self-unsubscription,
-callback exception isolation, and external refresh.
+callback exception isolation, external refresh, Windows physical aliases,
+anchored-handle rename blocking, and Windows/POSIX ancestor-swap fail-closed
+behavior.
 
 The implementation is excluded from the legacy `BAAS_CORE_SOURCES` glob and is
 compiled only through `cmake/ServiceFileResourceStore.cmake`.

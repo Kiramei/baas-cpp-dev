@@ -7,8 +7,10 @@
 #include <chrono>
 #include <cmath>
 #include <condition_variable>
+#include <cctype>
+#include <cstddef>
 #include <cstdint>
-#include <fstream>
+#include <cstring>
 #include <limits>
 #include <mutex>
 #include <optional>
@@ -25,6 +27,7 @@
 #define NOMINMAX
 #endif
 #include <Windows.h>
+#include <winternl.h>
 #else
 #include <cerrno>
 #include <fcntl.h>
@@ -328,10 +331,26 @@ bool valid_resource_id(const std::string& value, const std::size_t maximum)
         || value == "." || value == "..") {
         return false;
     }
-    return std::none_of(value.begin(), value.end(), [](const unsigned char character) {
+    const bool safe_characters = std::none_of(
+        value.begin(), value.end(), [](const unsigned char character) {
         return character == '/' || character == '\\' || character == ':'
             || character == 0 || character < 0x20 || character == 0x7f;
     });
+    if (!safe_characters) return false;
+#if defined(_WIN32)
+    if (value.back() == '.' || value.back() == ' ') return false;
+    const auto dot = value.find('.');
+    std::string base = value.substr(0, dot);
+    std::transform(base.begin(), base.end(), base.begin(), [](const unsigned char c) {
+        return static_cast<char>(std::toupper(c));
+    });
+    static const std::unordered_set<std::string> reserved{
+        "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4",
+        "COM5", "COM6", "COM7", "COM8", "COM9", "LPT1", "LPT2", "LPT3",
+        "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9"};
+    if (reserved.contains(base)) return false;
+#endif
+    return true;
 }
 
 enum class PathKind { missing, regular_file, directory, reparse, other, error };
@@ -391,23 +410,6 @@ bool path_is_within(const std::filesystem::path& root,
     }
 }
 
-std::optional<double> file_mtime_ms(const std::filesystem::path& path) noexcept
-{
-    std::error_code error;
-    const auto modified = std::filesystem::last_write_time(path, error);
-    if (error) return std::nullopt;
-    try {
-        const auto system_time = std::chrono::system_clock::now()
-            + (modified - std::filesystem::file_time_type::clock::now());
-        const auto millis = std::chrono::duration<double, std::milli>(
-                                system_time.time_since_epoch())
-                                .count();
-        return std::isfinite(millis) ? std::optional{millis} : std::nullopt;
-    } catch (...) {
-        return std::nullopt;
-    }
-}
-
 std::uint64_t process_id() noexcept
 {
 #if defined(_WIN32)
@@ -437,6 +439,408 @@ std::string filename_utf8(const std::filesystem::path& path)
     return {reinterpret_cast<const char*>(encoded.data()), encoded.size()};
 }
 
+#if defined(_WIN32)
+class WindowsHandle {
+public:
+    WindowsHandle() = default;
+    explicit WindowsHandle(const HANDLE value) : value_(value) {}
+    ~WindowsHandle()
+    {
+        if (value_ != INVALID_HANDLE_VALUE) CloseHandle(value_);
+    }
+    WindowsHandle(const WindowsHandle&) = delete;
+    WindowsHandle& operator=(const WindowsHandle&) = delete;
+    WindowsHandle(WindowsHandle&& other) noexcept
+        : value_(std::exchange(other.value_, INVALID_HANDLE_VALUE))
+    {}
+    WindowsHandle& operator=(WindowsHandle&& other) noexcept
+    {
+        if (this == &other) return *this;
+        if (value_ != INVALID_HANDLE_VALUE) CloseHandle(value_);
+        value_ = std::exchange(other.value_, INVALID_HANDLE_VALUE);
+        return *this;
+    }
+    [[nodiscard]] HANDLE get() const noexcept { return value_; }
+    [[nodiscard]] explicit operator bool() const noexcept
+    {
+        return value_ != INVALID_HANDLE_VALUE;
+    }
+private:
+    HANDLE value_{INVALID_HANDLE_VALUE};
+};
+
+struct WindowsRootAnchor {
+    WindowsHandle handle;
+    std::filesystem::path path;
+};
+
+using NtCreateFileFunction = NTSTATUS(NTAPI*)(
+    PHANDLE, ACCESS_MASK, POBJECT_ATTRIBUTES, PIO_STATUS_BLOCK, PLARGE_INTEGER,
+    ULONG, ULONG, ULONG, ULONG, PVOID, ULONG);
+using NtSetInformationFileFunction = NTSTATUS(NTAPI*)(
+    HANDLE, PIO_STATUS_BLOCK, PVOID, ULONG, FILE_INFORMATION_CLASS);
+
+NtCreateFileFunction nt_create_file() noexcept
+{
+    static const auto function = reinterpret_cast<NtCreateFileFunction>(
+        GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtCreateFile"));
+    return function;
+}
+
+NtSetInformationFileFunction nt_set_information_file() noexcept
+{
+    static const auto function = reinterpret_cast<NtSetInformationFileFunction>(
+        GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtSetInformationFile"));
+    return function;
+}
+
+WindowsHandle open_relative_windows(
+    const HANDLE parent, const std::wstring_view name, const ACCESS_MASK access,
+    const ULONG disposition, const bool directory) noexcept
+{
+    if (name.empty() || name.size() > USHRT_MAX / sizeof(wchar_t)) return {};
+    const auto create_file = nt_create_file();
+    if (!create_file) return {};
+    UNICODE_STRING unicode{};
+    unicode.Buffer = const_cast<PWSTR>(name.data());
+    unicode.Length = static_cast<USHORT>(name.size() * sizeof(wchar_t));
+    unicode.MaximumLength = unicode.Length;
+    OBJECT_ATTRIBUTES attributes{};
+    InitializeObjectAttributes(&attributes, &unicode, 0, parent, nullptr);
+    IO_STATUS_BLOCK status{};
+    HANDLE result = INVALID_HANDLE_VALUE;
+    const ULONG options = FILE_SYNCHRONOUS_IO_NONALERT | FILE_OPEN_REPARSE_POINT
+        | (directory ? FILE_DIRECTORY_FILE : FILE_NON_DIRECTORY_FILE)
+        | (disposition == FILE_CREATE ? FILE_WRITE_THROUGH : 0U);
+    const auto nt_status = create_file(
+        &result, access | SYNCHRONIZE, &attributes, &status, nullptr,
+        FILE_ATTRIBUTE_NORMAL,
+        FILE_SHARE_READ | FILE_SHARE_WRITE
+            | (directory ? 0U : FILE_SHARE_DELETE),
+        disposition, options, nullptr, 0);
+    if (nt_status < 0) return {};
+    FILE_ATTRIBUTE_TAG_INFO tag{};
+    if (!GetFileInformationByHandleEx(
+            result, FileAttributeTagInfo, &tag, sizeof(tag))
+        || (tag.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0) {
+        if (disposition == FILE_CREATE) {
+            FILE_DISPOSITION_INFO delete_on_close{TRUE};
+            static_cast<void>(SetFileInformationByHandle(
+                result, FileDispositionInfo, &delete_on_close,
+                sizeof(delete_on_close)));
+        }
+        CloseHandle(result);
+        return {};
+    }
+    return WindowsHandle(result);
+}
+
+std::shared_ptr<WindowsRootAnchor> open_windows_root_anchor(
+    const std::filesystem::path& root)
+{
+    WindowsHandle handle(CreateFileW(
+        root.c_str(), FILE_LIST_DIRECTORY | FILE_TRAVERSE
+            | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+        FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+        OPEN_EXISTING,
+        FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
+    if (!handle) return {};
+    FILE_ATTRIBUTE_TAG_INFO tag{};
+    if (!GetFileInformationByHandleEx(
+            handle.get(), FileAttributeTagInfo, &tag, sizeof(tag))
+        || (tag.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0
+        || (tag.FileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0) {
+        return {};
+    }
+    const auto required = GetFinalPathNameByHandleW(
+        handle.get(), nullptr, 0, FILE_NAME_NORMALIZED | VOLUME_NAME_DOS);
+    if (required == 0) return {};
+    std::wstring final_path(required, L'\0');
+    const auto written = GetFinalPathNameByHandleW(
+        handle.get(), final_path.data(), required,
+        FILE_NAME_NORMALIZED | VOLUME_NAME_DOS);
+    if (written == 0 || written >= required) return {};
+    final_path.resize(written);
+    constexpr std::wstring_view unc_prefix = L"\\\\?\\UNC\\";
+    constexpr std::wstring_view prefix = L"\\\\?\\";
+    if (final_path.starts_with(unc_prefix)) {
+        final_path = L"\\\\" + final_path.substr(unc_prefix.size());
+    } else if (final_path.starts_with(prefix)) {
+        final_path.erase(0, prefix.size());
+    }
+    return std::make_shared<WindowsRootAnchor>(WindowsRootAnchor{
+        std::move(handle), std::filesystem::path(final_path).lexically_normal()});
+}
+
+struct WindowsDirectoryChain {
+    std::vector<WindowsHandle> handles;
+    [[nodiscard]] HANDLE get() const noexcept
+    {
+        return handles.empty() ? INVALID_HANDLE_VALUE : handles.back().get();
+    }
+    [[nodiscard]] explicit operator bool() const noexcept
+    {
+        return !handles.empty();
+    }
+};
+
+WindowsDirectoryChain open_windows_resource_parent(
+    const WindowsRootAnchor& anchor, const std::filesystem::path& target,
+    const bool writable) noexcept
+{
+    try {
+        const auto relative = target.lexically_relative(anchor.path);
+        std::vector<std::wstring> components;
+        for (const auto& component : relative.parent_path()) {
+            const auto value = component.native();
+            if (value.empty() || value == L"." || value == L"..") return {};
+            components.push_back(value);
+        }
+        HANDLE current = anchor.handle.get();
+        WindowsDirectoryChain chain;
+        chain.handles.reserve(components.size());
+        for (std::size_t index = 0; index < components.size(); ++index) {
+            const auto& component = components[index];
+            auto next = open_relative_windows(
+                current, component,
+                FILE_LIST_DIRECTORY | FILE_TRAVERSE
+                    | FILE_READ_ATTRIBUTES
+                    | (writable && index + 1 == components.size()
+                           ? FILE_ADD_FILE : 0U),
+                FILE_OPEN, true);
+            if (!next) return {};
+            chain.handles.push_back(std::move(next));
+            current = chain.handles.back().get();
+        }
+        return chain;
+    } catch (...) {
+        return {};
+    }
+}
+
+bool windows_handle_has_exact_path(
+    const HANDLE handle, const std::filesystem::path& expected) noexcept
+{
+    try {
+        const auto required = GetFinalPathNameByHandleW(
+            handle, nullptr, 0, FILE_NAME_NORMALIZED | VOLUME_NAME_DOS);
+        if (required == 0) return false;
+        std::wstring actual(required, L'\0');
+        const auto written = GetFinalPathNameByHandleW(
+            handle, actual.data(), required,
+            FILE_NAME_NORMALIZED | VOLUME_NAME_DOS);
+        if (written == 0 || written >= required) return false;
+        actual.resize(written);
+        constexpr std::wstring_view unc_prefix = L"\\\\?\\UNC\\";
+        constexpr std::wstring_view prefix = L"\\\\?\\";
+        if (actual.starts_with(unc_prefix)) {
+            actual = L"\\\\" + actual.substr(unc_prefix.size());
+        } else if (actual.starts_with(prefix)) {
+            actual.erase(0, prefix.size());
+        }
+        const auto actual_native =
+            std::filesystem::path(actual).lexically_normal().native();
+        const auto expected_native = expected.lexically_normal().native();
+        return actual_native == expected_native;
+    } catch (...) {
+        return false;
+    }
+}
+
+struct WindowsAnchoredRead {
+    std::string bytes;
+    double modified_ms{};
+    ResourceStoreError error{ResourceStoreError::none};
+};
+
+WindowsAnchoredRead read_windows_resource(
+    const WindowsRootAnchor& anchor, const std::filesystem::path& target,
+    const std::size_t maximum_bytes)
+{
+    auto directory = open_windows_resource_parent(anchor, target, false);
+    if (!directory) return {{}, 0, ResourceStoreError::invalid_data};
+    const auto name = target.filename().native();
+    auto file = open_relative_windows(
+        directory.get(), name, GENERIC_READ | FILE_READ_ATTRIBUTES,
+        FILE_OPEN, false);
+    if (!file) return {{}, 0, ResourceStoreError::not_found};
+    if (!windows_handle_has_exact_path(file.get(), target)) {
+        return {{}, 0, ResourceStoreError::invalid_data};
+    }
+    LARGE_INTEGER size{};
+    if (!GetFileSizeEx(file.get(), &size) || size.QuadPart < 0) {
+        return {{}, 0, ResourceStoreError::internal_error};
+    }
+    if (static_cast<std::uint64_t>(size.QuadPart) > maximum_bytes) {
+        return {{}, 0, ResourceStoreError::capacity};
+    }
+    WindowsAnchoredRead result;
+    result.bytes.resize(static_cast<std::size_t>(size.QuadPart));
+    std::size_t offset{};
+    while (offset < result.bytes.size()) {
+        const auto chunk = static_cast<DWORD>(std::min<std::size_t>(
+            result.bytes.size() - offset, std::numeric_limits<DWORD>::max()));
+        DWORD read{};
+        if (!ReadFile(file.get(), result.bytes.data() + offset, chunk, &read, nullptr)
+            || read == 0) {
+            return {{}, 0, ResourceStoreError::internal_error};
+        }
+        offset += read;
+    }
+    LARGE_INTEGER size_after{};
+    if (!GetFileSizeEx(file.get(), &size_after)
+        || size_after.QuadPart != size.QuadPart) {
+        return {{}, 0, ResourceStoreError::internal_error};
+    }
+    FILETIME modified{};
+    if (!GetFileTime(file.get(), nullptr, nullptr, &modified)) {
+        return {{}, 0, ResourceStoreError::internal_error};
+    }
+    ULARGE_INTEGER ticks{};
+    ticks.LowPart = modified.dwLowDateTime;
+    ticks.HighPart = modified.dwHighDateTime;
+    constexpr std::uint64_t epoch_delta_100ns = 116'444'736'000'000'000ULL;
+    if (ticks.QuadPart < epoch_delta_100ns) {
+        return {{}, 0, ResourceStoreError::internal_error};
+    }
+    result.modified_ms = static_cast<double>(
+        (ticks.QuadPart - epoch_delta_100ns) / 10'000ULL);
+    return result;
+}
+
+bool windows_regular_resource_exists(
+    const WindowsRootAnchor& anchor, const std::filesystem::path& target) noexcept
+{
+    auto directory = open_windows_resource_parent(anchor, target, false);
+    if (!directory) return false;
+    const auto name = target.filename().native();
+    auto file = open_relative_windows(
+        directory.get(), name, FILE_READ_ATTRIBUTES, FILE_OPEN, false);
+    return file && windows_handle_has_exact_path(file.get(), target);
+}
+#else
+class PosixFd {
+public:
+    PosixFd() = default;
+    explicit PosixFd(const int value) : value_(value) {}
+    ~PosixFd() { if (value_ >= 0) static_cast<void>(::close(value_)); }
+    PosixFd(const PosixFd&) = delete;
+    PosixFd& operator=(const PosixFd&) = delete;
+    PosixFd(PosixFd&& other) noexcept
+        : value_(std::exchange(other.value_, -1))
+    {}
+    PosixFd& operator=(PosixFd&& other) noexcept
+    {
+        if (this == &other) return *this;
+        if (value_ >= 0) static_cast<void>(::close(value_));
+        value_ = std::exchange(other.value_, -1);
+        return *this;
+    }
+    [[nodiscard]] int get() const noexcept { return value_; }
+    [[nodiscard]] int release() noexcept { return std::exchange(value_, -1); }
+    [[nodiscard]] explicit operator bool() const noexcept { return value_ >= 0; }
+private:
+    int value_{-1};
+};
+
+struct PosixRootAnchor {
+    PosixFd fd;
+    std::filesystem::path path;
+};
+
+std::shared_ptr<PosixRootAnchor> open_posix_root_anchor(
+    const std::filesystem::path& root)
+{
+    PosixFd fd(::open(
+        root.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW));
+    if (!fd) return {};
+    struct stat status {};
+    if (::fstat(fd.get(), &status) != 0 || !S_ISDIR(status.st_mode)) return {};
+    return std::make_shared<PosixRootAnchor>(
+        PosixRootAnchor{std::move(fd), root});
+}
+
+PosixFd open_posix_resource_parent(
+    const PosixRootAnchor& anchor, const std::filesystem::path& target)
+{
+    const auto relative = target.lexically_relative(anchor.path);
+    int current = anchor.fd.get();
+    PosixFd owned;
+    for (const auto& component : relative.parent_path()) {
+        const auto name = component.native();
+        if (name.empty() || name == "." || name == "..") return {};
+        PosixFd next(::openat(
+            current, name.c_str(),
+            O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW));
+        if (!next) return {};
+        owned = std::move(next);
+        current = owned.get();
+    }
+    return owned;
+}
+
+struct PosixAnchoredRead {
+    std::string bytes;
+    double modified_ms{};
+    ResourceStoreError error{ResourceStoreError::none};
+};
+
+PosixAnchoredRead read_posix_resource(
+    const PosixRootAnchor& anchor, const std::filesystem::path& target,
+    const std::size_t maximum_bytes)
+{
+    auto directory = open_posix_resource_parent(anchor, target);
+    if (!directory) return {{}, 0, ResourceStoreError::invalid_data};
+    const auto name = target.filename().native();
+    PosixFd file(::openat(
+        directory.get(), name.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW));
+    if (!file) return {{}, 0, ResourceStoreError::not_found};
+    struct stat status {};
+    if (::fstat(file.get(), &status) != 0 || !S_ISREG(status.st_mode)) {
+        return {{}, 0, ResourceStoreError::invalid_data};
+    }
+    if (status.st_size < 0
+        || static_cast<std::uint64_t>(status.st_size) > maximum_bytes) {
+        return {{}, 0, ResourceStoreError::capacity};
+    }
+    PosixAnchoredRead result;
+    result.bytes.resize(static_cast<std::size_t>(status.st_size));
+    std::size_t offset{};
+    while (offset < result.bytes.size()) {
+        const auto read = ::read(
+            file.get(), result.bytes.data() + offset, result.bytes.size() - offset);
+        if (read < 0 && errno == EINTR) continue;
+        if (read <= 0) return {{}, 0, ResourceStoreError::internal_error};
+        offset += static_cast<std::size_t>(read);
+    }
+    struct stat after {};
+    if (::fstat(file.get(), &after) != 0 || after.st_size != status.st_size) {
+        return {{}, 0, ResourceStoreError::internal_error};
+    }
+#if defined(__APPLE__)
+    result.modified_ms = static_cast<double>(after.st_mtimespec.tv_sec) * 1000.0
+        + static_cast<double>(after.st_mtimespec.tv_nsec) / 1'000'000.0;
+#else
+    result.modified_ms = static_cast<double>(after.st_mtim.tv_sec) * 1000.0
+        + static_cast<double>(after.st_mtim.tv_nsec) / 1'000'000.0;
+#endif
+    return result;
+}
+
+bool posix_regular_resource_exists(
+    const PosixRootAnchor& anchor, const std::filesystem::path& target)
+{
+    auto directory = open_posix_resource_parent(anchor, target);
+    if (!directory) return false;
+    const auto name = target.filename().native();
+    PosixFd file(::openat(
+        directory.get(), name.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW));
+    if (!file) return false;
+    struct stat status {};
+    return ::fstat(file.get(), &status) == 0 && S_ISREG(status.st_mode);
+}
+#endif
+
 AtomicWriteResult checked_post_commit_durability(
     const std::filesystem::path& parent,
     const FileResourceStoreDependencies::PostCommitDurabilityCheck& check) noexcept
@@ -454,22 +858,35 @@ AtomicWriteResult checked_post_commit_durability(
 AtomicWriteResult durable_atomic_write(const std::filesystem::path& target,
                                        const std::string_view bytes,
                                        const FileResourceStoreDependencies::
-                                           PostCommitDurabilityCheck& check)
+                                           PostCommitDurabilityCheck& check,
+                                       const std::shared_ptr<WindowsRootAnchor>& anchor)
 {
+    if (!anchor) return AtomicWriteResult::not_committed;
     static std::atomic<std::uint64_t> next_sequence{};
     const auto parent = target.parent_path();
+    const auto target_name = target.filename().native();
+    if (target_name.empty()) return AtomicWriteResult::not_committed;
+    auto directory = open_windows_resource_parent(*anchor, target, true);
+    if (!directory) return AtomicWriteResult::not_committed;
+    const auto rename_size = offsetof(FILE_RENAME_INFO, FileName)
+        + target_name.size() * sizeof(wchar_t);
+    const auto rename_units =
+        (rename_size + sizeof(std::max_align_t) - 1) / sizeof(std::max_align_t);
+    std::vector<std::max_align_t> rename_storage(rename_units);
+    auto* const rename = reinterpret_cast<FILE_RENAME_INFO*>(rename_storage.data());
+    rename->ReplaceIfExists = TRUE;
+    rename->RootDirectory = directory.get();
+    rename->FileNameLength =
+        static_cast<DWORD>(target_name.size() * sizeof(wchar_t));
+    std::memcpy(rename->FileName, target_name.data(), rename->FileNameLength);
     for (std::size_t attempt = 0; attempt < 64; ++attempt) {
-        const auto temporary = temporary_path(target, next_sequence.fetch_add(1));
-        HANDLE file = CreateFileW(
-            temporary.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW,
-            FILE_ATTRIBUTE_NORMAL | FILE_ATTRIBUTE_TEMPORARY, nullptr);
-        if (file == INVALID_HANDLE_VALUE) {
-            if (GetLastError() == ERROR_FILE_EXISTS
-                || GetLastError() == ERROR_ALREADY_EXISTS) {
-                continue;
-            }
-            return AtomicWriteResult::not_committed;
-        }
+        const auto temporary_name = temporary_path(
+            target, next_sequence.fetch_add(1)).filename().native();
+        auto file = open_relative_windows(
+            directory.get(), temporary_name,
+            GENERIC_WRITE | DELETE | FILE_READ_ATTRIBUTES,
+            FILE_CREATE, false);
+        if (!file) continue;
 
         bool ok = true;
         std::size_t offset{};
@@ -478,22 +895,29 @@ AtomicWriteResult durable_atomic_write(const std::filesystem::path& target,
             const auto chunk = static_cast<DWORD>(std::min<std::size_t>(
                 remaining, std::numeric_limits<DWORD>::max()));
             DWORD written{};
-            if (!WriteFile(file, bytes.data() + offset, chunk, &written, nullptr)
+            if (!WriteFile(file.get(), bytes.data() + offset, chunk, &written, nullptr)
                 || written == 0) {
                 ok = false;
                 break;
             }
             offset += written;
         }
-        if (ok && !FlushFileBuffers(file)) ok = false;
-        if (!CloseHandle(file)) ok = false;
+        if (ok && !FlushFileBuffers(file.get())) ok = false;
         if (ok) {
-            ok = MoveFileExW(
-                     temporary.c_str(), target.c_str(),
-                     MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)
-                != 0;
+            IO_STATUS_BLOCK rename_status{};
+            const auto set_information = nt_set_information_file();
+            ok = set_information
+                && set_information(
+                       file.get(), &rename_status, rename,
+                       static_cast<ULONG>(rename_size),
+                       static_cast<FILE_INFORMATION_CLASS>(10)) >= 0;
         }
-        if (!ok) static_cast<void>(DeleteFileW(temporary.c_str()));
+        if (!ok) {
+            FILE_DISPOSITION_INFO disposition{TRUE};
+            static_cast<void>(SetFileInformationByHandle(
+                file.get(), FileDispositionInfo, &disposition,
+                sizeof(disposition)));
+        }
         if (!ok) return AtomicWriteResult::not_committed;
         return checked_post_commit_durability(parent, check);
     }
@@ -503,19 +927,29 @@ AtomicWriteResult durable_atomic_write(const std::filesystem::path& target,
 AtomicWriteResult durable_atomic_write(const std::filesystem::path& target,
                                        const std::string_view bytes,
                                        const FileResourceStoreDependencies::
-                                           PostCommitDurabilityCheck& check)
+                                           PostCommitDurabilityCheck& check,
+                                       const std::shared_ptr<PosixRootAnchor>& anchor)
 {
+    if (!anchor) return AtomicWriteResult::not_committed;
     static std::atomic<std::uint64_t> next_sequence{};
     const auto parent = target.parent_path();
+    const auto target_name = target.filename().native();
+    auto directory = open_posix_resource_parent(*anchor, target);
+    if (!directory) return AtomicWriteResult::not_committed;
     mode_t mode = 0600;
     struct stat target_status {};
-    if (::stat(target.c_str(), &target_status) == 0) {
-        mode = target_status.st_mode & 0777;
+    if (::fstatat(directory.get(), target_name.c_str(), &target_status,
+                  AT_SYMLINK_NOFOLLOW) != 0
+        || !S_ISREG(target_status.st_mode)) {
+        return AtomicWriteResult::not_committed;
     }
+    mode = target_status.st_mode & 0777;
     for (std::size_t attempt = 0; attempt < 64; ++attempt) {
-        const auto temporary = temporary_path(target, next_sequence.fetch_add(1));
-        const int file = ::open(
-            temporary.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, mode);
+        const auto temporary_name = temporary_path(
+            target, next_sequence.fetch_add(1)).filename().native();
+        const int file = ::openat(
+            directory.get(), temporary_name.c_str(),
+            O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, mode);
         if (file < 0) {
             if (errno == EEXIST) continue;
             return AtomicWriteResult::not_committed;
@@ -533,18 +967,17 @@ AtomicWriteResult durable_atomic_write(const std::filesystem::path& target,
         }
         if (ok && ::fsync(file) != 0) ok = false;
         if (::close(file) != 0) ok = false;
-        if (ok && ::rename(temporary.c_str(), target.c_str()) != 0) ok = false;
+        if (ok && ::renameat(directory.get(), temporary_name.c_str(), directory.get(),
+                             target_name.c_str()) != 0) {
+            ok = false;
+        }
         if (!ok) {
-            static_cast<void>(::unlink(temporary.c_str()));
+            static_cast<void>(::unlinkat(
+                directory.get(), temporary_name.c_str(), 0));
             return AtomicWriteResult::not_committed;
         }
-        const int directory = ::open(
-            parent.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
-        if (directory < 0) {
-            return AtomicWriteResult::committed_durability_uncertain;
-        }
-        const bool directory_ok = ::fsync(directory) == 0;
-        const bool close_ok = ::close(directory) == 0;
+        const bool directory_ok = ::fsync(directory.get()) == 0;
+        const bool close_ok = ::close(directory.release()) == 0;
         if (!directory_ok || !close_ok) {
             return AtomicWriteResult::committed_durability_uncertain;
         }
@@ -645,6 +1078,18 @@ public:
         if (absolute_error || path_kind(root) != PathKind::directory) {
             throw std::invalid_argument("project root must be a safe existing directory");
         }
+#if defined(_WIN32)
+        windows_root = open_windows_root_anchor(root);
+        if (!windows_root) {
+            throw std::invalid_argument("project root cannot be anchored safely");
+        }
+        root = windows_root->path;
+#else
+        posix_root = open_posix_root_anchor(root);
+        if (!posix_root) {
+            throw std::invalid_argument("project root cannot be anchored safely");
+        }
+#endif
         config_root = root / "config";
         const auto config_kind = path_kind(config_root);
         if (config_kind != PathKind::missing && config_kind != PathKind::directory) {
@@ -656,11 +1101,25 @@ public:
         } else {
             auto post_commit_check =
                 std::move(dependencies.post_commit_durability_check);
-            atomic_writer = [post_commit_check = std::move(post_commit_check)](
+#if defined(_WIN32)
+            auto root_anchor = windows_root;
+            atomic_writer = [post_commit_check = std::move(post_commit_check),
+                             root_anchor = std::move(root_anchor)](
                                 const std::filesystem::path& target,
                                 const std::string_view bytes) {
-                return durable_atomic_write(target, bytes, post_commit_check);
+                return durable_atomic_write(
+                    target, bytes, post_commit_check, root_anchor);
             };
+#else
+            auto root_anchor = posix_root;
+            atomic_writer = [post_commit_check = std::move(post_commit_check),
+                             root_anchor = std::move(root_anchor)](
+                                const std::filesystem::path& target,
+                                const std::string_view bytes) {
+                return durable_atomic_write(
+                    target, bytes, post_commit_check, root_anchor);
+            };
+#endif
         }
         if (!clock || !atomic_writer) {
             throw std::invalid_argument("file resource store dependencies are invalid");
@@ -757,30 +1216,27 @@ public:
         const auto path_error = validate_existing_path(key, path);
         if (path_error != ResourceStoreError::none) return {std::nullopt, path_error};
 
-        std::error_code size_error;
-        const auto size = std::filesystem::file_size(path, size_error);
-        if (size_error) return {std::nullopt, ResourceStoreError::internal_error};
-        if (size > limits.max_json_bytes) {
-            return {std::nullopt, ResourceStoreError::capacity};
+        std::string bytes;
+        double modified_value{};
+#if defined(_WIN32)
+        auto anchored = read_windows_resource(*windows_root, path, limits.max_json_bytes);
+        if (anchored.error != ResourceStoreError::none) {
+            return {std::nullopt, anchored.error};
         }
-        std::string bytes(static_cast<std::size_t>(size), '\0');
-        std::ifstream input(path, std::ios::binary);
-        if (!input) return {std::nullopt, ResourceStoreError::internal_error};
-        if (!bytes.empty()) {
-            input.read(bytes.data(), static_cast<std::streamsize>(bytes.size()));
-            if (input.gcount() != static_cast<std::streamsize>(bytes.size())) {
-                return {std::nullopt, ResourceStoreError::internal_error};
-            }
+        bytes = std::move(anchored.bytes);
+        modified_value = anchored.modified_ms;
+#else
+        auto anchored = read_posix_resource(*posix_root, path, limits.max_json_bytes);
+        if (anchored.error != ResourceStoreError::none) {
+            return {std::nullopt, anchored.error};
         }
-        if (input.peek() != std::char_traits<char>::eof()) {
-            return {std::nullopt, ResourceStoreError::capacity};
-        }
+        bytes = std::move(anchored.bytes);
+        modified_value = anchored.modified_ms;
+#endif
         const auto document = parse_json(bytes, bounds());
         if (!document) return {std::nullopt, ResourceStoreError::invalid_data};
-        const auto modified = file_mtime_ms(path);
-        if (!modified) return {std::nullopt, ResourceStoreError::internal_error};
         try {
-            ResourceSnapshot snapshot{timestamp_json(*modified), document->dump()};
+            ResourceSnapshot snapshot{timestamp_json(modified_value), document->dump()};
             if (snapshot.data_json.size() > limits.max_json_bytes) {
                 return {std::nullopt, ResourceStoreError::capacity};
             }
@@ -884,6 +1340,11 @@ public:
 
     std::filesystem::path root;
     std::filesystem::path config_root;
+#if defined(_WIN32)
+    std::shared_ptr<WindowsRootAnchor> windows_root;
+#else
+    std::shared_ptr<PosixRootAnchor> posix_root;
+#endif
     FileResourceStoreDependencies::Clock clock;
     FileResourceStoreDependencies::AtomicWriter atomic_writer;
     channels::ResourceStoreLimits limits;
@@ -943,13 +1404,21 @@ channels::ResourceStoreResult<ResourceSnapshot> FileResourceStore::config_list(
         } catch (...) {
             continue;
         }
-        if (!valid_resource_id(name, impl->limits.max_resource_id_bytes)
-            || path_kind(child) != PathKind::directory
-            || !path_is_within(impl->config_root, child)
-            || path_kind(child / "config.json") != PathKind::regular_file
-            || path_kind(child / "event.json") != PathKind::regular_file) {
+        if (!valid_resource_id(name, impl->limits.max_resource_id_bytes)) {
             continue;
         }
+        const auto config_path = child / "config.json";
+        const auto event_path = child / "event.json";
+#if defined(_WIN32)
+        const bool safe_pair = windows_regular_resource_exists(
+                                   *impl->windows_root, config_path)
+            && windows_regular_resource_exists(*impl->windows_root, event_path);
+#else
+        const bool safe_pair = posix_regular_resource_exists(
+                                   *impl->posix_root, config_path)
+            && posix_regular_resource_exists(*impl->posix_root, event_path);
+#endif
+        if (!safe_pair) continue;
         if (identifiers.size() >= impl->limits.max_resources) {
             return {std::nullopt, ResourceStoreError::capacity};
         }
