@@ -1,0 +1,139 @@
+name: Service application
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/service-application.yml'
+      - 'CMakeLists.txt'
+      - 'cmake/Service*.cmake'
+      - 'apps/BAAS_service/**'
+      - 'include/service/**'
+      - 'src/service/**'
+      - 'tests/service/ServiceApplicationTests.cpp'
+      - 'deploy/conan/recipes/baas-libsodium/**'
+      - 'deploy/conan/recipes/baas-cpp-httplib/**'
+      - 'deploy/conan/recipes/baas-nlohmann-json/**'
+      - 'docs/script-runtime/SERVICE_APPLICATION.md'
+      - 'docs/script-runtime/SERVICE_COMMAND_LINE.md'
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+    paths:
+      - '.github/workflows/service-application.yml'
+      - 'CMakeLists.txt'
+      - 'cmake/Service*.cmake'
+      - 'apps/BAAS_service/**'
+      - 'include/service/**'
+      - 'src/service/**'
+      - 'tests/service/ServiceApplicationTests.cpp'
+      - 'deploy/conan/recipes/baas-libsodium/**'
+      - 'deploy/conan/recipes/baas-cpp-httplib/**'
+      - 'deploy/conan/recipes/baas-nlohmann-json/**'
+      - 'docs/script-runtime/SERVICE_APPLICATION.md'
+      - 'docs/script-runtime/SERVICE_COMMAND_LINE.md'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: service-application-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  host-application:
+    name: ${{ matrix.os }} / ${{ matrix.build_type }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        include:
+          - os: windows-latest
+            build_type: Debug
+            conan_settings: '-s:h compiler.runtime_type=Debug'
+          - os: windows-latest
+            build_type: Release
+            conan_settings: '-s:h compiler.runtime_type=Release'
+          - os: ubuntu-latest
+            build_type: Debug
+            conan_settings: ''
+          - os: ubuntu-latest
+            build_type: Release
+            conan_settings: ''
+          - os: macos-latest
+            build_type: Debug
+            conan_settings: ''
+          - os: macos-latest
+            build_type: Release
+            conan_settings: ''
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Conan
+        run: python -m pip install --disable-pip-version-check conan==2.30.0
+
+      - name: Detect host profile
+        run: conan profile detect --force
+
+      - name: Build pinned libsodium recipe
+        run: >-
+          conan create deploy/conan/recipes/baas-libsodium
+          -s:h build_type=${{ matrix.build_type }} -s:b build_type=Release
+          ${{ matrix.conan_settings }} --build=missing --no-remote
+
+      - name: Build pinned cpp-httplib recipe
+        run: >-
+          conan create deploy/conan/recipes/baas-cpp-httplib
+          -s:h build_type=${{ matrix.build_type }} -s:b build_type=Release
+          ${{ matrix.conan_settings }} --build=missing --no-remote
+
+      - name: Build pinned nlohmann-json recipe
+        run: >-
+          conan create deploy/conan/recipes/baas-nlohmann-json
+          -s:h build_type=${{ matrix.build_type }} -s:b build_type=Release
+          ${{ matrix.conan_settings }} --build=missing --no-remote
+
+      - name: Generate application CMake dependencies
+        run: >-
+          conan install --requires=baas-libsodium/1.0.22
+          --requires=baas-cpp-httplib/0.50.1
+          --requires=baas-nlohmann-json/3.11.3
+          -of build/conan/service-application
+          -s:h build_type=${{ matrix.build_type }} -s:b build_type=Release
+          ${{ matrix.conan_settings }}
+          -g CMakeDeps -g CMakeToolchain --build=missing --no-remote
+
+      - name: Configure hook-free production application
+        run: >-
+          cmake -S . -B build/service-application
+          "-DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}/build/conan/service-application/conan_toolchain.cmake"
+          -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
+          -DBUILD_TESTING=ON -DBUILD_SERVICE_APP_TESTS=ON
+          -DBUILD_APP_BAAS=OFF -DBUILD_APP_ISA=OFF -DBUILD_BAAS_OCR=OFF
+          -DBUILD_BAAS_AW_CHECKER=OFF -DBUILD_BAAS_NMS_BENCHMARK=OFF
+          -DBAAS_FETCH_RESOURCES=OFF
+
+      - name: Build executable and application tests
+        run: >-
+          cmake --build build/service-application
+          --config ${{ matrix.build_type }} --parallel 4
+          --target BAAS_service BAAS_service_application_tests
+
+      - name: Run real loopback and CLI tests
+        run: >-
+          ctest --test-dir build/service-application
+          --build-config ${{ matrix.build_type }} --output-on-failure --timeout 90
+          -R "^BAAS_service_(application_tests|version_cli|help_cli)$"

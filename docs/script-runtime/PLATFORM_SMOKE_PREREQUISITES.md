@@ -182,11 +182,13 @@ python scripts\platform\run_windows_desktop_pipe_smoke.py `
   --output build\evidence\windows-desktop-pipe.json
 ```
 
-`run_windows_desktop_pipe_smoke.py` and `BAAS_service.exe` do not exist at this
-baseline, so this command is a required runner interface, not an instruction
-that passed. The future evidence must include process ownership, unique pipe
-name without leaking it publicly, `/health` readiness, BPIP open/open_ok for
-provider/sync/trigger, one correlated command, graceful Tauri exit, backend
+`BAAS_service.exe` now exists when `BUILD_SERVICE_APP=ON`, but intentionally
+rejects `--pipe-name` before side effects because application-level Pipe
+composition is incomplete. `run_windows_desktop_pipe_smoke.py` remains a
+required future runner interface, not an instruction that passed. Its evidence
+must include process ownership, unique pipe name without leaking it publicly,
+`/health` readiness, BPIP open/open_ok for provider/sync/trigger, one correlated
+command, graceful Tauri exit, backend
 termination, no stale PID/pipe, and bounded timeouts. Windows pipe ACL evidence
 must prove current-user-only access.
 
