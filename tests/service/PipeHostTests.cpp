@@ -38,6 +38,11 @@ void check(const bool condition, const std::string_view message)
     return {reinterpret_cast<const std::byte*>(value.data()), value.size()};
 }
 
+[[nodiscard]] std::string_view text(const bpip::Bytes& value)
+{
+    return {reinterpret_cast<const char*>(value.data()), value.size()};
+}
+
 [[nodiscard]] bpip::Bytes frame(
     const bpip::FrameKind kind, const std::span<const std::byte> payload)
 {
@@ -219,6 +224,7 @@ struct FactoryState {
     std::mutex mutex;
     std::vector<pipe::PipeOpenRequest> requests;
     std::size_t frames{};
+    std::size_t opens{};
     std::size_t closes{};
     bool throw_on_frame{};
     bool emit_batch{};
@@ -233,6 +239,7 @@ struct FactoryState {
     pipe::PipeHostError second_write_error{pipe::PipeHostError::none};
     bool callback_entered{};
     bool cancellation_observed{};
+    bool emit_on_open{};
 };
 
 class RecordingHandler final : public pipe::PipeChannelHandler {
@@ -240,6 +247,22 @@ public:
     explicit RecordingHandler(std::shared_ptr<FactoryState> state)
         : state_(std::move(state))
     {}
+
+    pipe::PipeHandlerResult on_open(
+        pipe::PipeConnectionWriter& writer,
+        const std::stop_token) override
+    {
+        bool emit{};
+        {
+            std::lock_guard lock(state_->mutex);
+            ++state_->opens;
+            emit = state_->emit_on_open;
+        }
+        if (!emit) return {};
+        const auto error = writer.write_frame(
+            bpip::FrameKind::json, bytes(R"({"type":"initial"})"));
+        return {pipe::PipeHandlerAction::continue_connection, error};
+    }
 
     pipe::PipeHandlerResult on_frame(
         const bpip::Frame&, pipe::PipeConnectionWriter& writer,
@@ -451,6 +474,46 @@ void test_fragmented_open_coalesced_business_and_atomic_batch()
                   && response.frames[1].kind == bpip::kind_value(bpip::FrameKind::bytes)
                   && response.frames[1].payload.empty(),
               "JSON and present zero-byte BYTES must share one atomic write buffer");
+    }
+}
+
+void test_open_callback_runs_after_open_ok_before_coalesced_input()
+{
+    auto listener = std::make_unique<FakeListener>();
+    auto* listener_view = listener.get();
+    const auto stream = std::make_shared<StreamState>();
+    stream->reads.push_back(open_and(
+        R"({"type":"open","channel":"provider","name":"provider"})",
+        {frame(bpip::FrameKind::json, R"({"type":"status_request"})"),
+         frame(bpip::FrameKind::close, std::span<const std::byte>{})}));
+    listener_view->push(std::make_unique<FakeStream>(stream));
+    const auto factory_state = std::make_shared<FactoryState>();
+    factory_state->emit_on_open = true;
+    pipe::PipeHost host{std::move(listener),
+        std::make_shared<RecordingFactory>(factory_state)};
+    check(host.start(), "open-callback host must start");
+    check(wait_until([&] { return host.stats().completed == 1; }),
+          "open callback connection must complete");
+    host.stop();
+    host.join();
+
+    {
+        std::lock_guard lock(factory_state->mutex);
+        check(factory_state->opens == 1 && factory_state->frames == 1,
+              "handler must open exactly once before receiving coalesced input");
+    }
+    std::lock_guard lock(stream->mutex);
+    check(stream->writes.size() == 2,
+          "open_ok and server-initiated output must be distinct ordered writes");
+    if (stream->writes.size() == 2) {
+        const auto opened = bpip::Decoder{}.feed(stream->writes[0]);
+        const auto initial = bpip::Decoder{}.feed(stream->writes[1]);
+        check(opened.frames.size() == 1 && initial.frames.size() == 1
+                  && text(opened.frames[0].payload).find("open_ok")
+                      != std::string::npos
+                  && text(initial.frames[0].payload)
+                      == R"({"type":"initial"})",
+              "open_ok must be fully written before on_open output");
     }
 }
 
@@ -909,6 +972,7 @@ int main()
 {
     test_bounded_open_codec_and_inventory();
     test_fragmented_open_coalesced_business_and_atomic_batch();
+    test_open_callback_runs_after_open_ok_before_coalesced_input();
     test_protocol_and_handler_failures_are_terminal();
     test_partial_write_and_connection_limit_close_and_join();
     test_partial_handler_write_is_never_followed_by_close();
