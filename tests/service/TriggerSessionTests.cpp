@@ -131,18 +131,21 @@ void test_admission_validation_and_correlation_reservation()
     check(session.admit(std::move(invalid)).error == trigger::AdmissionError::payload_too_large,
           "oversized decoded payloads must be rejected before dispatch");
 
-    check(static_cast<bool>(session.admit(command("status", 10))),
+    const auto first_admission = session.admit(command("status", 10));
+    check(static_cast<bool>(first_admission),
           "first command must be admitted");
     check(session.admit(command("solve", 10)).error
               == trigger::AdmissionError::duplicate_timestamp,
           "a live timestamp must be unique across commands");
-    check(static_cast<bool>(session.admit(command("solve", 11))),
+    const auto second_admission = session.admit(command("solve", 11));
+    check(static_cast<bool>(second_admission),
           "second distinct command must be admitted");
     check(session.admit(command("detect_adb", 12)).error
               == trigger::AdmissionError::in_flight_limit,
           "bounded in-flight capacity must reject before dispatch");
 
-    check(static_cast<bool>(session.publish(response("status", 10))),
+    check(static_cast<bool>(session.publish(
+              *first_admission.receipt, response("status", 10))),
           "terminal response must enter the outbound queue");
     check(session.admit(command("status", 10)).error
               == trigger::AdmissionError::duplicate_timestamp,
@@ -161,11 +164,12 @@ void test_admission_validation_and_correlation_reservation()
 void test_streaming_order_and_atomic_binary_batch()
 {
     trigger::TriggerSession session;
-    check(static_cast<bool>(session.admit(
-              command("test_all_sha_stream", 20, trigger::ResponseMode::stream))),
+    const auto admission = session.admit(
+        command("test_all_sha_stream", 20, trigger::ResponseMode::stream));
+    check(static_cast<bool>(admission),
           "stream command must be admitted");
 
-    check(static_cast<bool>(session.publish(response(
+    check(static_cast<bool>(session.publish(*admission.receipt, response(
               "test_all_sha_stream", 20, false, trigger::ResponseStatus::ok,
               R"({"name":"one"})", trigger::ResponseMode::stream))),
           "stream progress must be publishable without completing correlation");
@@ -175,14 +179,14 @@ void test_streaming_order_and_atomic_binary_batch()
         R"({"name":"archive"})", trigger::ResponseMode::stream,
         std::vector<std::byte>{
             std::byte{0x00}, std::byte{0x01}, std::byte{0xFE}, std::byte{0xFF}});
-    check(static_cast<bool>(session.publish(std::move(binary))),
+    check(static_cast<bool>(session.publish(*admission.receipt, std::move(binary))),
           "JSON declaration and binary bytes must be accepted as one batch");
 
-    check(static_cast<bool>(session.publish(response(
+    check(static_cast<bool>(session.publish(*admission.receipt, response(
               "test_all_sha_stream", 20, true, trigger::ResponseStatus::ok,
               R"({})", trigger::ResponseMode::stream))),
           "stream terminal response must complete the correlation");
-    check(session.publish(response(
+    check(session.publish(*admission.receipt, response(
               "test_all_sha_stream", 20, true, trigger::ResponseStatus::ok,
               R"({})", trigger::ResponseMode::stream)).error
               == trigger::PublishError::terminal_already_queued,
@@ -211,39 +215,43 @@ void test_publish_validation_backpressure_and_retry()
     limits.max_queued_bytes = 512;
     trigger::TriggerSession session{limits};
 
-    check(static_cast<bool>(session.admit(
-              command("update_to_latest_stream", 30, trigger::ResponseMode::stream))),
+    const auto admission = session.admit(
+        command("update_to_latest_stream", 30, trigger::ResponseMode::stream));
+    check(static_cast<bool>(admission),
           "bounded stream must be admitted");
     auto progress = response(
         "update_to_latest_stream", 30, false, trigger::ResponseStatus::ok,
         R"({"progress":1})", trigger::ResponseMode::stream);
-    check(static_cast<bool>(session.publish(progress)),
+    check(static_cast<bool>(session.publish(*admission.receipt, std::move(progress))),
           "first bounded response must be queued");
 
     auto terminal = response(
         "update_to_latest_stream", 30, true, trigger::ResponseStatus::ok,
         R"({})", trigger::ResponseMode::stream);
-    check(session.publish(terminal).error == trigger::PublishError::queue_full,
+    check(session.publish(*admission.receipt, std::move(terminal)).error
+              == trigger::PublishError::queue_full,
           "full outbound queue must report retryable backpressure");
     check(session.stats().active_correlations == 1,
           "failed terminal enqueue must not complete the correlation");
     check(static_cast<bool>(begin_and_complete(session)),
           "confirming one batch must create capacity");
-    check(static_cast<bool>(session.publish(std::move(terminal))),
+    check(static_cast<bool>(session.publish(
+              *admission.receipt, std::move(terminal))),
           "terminal publication must succeed when retried after drain");
 
     trigger::TriggerSession single;
-    check(static_cast<bool>(single.admit(command("status", 31))),
+    const auto single_admission = single.admit(command("status", 31));
+    check(static_cast<bool>(single_admission),
           "single response command must be admitted");
-    check(single.publish(response(
+    check(single.publish(*single_admission.receipt, response(
               "status", 31, false, trigger::ResponseStatus::ok, R"({})",
               trigger::ResponseMode::stream)).error
               == trigger::PublishError::response_mode_mismatch,
           "response mode must match the admitted command lifecycle");
-    check(single.publish(response("wrong", 31)).error
+    check(single.publish(*single_admission.receipt, response("wrong", 31)).error
               == trigger::PublishError::command_mismatch,
           "response command must exactly echo its admitted command");
-    check(single.publish(trigger::OutboundBatch{}).error
+    check(single.publish(*single_admission.receipt, trigger::OutboundBatch{}).error
               == trigger::PublishError::invalid_json_utf8,
           "uninitialized batches must never reach a JSON transport frame");
 }
@@ -251,16 +259,18 @@ void test_publish_validation_backpressure_and_retry()
 void test_cancellation_and_disconnect_cleanup()
 {
     trigger::TriggerSession session;
-    check(static_cast<bool>(session.admit(command("solve", 40))),
+    const auto cancellation_admission = session.admit(command("solve", 40));
+    check(static_cast<bool>(cancellation_admission),
           "cancellable task must be admitted");
     check(session.request_cancel(40) == trigger::CancelDecision::requested,
           "first cancellation request must notify the task owner");
     check(session.request_cancel(40) == trigger::CancelDecision::already_requested,
           "cancellation requests must be idempotent");
-    check(session.publish(response("solve", 40)).error
+    check(session.publish(
+              *cancellation_admission.receipt, response("solve", 40)).error
               == trigger::PublishError::cancellation_response_required,
           "ordinary success must not race past an accepted cancellation");
-    check(static_cast<bool>(session.publish(response(
+    check(static_cast<bool>(session.publish(*cancellation_admission.receipt, response(
               "solve", 40, true, trigger::ResponseStatus::cancelled,
               std::nullopt))),
           "only an explicit terminal cancellation may complete cancelled work");
@@ -282,7 +292,9 @@ void test_cancellation_and_disconnect_cleanup()
           "closed connection must drop unsendable output and all correlations");
     check(session.admit(command("status", 43)).error == trigger::AdmissionError::closed,
           "closed sessions must never reopen admission");
-    check(session.publish(response("status", 43)).error == trigger::PublishError::closed,
+    check(session.publish(
+              *cancellation_admission.receipt, response("status", 43)).error
+              == trigger::PublishError::closed,
           "closed sessions must reject late task completions");
     check(session.request_cancel(43) == trigger::CancelDecision::closed,
           "closed sessions must reject new cancellation requests");
@@ -298,9 +310,13 @@ void test_concurrent_admission_and_publication()
     std::vector<std::thread> workers;
     for (trigger::Timestamp timestamp = 1; timestamp <= 64; ++timestamp) {
         workers.emplace_back([&session, &accepted, timestamp] {
-            if (session.admit(command("status", timestamp))) {
+            auto admission = session.admit(command("status", timestamp));
+            if (admission) {
                 ++accepted;
-                if (!session.publish(response("status", timestamp))) --accepted;
+                if (!session.publish(
+                        *admission.receipt, response("status", timestamp))) {
+                    --accepted;
+                }
             }
         });
     }

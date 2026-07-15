@@ -234,13 +234,13 @@ class ServiceTriggerSessionTests(unittest.TestCase):
         self.assertIn("BAAS_service_trigger_catalog_tests", self.workflow)
         self.assertIn("- [~] Implement task submission", self.roadmap)
         for pending in (
-            "command dispatch and actual",
+            "actual command handlers and runtime/executor ownership",
             "WebSocket and live Pipe channel hosts",
             "shared Python/C++/Tauri fixtures",
         ):
             self.assertIn(pending, self.spec)
         self.assertIn("TriggerEnvelope", self.protocol)
-        self.assertIn("does\nnot yet dispatch or execute commands", self.protocol)
+        self.assertIn("does not yet execute real commands", self.protocol)
         self.assertIn("dependency-free JSON codec", self.envelope_spec)
         self.assertIn("zero-length BYTES frame", self.envelope_spec)
         self.assertIn("`declares_binary`", self.envelope_spec)

@@ -511,10 +511,12 @@ including zero-byte frames. `TriggerIngress` now enforces one-outstanding input,
 strict adjacent JSON/binary ordering, owned zero-byte-aware input, and
 independent frame/aggregate bounds. It resolves the immutable command catalog,
 rejects unknown/config/binary-policy violations, derives response mode, and
-produces an item directly admissible to `TriggerSession`. The C++ service does
-not yet dispatch or execute commands or run behind a live WebSocket/Pipe
-trigger channel; live adapters also still own fatal-versus-recoverable error
-mapping.
+produces an item directly admissible to `TriggerSession`. `TriggerDispatcher`
+now provides sealed descriptor registration, receipt-bound response identity,
+staged terminal exception containment, and explicit retry/close outcomes. The
+C++ service does not yet execute real commands or run behind a live
+WebSocket/Pipe trigger channel; live adapters also still own
+fatal-versus-recoverable error mapping.
 
 ### 8.6 Remote
 

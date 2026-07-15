@@ -1,12 +1,30 @@
 #include "service/protocol/TriggerSession.h"
 
 #include <algorithm>
+#include <atomic>
 #include <limits>
 #include <stdexcept>
 #include <utility>
 
 namespace baas::service::protocol::trigger {
 namespace {
+
+[[nodiscard]] std::uint64_t allocate_session_instance_id()
+{
+    static std::atomic<std::uint64_t> next{1};
+    auto current = next.load(std::memory_order_relaxed);
+    for (;;) {
+        if (current == 0)
+            throw std::overflow_error("trigger session instance ids exhausted");
+        const auto desired = current == std::numeric_limits<std::uint64_t>::max()
+            ? std::uint64_t{0} : current + 1;
+        if (next.compare_exchange_weak(
+                current, desired, std::memory_order_relaxed,
+                std::memory_order_relaxed)) {
+            return current;
+        }
+    }
+}
 
 [[nodiscard]] bool is_continuation(const unsigned char byte) noexcept
 {
@@ -112,6 +130,7 @@ std::string_view admission_error_name(const AdmissionError error) noexcept
         case binary_too_large: return "binary_too_large";
         case duplicate_timestamp: return "duplicate_timestamp";
         case in_flight_limit: return "in_flight_limit";
+        case admission_generation_exhausted: return "admission_generation_exhausted";
     }
     return "unknown";
 }
@@ -122,6 +141,7 @@ std::string_view publish_error_name(const PublishError error) noexcept
     switch (error) {
         case none: return "none";
         case closed: return "closed";
+        case invalid_admission_receipt: return "invalid_admission_receipt";
         case unknown_timestamp: return "unknown_timestamp";
         case command_mismatch: return "command_mismatch";
         case response_mode_mismatch: return "response_mode_mismatch";
@@ -134,6 +154,18 @@ std::string_view publish_error_name(const PublishError error) noexcept
         case binary_too_large: return "binary_too_large";
         case queue_full: return "queue_full";
         case queued_bytes_exceeded: return "queued_bytes_exceeded";
+    }
+    return "unknown";
+}
+
+std::string_view rollback_error_name(const RollbackError error) noexcept
+{
+    using enum RollbackError;
+    switch (error) {
+        case none: return "none";
+        case closed: return "closed";
+        case invalid_admission_receipt: return "invalid_admission_receipt";
+        case response_already_queued: return "response_already_queued";
     }
     return "unknown";
 }
@@ -162,7 +194,8 @@ std::string_view send_transition_error_name(const SendTransitionError error) noe
     return "unknown";
 }
 
-TriggerSession::TriggerSession(const TriggerSessionLimits limits) : limits_(limits)
+TriggerSession::TriggerSession(const TriggerSessionLimits limits)
+    : limits_(limits), instance_id_(allocate_session_instance_id())
 {
     validate_limits(limits_);
 }
@@ -172,7 +205,7 @@ AdmissionResult TriggerSession::admit(CommandAdmission command)
     const auto reject = [this](const AdmissionError error) {
         std::lock_guard lock(mutex_);
         ++admission_rejections_;
-        return AdmissionResult{error};
+        return AdmissionResult{error, std::nullopt};
     };
 
     if (command.command.size() > limits_.max_command_bytes
@@ -194,20 +227,48 @@ AdmissionResult TriggerSession::admit(CommandAdmission command)
     std::lock_guard lock(mutex_);
     if (closed_) {
         ++admission_rejections_;
-        return {AdmissionError::closed};
+        return {AdmissionError::closed, std::nullopt};
     }
     if (entries_.contains(command.timestamp)) {
         ++admission_rejections_;
-        return {AdmissionError::duplicate_timestamp};
+        return {AdmissionError::duplicate_timestamp, std::nullopt};
     }
     if (entries_.size() >= limits_.max_in_flight) {
         ++admission_rejections_;
-        return {AdmissionError::in_flight_limit};
+        return {AdmissionError::in_flight_limit, std::nullopt};
     }
+    if (next_admission_generation_ == 0) {
+        ++admission_rejections_;
+        return {AdmissionError::admission_generation_exhausted, std::nullopt};
+    }
+    const auto generation = next_admission_generation_++;
     entries_.emplace(
         command.timestamp,
-        Entry{std::move(command.command), command.response_mode, false, false});
+        Entry{
+            std::move(command.command), command.response_mode, false, false,
+            false, generation});
     ++accepted_;
+    return {
+        AdmissionError::none,
+        AdmissionReceipt{instance_id_, command.timestamp, generation},
+    };
+}
+
+RollbackResult TriggerSession::rollback(const AdmissionReceipt& receipt)
+{
+    std::lock_guard lock(mutex_);
+    if (closed_) return {RollbackError::closed};
+    if (receipt.owner_id_ != instance_id_)
+        return {RollbackError::invalid_admission_receipt};
+    const auto iterator = entries_.find(receipt.timestamp_);
+    if (iterator == entries_.end()
+        || iterator->second.generation != receipt.generation_) {
+        return {RollbackError::invalid_admission_receipt};
+    }
+    if (iterator->second.response_queued)
+        return {RollbackError::response_already_queued};
+    entries_.erase(iterator);
+    ++rolled_back_admissions_;
     return {};
 }
 
@@ -234,7 +295,8 @@ std::size_t TriggerSession::batch_bytes(const OutboundBatch& batch) noexcept
     return result;
 }
 
-PublishResult TriggerSession::publish(OutboundBatch batch)
+PublishResult TriggerSession::publish(
+    const AdmissionReceipt& receipt, OutboundBatch&& batch)
 {
     if (batch.json().empty() || !is_valid_utf8(batch.json())) {
         std::lock_guard lock(mutex_);
@@ -263,9 +325,14 @@ PublishResult TriggerSession::publish(OutboundBatch batch)
         return PublishResult{error};
     };
     if (closed_) return reject(PublishError::closed);
-    const auto iterator = entries_.find(batch.timestamp());
-    if (iterator == entries_.end()) return reject(PublishError::unknown_timestamp);
+    if (receipt.owner_id_ != instance_id_ || receipt.timestamp_ != batch.timestamp())
+        return reject(PublishError::invalid_admission_receipt);
+    const auto iterator = entries_.find(receipt.timestamp_);
+    if (iterator == entries_.end())
+        return reject(PublishError::invalid_admission_receipt);
     auto& entry = iterator->second;
+    if (entry.generation != receipt.generation_)
+        return reject(PublishError::invalid_admission_receipt);
     if (entry.command != batch.command()) return reject(PublishError::command_mismatch);
     if (entry.response_mode != batch.response_mode())
         return reject(PublishError::response_mode_mismatch);
@@ -285,6 +352,7 @@ PublishResult TriggerSession::publish(OutboundBatch batch)
 
     outbound_.push_back(std::make_shared<const OutboundBatch>(std::move(batch)));
     queued_bytes_ += bytes;
+    entry.response_queued = true;
     if (outbound_.back()->terminal()) entry.terminal_queued = true;
     ++published_batches_;
     return {};
@@ -373,6 +441,7 @@ TriggerSessionStats TriggerSession::stats() const
     return {
         accepted_,
         admission_rejections_,
+        rolled_back_admissions_,
         published_batches_,
         publish_rejections_,
         popped_batches_,

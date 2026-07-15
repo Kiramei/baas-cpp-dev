@@ -64,9 +64,11 @@ void test_lease_retains_queue_budget_and_correlation()
     limits.max_queued_bytes = 512;
     trigger::TriggerSession session{limits};
 
-    check(session.admit(command("stream", 1, trigger::ResponseMode::stream)),
+    const auto admission = session.admit(
+        command("stream", 1, trigger::ResponseMode::stream));
+    check(admission,
           "stream command must be admitted");
-    check(session.publish(response(
+    check(session.publish(*admission.receipt, response(
               "stream", 1, false, trigger::ResponseMode::stream)),
           "progress batch must be queued");
     const auto before = session.stats();
@@ -82,7 +84,7 @@ void test_lease_retains_queue_budget_and_correlation()
               && during.active_correlations == 1 && during.send_in_progress
               && during.popped_batches == 0,
           "a lease must retain queue charge, ownership, and correlation");
-    check(session.publish(response(
+    check(session.publish(*admission.receipt, response(
               "stream", 1, true, trigger::ResponseMode::stream)).error
               == trigger::PublishError::queue_full,
           "leasing must not prematurely relieve queue backpressure");
@@ -92,7 +94,7 @@ void test_lease_retains_queue_budget_and_correlation()
 
     check(session.complete_send(*begun.lease),
           "full batch success must confirm the active lease");
-    check(session.publish(response(
+    check(session.publish(*admission.receipt, response(
               "stream", 1, true, trigger::ResponseMode::stream)),
           "confirmation must create queue capacity for the terminal batch");
     auto terminal = session.begin_send();
@@ -108,8 +110,9 @@ void test_lease_retains_queue_budget_and_correlation()
 void test_stale_duplicate_ack_and_fail_are_harmless()
 {
     trigger::TriggerSession session;
-    check(session.admit(command("status", 10))
-              && session.publish(response("status", 10)),
+    const auto first_admission = session.admit(command("status", 10));
+    check(first_admission && session.publish(
+              *first_admission.receipt, response("status", 10)),
           "first response must be ready");
     auto first = session.begin_send();
     check(first && session.complete_send(*first.lease),
@@ -121,8 +124,9 @@ void test_stale_duplicate_ack_and_fail_are_harmless()
               == trigger::SendTransitionError::no_active_lease,
           "duplicate failure without an active lease must not close the session");
 
-    check(session.admit(command("status", 11))
-              && session.publish(response("status", 11)),
+    const auto second_admission = session.admit(command("status", 11));
+    check(second_admission && session.publish(
+              *second_admission.receipt, response("status", 11)),
           "second response must be ready");
     auto second = session.begin_send();
     check(second && second.lease->id() != first.lease->id(),
@@ -153,20 +157,22 @@ void test_lease_retains_aggregate_byte_backpressure()
     limits.max_queued_bytes = batch_bytes + 1;
     trigger::TriggerSession session{limits};
 
-    check(session.admit(command("stream", 5, trigger::ResponseMode::stream))
-              && session.publish(std::move(first_batch)),
+    const auto admission = session.admit(
+        command("stream", 5, trigger::ResponseMode::stream));
+    check(admission && session.publish(
+              *admission.receipt, std::move(first_batch)),
           "byte-backpressure fixture must be ready");
     auto begun = session.begin_send();
     auto second_batch = response(
         "stream", 5, false, trigger::ResponseMode::stream,
         std::vector<std::byte>{std::byte{0x02}});
-    check(session.publish(second_batch).error
+    check(session.publish(*admission.receipt, std::move(second_batch)).error
               == trigger::PublishError::queued_bytes_exceeded,
           "leased bytes must continue enforcing aggregate backpressure");
     check(session.stats().queue_backpressure == 1,
           "leased-byte rejection must increment backpressure exactly once");
     check(session.complete_send(*begun.lease)
-              && session.publish(std::move(second_batch)),
+              && session.publish(*admission.receipt, std::move(second_batch)),
           "acknowledgement must relieve the retained byte charge");
     const auto active = session.close();
     check(active.size() == 1 && active[0].timestamp == 5,
@@ -176,12 +182,14 @@ void test_lease_retains_aggregate_byte_backpressure()
 void test_send_failure_is_connection_fatal_and_deterministic()
 {
     trigger::TriggerSession session;
-    check(session.admit(command("stream", 20, trigger::ResponseMode::stream))
-              && session.publish(response(
+    const auto stream_admission = session.admit(
+        command("stream", 20, trigger::ResponseMode::stream));
+    check(stream_admission && session.publish(*stream_admission.receipt, response(
                   "stream", 20, false, trigger::ResponseMode::stream)),
           "active stream progress must be queued");
-    check(session.admit(command("status", 21))
-              && session.publish(response("status", 21)),
+    const auto status_admission = session.admit(command("status", 21));
+    check(status_admission && session.publish(
+              *status_admission.receipt, response("status", 21)),
           "completed command output must be queued behind the lease");
     check(session.admit(command("solve", 22)),
           "running command without output must be admitted");
@@ -220,8 +228,9 @@ void test_send_failure_is_connection_fatal_and_deterministic()
 void test_concurrent_begin_allows_one_lease()
 {
     trigger::TriggerSession session;
-    check(session.admit(command("status", 30))
-              && session.publish(response("status", 30)),
+    const auto admission = session.admit(command("status", 30));
+    check(admission && session.publish(
+              *admission.receipt, response("status", 30)),
           "concurrent begin fixture must be ready");
 
     std::atomic<int> acquired{};
@@ -251,8 +260,9 @@ void test_concurrent_begin_allows_one_lease()
 void test_close_wins_before_ack_or_fail()
 {
     trigger::TriggerSession ack_session;
-    check(ack_session.admit(command("stream", 35, trigger::ResponseMode::stream))
-              && ack_session.publish(response(
+    const auto ack_admission = ack_session.admit(
+        command("stream", 35, trigger::ResponseMode::stream));
+    check(ack_admission && ack_session.publish(*ack_admission.receipt, response(
                   "stream", 35, false, trigger::ResponseMode::stream)),
           "close-before-ack fixture must be ready");
     auto ack_lease = ack_session.begin_send();
@@ -263,8 +273,9 @@ void test_close_wins_before_ack_or_fail()
           "a winning close must invalidate a pending acknowledgement");
 
     trigger::TriggerSession fail_session;
-    check(fail_session.admit(command("stream", 36, trigger::ResponseMode::stream))
-              && fail_session.publish(response(
+    const auto fail_admission = fail_session.admit(
+        command("stream", 36, trigger::ResponseMode::stream));
+    check(fail_admission && fail_session.publish(*fail_admission.receipt, response(
                   "stream", 36, false, trigger::ResponseMode::stream)),
           "close-before-fail fixture must be ready");
     auto fail_lease = fail_session.begin_send();
@@ -280,8 +291,9 @@ void test_complete_close_race_is_linearizable()
 {
     for (int iteration = 0; iteration < 64; ++iteration) {
         trigger::TriggerSession session;
-        check(session.admit(command("stream", 40, trigger::ResponseMode::stream))
-                  && session.publish(response(
+        const auto admission = session.admit(
+            command("stream", 40, trigger::ResponseMode::stream));
+        check(admission && session.publish(*admission.receipt, response(
                       "stream", 40, false, trigger::ResponseMode::stream)),
               "complete-close race fixture must be ready");
         auto begun = session.begin_send();
@@ -306,8 +318,9 @@ void test_fail_close_race_returns_cancellation_once()
 {
     for (int iteration = 0; iteration < 64; ++iteration) {
         trigger::TriggerSession session;
-        check(session.admit(command("stream", 50, trigger::ResponseMode::stream))
-                  && session.publish(response(
+        const auto admission = session.admit(
+            command("stream", 50, trigger::ResponseMode::stream));
+        check(admission && session.publish(*admission.receipt, response(
                       "stream", 50, false, trigger::ResponseMode::stream)),
               "fail-close race fixture must be ready");
         auto begun = session.begin_send();

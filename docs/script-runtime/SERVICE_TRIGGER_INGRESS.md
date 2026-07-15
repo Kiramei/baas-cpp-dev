@@ -39,6 +39,13 @@ admission without reconstructing policy and returns the same ingress policy
 result shape. Duplicate/saturated session admission is a correlated command
 rejection; a closed session yields the explicit `closed` disposition.
 
+The intended host execution path move-consumes the ready item through
+`TriggerDispatcher::submit()`. Host integrations must use this transaction. The
+dispatcher resolves a registered descriptor
+before its centralized admission call, so an unregistered command cannot leak a
+correlation. Direct `admit_to()` remains a low-level integration/testing API and
+must not be combined with a later dispatcher submit of the same logical item.
+
 Before frame state changes, ingress returns stable `unknown_command`,
 `config_id_required`, `binary_marker_required`, or
 `binary_marker_forbidden` errors. Required config IDs reject both absence and
@@ -120,6 +127,6 @@ static safe messages, independent limits, fatal closure, command-level
 continuation, reset, explicit close, and late frames.
 
 Still pending are authenticated WebSocket/Pipe hosts, frame decryption/decoding
-adapters, command-specific payload schemas, connection-owned orchestration of
-`admit_to()`, dispatch/runtime execution, cancellation, and shared
+adapters, command-specific payload schemas, real runtime execution,
+cancellation propagation, and shared
 Python/C++/Tauri end-to-end fixtures.

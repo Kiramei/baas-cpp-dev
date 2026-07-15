@@ -339,11 +339,11 @@ void test_response_rejections_and_session_integration()
         R"({"type":"command","command":"status","timestamp":24,"payload":{}})");
     trigger::TriggerSession session;
     const auto admission = trigger::make_admission(decoded.envelope, std::nullopt);
-    check(decoded && admission
-              && session.admit(admission.admission),
+    const auto admitted = session.admit(admission.admission);
+    check(decoded && admission && admitted,
           "decoded metadata must directly form a bounded session admission");
-    const auto reply = trigger::encode_command_response(success("status", 24));
-    check(reply && session.publish(reply.batch),
+    auto reply = trigger::encode_command_response(success("status", 24));
+    check(reply && session.publish(*admitted.receipt, std::move(reply.batch)),
           "only codec-produced response metadata must enter the session");
     auto begun = session.begin_send();
     const bool completed = begun && session.complete_send(*begun.lease);

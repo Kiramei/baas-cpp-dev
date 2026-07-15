@@ -37,6 +37,13 @@ racing a stale or partially written response into Tauri's callback map. Input
 payloads are not retained by this core; their transport/dispatcher owner
 remains responsible for lifetime and command-specific validation.
 
+Successful admission also returns an opaque `AdmissionReceipt`. Every publish
+must present that receipt; session instance ID, timestamp, and monotonic
+generation must match the live entry. This prevents stale or cross-session
+handlers from publishing into a reused correlation. `rollback()` releases an
+admission only before any response is queued and rejects old, foreign, or
+already-visible receipts without changing state.
+
 ## Streaming, binary FIFO, and backpressure
 
 Single-response commands must publish one terminal batch. Stream commands may
@@ -144,8 +151,9 @@ macOS.
 
 Still required before the Phase 4 task API item is complete:
 
-- catalog-selected admissions are integrated; command dispatch and actual
-  runtime/executor task ownership remain pending;
+- catalog-selected admissions and a sealed dispatch/response bridge are
+  integrated; actual command handlers and runtime/executor ownership remain
+  pending;
 - a coordinated general cancellation message or exact legacy stop-command
   mapping;
 - WebSocket and live Pipe channel hosts using this core;

@@ -271,11 +271,14 @@ Python fallback is needed for migrated representative workflows.
   hostile JSON budgets, builds deterministic response envelopes, and owns exact
   binary-size declarations including zero-byte frames. `TriggerIngress` now
   owns the strict one-outstanding JSON/optional-adjacent-binary state machine,
-  aggregate limits, and complete input admission item. The real command
-  dispatcher/executor, live WebSocket/Pipe hosts, deadlines, stale-task cleanup,
+  aggregate limits, and complete input admission item. The sealed
+  `TriggerDispatcher` resolves registered descriptors before admission and
+  provides receipt-bound, exception-safe terminal publication with explicit
+  backpressure retry. Real command handlers/executor ownership, live
+  WebSocket/Pipe hosts, deadlines, stale-task cleanup,
   and cross-language load/E2E remain pending; see
-  `SERVICE_TRIGGER_SESSION.md`, `SERVICE_TRIGGER_ENVELOPE.md`, and
-  `SERVICE_TRIGGER_INGRESS.md`.
+  `SERVICE_TRIGGER_SESSION.md`, `SERVICE_TRIGGER_ENVELOPE.md`,
+  `SERVICE_TRIGGER_INGRESS.md`, and `SERVICE_TRIGGER_DISPATCH.md`.
 - [ ] Implement configuration and resource update APIs with atomic persistence.
 - [ ] Implement authentication/origin/listen-address policy appropriate to local
   desktop and Android deployment.

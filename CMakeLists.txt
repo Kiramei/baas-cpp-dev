@@ -86,6 +86,8 @@ option(BUILD_SERVICE_PROTOCOL   "Build the standalone BAAS service protocol libr
 option(BUILD_SERVICE_PROTOCOL_TESTS "Build native tests for the BAAS service protocol" OFF)
 option(BUILD_SERVICE_TRIGGER_CATALOG "Build the transport-independent trigger command catalog" OFF)
 option(BUILD_SERVICE_TRIGGER_CATALOG_TESTS "Build native tests for the trigger command catalog" OFF)
+option(BUILD_SERVICE_TRIGGER_DISPATCH "Build the transport-independent trigger dispatcher" OFF)
+option(BUILD_SERVICE_TRIGGER_DISPATCH_TESTS "Build native tests for trigger dispatch" OFF)
 option(BUILD_SERVICE_ROUTER     "Build the transport-independent BAAS service router" OFF)
 option(BUILD_SERVICE_ROUTER_TESTS "Build native tests for the BAAS service router" OFF)
 option(BUILD_SERVICE_ORIGIN_POLICY "Build the standalone HTTP Origin/CORS policy" OFF)
@@ -120,6 +122,18 @@ if(BUILD_SERVICE_PROTOCOL AND NOT BUILD_SERVICE_TRIGGER_CATALOG)
 endif()
 
 if(BUILD_SERVICE_TRIGGER_CATALOG_TESTS AND NOT BUILD_SERVICE_TRIGGER_CATALOG)
+    set(BUILD_SERVICE_TRIGGER_CATALOG ON CACHE BOOL "Build the transport-independent trigger command catalog" FORCE)
+endif()
+
+if(BUILD_SERVICE_TRIGGER_DISPATCH_TESTS AND NOT BUILD_SERVICE_TRIGGER_DISPATCH)
+    set(BUILD_SERVICE_TRIGGER_DISPATCH ON CACHE BOOL "Build the transport-independent trigger dispatcher" FORCE)
+endif()
+
+if(BUILD_SERVICE_TRIGGER_DISPATCH AND NOT BUILD_SERVICE_PROTOCOL)
+    set(BUILD_SERVICE_PROTOCOL ON CACHE BOOL "Build the standalone BAAS service protocol library" FORCE)
+endif()
+
+if(BUILD_SERVICE_TRIGGER_DISPATCH AND NOT BUILD_SERVICE_TRIGGER_CATALOG)
     set(BUILD_SERVICE_TRIGGER_CATALOG ON CACHE BOOL "Build the transport-independent trigger command catalog" FORCE)
 endif()
 
@@ -267,6 +281,10 @@ endif()
 
 if(BUILD_SERVICE_PROTOCOL)
     include("${CMAKE_CURRENT_LIST_DIR}/cmake/ServiceProtocol.cmake")
+endif()
+
+if(BUILD_SERVICE_TRIGGER_DISPATCH)
+    include("${CMAKE_CURRENT_LIST_DIR}/cmake/ServiceTriggerDispatch.cmake")
 endif()
 
 if(BUILD_SERVICE_ROUTER)

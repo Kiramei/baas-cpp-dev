@@ -21,6 +21,33 @@ struct EncodeResponseResult;
 using Timestamp = std::uint64_t;
 inline constexpr Timestamp maximum_safe_timestamp = 9'007'199'254'740'991ULL;
 
+class TriggerSession;
+
+// Session-minted correlation capability. The generation prevents an old
+// handler from publishing into a later command that reuses the same timestamp.
+// Only TriggerSession can create or inspect a receipt.
+class AdmissionReceipt final {
+public:
+    AdmissionReceipt(const AdmissionReceipt&) = default;
+    AdmissionReceipt& operator=(const AdmissionReceipt&) = default;
+    AdmissionReceipt(AdmissionReceipt&&) noexcept = default;
+    AdmissionReceipt& operator=(AdmissionReceipt&&) noexcept = default;
+
+private:
+    AdmissionReceipt(
+        std::uint64_t owner_id,
+        Timestamp timestamp,
+        std::uint64_t generation) noexcept
+        : owner_id_(owner_id), timestamp_(timestamp), generation_(generation)
+    {}
+
+    friend class TriggerSession;
+
+    std::uint64_t owner_id_{};
+    Timestamp timestamp_{};
+    std::uint64_t generation_{};
+};
+
 enum class ResponseMode : std::uint8_t {
     single,
     stream,
@@ -60,16 +87,18 @@ enum class AdmissionError : std::uint8_t {
     binary_too_large,
     duplicate_timestamp,
     in_flight_limit,
+    admission_generation_exhausted,
 };
 
 [[nodiscard]] std::string_view admission_error_name(AdmissionError error) noexcept;
 
 struct AdmissionResult {
     AdmissionError error{AdmissionError::none};
+    std::optional<AdmissionReceipt> receipt;
 
     [[nodiscard]] explicit operator bool() const noexcept
     {
-        return error == AdmissionError::none;
+        return error == AdmissionError::none && receipt.has_value();
     }
 };
 
@@ -137,6 +166,7 @@ private:
 enum class PublishError : std::uint8_t {
     none,
     closed,
+    invalid_admission_receipt,
     unknown_timestamp,
     command_mismatch,
     response_mode_mismatch,
@@ -159,6 +189,24 @@ struct PublishResult {
     [[nodiscard]] explicit operator bool() const noexcept
     {
         return error == PublishError::none;
+    }
+};
+
+enum class RollbackError : std::uint8_t {
+    none,
+    closed,
+    invalid_admission_receipt,
+    response_already_queued,
+};
+
+[[nodiscard]] std::string_view rollback_error_name(RollbackError error) noexcept;
+
+struct RollbackResult {
+    RollbackError error{RollbackError::none};
+
+    [[nodiscard]] explicit operator bool() const noexcept
+    {
+        return error == RollbackError::none;
     }
 };
 
@@ -254,6 +302,7 @@ struct FailSendResult {
 struct TriggerSessionStats {
     std::size_t accepted{};
     std::size_t admission_rejections{};
+    std::size_t rolled_back_admissions{};
     std::size_t published_batches{};
     std::size_t publish_rejections{};
     std::size_t popped_batches{};
@@ -282,8 +331,10 @@ public:
     TriggerSession& operator=(TriggerSession&&) = delete;
 
     [[nodiscard]] AdmissionResult admit(CommandAdmission command);
+    [[nodiscard]] RollbackResult rollback(const AdmissionReceipt& receipt);
     [[nodiscard]] CancelDecision request_cancel(Timestamp timestamp);
-    [[nodiscard]] PublishResult publish(OutboundBatch batch);
+    [[nodiscard]] PublishResult publish(
+        const AdmissionReceipt& receipt, OutboundBatch&& batch);
     [[nodiscard]] BeginSendResult begin_send();
 
     // Confirms that every frame in the leased batch was written successfully.
@@ -309,11 +360,14 @@ private:
         ResponseMode response_mode{ResponseMode::single};
         bool cancel_requested{};
         bool terminal_queued{};
+        bool response_queued{};
+        std::uint64_t generation{};
     };
 
     [[nodiscard]] static std::size_t batch_bytes(const OutboundBatch& batch) noexcept;
 
     TriggerSessionLimits limits_;
+    const std::uint64_t instance_id_;
     mutable std::mutex mutex_;
     std::map<Timestamp, Entry> entries_;
     [[nodiscard]] std::vector<ActiveCommand> close_locked();
@@ -325,6 +379,7 @@ private:
     std::size_t queued_bytes_{};
     std::size_t accepted_{};
     std::size_t admission_rejections_{};
+    std::size_t rolled_back_admissions_{};
     std::size_t published_batches_{};
     std::size_t publish_rejections_{};
     std::size_t popped_batches_{};
@@ -334,6 +389,7 @@ private:
     std::size_t dropped_bytes_{};
     std::size_t cancellations_requested_{};
     std::size_t queue_backpressure_{};
+    std::uint64_t next_admission_generation_{1};
     bool closed_{};
 };
 
