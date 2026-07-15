@@ -165,6 +165,9 @@ class ServiceTriggerSessionTests(unittest.TestCase):
             "take_ready",
             "TriggerCommandCatalog.h",
             "admit_to(TriggerSession& session)",
+            "TriggerIngressDisposition",
+            "TriggerCommandRejection",
+            "std::optional<TriggerCommandRejection>",
         ):
             self.assertIn(anchor, self.ingress_header)
         self.assertIn("decode_command_envelope", self.ingress_source)
@@ -178,6 +181,9 @@ class ServiceTriggerSessionTests(unittest.TestCase):
             "binary_marker_required",
             "binary_marker_forbidden",
             "response_mode_for",
+            "trigger_ingress_disposition",
+            "trigger_command_rejection_safe_message",
+            "TriggerIngressDisposition::fatal",
         ):
             self.assertIn(policy_anchor, self.ingress_source)
         for test_name in (
@@ -185,9 +191,10 @@ class ServiceTriggerSessionTests(unittest.TestCase):
             "test_declared_binary_is_adjacent_owned_and_zero_length_distinct",
             "test_binary_marker_gate_and_strict_frame_order",
             "test_catalog_policy_and_direct_session_admission",
-            "test_frame_and_aggregate_limits_clear_partial_state",
-            "test_envelope_failures_and_limit_validation_recover",
+            "test_frame_and_aggregate_limits_are_connection_fatal",
+            "test_envelope_failures_are_connection_fatal",
             "test_reset_and_close_are_explicit_and_terminal",
+            "test_error_disposition_matrix_and_names_are_total",
         ):
             self.assertIn(test_name, self.ingress_tests)
         self.assertIn("BAAS_service_trigger_ingress_tests", self.cmake)
@@ -240,10 +247,15 @@ class ServiceTriggerSessionTests(unittest.TestCase):
         self.assertIn("does not execute commands", self.catalog_spec)
         self.assertIn("Only `import_config`", self.catalog_spec)
         self.assertIn("deliberately stricter than the current Python handler", self.catalog_spec)
-        self.assertIn(
-            "recoverable responses or connection-fatal closure",
-            self.ingress_spec,
-        )
+        for policy in (
+            "Executable live-adapter policy",
+            "`fatal`",
+            "`recoverable`",
+            "`command_rejection`",
+            "never invent command correlation",
+            "future `command_response` without reparsing",
+        ):
+            self.assertIn(policy, self.ingress_spec)
         for boundary in (
             "dependency-free, transport-independent",
             "one-outstanding",

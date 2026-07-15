@@ -29,6 +29,24 @@ namespace command_catalog = baas::service::trigger;
         ? ResponseMode::stream : ResponseMode::single;
 }
 
+[[nodiscard]] TriggerIngressResult command_rejection_result(
+    const TriggerIngressError error,
+    std::string command,
+    const Timestamp timestamp,
+    const EnvelopeError envelope_error = EnvelopeError::none,
+    const AdmissionError admission_error = AdmissionError::none
+)
+{
+    TriggerIngressResult result;
+    result.error = error;
+    result.envelope_error = envelope_error;
+    result.admission_error = admission_error;
+    result.command_rejection.emplace(TriggerCommandRejection{
+        std::move(command), timestamp, error,
+    });
+    return result;
+}
+
 }  // namespace
 
 std::string_view trigger_ingress_error_name(const TriggerIngressError error) noexcept
@@ -53,6 +71,63 @@ std::string_view trigger_ingress_error_name(const TriggerIngressError error) noe
     return "unknown";
 }
 
+TriggerIngressDisposition trigger_ingress_disposition(
+    const TriggerIngressError error) noexcept
+{
+    using enum TriggerIngressError;
+    switch (error) {
+        case none: return TriggerIngressDisposition::none;
+        case closed: return TriggerIngressDisposition::closed;
+        case unknown_command:
+        case config_id_required:
+        case binary_marker_required:
+        case binary_marker_forbidden:
+        case admission_rejected:
+            return TriggerIngressDisposition::command_rejection;
+        case json_while_awaiting_binary:
+        case item_pending:
+        case binary_without_declaration:
+        case json_too_large:
+        case binary_too_large:
+        case aggregate_too_large:
+        case envelope_rejected:
+            return TriggerIngressDisposition::fatal;
+    }
+    // Unknown future values fail closed instead of accidentally continuing a
+    // potentially desynchronized frame stream.
+    return TriggerIngressDisposition::fatal;
+}
+
+std::string_view trigger_ingress_disposition_name(
+    const TriggerIngressDisposition disposition) noexcept
+{
+    using enum TriggerIngressDisposition;
+    switch (disposition) {
+        case none: return "none";
+        case fatal: return "fatal";
+        case recoverable: return "recoverable";
+        case command_rejection: return "command_rejection";
+        case closed: return "closed";
+    }
+    return "unknown";
+}
+
+std::string_view trigger_command_rejection_safe_message(
+    const TriggerIngressError error) noexcept
+{
+    using enum TriggerIngressError;
+    switch (error) {
+        case unknown_command: return "Unsupported command";
+        case config_id_required: return "config_id is required";
+        case binary_marker_required:
+            return "binary archive payload is required for import_config";
+        case binary_marker_forbidden:
+            return "binary payload is not allowed for this command";
+        case admission_rejected: return "command admission rejected";
+        default: return "command rejected";
+    }
+}
+
 TriggerIngressItem::TriggerIngressItem(
     CommandEnvelope envelope,
     std::optional<std::vector<std::byte>> binary,
@@ -65,9 +140,24 @@ TriggerIngressItem::TriggerIngressItem(
       descriptor_(descriptor)
 {}
 
-AdmissionResult TriggerIngressItem::admit_to(TriggerSession& session) const
+TriggerIngressResult TriggerIngressItem::admit_to(TriggerSession& session) const
 {
-    return session.admit(admission());
+    const auto admitted = session.admit(admission());
+    if (admitted) return {TriggerIngressOutcome::admitted};
+
+    if (admitted.error == AdmissionError::closed) {
+        TriggerIngressResult result;
+        result.error = TriggerIngressError::closed;
+        result.admission_error = admitted.error;
+        return result;
+    }
+    return command_rejection_result(
+        TriggerIngressError::admission_rejected,
+        envelope_.command,
+        envelope_.timestamp,
+        EnvelopeError::none,
+        admitted.error
+    );
 }
 
 TriggerIngress::TriggerIngress(const TriggerIngressLimits limits) : limits_(limits)
@@ -107,21 +197,39 @@ TriggerIngressResult TriggerIngress::receive_json_frame(const std::string_view j
     }
     const auto lookup = command_catalog::TriggerCommandCatalog::lookup(
         decoded.envelope.command);
-    if (!lookup) return reject(TriggerIngressError::unknown_command);
+    if (!lookup) {
+        return command_rejection_result(
+            TriggerIngressError::unknown_command,
+            std::move(decoded.envelope.command),
+            decoded.envelope.timestamp
+        );
+    }
     const auto* const descriptor = lookup.descriptor;
     if (descriptor->config_id
             == command_catalog::TriggerConfigIdRequirement::required
         && (!decoded.envelope.config_id
             || decoded.envelope.config_id->empty())) {
-        return reject(TriggerIngressError::config_id_required);
+        return command_rejection_result(
+            TriggerIngressError::config_id_required,
+            std::move(decoded.envelope.command),
+            decoded.envelope.timestamp
+        );
     }
     const bool requires_binary = descriptor->inbound_binary
         == command_catalog::TriggerInboundBinaryPolicy::required;
     if (requires_binary && !decoded.envelope.declares_binary) {
-        return reject(TriggerIngressError::binary_marker_required);
+        return command_rejection_result(
+            TriggerIngressError::binary_marker_required,
+            std::move(decoded.envelope.command),
+            decoded.envelope.timestamp
+        );
     }
     if (!requires_binary && decoded.envelope.declares_binary) {
-        return reject(TriggerIngressError::binary_marker_forbidden);
+        return command_rejection_result(
+            TriggerIngressError::binary_marker_forbidden,
+            std::move(decoded.envelope.command),
+            decoded.envelope.timestamp
+        );
     }
 
     const auto response_mode = response_mode_for(*descriptor);
@@ -211,7 +319,12 @@ TriggerIngressResult TriggerIngress::complete(
         ? std::optional<std::size_t>{binary->size()} : std::nullopt;
     auto build = make_admission(envelope, binary_bytes, response_mode);
     if (!build) {
-        return reject(TriggerIngressError::admission_rejected, build.error);
+        return command_rejection_result(
+            TriggerIngressError::admission_rejected,
+            std::move(envelope.command),
+            envelope.timestamp,
+            build.error
+        );
     }
 
     TriggerIngressItem item{
@@ -227,12 +340,12 @@ TriggerIngressResult TriggerIngress::reject(
     const std::size_t error_offset
 ) noexcept
 {
-    return {
-        TriggerIngressOutcome::rejected,
-        error,
-        envelope_error,
-        error_offset,
-    };
+    TriggerIngressResult result;
+    result.error = error;
+    result.envelope_error = envelope_error;
+    result.error_offset = error_offset;
+    if (result.disposition() == TriggerIngressDisposition::fatal) close();
+    return result;
 }
 
 }  // namespace baas::service::protocol::trigger

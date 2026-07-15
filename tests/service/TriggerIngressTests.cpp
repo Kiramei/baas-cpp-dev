@@ -29,6 +29,26 @@ void check(const trigger::TriggerIngressResult& result, const std::string_view m
     check(static_cast<bool>(result), message);
 }
 
+void check_command_rejection(
+    const trigger::TriggerIngressResult& result,
+    const trigger::TriggerIngressError error,
+    const std::string_view command_name,
+    const trigger::Timestamp timestamp,
+    const std::string_view message
+)
+{
+    check(!result && result.error == error
+              && result.disposition()
+                  == trigger::TriggerIngressDisposition::command_rejection
+              && result.command_rejection
+              && result.command_rejection->command == command_name
+              && result.command_rejection->timestamp == timestamp
+              && result.command_rejection->code == error
+              && !result.command_rejection->code_name().empty()
+              && !result.command_rejection->safe_message().empty(),
+          message);
+}
+
 [[nodiscard]] std::string command(
     const std::uint64_t timestamp,
     const std::string_view name = "status",
@@ -60,10 +80,6 @@ void test_json_only_ready_item_is_owned_and_single_outstanding()
           "JSON-only command must complete immediately");
     check(ingress.state() == trigger::TriggerIngressState::ready,
           "completed command must reserve the sole ready slot");
-
-    const auto blocked = ingress.receive_json_frame(command(2));
-    check(!blocked && blocked.error == trigger::TriggerIngressError::item_pending,
-          "a second command must not overwrite an untaken ready item");
     frame.assign(frame.size(), 'x');
 
     auto item = ingress.take_ready();
@@ -86,7 +102,18 @@ void test_json_only_ready_item_is_owned_and_single_outstanding()
     check(ingress.state() == trigger::TriggerIngressState::accepting_json,
           "taking the item must release the one-outstanding gate");
     check(ingress.receive_json_frame(command(2)),
-          "next command must be accepted after the ready item is taken");
+          "next command must be accepted after take_ready");
+
+    trigger::TriggerIngress overwritten;
+    check(overwritten.receive_json_frame(command(3)),
+          "item_pending fatality test must create one ready item");
+    const auto blocked = overwritten.receive_json_frame(command(4));
+    check(!blocked && blocked.error == trigger::TriggerIngressError::item_pending
+              && blocked.disposition() == trigger::TriggerIngressDisposition::fatal
+              && !blocked.command_rejection
+              && overwritten.state() == trigger::TriggerIngressState::closed
+              && !overwritten.take_ready(),
+          "consumed frame while an item is pending must close instead of losing a command");
 }
 
 void test_declared_binary_is_adjacent_owned_and_zero_length_distinct()
@@ -124,58 +151,74 @@ void test_declared_binary_is_adjacent_owned_and_zero_length_distinct()
 
 void test_binary_marker_gate_and_strict_frame_order()
 {
-    trigger::TriggerIngress ingress;
     const std::array stray{std::byte{0x01}};
-    auto result = ingress.receive_binary_frame(stray);
+    trigger::TriggerIngress stray_ingress;
+    auto result = stray_ingress.receive_binary_frame(stray);
     check(!result
-              && result.error == trigger::TriggerIngressError::binary_without_declaration,
-          "binary input without a declaration must be rejected");
+              && result.error == trigger::TriggerIngressError::binary_without_declaration
+              && result.disposition() == trigger::TriggerIngressDisposition::fatal
+              && !result.command_rejection
+              && stray_ingress.state() == trigger::TriggerIngressState::closed,
+          "binary input without a declaration must close without correlation");
 
-    check(ingress.receive_json_frame(binary_command(20)),
+    trigger::TriggerIngress ordering_ingress;
+    check(ordering_ingress.receive_json_frame(binary_command(20)),
           "binary declaration must enter awaiting state");
-    result = ingress.receive_json_frame(command(21));
+    result = ordering_ingress.receive_json_frame(command(21));
     check(!result
               && result.error
                   == trigger::TriggerIngressError::json_while_awaiting_binary
-              && ingress.state() == trigger::TriggerIngressState::accepting_json,
-          "JSON instead of promised binary must reject and clear partial state");
-    result = ingress.receive_binary_frame(stray);
+              && result.disposition() == trigger::TriggerIngressDisposition::fatal
+              && !result.command_rejection
+              && ordering_ingress.state() == trigger::TriggerIngressState::closed,
+          "JSON instead of promised binary must close without forged correlation");
+    result = ordering_ingress.receive_binary_frame(stray);
     check(!result
-              && result.error == trigger::TriggerIngressError::binary_without_declaration,
-          "late binary must not attach after an ordering failure");
-    check(ingress.receive_json_frame(command(21)),
-          "clean JSON must recover immediately after ordering failure");
-    result = ingress.receive_binary_frame(stray);
-    check(!result && result.error == trigger::TriggerIngressError::item_pending,
-          "frames must not overwrite a completed untaken command");
-    static_cast<void>(ingress.take_ready());
+              && result.error == trigger::TriggerIngressError::closed
+              && result.disposition() == trigger::TriggerIngressDisposition::closed,
+          "late binary must see permanent closure after an ordering failure");
 
-    result = ingress.receive_json_frame(command(
+    trigger::TriggerIngress policy_ingress;
+    result = policy_ingress.receive_json_frame(command(
         22, "import_config", R"({"binary":false})"));
-    check(!result
-              && result.error == trigger::TriggerIngressError::binary_marker_required,
+    check_command_rejection(
+        result, trigger::TriggerIngressError::binary_marker_required,
+        "import_config", 22,
           "import_config must declare its required binary at ingress");
+    check(policy_ingress.state() == trigger::TriggerIngressState::accepting_json,
+          "binary marker policy rejection must keep correlation input available");
 
-    result = ingress.receive_json_frame(command(
+    result = policy_ingress.receive_json_frame(command(
         23, "status", R"({"binary":true})"));
-    check(!result
-              && result.error == trigger::TriggerIngressError::binary_marker_forbidden,
+    check_command_rejection(
+        result, trigger::TriggerIngressError::binary_marker_forbidden,
+        "status", 23,
           "catalog-forbidden binary marker must fail before frame state changes");
+    check(policy_ingress.receive_json_frame(command(24)),
+          "command-level marker rejections must allow the next command");
 }
 
 void test_catalog_policy_and_direct_session_admission()
 {
     trigger::TriggerIngress ingress;
     auto result = ingress.receive_json_frame(command(24, "not_a_command"));
-    check(!result && result.error == trigger::TriggerIngressError::unknown_command,
+    check_command_rejection(
+        result, trigger::TriggerIngressError::unknown_command,
+        "not_a_command", 24,
           "unknown commands must have a stable ingress rejection");
+    check(ingress.state() == trigger::TriggerIngressState::accepting_json,
+          "unknown command rejection must preserve the serial ingress");
 
     result = ingress.receive_json_frame(command(25, "start_scheduler"));
-    check(!result && result.error == trigger::TriggerIngressError::config_id_required,
+    check_command_rejection(
+        result, trigger::TriggerIngressError::config_id_required,
+        "start_scheduler", 25,
           "catalog-required config id must reject absence");
     result = ingress.receive_json_frame(command(
         26, "start_scheduler", "{}", R"("")"));
-    check(!result && result.error == trigger::TriggerIngressError::config_id_required,
+    check_command_rejection(
+        result, trigger::TriggerIngressError::config_id_required,
+        "start_scheduler", 26,
           "catalog-required config id must reject an empty string");
 
     check(ingress.receive_json_frame(command(261, "status", "{}", R"("")")),
@@ -185,7 +228,8 @@ void test_catalog_policy_and_direct_session_admission()
     check(optional_config_item
               && optional_config_item->envelope().config_id
               && optional_config_item->envelope().config_id->empty()
-              && optional_config_item->admit_to(optional_config_session),
+              && optional_config_item->admit_to(optional_config_session).outcome
+                  == trigger::TriggerIngressOutcome::admitted,
           "status with present-empty config id must become ready and admit safely");
 
     check(ingress.receive_json_frame(command(
@@ -196,14 +240,36 @@ void test_catalog_policy_and_direct_session_admission()
               && item->admission().response_mode == trigger::ResponseMode::single,
           "ready item must retain the exact catalog decision and response mode");
     trigger::TriggerSession session;
-    check(item && item->admit_to(session),
+    check(item && item->admit_to(session).outcome
+              == trigger::TriggerIngressOutcome::admitted,
           "catalog-derived ready item must admit directly to TriggerSession");
-    check(item && item->admit_to(session).error
-              == trigger::AdmissionError::duplicate_timestamp,
-          "direct session admission must preserve correlation safety");
+    const auto duplicate = item
+        ? item->admit_to(session) : trigger::TriggerIngressResult{};
+    check_command_rejection(
+        duplicate, trigger::TriggerIngressError::admission_rejected,
+        "start_custom", 27,
+        "session admission rejection must preserve safe correlation identity");
+    check(duplicate.admission_error == trigger::AdmissionError::duplicate_timestamp,
+          "session admission rejection must retain its stable admission subtype");
+
+    trigger::TriggerIngress closed_ingress;
+    check(closed_ingress.receive_json_frame(command(28)),
+          "closed-session policy test must produce one ready item");
+    auto closed_item = closed_ingress.take_ready();
+    trigger::TriggerSession closed_session;
+    static_cast<void>(closed_session.close());
+    const auto closed_admission = closed_item
+        ? closed_item->admit_to(closed_session) : trigger::TriggerIngressResult{};
+    check(!closed_admission
+              && closed_admission.error == trigger::TriggerIngressError::closed
+              && closed_admission.admission_error == trigger::AdmissionError::closed
+              && closed_admission.disposition()
+                  == trigger::TriggerIngressDisposition::closed
+              && !closed_admission.command_rejection,
+          "closed session admission must not claim a sendable command rejection");
 }
 
-void test_frame_and_aggregate_limits_clear_partial_state()
+void test_frame_and_aggregate_limits_are_connection_fatal()
 {
     const auto plain = command(30);
     const auto declared = binary_command(31);
@@ -213,8 +279,10 @@ void test_frame_and_aggregate_limits_clear_partial_state()
     trigger::TriggerIngress json_bounded{json_limits};
     auto result = json_bounded.receive_json_frame(plain);
     check(!result && result.error == trigger::TriggerIngressError::json_too_large
-              && json_bounded.state() == trigger::TriggerIngressState::accepting_json,
-          "oversized JSON frame must reject without partial state");
+              && result.disposition() == trigger::TriggerIngressDisposition::fatal
+              && !result.command_rejection
+              && json_bounded.state() == trigger::TriggerIngressState::closed,
+          "oversized JSON frame must close without correlation");
 
     trigger::TriggerIngressLimits binary_limits;
     binary_limits.max_binary_frame_bytes = 2;
@@ -226,18 +294,19 @@ void test_frame_and_aggregate_limits_clear_partial_state()
     };
     result = binary_bounded.receive_binary_frame(too_large);
     check(!result && result.error == trigger::TriggerIngressError::binary_too_large
-              && binary_bounded.state()
-                  == trigger::TriggerIngressState::accepting_json,
-          "oversized promised binary must consume and clear the partial command");
-    check(binary_bounded.receive_json_frame(command(32)),
-          "binary limit failure must permit a clean next command");
+              && result.disposition() == trigger::TriggerIngressDisposition::fatal
+              && !result.command_rejection
+              && binary_bounded.state() == trigger::TriggerIngressState::closed,
+          "oversized promised binary must close and clear the partial command");
 
     trigger::TriggerIngressLimits aggregate_json_limits;
     aggregate_json_limits.max_aggregate_bytes = plain.size() - 1;
     trigger::TriggerIngress aggregate_json{aggregate_json_limits};
     result = aggregate_json.receive_json_frame(plain);
-    check(!result && result.error == trigger::TriggerIngressError::aggregate_too_large,
-          "aggregate gate must independently bound JSON-only commands");
+    check(!result && result.error == trigger::TriggerIngressError::aggregate_too_large
+              && result.disposition() == trigger::TriggerIngressDisposition::fatal
+              && aggregate_json.state() == trigger::TriggerIngressState::closed,
+          "aggregate JSON gate must be connection-fatal");
 
     trigger::TriggerIngressLimits aggregate_binary_limits;
     aggregate_binary_limits.max_binary_frame_bytes = 8;
@@ -248,26 +317,24 @@ void test_frame_and_aggregate_limits_clear_partial_state()
     const std::array two_bytes{std::byte{0x01}, std::byte{0x02}};
     result = aggregate_binary.receive_binary_frame(two_bytes);
     check(!result && result.error == trigger::TriggerIngressError::aggregate_too_large
-              && aggregate_binary.state()
-                  == trigger::TriggerIngressState::accepting_json,
-          "aggregate binary overflow must clear the pending envelope");
-    check(aggregate_binary.receive_json_frame(command(33)),
-          "aggregate failure must recover for the next complete command");
+              && result.disposition() == trigger::TriggerIngressDisposition::fatal
+              && !result.command_rejection
+              && aggregate_binary.state() == trigger::TriggerIngressState::closed,
+          "aggregate binary overflow must close and clear the pending envelope");
 }
 
-void test_envelope_failures_and_limit_validation_recover()
+void test_envelope_failures_are_connection_fatal()
 {
     trigger::TriggerIngress ingress;
     auto result = ingress.receive_json_frame(
         R"({"type":"command","command":"status","command":"solve","timestamp":40})"
     );
     check(!result && result.error == trigger::TriggerIngressError::envelope_rejected
-              && result.envelope_error == trigger::EnvelopeError::duplicate_key,
-          "ingress must preserve bounded codec error classification");
-    check(ingress.state() == trigger::TriggerIngressState::accepting_json
-              && ingress.receive_json_frame(command(40)),
-          "malicious JSON must not poison later valid input");
-    static_cast<void>(ingress.take_ready());
+              && result.envelope_error == trigger::EnvelopeError::duplicate_key
+              && result.disposition() == trigger::TriggerIngressDisposition::fatal
+              && !result.command_rejection
+              && ingress.state() == trigger::TriggerIngressState::closed,
+          "codec failure must preserve detail but never forge correlation");
 
     bool rejected = false;
     try {
@@ -292,70 +359,128 @@ void test_envelope_failures_and_limit_validation_recover()
 
 void test_reset_and_close_are_explicit_and_terminal()
 {
-    trigger::TriggerIngress ingress;
-    check(ingress.receive_json_frame(binary_command(50)),
+    trigger::TriggerIngress reset_pending;
+    check(reset_pending.receive_json_frame(binary_command(50)),
           "reset test must enter awaiting state");
-    ingress.reset();
-    check(ingress.state() == trigger::TriggerIngressState::accepting_json,
+    reset_pending.reset();
+    check(reset_pending.state() == trigger::TriggerIngressState::accepting_json,
           "reset must discard partial binary state");
-    check(ingress.receive_binary_frame(std::span<const std::byte>{}).error
-              == trigger::TriggerIngressError::binary_without_declaration,
-          "reset must prevent a late binary frame from attaching");
+    const auto late = reset_pending.receive_binary_frame(
+        std::span<const std::byte>{});
+    check(late.error == trigger::TriggerIngressError::binary_without_declaration
+              && late.disposition() == trigger::TriggerIngressDisposition::fatal
+              && reset_pending.state() == trigger::TriggerIngressState::closed,
+          "late binary after reset must close and cannot attach to another command");
 
-    check(ingress.receive_json_frame(command(51)),
+    trigger::TriggerIngress reset_ready;
+    check(reset_ready.receive_json_frame(command(51)),
           "ready reset test must complete a command");
-    ingress.reset();
-    check(!ingress.take_ready()
-              && ingress.state() == trigger::TriggerIngressState::accepting_json,
+    reset_ready.reset();
+    check(!reset_ready.take_ready()
+              && reset_ready.state() == trigger::TriggerIngressState::accepting_json
+              && reset_ready.receive_json_frame(command(52)),
           "reset must explicitly discard an untaken ready item");
 
-    check(ingress.receive_json_frame(binary_command(52)),
+    trigger::TriggerIngress ingress;
+    check(ingress.receive_json_frame(binary_command(53)),
           "close test must enter awaiting state");
     ingress.close();
     ingress.close();
     check(ingress.state() == trigger::TriggerIngressState::closed
               && !ingress.take_ready(),
           "close must be idempotent and discard all outstanding input");
-    auto result = ingress.receive_json_frame(command(53));
-    check(!result && result.error == trigger::TriggerIngressError::closed,
+    auto result = ingress.receive_json_frame(command(54));
+    check(!result && result.error == trigger::TriggerIngressError::closed
+              && result.disposition() == trigger::TriggerIngressDisposition::closed
+              && !result.command_rejection,
           "closed ingress must reject JSON forever");
     result = ingress.receive_binary_frame(std::span<const std::byte>{});
-    check(!result && result.error == trigger::TriggerIngressError::closed,
+    check(!result && result.error == trigger::TriggerIngressError::closed
+              && result.disposition() == trigger::TriggerIngressDisposition::closed,
           "closed ingress must reject binary forever");
     ingress.reset();
     check(ingress.state() == trigger::TriggerIngressState::closed,
           "reset must never reopen a closed ingress");
 }
 
-void test_error_names_are_stable()
+void test_error_disposition_matrix_and_names_are_total()
 {
+    using TriggerIngressDisposition = trigger::TriggerIngressDisposition;
+    struct Expected {
+        trigger::TriggerIngressError error;
+        trigger::TriggerIngressDisposition disposition;
+        std::string_view name;
+    };
     using enum trigger::TriggerIngressError;
-    check(trigger::trigger_ingress_error_name(none) == "none"
-              && trigger::trigger_ingress_error_name(closed) == "closed"
-              && trigger::trigger_ingress_error_name(item_pending) == "item_pending"
-              && trigger::trigger_ingress_error_name(json_while_awaiting_binary)
-                  == "json_while_awaiting_binary"
-              && trigger::trigger_ingress_error_name(binary_without_declaration)
-                  == "binary_without_declaration"
-              && trigger::trigger_ingress_error_name(json_too_large)
-                  == "json_too_large"
-              && trigger::trigger_ingress_error_name(binary_too_large)
-                  == "binary_too_large"
-              && trigger::trigger_ingress_error_name(aggregate_too_large)
-                  == "aggregate_too_large"
-              && trigger::trigger_ingress_error_name(envelope_rejected)
-                  == "envelope_rejected"
-              && trigger::trigger_ingress_error_name(unknown_command)
-                  == "unknown_command"
-              && trigger::trigger_ingress_error_name(config_id_required)
-                  == "config_id_required"
-              && trigger::trigger_ingress_error_name(binary_marker_required)
-                  == "binary_marker_required"
-              && trigger::trigger_ingress_error_name(binary_marker_forbidden)
-                  == "binary_marker_forbidden"
-              && trigger::trigger_ingress_error_name(admission_rejected)
-                  == "admission_rejected",
-          "ingress errors must have stable machine-readable names");
+    constexpr std::array expected{
+        Expected{none, TriggerIngressDisposition::none, "none"},
+        Expected{trigger::TriggerIngressError::closed, TriggerIngressDisposition::closed,
+                 "closed"},
+        Expected{item_pending, TriggerIngressDisposition::fatal, "item_pending"},
+        Expected{json_while_awaiting_binary, TriggerIngressDisposition::fatal,
+                 "json_while_awaiting_binary"},
+        Expected{binary_without_declaration, TriggerIngressDisposition::fatal,
+                 "binary_without_declaration"},
+        Expected{json_too_large, TriggerIngressDisposition::fatal, "json_too_large"},
+        Expected{binary_too_large, TriggerIngressDisposition::fatal,
+                 "binary_too_large"},
+        Expected{aggregate_too_large, TriggerIngressDisposition::fatal,
+                 "aggregate_too_large"},
+        Expected{envelope_rejected, TriggerIngressDisposition::fatal,
+                 "envelope_rejected"},
+        Expected{unknown_command, TriggerIngressDisposition::command_rejection,
+                 "unknown_command"},
+        Expected{config_id_required, TriggerIngressDisposition::command_rejection,
+                 "config_id_required"},
+        Expected{binary_marker_required, TriggerIngressDisposition::command_rejection,
+                 "binary_marker_required"},
+        Expected{binary_marker_forbidden, TriggerIngressDisposition::command_rejection,
+                 "binary_marker_forbidden"},
+        Expected{admission_rejected, TriggerIngressDisposition::command_rejection,
+                 "admission_rejected"},
+    };
+    for (const auto& item : expected) {
+        check(trigger::trigger_ingress_error_name(item.error) == item.name
+                  && trigger::trigger_ingress_disposition(item.error)
+                      == item.disposition,
+              "every ingress error must have one stable executable disposition");
+    }
+    check(trigger::trigger_ingress_disposition_name(
+              TriggerIngressDisposition::none) == "none"
+              && trigger::trigger_ingress_disposition_name(
+                     TriggerIngressDisposition::fatal) == "fatal"
+              && trigger::trigger_ingress_disposition_name(
+                     TriggerIngressDisposition::recoverable)
+                  == "recoverable"
+              && trigger::trigger_ingress_disposition_name(
+                     TriggerIngressDisposition::command_rejection)
+                  == "command_rejection"
+              && trigger::trigger_ingress_disposition_name(
+                     TriggerIngressDisposition::closed) == "closed",
+          "all disposition vocabulary must remain stable");
+    check(trigger::trigger_ingress_error_name(
+              static_cast<trigger::TriggerIngressError>(255)) == "unknown"
+              && trigger::trigger_ingress_disposition(
+                     static_cast<trigger::TriggerIngressError>(255))
+                  == TriggerIngressDisposition::fatal
+              && trigger::trigger_ingress_disposition_name(
+                     static_cast<trigger::TriggerIngressDisposition>(255)) == "unknown",
+          "unknown future error values must fail closed with total names");
+    check(trigger::trigger_command_rejection_safe_message(unknown_command)
+              == "Unsupported command"
+              && trigger::trigger_command_rejection_safe_message(config_id_required)
+                  == "config_id is required"
+              && trigger::trigger_command_rejection_safe_message(
+                     binary_marker_required)
+                  == "binary archive payload is required for import_config"
+              && trigger::trigger_command_rejection_safe_message(
+                     binary_marker_forbidden)
+                  == "binary payload is not allowed for this command"
+              && trigger::trigger_command_rejection_safe_message(admission_rejected)
+                  == "command admission rejected"
+              && trigger::trigger_command_rejection_safe_message(json_too_large)
+                  == "command rejected",
+          "command rejection messages must be bounded static text");
 }
 
 }  // namespace
@@ -366,10 +491,10 @@ int main()
     test_declared_binary_is_adjacent_owned_and_zero_length_distinct();
     test_binary_marker_gate_and_strict_frame_order();
     test_catalog_policy_and_direct_session_admission();
-    test_frame_and_aggregate_limits_clear_partial_state();
-    test_envelope_failures_and_limit_validation_recover();
+    test_frame_and_aggregate_limits_are_connection_fatal();
+    test_envelope_failures_are_connection_fatal();
     test_reset_and_close_are_explicit_and_terminal();
-    test_error_names_are_stable();
+    test_error_disposition_matrix_and_names_are_total();
     if (failures != 0) {
         std::cerr << failures << " trigger ingress test(s) failed\n";
         return EXIT_FAILURE;

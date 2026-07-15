@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <optional>
 #include <span>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -30,6 +31,7 @@ enum class TriggerIngressOutcome : std::uint8_t {
     rejected,
     awaiting_binary,
     ready,
+    admitted,
 };
 
 enum class TriggerIngressError : std::uint8_t {
@@ -49,20 +51,60 @@ enum class TriggerIngressError : std::uint8_t {
     admission_rejected,
 };
 
+enum class TriggerIngressDisposition : std::uint8_t {
+    none,
+    fatal,
+    recoverable,
+    command_rejection,
+    closed,
+};
+
 [[nodiscard]] std::string_view trigger_ingress_error_name(
     TriggerIngressError error
 ) noexcept;
+[[nodiscard]] TriggerIngressDisposition trigger_ingress_disposition(
+    TriggerIngressError error
+) noexcept;
+[[nodiscard]] std::string_view trigger_ingress_disposition_name(
+    TriggerIngressDisposition disposition
+) noexcept;
+[[nodiscard]] std::string_view trigger_command_rejection_safe_message(
+    TriggerIngressError error
+) noexcept;
+
+// Bounded, decoded correlation identity for errors that are safe to answer as
+// command_response. Fatal parsing/framing failures never populate this type.
+struct TriggerCommandRejection {
+    std::string command;
+    Timestamp timestamp{};
+    TriggerIngressError code{TriggerIngressError::admission_rejected};
+
+    [[nodiscard]] std::string_view code_name() const noexcept
+    {
+        return trigger_ingress_error_name(code);
+    }
+    [[nodiscard]] std::string_view safe_message() const noexcept
+    {
+        return trigger_command_rejection_safe_message(code);
+    }
+};
 
 struct TriggerIngressResult {
     TriggerIngressOutcome outcome{TriggerIngressOutcome::rejected};
     TriggerIngressError error{TriggerIngressError::none};
     EnvelopeError envelope_error{EnvelopeError::none};
+    AdmissionError admission_error{AdmissionError::none};
     std::size_t error_offset{};
+    std::optional<TriggerCommandRejection> command_rejection;
 
     [[nodiscard]] explicit operator bool() const noexcept
     {
         return error == TriggerIngressError::none
             && outcome != TriggerIngressOutcome::rejected;
+    }
+    [[nodiscard]] TriggerIngressDisposition disposition() const noexcept
+    {
+        return trigger_ingress_disposition(error);
     }
 };
 
@@ -96,7 +138,7 @@ public:
     }
     // The admission was derived from this item's immutable catalog descriptor,
     // so transports do not need to reconstruct or choose response policy.
-    [[nodiscard]] AdmissionResult admit_to(TriggerSession& session) const;
+    [[nodiscard]] TriggerIngressResult admit_to(TriggerSession& session) const;
 
 private:
     TriggerIngressItem(
@@ -156,7 +198,7 @@ private:
         ResponseMode response_mode,
         const baas::service::trigger::TriggerCommandDescriptor* descriptor
     );
-    [[nodiscard]] static TriggerIngressResult reject(
+    [[nodiscard]] TriggerIngressResult reject(
         TriggerIngressError error,
         EnvelopeError envelope_error = EnvelopeError::none,
         std::size_t error_offset = 0

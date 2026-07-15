@@ -22,10 +22,12 @@ Only the catalog descriptor whose inbound policy is `required`—currently
 `command:"import_config"`—with the exact JSON boolean
 `payload.binary:true` enters `awaiting_binary`. The codec reports the marker
 without command knowledge and ingress applies the catalog rule. A JSON frame
-while awaiting binary is discarded with `json_while_awaiting_binary` and clears the
-partial command. A binary frame without that declaration is rejected with
-`binary_without_declaration`. A frame received while a completed item is still
-untaken returns `item_pending` without replacing the complete item.
+while awaiting binary is discarded with `json_while_awaiting_binary`, clears the
+partial command, and closes ingress. A binary frame without that declaration is
+connection-fatal as `binary_without_declaration`. A frame received while a
+completed item is still untaken is also fatal: ingress does not own that second
+frame and therefore cannot safely claim it is retryable. These paths close
+before a late binary can attach to a new command.
 
 The binary is represented as `optional<vector<byte>>`. `nullopt` means no
 binary frame; an engaged empty vector proves a present zero-length frame. The
@@ -33,28 +35,58 @@ ready item owns the decoded `CommandEnvelope`, optional bytes, successful
 `BuildAdmissionResult`/`CommandAdmission`, and stable catalog descriptor. Its
 single/stream `ResponseMode` comes only from that descriptor; callers cannot
 override it. `admit_to(TriggerSession&)` submits the immutable catalog-derived
-admission without reconstructing policy.
+admission without reconstructing policy and returns the same ingress policy
+result shape. Duplicate/saturated session admission is a correlated command
+rejection; a closed session yields the explicit `closed` disposition.
 
 Before frame state changes, ingress returns stable `unknown_command`,
 `config_id_required`, `binary_marker_required`, or
 `binary_marker_forbidden` errors. Required config IDs reject both absence and
 the empty string; present-empty remains valid for commands without that
 requirement. This fail-fast binary policy is a deliberate safety hardening over
-Python: Python currently ignores a true marker on other commands and reports a
-missing import payload later during execution.
+the current Python handler, which ignores a true marker on other commands and reports a
+missing import payload later during execution. C++ rejects both cases before
+dispatch, but classifies them as correlated `command_rejection`, so a future
+adapter may send one safe error response and continue without waiting for bytes.
+
+## Executable live-adapter policy
+
+`trigger_ingress_disposition()` is a total, allocation-free matrix. Unknown
+future error enum values fail closed.
+
+| Error class | Disposition | Correlation | Required adapter action |
+| --- | --- | --- | --- |
+| no error | `none` | no | continue the success path |
+| already closed | `closed` | no | stop reads; close remains permanent |
+| item already pending | `fatal` | no | close; the newly supplied frame is not owned |
+| malformed/schema-invalid JSON | `fatal` | no | close without a response |
+| frame order/presence violation | `fatal` | no | close without a response |
+| JSON, binary, or aggregate limit | `fatal` | no | close without a response |
+| unknown command | `command_rejection` | yes | send one command error, then continue |
+| missing required config ID | `command_rejection` | yes | send one command error, then continue |
+| required/forbidden binary marker | `command_rejection` | yes | send one command error, then continue |
+| non-closed session admission failure | `command_rejection` | yes | send one command error, then continue |
+
+`recoverable` is reserved in the public vocabulary for a future operation that
+can prove the caller still owns all retry input. No current ingress error maps
+to it.
+
+Every command rejection owns the already decoded, bounded command name and
+timestamp, its stable ingress error code, and a static safe message. Fatal,
+recoverable, and closed results never invent command correlation. This is
+enough to construct a future `command_response` without reparsing the original
+JSON, but this layer deliberately does not own a generic response sink.
 
 ## Transactional failure and lifecycle
 
 JSON decode failures retain `EnvelopeError` and its byte offset. Oversized or
-wrong-type frames, catalog rejection, codec rejection, and admission
-rejection never leave a partial command. On receipt of the promised binary,
-the pending envelope is removed before any limit check or allocation, so even
-allocation exceptions cannot leave `awaiting_binary` state.
+wrong-type frames and codec rejection transition ingress to `closed` without a
+correlation identity. Catalog and non-closed session admission rejection leave
+ingress able to accept the next JSON command and carry bounded identity.
 
-Ingress errors reset or preserve this local state exactly as documented, but
-do not define whether a live transport must close its connection. Mapping
-framing/schema failures to recoverable responses or connection-fatal closure
-remains a responsibility of the pending authenticated adapter.
+On receipt of the promised binary, the pending envelope is removed before any
+limit check or allocation. A binary/aggregate limit failure then closes
+ingress; even allocation exceptions cannot leave `awaiting_binary` state.
 
 `reset()` explicitly drops pending or completed input and resumes
 `accepting_json`. It cannot reopen an ingress after `close()`. `close()` is
@@ -83,8 +115,9 @@ clears that partial command, preventing late bytes from attaching to later JSON.
 zero-length presence, one outstanding item, strict adjacency, required and
 forbidden binary markers, malformed and duplicate-key JSON, unknown commands,
 required/optional-empty config IDs, catalog-derived modes, direct session
-admission, independent JSON/binary/aggregate limits, reset, close, late frames,
-and clean recovery after every structured failure.
+admission, every error-to-disposition mapping, correlated rejection identity,
+static safe messages, independent limits, fatal closure, command-level
+continuation, reset, explicit close, and late frames.
 
 Still pending are authenticated WebSocket/Pipe hosts, frame decryption/decoding
 adapters, command-specific payload schemas, connection-owned orchestration of
