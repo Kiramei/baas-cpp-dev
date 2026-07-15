@@ -39,6 +39,9 @@ class ServiceTriggerSessionTests(unittest.TestCase):
         cls.spec = (
             ROOT / "docs/script-runtime/SERVICE_TRIGGER_SESSION.md"
         ).read_text(encoding="utf-8")
+        cls.catalog_spec = (
+            ROOT / "docs/script-runtime/SERVICE_TRIGGER_COMMAND_CATALOG.md"
+        ).read_text(encoding="utf-8")
         cls.envelope_spec = (
             ROOT / "docs/script-runtime/SERVICE_TRIGGER_ENVELOPE.md"
         ).read_text(encoding="utf-8")
@@ -134,11 +137,19 @@ class ServiceTriggerSessionTests(unittest.TestCase):
             self.workflow.count("docs/script-runtime/SERVICE_TRIGGER_ENVELOPE.md"),
             2,
         )
+        self.assertEqual(
+            self.workflow.count(
+                "docs/script-runtime/SERVICE_TRIGGER_COMMAND_CATALOG.md"
+            ),
+            2,
+        )
         self.assertIn("BUILD_SERVICE_PROTOCOL_TESTS=ON", self.workflow)
+        self.assertIn("BUILD_SERVICE_TRIGGER_CATALOG_TESTS=ON", self.workflow)
         self.assertIn("BAAS_service_trigger_envelope_tests", self.workflow)
+        self.assertIn("BAAS_service_trigger_catalog_tests", self.workflow)
         self.assertIn("- [~] Implement task submission", self.roadmap)
         for pending in (
-            "complete table-driven command dispatcher",
+            "catalog admission/dispatch integration",
             "WebSocket and live Pipe channel hosts",
             "shared Python/C++/Tauri fixtures",
         ):
@@ -147,6 +158,8 @@ class ServiceTriggerSessionTests(unittest.TestCase):
         self.assertIn("does not yet dispatch commands", self.protocol)
         self.assertIn("dependency-free JSON codec", self.envelope_spec)
         self.assertIn("zero-length BYTES frame", self.envelope_spec)
+        self.assertIn("does not execute commands", self.catalog_spec)
+        self.assertIn("Only `import_config`", self.catalog_spec)
 
 
 if __name__ == "__main__":

@@ -6,9 +6,10 @@ for the v1 `trigger` business channel. It preserves the observed Python/Tauri
 
 This is a real bounded correlation and outbound-ordering layer, not a complete
 command service. The adjacent bounded codec in `SERVICE_TRIGGER_ENVELOPE.md`
-now owns v1 JSON decoding/encoding; the command inventory dispatcher, executor
-ownership, WebSocket authentication/secretstream, and live BAAS task adapters
-remain separate required layers.
+owns v1 JSON decoding/encoding, and `SERVICE_TRIGGER_COMMAND_CATALOG.md` freezes
+the legacy command-selection metadata. Catalog integration, executor ownership,
+WebSocket authentication/secretstream, and live BAAS task adapters remain
+separate required layers.
 
 ## Admission and correlation
 
@@ -101,8 +102,7 @@ Release foundation builds.
 
 Still required before the Phase 4 task API item is complete:
 
-- the complete table-driven command dispatcher and actual runtime/executor task
-  ownership;
+- catalog admission/dispatch integration and actual runtime/executor task ownership;
 - a coordinated general cancellation message or exact legacy stop-command
   mapping;
 - WebSocket and live Pipe channel hosts using this core;
