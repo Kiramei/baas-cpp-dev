@@ -19,16 +19,17 @@ fields are validated as JSON and ignored, matching the current Pydantic
 `BaseModel` extra-field behavior. The stricter normative v1 requirements are
 applied before admission: command names use lowercase ASCII/digits/underscore,
 timestamps are unsigned integer JSON tokens no greater than
-`9007199254740991`, and a present config ID is non-empty UTF-8.
+`9007199254740991`, and a present config ID is bounded UTF-8. Empty remains
+present so the catalog can reject it only for commands that require an ID.
 
 The parser validates the complete document, including ignored fields. It
 rejects malformed scalar UTF-8, invalid escapes or surrogate pairs, trailing
 data/commas, duplicate keys at every object depth, and depth/node/string/work
 budget exhaustion. The returned `payload_json` is compact, duplicate-free
-UTF-8 JSON. `expects_binary` is true only for `import_config` with the exact
-JSON boolean `payload.binary: true`, preserving both Python's command gate and
-its `is True` behavior. The same marker on any other command does not consume a
-frame.
+UTF-8 JSON. `declares_binary` reports only whether the exact JSON boolean
+`payload.binary: true` was present. The codec deliberately does not name
+`import_config`: `TriggerCommandCatalog` is the sole command-policy source and
+`TriggerIngress` applies its required/forbidden binary rule.
 
 After a transport receives the promised immediately-following frame,
 `make_admission()` accepts an optional actual binary byte count and combines it
@@ -107,11 +108,12 @@ success/error/cancellation responses, stream terminal wire binding, response
 mode mismatch, inbound binary presence, reserved binary metadata, non-object
 binary data, zero-byte frames, and codec-to-session correlation. The target is
 part of the Debug/Release foundation CI matrix alongside framing, session, and
-egress lease/race tests.
+egress lease/race tests. Command authorization and mode derivation are covered
+by the adjacent ingress integration suite, not duplicated in this codec suite.
 
 Still required before Phase 4 task APIs are complete:
 
-- a table-driven command inventory with command-specific payload/result schemas;
+- command-specific payload/result schemas beyond the implemented inventory;
 - actual runtime/executor ownership, deadlines, and stale-task cleanup;
 - a coordinated cancellation envelope or exact legacy stop-command mapping;
 - authenticated WebSocket and local Pipe trigger hosts using this codec/session;

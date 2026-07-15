@@ -32,12 +32,14 @@ void check(const trigger::TriggerIngressResult& result, const std::string_view m
 [[nodiscard]] std::string command(
     const std::uint64_t timestamp,
     const std::string_view name = "status",
-    const std::string_view payload = "{}"
+    const std::string_view payload = "{}",
+    const std::string_view config_id = "null"
 )
 {
     return std::string{"{\"type\":\"command\",\"command\":\""} + std::string{name}
         + "\",\"timestamp\":" + std::to_string(timestamp)
-        + ",\"config_id\":null,\"payload\":" + std::string{payload} + "}";
+        + ",\"config_id\":" + std::string{config_id}
+        + ",\"payload\":" + std::string{payload} + "}";
 }
 
 [[nodiscard]] std::string binary_command(const std::uint64_t timestamp)
@@ -52,10 +54,8 @@ void check(const trigger::TriggerIngressResult& result, const std::string_view m
 void test_json_only_ready_item_is_owned_and_single_outstanding()
 {
     trigger::TriggerIngress ingress;
-    auto frame = command(1, "status", R"({"name":"alpha"})");
-    const auto accepted = ingress.receive_json_frame(
-        frame, trigger::ResponseMode::stream
-    );
+    auto frame = command(1, "test_all_sha_stream", R"({"name":"alpha"})");
+    const auto accepted = ingress.receive_json_frame(frame);
     check(accepted && accepted.outcome == trigger::TriggerIngressOutcome::ready,
           "JSON-only command must complete immediately");
     check(ingress.state() == trigger::TriggerIngressState::ready,
@@ -70,18 +70,18 @@ void test_json_only_ready_item_is_owned_and_single_outstanding()
     check(item && !item->has_binary(),
           "JSON-only ready item must distinguish absent binary input");
     if (item) {
-        check(item->envelope().command == "status"
+        check(item->envelope().command == "test_all_sha_stream"
                   && item->envelope().timestamp == 1
                   && item->envelope().payload_json == R"({"name":"alpha"})",
               "ready item must own decoded envelope data after source mutation");
         check(item->build_admission()
-                  && item->admission().command == "status"
+                  && item->admission().command == "test_all_sha_stream"
                   && item->admission().timestamp == 1
                   && item->admission().payload_bytes
                       == item->envelope().payload_json.size()
                   && item->admission().binary_bytes == 0
                   && item->admission().response_mode == trigger::ResponseMode::stream,
-              "ready item must own the matching BuildAdmissionResult and admission");
+              "catalog stream policy must flow into the owned admission");
     }
     check(ingress.state() == trigger::TriggerIngressState::accepting_json,
           "taking the item must release the one-outstanding gate");
@@ -150,21 +150,57 @@ void test_binary_marker_gate_and_strict_frame_order()
           "frames must not overwrite a completed untaken command");
     static_cast<void>(ingress.take_ready());
 
-    check(ingress.receive_json_frame(command(
-              22, "import_config", R"({"binary":false})"
-          )),
-          "false binary marker must complete as JSON-only");
-    auto item = ingress.take_ready();
-    check(item && !item->has_binary(),
-          "false binary marker must not consume a binary frame");
+    result = ingress.receive_json_frame(command(
+        22, "import_config", R"({"binary":false})"));
+    check(!result
+              && result.error == trigger::TriggerIngressError::binary_marker_required,
+          "import_config must declare its required binary at ingress");
+
+    result = ingress.receive_json_frame(command(
+        23, "status", R"({"binary":true})"));
+    check(!result
+              && result.error == trigger::TriggerIngressError::binary_marker_forbidden,
+          "catalog-forbidden binary marker must fail before frame state changes");
+}
+
+void test_catalog_policy_and_direct_session_admission()
+{
+    trigger::TriggerIngress ingress;
+    auto result = ingress.receive_json_frame(command(24, "not_a_command"));
+    check(!result && result.error == trigger::TriggerIngressError::unknown_command,
+          "unknown commands must have a stable ingress rejection");
+
+    result = ingress.receive_json_frame(command(25, "start_scheduler"));
+    check(!result && result.error == trigger::TriggerIngressError::config_id_required,
+          "catalog-required config id must reject absence");
+    result = ingress.receive_json_frame(command(
+        26, "start_scheduler", "{}", R"("")"));
+    check(!result && result.error == trigger::TriggerIngressError::config_id_required,
+          "catalog-required config id must reject an empty string");
+
+    check(ingress.receive_json_frame(command(261, "status", "{}", R"("")")),
+          "commands without a config requirement must preserve an empty config id");
+    auto optional_config_item = ingress.take_ready();
+    trigger::TriggerSession optional_config_session;
+    check(optional_config_item
+              && optional_config_item->envelope().config_id
+              && optional_config_item->envelope().config_id->empty()
+              && optional_config_item->admit_to(optional_config_session),
+          "status with present-empty config id must become ready and admit safely");
 
     check(ingress.receive_json_frame(command(
-              23, "status", R"({"binary":true})"
-          )),
-          "binary marker on another command must remain JSON-only");
-    item = ingress.take_ready();
-    check(item && !item->has_binary(),
-          "only import_config may declare inbound binary");
+              27, "start_custom", "{}", R"("cfg")")),
+          "known prefix command with config id must become ready");
+    auto item = ingress.take_ready();
+    check(item && item->descriptor().canonical_name == "start_*"
+              && item->admission().response_mode == trigger::ResponseMode::single,
+          "ready item must retain the exact catalog decision and response mode");
+    trigger::TriggerSession session;
+    check(item && item->admit_to(session),
+          "catalog-derived ready item must admit directly to TriggerSession");
+    check(item && item->admit_to(session).error
+              == trigger::AdmissionError::duplicate_timestamp,
+          "direct session admission must preserve correlation safety");
 }
 
 void test_frame_and_aggregate_limits_clear_partial_state()
@@ -219,7 +255,7 @@ void test_frame_and_aggregate_limits_clear_partial_state()
           "aggregate failure must recover for the next complete command");
 }
 
-void test_envelope_failures_modes_and_limit_validation_recover()
+void test_envelope_failures_and_limit_validation_recover()
 {
     trigger::TriggerIngress ingress;
     auto result = ingress.receive_json_frame(
@@ -232,13 +268,6 @@ void test_envelope_failures_modes_and_limit_validation_recover()
               && ingress.receive_json_frame(command(40)),
           "malicious JSON must not poison later valid input");
     static_cast<void>(ingress.take_ready());
-
-    result = ingress.receive_json_frame(
-        command(41), static_cast<trigger::ResponseMode>(99)
-    );
-    check(!result && result.error == trigger::TriggerIngressError::invalid_response_mode
-              && ingress.state() == trigger::TriggerIngressState::accepting_json,
-          "invalid caller-supplied response mode must fail before partial state");
 
     bool rejected = false;
     try {
@@ -308,8 +337,6 @@ void test_error_names_are_stable()
                   == "json_while_awaiting_binary"
               && trigger::trigger_ingress_error_name(binary_without_declaration)
                   == "binary_without_declaration"
-              && trigger::trigger_ingress_error_name(invalid_response_mode)
-                  == "invalid_response_mode"
               && trigger::trigger_ingress_error_name(json_too_large)
                   == "json_too_large"
               && trigger::trigger_ingress_error_name(binary_too_large)
@@ -318,6 +345,14 @@ void test_error_names_are_stable()
                   == "aggregate_too_large"
               && trigger::trigger_ingress_error_name(envelope_rejected)
                   == "envelope_rejected"
+              && trigger::trigger_ingress_error_name(unknown_command)
+                  == "unknown_command"
+              && trigger::trigger_ingress_error_name(config_id_required)
+                  == "config_id_required"
+              && trigger::trigger_ingress_error_name(binary_marker_required)
+                  == "binary_marker_required"
+              && trigger::trigger_ingress_error_name(binary_marker_forbidden)
+                  == "binary_marker_forbidden"
               && trigger::trigger_ingress_error_name(admission_rejected)
                   == "admission_rejected",
           "ingress errors must have stable machine-readable names");
@@ -330,8 +365,9 @@ int main()
     test_json_only_ready_item_is_owned_and_single_outstanding();
     test_declared_binary_is_adjacent_owned_and_zero_length_distinct();
     test_binary_marker_gate_and_strict_frame_order();
+    test_catalog_policy_and_direct_session_admission();
     test_frame_and_aggregate_limits_clear_partial_state();
-    test_envelope_failures_modes_and_limit_validation_recover();
+    test_envelope_failures_and_limit_validation_recover();
     test_reset_and_close_are_explicit_and_terminal();
     test_error_names_are_stable();
     if (failures != 0) {

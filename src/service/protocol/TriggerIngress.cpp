@@ -8,6 +8,8 @@
 namespace baas::service::protocol::trigger {
 namespace {
 
+namespace command_catalog = baas::service::trigger;
+
 [[nodiscard]] bool checked_add(
     const std::size_t left,
     const std::size_t right,
@@ -19,9 +21,12 @@ namespace {
     return true;
 }
 
-[[nodiscard]] bool valid_response_mode(const ResponseMode mode) noexcept
+[[nodiscard]] ResponseMode response_mode_for(
+    const command_catalog::TriggerCommandDescriptor& descriptor) noexcept
 {
-    return mode == ResponseMode::single || mode == ResponseMode::stream;
+    using enum command_catalog::TriggerCommandResponseMode;
+    return descriptor.response_mode == stream
+        ? ResponseMode::stream : ResponseMode::single;
 }
 
 }  // namespace
@@ -35,11 +40,14 @@ std::string_view trigger_ingress_error_name(const TriggerIngressError error) noe
         case item_pending: return "item_pending";
         case json_while_awaiting_binary: return "json_while_awaiting_binary";
         case binary_without_declaration: return "binary_without_declaration";
-        case invalid_response_mode: return "invalid_response_mode";
         case json_too_large: return "json_too_large";
         case binary_too_large: return "binary_too_large";
         case aggregate_too_large: return "aggregate_too_large";
         case envelope_rejected: return "envelope_rejected";
+        case unknown_command: return "unknown_command";
+        case config_id_required: return "config_id_required";
+        case binary_marker_required: return "binary_marker_required";
+        case binary_marker_forbidden: return "binary_marker_forbidden";
         case admission_rejected: return "admission_rejected";
     }
     return "unknown";
@@ -48,12 +56,19 @@ std::string_view trigger_ingress_error_name(const TriggerIngressError error) noe
 TriggerIngressItem::TriggerIngressItem(
     CommandEnvelope envelope,
     std::optional<std::vector<std::byte>> binary,
-    BuildAdmissionResult build_admission
+    BuildAdmissionResult build_admission,
+    const command_catalog::TriggerCommandDescriptor* const descriptor
 )
     : envelope_(std::move(envelope)),
       binary_(std::move(binary)),
-      build_admission_(std::move(build_admission))
+      build_admission_(std::move(build_admission)),
+      descriptor_(descriptor)
 {}
+
+AdmissionResult TriggerIngressItem::admit_to(TriggerSession& session) const
+{
+    return session.admit(admission());
+}
 
 TriggerIngress::TriggerIngress(const TriggerIngressLimits limits) : limits_(limits)
 {
@@ -67,19 +82,13 @@ TriggerIngress::TriggerIngress(const TriggerIngressLimits limits) : limits_(limi
     }
 }
 
-TriggerIngressResult TriggerIngress::receive_json_frame(
-    const std::string_view json,
-    const ResponseMode response_mode
-)
+TriggerIngressResult TriggerIngress::receive_json_frame(const std::string_view json)
 {
     if (closed_) return reject(TriggerIngressError::closed);
     if (ready_) return reject(TriggerIngressError::item_pending);
     if (pending_binary_) {
         pending_binary_.reset();
         return reject(TriggerIngressError::json_while_awaiting_binary);
-    }
-    if (!valid_response_mode(response_mode)) {
-        return reject(TriggerIngressError::invalid_response_mode);
     }
     if (json.size() > limits_.max_json_frame_bytes) {
         return reject(TriggerIngressError::json_too_large);
@@ -96,13 +105,34 @@ TriggerIngressResult TriggerIngress::receive_json_frame(
             decoded.error_offset
         );
     }
-    if (decoded.envelope.expects_binary) {
+    const auto lookup = command_catalog::TriggerCommandCatalog::lookup(
+        decoded.envelope.command);
+    if (!lookup) return reject(TriggerIngressError::unknown_command);
+    const auto* const descriptor = lookup.descriptor;
+    if (descriptor->config_id
+            == command_catalog::TriggerConfigIdRequirement::required
+        && (!decoded.envelope.config_id
+            || decoded.envelope.config_id->empty())) {
+        return reject(TriggerIngressError::config_id_required);
+    }
+    const bool requires_binary = descriptor->inbound_binary
+        == command_catalog::TriggerInboundBinaryPolicy::required;
+    if (requires_binary && !decoded.envelope.declares_binary) {
+        return reject(TriggerIngressError::binary_marker_required);
+    }
+    if (!requires_binary && decoded.envelope.declares_binary) {
+        return reject(TriggerIngressError::binary_marker_forbidden);
+    }
+
+    const auto response_mode = response_mode_for(*descriptor);
+    if (requires_binary) {
         pending_binary_.emplace(PendingBinary{
-            std::move(decoded.envelope), json.size(), response_mode,
+            std::move(decoded.envelope), json.size(), response_mode, descriptor,
         });
         return {TriggerIngressOutcome::awaiting_binary};
     }
-    return complete(std::move(decoded.envelope), std::nullopt, response_mode);
+    return complete(
+        std::move(decoded.envelope), std::nullopt, response_mode, descriptor);
 }
 
 TriggerIngressResult TriggerIngress::receive_binary_frame(
@@ -135,7 +165,8 @@ TriggerIngressResult TriggerIngress::receive_binary_frame(
     return complete(
         std::move(pending.envelope),
         std::optional<std::vector<std::byte>>{std::move(owned_binary)},
-        pending.response_mode
+        pending.response_mode,
+        pending.descriptor
     );
 }
 
@@ -172,7 +203,8 @@ TriggerIngressState TriggerIngress::state() const noexcept
 TriggerIngressResult TriggerIngress::complete(
     CommandEnvelope envelope,
     std::optional<std::vector<std::byte>> binary,
-    const ResponseMode response_mode
+    const ResponseMode response_mode,
+    const command_catalog::TriggerCommandDescriptor* const descriptor
 )
 {
     const std::optional<std::size_t> binary_bytes = binary
@@ -183,7 +215,7 @@ TriggerIngressResult TriggerIngress::complete(
     }
 
     TriggerIngressItem item{
-        std::move(envelope), std::move(binary), std::move(build),
+        std::move(envelope), std::move(binary), std::move(build), descriptor,
     };
     ready_.emplace(std::move(item));
     return {TriggerIngressOutcome::ready};

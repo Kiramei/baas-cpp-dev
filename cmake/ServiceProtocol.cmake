@@ -17,7 +17,10 @@ target_include_directories(
         PUBLIC
         "${BAAS_PROJECT_PATH}/include"
 )
-target_link_libraries(BAAS_service_protocol PUBLIC Threads::Threads)
+target_link_libraries(
+        BAAS_service_protocol
+        PUBLIC Threads::Threads BAAS_service_trigger_catalog
+)
 
 if(MSVC)
     target_compile_options(BAAS_service_protocol PUBLIC /utf-8)

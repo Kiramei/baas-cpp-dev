@@ -4,8 +4,8 @@
 boundary between WebSocket/Pipe framing and future command dispatch. It accepts
 already separated JSON and binary frames, delegates JSON schema parsing to
 `TriggerEnvelope`, and produces one owned item suitable for later
-`TriggerSession::admit()`. It performs no network I/O, command catalog lookup,
-session mutation, or command execution.
+`TriggerSession::admit()`. It performs catalog lookup and policy admission but
+no network I/O, automatic session mutation, dispatch, or command execution.
 
 ## State and frame order
 
@@ -18,28 +18,43 @@ The serial state machine is intentionally one-outstanding:
 | `ready` | `take_ready()` | returns the sole item and resumes JSON input |
 | `closed` | none | permanent `closed` rejection |
 
-Only `command:"import_config"` with the exact JSON boolean
-`payload.binary:true` enters `awaiting_binary`; the rule comes from
-`decode_command_envelope()` rather than a second parser. A JSON frame while
-awaiting binary is discarded with `json_while_awaiting_binary` and clears the
+Only the catalog descriptor whose inbound policy is `required`—currently
+`command:"import_config"`—with the exact JSON boolean
+`payload.binary:true` enters `awaiting_binary`. The codec reports the marker
+without command knowledge and ingress applies the catalog rule. A JSON frame
+while awaiting binary is discarded with `json_while_awaiting_binary` and clears the
 partial command. A binary frame without that declaration is rejected with
 `binary_without_declaration`. A frame received while a completed item is still
 untaken returns `item_pending` without replacing the complete item.
 
 The binary is represented as `optional<vector<byte>>`. `nullopt` means no
 binary frame; an engaged empty vector proves a present zero-length frame. The
-ready item owns the decoded `CommandEnvelope`, optional bytes, and successful
-`BuildAdmissionResult`/`CommandAdmission`. The caller supplies the future
-single/stream `ResponseMode`; ingress validates the enum but does not implement
-a command catalog.
+ready item owns the decoded `CommandEnvelope`, optional bytes, successful
+`BuildAdmissionResult`/`CommandAdmission`, and stable catalog descriptor. Its
+single/stream `ResponseMode` comes only from that descriptor; callers cannot
+override it. `admit_to(TriggerSession&)` submits the immutable catalog-derived
+admission without reconstructing policy.
+
+Before frame state changes, ingress returns stable `unknown_command`,
+`config_id_required`, `binary_marker_required`, or
+`binary_marker_forbidden` errors. Required config IDs reject both absence and
+the empty string; present-empty remains valid for commands without that
+requirement. This fail-fast binary policy is a deliberate safety hardening over
+Python: Python currently ignores a true marker on other commands and reports a
+missing import payload later during execution.
 
 ## Transactional failure and lifecycle
 
 JSON decode failures retain `EnvelopeError` and its byte offset. Oversized or
-wrong-type frames, invalid response mode, codec rejection, and admission
+wrong-type frames, catalog rejection, codec rejection, and admission
 rejection never leave a partial command. On receipt of the promised binary,
 the pending envelope is removed before any limit check or allocation, so even
 allocation exceptions cannot leave `awaiting_binary` state.
+
+Ingress errors reset or preserve this local state exactly as documented, but
+do not define whether a live transport must close its connection. Mapping
+framing/schema failures to recoverable responses or connection-fatal closure
+remains a responsibility of the pending authenticated adapter.
 
 `reset()` explicitly drops pending or completed input and resumes
 `accepting_json`. It cannot reopen an ingress after `close()`. `close()` is
@@ -65,12 +80,13 @@ clears that partial command, preventing late bytes from attaching to later JSON.
 ## Verification and remaining boundary
 
 `BAAS_service_trigger_ingress_tests` covers owned JSON-only and binary items,
-zero-length presence, one outstanding item, strict adjacency, false/unrelated
-binary markers, malformed and duplicate-key JSON, invalid modes and limits,
-independent JSON/binary/aggregate bounds, reset, close, late frames, and clean
-recovery after every structured failure.
+zero-length presence, one outstanding item, strict adjacency, required and
+forbidden binary markers, malformed and duplicate-key JSON, unknown commands,
+required/optional-empty config IDs, catalog-derived modes, direct session
+admission, independent JSON/binary/aggregate limits, reset, close, late frames,
+and clean recovery after every structured failure.
 
 Still pending are authenticated WebSocket/Pipe hosts, frame decryption/decoding
-adapters, the command catalog and payload schemas, actual
-`TriggerSession::admit()` orchestration, runtime execution, cancellation, and
-shared Python/C++/Tauri end-to-end fixtures.
+adapters, command-specific payload schemas, connection-owned orchestration of
+`admit_to()`, dispatch/runtime execution, cancellation, and shared
+Python/C++/Tauri end-to-end fixtures.

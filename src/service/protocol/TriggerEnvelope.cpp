@@ -773,7 +773,7 @@ DecodeCommandResult decode_command_envelope(
 
     const auto* config_id = member(*root, "config_id");
     if (config_id && config_id->kind != JsonKind::null) {
-        if (config_id->kind != JsonKind::string || config_id->text.empty()
+        if (config_id->kind != JsonKind::string
             || config_id->text.size() > limits.max_config_id_bytes) {
             result.error = EnvelopeError::invalid_config_id;
             return result;
@@ -798,9 +798,8 @@ DecodeCommandResult decode_command_envelope(
     result.envelope.timestamp = *decoded_timestamp;
     result.envelope.payload_json = std::move(*encoded_payload);
     if (const auto* binary = member(*payload, "binary")) {
-        result.envelope.expects_binary =
-            result.envelope.command == "import_config"
-            && binary->kind == JsonKind::boolean && binary->boolean;
+        result.envelope.declares_binary =
+            binary->kind == JsonKind::boolean && binary->boolean;
     }
     return result;
 }
@@ -810,7 +809,7 @@ BuildAdmissionResult make_admission(
     const std::optional<std::size_t> binary_frame_bytes,
     const ResponseMode mode)
 {
-    if (binary_frame_bytes.has_value() != envelope.expects_binary) {
+    if (binary_frame_bytes.has_value() != envelope.declares_binary) {
         return {{}, EnvelopeError::binary_presence_mismatch};
     }
     return {{

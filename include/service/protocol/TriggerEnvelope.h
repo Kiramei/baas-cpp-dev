@@ -62,14 +62,14 @@ enum class EnvelopeError : std::uint8_t {
 
 // payload_json is validated, duplicate-free, compact UTF-8 JSON. Unknown
 // top-level fields are ignored to retain Pydantic v1's existing extra-field
-// compatibility. Only import_config with payload.binary === true declares an
-// inbound BYTES frame, matching the Python channel handler.
+// compatibility. The codec reports the exact payload.binary === true marker;
+// command-specific permission and requirement belong to TriggerCommandCatalog.
 struct CommandEnvelope {
     std::string command;
     Timestamp timestamp{};
     std::optional<std::string> config_id;
     std::string payload_json{"{}"};
-    bool expects_binary{};
+    bool declares_binary{};
 };
 
 struct DecodeCommandResult {

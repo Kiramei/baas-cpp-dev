@@ -112,6 +112,13 @@ if(BUILD_SERVICE_PROTOCOL_TESTS AND NOT BUILD_SERVICE_PROTOCOL)
     set(BUILD_SERVICE_PROTOCOL ON CACHE BOOL "Build the standalone BAAS service protocol library" FORCE)
 endif()
 
+# Trigger ingress consumes command policy from the catalog. Keep this a
+# one-way dependency: the allocation-free catalog never depends on protocol
+# framing, envelopes, or sessions.
+if(BUILD_SERVICE_PROTOCOL AND NOT BUILD_SERVICE_TRIGGER_CATALOG)
+    set(BUILD_SERVICE_TRIGGER_CATALOG ON CACHE BOOL "Build the transport-independent trigger command catalog" FORCE)
+endif()
+
 if(BUILD_SERVICE_TRIGGER_CATALOG_TESTS AND NOT BUILD_SERVICE_TRIGGER_CATALOG)
     set(BUILD_SERVICE_TRIGGER_CATALOG ON CACHE BOOL "Build the transport-independent trigger command catalog" FORCE)
 endif()
@@ -254,12 +261,12 @@ if(BUILD_SCRIPT_RUNTIME)
     include("${CMAKE_CURRENT_LIST_DIR}/cmake/ScriptRuntime.cmake")
 endif()
 
-if(BUILD_SERVICE_PROTOCOL)
-    include("${CMAKE_CURRENT_LIST_DIR}/cmake/ServiceProtocol.cmake")
-endif()
-
 if(BUILD_SERVICE_TRIGGER_CATALOG)
     include("${CMAKE_CURRENT_LIST_DIR}/cmake/ServiceTriggerCatalog.cmake")
+endif()
+
+if(BUILD_SERVICE_PROTOCOL)
+    include("${CMAKE_CURRENT_LIST_DIR}/cmake/ServiceProtocol.cmake")
 endif()
 
 if(BUILD_SERVICE_ROUTER)

@@ -47,17 +47,34 @@ The commands requiring top-level `config_id` are `start_scheduler`,
 Payload fields such as configuration `id`, `task`, or `operation` are outside
 this catalog.
 
-## Boundary and verification
+## Admission integration and compatibility
 
-The catalog classifies a supplied byte string only. It intentionally does not
-duplicate `TriggerSession` command syntax, UTF-8, or 128-byte admission limits;
-a transport must admit an envelope before catalog dispatch. Consequently a
-large or embedded-NUL input still receives exact length-aware selector
-semantics when the catalog is tested in isolation, even though normal envelope
-admission rejects it.
+`TriggerIngress` resolves every decoded envelope against this table before it
+can become ready. Unknown commands, absent or empty required `config_id`, a
+missing required `payload.binary:true`, and a marker forbidden by the selected
+descriptor receive stable ingress errors. A present-empty config ID remains
+valid for commands such as `status` that do not require one. The descriptor's
+single/stream mode is converted once into protocol `ResponseMode`, stored in
+the ready admission, and passed directly to `TriggerSession` by `admit_to()`.
+
+This is deliberately stricter than the current Python handler at the transport
+edge. Python ignores `payload.binary:true` on non-import commands and lets an
+`import_config` without the true marker reach later execution; C++ ingress
+rejects both before frame ownership or session correlation changes. Accepted
+command inventory, prefix order, and config-ID truthiness still mirror Python.
+Whether a schema/framing rejection is connection-fatal or recoverable belongs
+to the still-pending live adapter and is not claimed here.
+
+The catalog itself remains allocation-free and does not duplicate
+`TriggerSession` command syntax, UTF-8, or 128-byte admission limits. A large
+or embedded-NUL input therefore still receives exact length-aware selector
+semantics in isolated catalog tests, even though envelope/session boundaries
+reject it in the integrated path.
 
 `BAAS_service_trigger_catalog_tests` freezes the complete inventory and
 metadata, precedence collisions, the intentionally broad wildcard families,
 stream-only commands, `config_id` and binary policies, embedded-NUL and invalid
 byte cases, oversized inputs, stable descriptor identity, and total enum-name
-fallbacks. No application, service, socket, or device is started by the suite.
+fallbacks. `BAAS_service_trigger_ingress_tests` freezes integrated policy
+errors, response-mode derivation, direct session admission, and zero-length
+binary presence. No application, service, socket, or device is started.

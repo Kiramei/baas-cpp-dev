@@ -182,8 +182,7 @@ AdmissionResult TriggerSession::admit(CommandAdmission command)
     if (command.timestamp > maximum_safe_timestamp)
         return reject(AdmissionError::invalid_timestamp);
     if (command.config_id
-        && (command.config_id->empty()
-            || command.config_id->size() > limits_.max_config_id_bytes
+        && (command.config_id->size() > limits_.max_config_id_bytes
             || !is_valid_utf8(*command.config_id))) {
         return reject(AdmissionError::invalid_config_id);
     }

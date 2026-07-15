@@ -120,6 +120,12 @@ void test_admission_validation_and_correlation_reservation()
     check(session.admit(std::move(invalid)).error == trigger::AdmissionError::invalid_config_id,
           "invalid UTF-8 config ids must be rejected before dispatch");
 
+    trigger::TriggerSession empty_config_session;
+    auto empty_config = command("status", 2);
+    empty_config.config_id = std::string{};
+    check(static_cast<bool>(empty_config_session.admit(std::move(empty_config))),
+          "present-empty config id is valid for commands without a catalog requirement");
+
     invalid = command("status", 3);
     invalid.payload_bytes = limits.max_request_payload_bytes + 1;
     check(session.admit(std::move(invalid)).error == trigger::AdmissionError::payload_too_large,

@@ -57,8 +57,8 @@ void test_command_decode_and_compatibility()
     check(decoded.envelope.payload_json
               == R"({"binary":true,"nested":{"name":"A\nB"}})",
           "payload must be compact validated JSON with semantic escapes preserved");
-    check(decoded.envelope.expects_binary,
-          "only payload.binary true must declare the next inbound binary frame");
+    check(decoded.envelope.declares_binary,
+          "payload.binary true must be reported without command policy");
     check(trigger::make_admission(decoded.envelope, std::nullopt).error
               == trigger::EnvelopeError::binary_presence_mismatch,
           "declared binary input must not dispatch without its following frame");
@@ -70,7 +70,7 @@ void test_command_decode_and_compatibility()
     const auto defaults = trigger::decode_command_envelope(
         R"({"type":"command","command":"status","timestamp":0,"unknown":true})");
     check(defaults && defaults.envelope.payload_json == "{}"
-              && !defaults.envelope.config_id && !defaults.envelope.expects_binary,
+              && !defaults.envelope.config_id && !defaults.envelope.declares_binary,
           "Pydantic-compatible missing optional fields and unknown fields must survive");
     check(trigger::make_admission(defaults.envelope, std::size_t{1}).error
               == trigger::EnvelopeError::binary_presence_mismatch,
@@ -78,13 +78,13 @@ void test_command_decode_and_compatibility()
 
     const auto false_binary = trigger::decode_command_envelope(
         R"({"type":"command","command":"import_config","timestamp":2,"payload":{"binary":false}})");
-    check(false_binary && !false_binary.envelope.expects_binary,
+    check(false_binary && !false_binary.envelope.declares_binary,
           "false binary marker must not consume a following frame");
 
     const auto unrelated_binary = trigger::decode_command_envelope(
         R"({"type":"command","command":"status","timestamp":3,"payload":{"binary":true}})");
-    check(unrelated_binary && !unrelated_binary.envelope.expects_binary,
-          "only import_config may consume the following global binary frame");
+    check(unrelated_binary && unrelated_binary.envelope.declares_binary,
+          "codec must report a true marker for catalog policy validation");
 }
 
 void test_schema_and_json_rejections()
@@ -115,10 +115,11 @@ void test_schema_and_json_rejections()
         check_decode_error(json, trigger::EnvelopeError::invalid_timestamp,
                            "timestamp must be an unsigned JS-safe integer token");
     }
-    check_decode_error(
-        R"({"type":"command","command":"status","timestamp":1,"config_id":""})",
-        trigger::EnvelopeError::invalid_config_id,
-        "empty config ids must fail before admission");
+    const auto empty_config = trigger::decode_command_envelope(
+        R"({"type":"command","command":"status","timestamp":1,"config_id":""})");
+    check(empty_config && empty_config.envelope.config_id
+              && empty_config.envelope.config_id->empty(),
+          "empty config ids remain present for catalog truthiness policy");
     check_decode_error(
         R"({"type":"command","command":"status","timestamp":1,"payload":[]})",
         trigger::EnvelopeError::invalid_payload,

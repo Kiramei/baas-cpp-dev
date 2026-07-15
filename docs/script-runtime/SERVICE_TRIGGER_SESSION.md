@@ -144,7 +144,8 @@ macOS.
 
 Still required before the Phase 4 task API item is complete:
 
-- catalog admission/dispatch integration and actual runtime/executor task ownership;
+- catalog-selected admissions are integrated; command dispatch and actual
+  runtime/executor task ownership remain pending;
 - a coordinated general cancellation message or exact legacy stop-command
   mapping;
 - WebSocket and live Pipe channel hosts using this core;

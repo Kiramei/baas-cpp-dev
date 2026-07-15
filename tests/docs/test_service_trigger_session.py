@@ -45,6 +45,7 @@ class ServiceTriggerSessionTests(unittest.TestCase):
             ROOT / "tests/service/TriggerEgressTests.cpp"
         ).read_text(encoding="utf-8")
         cls.cmake = (ROOT / "cmake/ServiceProtocol.cmake").read_text(encoding="utf-8")
+        cls.root_cmake = (ROOT / "CMakeLists.txt").read_text(encoding="utf-8")
         cls.workflow = (
             ROOT / ".github/workflows/foundation-runtime.yml"
         ).read_text(encoding="utf-8")
@@ -162,23 +163,44 @@ class ServiceTriggerSessionTests(unittest.TestCase):
             "std::optional<std::vector<std::byte>>",
             "BuildAdmissionResult",
             "take_ready",
+            "TriggerCommandCatalog.h",
+            "admit_to(TriggerSession& session)",
         ):
             self.assertIn(anchor, self.ingress_header)
         self.assertIn("decode_command_envelope", self.ingress_source)
         self.assertIn("make_admission", self.ingress_source)
         self.assertIn("pending_binary_.reset();", self.ingress_source)
         self.assertIn("checked_add", self.ingress_source)
+        for policy_anchor in (
+            "TriggerCommandCatalog::lookup",
+            "unknown_command",
+            "config_id_required",
+            "binary_marker_required",
+            "binary_marker_forbidden",
+            "response_mode_for",
+        ):
+            self.assertIn(policy_anchor, self.ingress_source)
         for test_name in (
             "test_json_only_ready_item_is_owned_and_single_outstanding",
             "test_declared_binary_is_adjacent_owned_and_zero_length_distinct",
             "test_binary_marker_gate_and_strict_frame_order",
+            "test_catalog_policy_and_direct_session_admission",
             "test_frame_and_aggregate_limits_clear_partial_state",
-            "test_envelope_failures_modes_and_limit_validation_recover",
+            "test_envelope_failures_and_limit_validation_recover",
             "test_reset_and_close_are_explicit_and_terminal",
         ):
             self.assertIn(test_name, self.ingress_tests)
         self.assertIn("BAAS_service_trigger_ingress_tests", self.cmake)
         self.assertIn("BAAS_service_trigger_ingress_tests", self.workflow)
+        self.assertIn("PUBLIC Threads::Threads BAAS_service_trigger_catalog", self.cmake)
+        self.assertLess(
+            self.root_cmake.index('include("${CMAKE_CURRENT_LIST_DIR}/cmake/ServiceTriggerCatalog.cmake")'),
+            self.root_cmake.index('include("${CMAKE_CURRENT_LIST_DIR}/cmake/ServiceProtocol.cmake")'),
+        )
+        self.assertIn(
+            "if(BUILD_SERVICE_PROTOCOL AND NOT BUILD_SERVICE_TRIGGER_CATALOG)",
+            self.root_cmake,
+        )
 
     def test_docs_and_ci_preserve_the_remaining_service_boundary(self) -> None:
         self.assertEqual(
@@ -205,23 +227,29 @@ class ServiceTriggerSessionTests(unittest.TestCase):
         self.assertIn("BAAS_service_trigger_catalog_tests", self.workflow)
         self.assertIn("- [~] Implement task submission", self.roadmap)
         for pending in (
-            "catalog admission/dispatch integration",
+            "command dispatch and actual",
             "WebSocket and live Pipe channel hosts",
             "shared Python/C++/Tauri fixtures",
         ):
             self.assertIn(pending, self.spec)
         self.assertIn("TriggerEnvelope", self.protocol)
-        self.assertIn("does not yet dispatch commands", self.protocol)
+        self.assertIn("does\nnot yet dispatch or execute commands", self.protocol)
         self.assertIn("dependency-free JSON codec", self.envelope_spec)
         self.assertIn("zero-length BYTES frame", self.envelope_spec)
+        self.assertIn("`declares_binary`", self.envelope_spec)
         self.assertIn("does not execute commands", self.catalog_spec)
         self.assertIn("Only `import_config`", self.catalog_spec)
+        self.assertIn("deliberately stricter than the current Python handler", self.catalog_spec)
+        self.assertIn(
+            "recoverable responses or connection-fatal closure",
+            self.ingress_spec,
+        )
         for boundary in (
             "dependency-free, transport-independent",
             "one-outstanding",
             "immediately adjacent binary frame",
             "present zero-length frame",
-            "performs no network I/O",
+            "no network I/O",
         ):
             self.assertIn(boundary, self.ingress_spec)
 
