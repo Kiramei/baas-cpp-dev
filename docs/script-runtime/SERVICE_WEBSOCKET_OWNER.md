@@ -82,7 +82,24 @@ The handler is the only socket reader. Each admitted session has one bounded
 writer queue, while one shared scheduler drives handshake deadlines and
 heartbeats. Calls into one `SessionDriver` are serialized, and a driver cannot
 transition from streaming back to handshaking. Outbound batches preserve
-consecutive JSON-plus-binary writes and contain at most two frames.
+consecutive JSON-plus-binary writes and contain at most two frames. An enqueue
+may carry a shared `BatchCompletion` observer. A non-null observer receives
+exactly one `BatchWriteResult`: `written` only after every frame in the batch
+has been written consecutively, or `failed` once the entire batch can no longer
+be written. A partial JSON-plus-binary write is therefore `failed`, never
+`written`.
+
+Synchronous enqueue rejection completes the observer with `failed` before
+`enqueue()` returns. Accepted batches are completed later by the writer or
+teardown path; acceptance alone is not a transport acknowledgement. Normal
+terminal handling still drains batches accepted before the terminal action,
+while shutdown, transport interruption, write failure, and any discarded queue
+complete their unsendable batches with `failed`. Active bytes remain charged
+until the write attempt ends, and every queued or active charge is released
+before its callback. Callbacks can run on the enqueue, writer, or teardown
+thread and are invoked without the owner queue, registry, transport, or writer
+mutex held. Observer implementations must be non-blocking and `noexcept` and
+must tolerate callback re-entry into the outbound sink.
 
 Origin is evaluated immediately after the HTTP 101 upgrade because
 cpp-httplib's WebSocket callback owns the upgraded socket. A denied or
@@ -153,8 +170,9 @@ are:
 - `BAAS_service_websocket_handshake_tests` for exact route, target, authority,
   cardinality, token, key, version, and body-framing validation;
 - `BAAS_service_websocket_owner_tests` for driver serialization, frame/batch
-  limits, backpressure, close codes, capacity, deadlines, heartbeats,
-  interrupt, shutdown, and restart behavior through a fake transport;
+  limits, backpressure, exact-once batch completion, partial-write failure,
+  callback re-entry, close codes, capacity, deadlines, heartbeats, interrupt,
+  shutdown, and restart behavior through a fake transport;
 - `BAAS_service_websocket_wire_tests` for real 101/426 responses, strict target
   rejection, rejected-body connection closure, post-upgrade close codes, slow
   partial masked frames, full-capacity `/health` reserve, and bounded idle stop

@@ -240,8 +240,11 @@ struct Fixture {
 
 class Sink final : public ws::OutboundSink {
 public:
-    [[nodiscard]] ws::EnqueueResult enqueue(ws::OutboundBatch) override
+    [[nodiscard]] ws::EnqueueResult enqueue(
+        ws::OutboundBatch,
+        std::shared_ptr<ws::BatchCompletion> completion) override
     {
+        if (completion) completion->complete(ws::BatchWriteResult::written);
         return ws::EnqueueResult::accepted;
     }
     void terminate(ws::TerminalAction) noexcept override {}

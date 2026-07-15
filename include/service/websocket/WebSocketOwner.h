@@ -18,6 +18,13 @@ class Server;
 
 namespace baas::service::websocket {
 
+#if defined(BAAS_SERVICE_WEBSOCKET_TEST_HOOKS)
+struct WebSocketOwnerTestAccess final {
+    static void fail_next_enqueue_allocation() noexcept;
+    [[nodiscard]] static std::size_t rejected_payload_bytes() noexcept;
+};
+#endif
+
 inline constexpr std::size_t websocket_max_frame_bytes = 64U * 1'024U * 1'024U;
 inline constexpr std::uint16_t websocket_close_origin_rejected = 4403;
 inline constexpr std::uint16_t websocket_close_authentication_failed = 4401;
@@ -57,12 +64,29 @@ enum class EnqueueResult : std::uint8_t {
     resource_exhausted,
 };
 
+enum class BatchWriteResult : std::uint8_t { written, failed };
+
+// Optional per-enqueue observer. A non-null observer is completed exactly once:
+// synchronously with failed when enqueue rejects the batch, or asynchronously
+// after an accepted batch is wholly written or made permanently unsendable.
+// complete() may run on the enqueue, writer, or teardown thread. Implementations
+// must return promptly and must not throw. The owner invokes it without holding
+// its queue, registry, transport, or writer mutex.
+class BatchCompletion {
+public:
+    virtual ~BatchCompletion() = default;
+    virtual void complete(BatchWriteResult result) noexcept = 0;
+};
+
 enum class TerminalAction : std::uint8_t;
 
 class OutboundSink {
 public:
     virtual ~OutboundSink() = default;
-    [[nodiscard]] virtual EnqueueResult enqueue(OutboundBatch batch) = 0;
+    [[nodiscard]] virtual EnqueueResult enqueue(
+        OutboundBatch batch,
+        std::shared_ptr<BatchCompletion> completion = {}
+    ) = 0;
     virtual void terminate(TerminalAction action) noexcept = 0;
 };
 
