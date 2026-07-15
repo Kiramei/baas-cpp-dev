@@ -71,6 +71,7 @@ struct StreamState {
     bool closed{};
     bool partial_write{};
     std::size_t partial_write_on_call{};
+    std::size_t throw_after_partial_on_call{};
 };
 
 class FakeStream final : public pipe::PipeStream {
@@ -139,11 +140,16 @@ public:
         if (state_->closed) return {0, false, true, false};
         const auto partial = state_->partial_write
             || (state_->partial_write_on_call != 0
-                && state_->writes.size() + 1 == state_->partial_write_on_call);
+                && state_->writes.size() + 1 == state_->partial_write_on_call)
+            || (state_->throw_after_partial_on_call != 0
+                && state_->writes.size() + 1 == state_->throw_after_partial_on_call);
         const auto count = partial && !input.empty()
             ? input.size() - 1 : input.size();
         state_->writes.emplace_back(input.begin(), input.begin()
             + static_cast<std::ptrdiff_t>(count));
+        if (state_->throw_after_partial_on_call != 0
+            && state_->writes.size() == state_->throw_after_partial_on_call)
+            throw std::runtime_error("write threw after partial visibility");
         return {count, false, partial, false};
     }
 
@@ -202,6 +208,9 @@ struct FactoryState {
     std::function<void(std::stop_token)> factory_action;
     pipe::PipeHostError last_write_error{pipe::PipeHostError::none};
     std::size_t emit_payload_size{};
+    bool retry_after_write_failure{};
+    bool use_write_frame{};
+    pipe::PipeHostError second_write_error{pipe::PipeHostError::none};
     bool callback_entered{};
     bool cancellation_observed{};
 };
@@ -220,6 +229,8 @@ public:
         bool emit{};
         std::function<void(std::stop_token)> action;
         std::size_t emit_payload_size{};
+        bool retry_after_write_failure{};
+        bool use_write_frame{};
         {
             std::lock_guard lock(state_->mutex);
             ++state_->frames;
@@ -227,6 +238,8 @@ public:
             emit = state_->emit_batch;
             action = state_->action;
             emit_payload_size = state_->emit_payload_size;
+            retry_after_write_failure = state_->retry_after_write_failure;
+            use_write_frame = state_->use_write_frame;
         }
         if (action) action(stop_token);
         if (throw_now) throw std::runtime_error("handler failure");
@@ -241,10 +254,17 @@ public:
                 output[0].payload.assign(bytes(R"({"type":"reply"})").begin(),
                     bytes(R"({"type":"reply"})").end());
             }
-            const auto error = writer.write_batch(output);
+            const auto error = use_write_frame
+                ? writer.write_frame(bpip::FrameKind::json, output[0].payload)
+                : writer.write_batch(output);
+            const auto second_error = error != pipe::PipeHostError::none
+                    && retry_after_write_failure
+                ? writer.write_frame(bpip::FrameKind::json, bytes("{}"))
+                : pipe::PipeHostError::none;
             {
                 std::lock_guard lock(state_->mutex);
                 state_->last_write_error = error;
+                state_->second_write_error = second_error;
             }
             return {pipe::PipeHandlerAction::continue_connection, error};
         }
@@ -490,26 +510,36 @@ void test_partial_write_and_connection_limit_close_and_join()
 
 void test_partial_handler_write_is_never_followed_by_close()
 {
-    auto listener = std::make_unique<FakeListener>();
-    auto* view = listener.get();
-    const auto stream = std::make_shared<StreamState>();
-    stream->partial_write_on_call = 2;
-    stream->reads.push_back(open_and(
-        R"({"type":"open","channel":"sync","name":"partial-handler"})",
-        {frame(bpip::FrameKind::json, "{}") }));
-    view->push(std::make_unique<FakeStream>(stream));
-    const auto factory = std::make_shared<FactoryState>();
-    factory->emit_batch = true;
-    pipe::PipeHost host{std::move(listener),
-        std::make_shared<RecordingFactory>(factory)};
-    check(host.start(), "partial handler-write host must start");
-    check(wait_until([&] { return host.stats().completed == 1; }),
-          "partial handler output must close the connection");
-    host.stop();
-    host.join();
-    std::lock_guard lock(stream->mutex);
-    check(stream->writes.size() == 2,
-          "partial handler output must not be followed by CLOSE or ERROR+CLOSE");
+    for (const bool throw_after_partial : {false, true}) {
+        auto listener = std::make_unique<FakeListener>();
+        auto* view = listener.get();
+        const auto stream = std::make_shared<StreamState>();
+        if (throw_after_partial) stream->throw_after_partial_on_call = 2;
+        else stream->partial_write_on_call = 2;
+        stream->reads.push_back(open_and(
+            R"({"type":"open","channel":"sync","name":"partial-handler"})",
+            {frame(bpip::FrameKind::json, "{}") }));
+        view->push(std::make_unique<FakeStream>(stream));
+        const auto factory = std::make_shared<FactoryState>();
+        factory->emit_batch = true;
+        factory->retry_after_write_failure = true;
+        pipe::PipeHost host{std::move(listener),
+            std::make_shared<RecordingFactory>(factory)};
+        check(host.start(), "partial handler-write host must start");
+        check(wait_until([&] { return host.stats().completed == 1; }),
+              "partial or throwing handler output must close the connection");
+        host.stop();
+        host.join();
+        {
+            std::lock_guard lock(stream->mutex);
+            check(stream->writes.size() == 2,
+                  "poisoned handler retry and host terminal path must issue zero writes");
+        }
+        std::lock_guard lock(factory->mutex);
+        check(factory->last_write_error == pipe::PipeHostError::write_failed
+                  && factory->second_write_error == pipe::PipeHostError::write_failed,
+              "partial and throw-after-partial writes must permanently poison writer");
+    }
 }
 
 void test_declared_oversized_open_is_rejected_from_header()
@@ -595,7 +625,8 @@ void test_global_retained_byte_budgets()
     egress_limits.max_total_egress_retained_bytes = 64;
     const auto egress_factory = std::make_shared<FactoryState>();
     egress_factory->emit_batch = true;
-    egress_factory->emit_payload_size = 100;
+    egress_factory->emit_payload_size = 1U * 1'024U * 1'024U;
+    egress_factory->use_write_frame = true;
     pipe::PipeHost egress_host{std::move(egress_listener),
         std::make_shared<RecordingFactory>(egress_factory), egress_limits};
     check(egress_host.start(), "egress-budget host must start");

@@ -75,6 +75,11 @@ class ServicePipeHostTests(unittest.TestCase):
         self.assertIn("try_reserve_ingress(declared)", self.source)
         self.assertIn("try_reserve_ingress(*expected)", self.source)
         self.assertIn("try_reserve_egress(wire_size)", self.source)
+        self.assertLess(
+            self.source.index("try_reserve_egress(wire_size)"),
+            self.source.index("output.insert(output.end(), payload.begin()"),
+        )
+        self.assertNotIn("bpip::Bytes{payload.begin(), payload.end()}", self.source)
 
     def test_fake_tests_cover_lifecycle_and_atomicity(self) -> None:
         for test_name in (
@@ -93,6 +98,8 @@ class ServicePipeHostTests(unittest.TestCase):
             self.assertIn(test_name, self.tests)
         self.assertIn("class FakeListener", self.tests)
         self.assertIn("class FakeStream", self.tests)
+        self.assertIn("throw_after_partial_on_call", self.tests)
+        self.assertIn("retry_after_write_failure", self.tests)
 
     def test_independent_target_ci_and_docs_do_not_overclaim(self) -> None:
         self.assertIn("BAAS_service_pipe_host", self.cmake)

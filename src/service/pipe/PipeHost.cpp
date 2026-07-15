@@ -435,17 +435,58 @@ bpip::EncodeResult encode_pipe_open_ok(const PipeChannel channel)
 PipeHostError PipeConnectionWriter::write_frame(
     const bpip::FrameKind kind, const std::span<const std::byte> payload)
 {
-    const std::array frames{bpip::Frame{bpip::kind_value(kind),
-        bpip::Bytes{payload.begin(), payload.end()}}};
-    return write_batch(frames);
+    const auto wire_size = bpip::header_size + payload.size();
+    bool reserved{};
+    bool io_started{};
+    try {
+        std::lock_guard lock(mutex_);
+        if (transport_poisoned_) return PipeHostError::write_failed;
+        if (kind == bpip::FrameKind::close && !payload.empty())
+            return PipeHostError::nonempty_close;
+        if (kind == bpip::FrameKind::error && !payload.empty()
+            && !valid_utf8(std::string_view{
+                reinterpret_cast<const char*>(payload.data()), payload.size()}))
+            return PipeHostError::write_failed;
+        if (payload.size() > bpip::max_payload_size
+            || wire_size > max_atomic_write_bytes_)
+            return PipeHostError::atomic_write_too_large;
+        const auto header = bpip::encode_header(kind, payload.size());
+        if (!header) return PipeHostError::atomic_write_too_large;
+        if (!host_.try_reserve_egress(wire_size))
+            return PipeHostError::egress_budget_exhausted;
+        reserved = true;
+        bpip::Bytes output;
+        output.reserve(wire_size);
+        output.insert(output.end(), header.header.begin(), header.header.end());
+        output.insert(output.end(), payload.begin(), payload.end());
+        io_started = true;
+        const auto result = stream_.write_all(output, write_timeout_);
+        host_.release_egress(wire_size);
+        reserved = false;
+        if (result.error || result.eof || result.timed_out
+            || result.bytes != output.size()) {
+            transport_poisoned_ = true;
+            return PipeHostError::write_failed;
+        }
+        return PipeHostError::none;
+    } catch (...) {
+        if (reserved) host_.release_egress(wire_size);
+        if (io_started) {
+            std::lock_guard lock(mutex_);
+            transport_poisoned_ = true;
+        }
+        return PipeHostError::write_failed;
+    }
 }
 
 PipeHostError PipeConnectionWriter::write_batch(const std::span<const bpip::Frame> frames)
 {
     std::size_t wire_size{};
     bool reserved{};
+    bool io_started{};
     try {
         std::lock_guard lock(mutex_);
+        if (transport_poisoned_) return PipeHostError::write_failed;
         for (const auto& frame : frames) {
             if (!bpip::is_known_kind(frame.kind))
                 return PipeHostError::unsupported_frame_kind;
@@ -479,6 +520,7 @@ PipeHostError PipeConnectionWriter::write_batch(const std::span<const bpip::Fram
             output.insert(output.end(), header.header.begin(), header.header.end());
             output.insert(output.end(), frame.payload.begin(), frame.payload.end());
         }
+        io_started = true;
         const auto result = stream_.write_all(output, write_timeout_);
         host_.release_egress(wire_size);
         reserved = false;
@@ -490,6 +532,10 @@ PipeHostError PipeConnectionWriter::write_batch(const std::span<const bpip::Fram
         return PipeHostError::none;
     } catch (...) {
         if (reserved) host_.release_egress(wire_size);
+        if (io_started) {
+            std::lock_guard lock(mutex_);
+            transport_poisoned_ = true;
+        }
         return PipeHostError::write_failed;
     }
 }
