@@ -10,6 +10,7 @@
 #include <opencv2/opencv.hpp>
 
 #include "definitions.h"
+#include "http_contract.h"
 #include "config/BAASConfig.h"
 
 OCR_NAMESPACE_BEGIN

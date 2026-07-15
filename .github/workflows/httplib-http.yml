@@ -1,0 +1,161 @@
+name: cpp-httplib HTTP compatibility
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/httplib-http.yml'
+      - 'CMakeLists.txt'
+      - 'cmake/BAASDependency.cmake'
+      - 'cmake/ServiceHttp.cmake'
+      - 'deploy/conan/profiles/dependency-versions-default'
+      - 'deploy/conan/recipes/baas-cpp-httplib/**'
+      - 'deploy/conan/README.md'
+      - 'include/service/**'
+      - 'src/service/http/**'
+      - 'src/service/origin/**'
+      - 'src/service/router/**'
+      - 'tests/service/HttplibAdapterTests.cpp'
+      - 'tests/service/HttpHostTests.cpp'
+      - 'tests/service/HttplibUpgradeContractTests.cpp'
+      - 'tests/docs/test_httplib_upgrade.py'
+      - 'apps/ocr_server/README.md'
+      - 'apps/ocr_server/include/http_contract.h'
+      - 'apps/ocr_server/include/server.h'
+      - 'apps/ocr_server/src/server.cpp'
+      - 'docs/script-runtime/SERVICE_HTTPLIB_ADAPTER.md'
+  pull_request:
+    branches:
+      - main
+    types:
+      - opened
+      - synchronize
+      - reopened
+    paths:
+      - '.github/workflows/httplib-http.yml'
+      - 'CMakeLists.txt'
+      - 'cmake/BAASDependency.cmake'
+      - 'cmake/ServiceHttp.cmake'
+      - 'deploy/conan/profiles/dependency-versions-default'
+      - 'deploy/conan/recipes/baas-cpp-httplib/**'
+      - 'deploy/conan/README.md'
+      - 'include/service/**'
+      - 'src/service/http/**'
+      - 'src/service/origin/**'
+      - 'src/service/router/**'
+      - 'tests/service/HttplibAdapterTests.cpp'
+      - 'tests/service/HttpHostTests.cpp'
+      - 'tests/service/HttplibUpgradeContractTests.cpp'
+      - 'tests/docs/test_httplib_upgrade.py'
+      - 'apps/ocr_server/README.md'
+      - 'apps/ocr_server/include/http_contract.h'
+      - 'apps/ocr_server/include/server.h'
+      - 'apps/ocr_server/src/server.cpp'
+      - 'docs/script-runtime/SERVICE_HTTPLIB_ADAPTER.md'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: httplib-http-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  host-http:
+    name: ${{ matrix.os }} / ${{ matrix.build_type }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        os:
+          - windows-latest
+          - ubuntu-latest
+          - macos-latest
+        build_type:
+          - Debug
+          - Release
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Conan
+        run: python -m pip install --disable-pip-version-check conan==2.30.0
+
+      - name: Detect host profile
+        run: conan profile detect --force
+
+      - name: Verify checked-in upgrade metadata
+        run: python -B -m unittest discover -s tests/docs -p "test_httplib_upgrade.py" -v
+
+      - name: Verify pinned recipe and package contract
+        run: >-
+          conan create deploy/conan/recipes/baas-cpp-httplib
+          -s:h build_type=${{ matrix.build_type }}
+          -s:b build_type=Release
+          --build=missing
+          --no-remote
+
+      - name: Generate httplib-only CMake dependencies
+        run: >-
+          conan install --requires=baas-cpp-httplib/0.50.1
+          -of build/conan/httplib-http
+          -s:h build_type=${{ matrix.build_type }}
+          -s:b build_type=Release
+          -g CMakeDeps
+          -g CMakeToolchain
+          --build=missing
+          --no-remote
+
+      - name: Configure HTTP tests
+        run: >-
+          cmake -S . -B build/httplib-http
+          "-DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}/build/conan/httplib-http/conan_toolchain.cmake"
+          -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
+          -DBUILD_TESTING=ON
+          -DBUILD_SERVICE_HTTP_TESTS=ON
+          -DBUILD_APP_BAAS=OFF
+          -DBUILD_APP_ISA=OFF
+          -DBUILD_BAAS_OCR=OFF
+          -DBUILD_BAAS_AW_CHECKER=OFF
+          -DBUILD_BAAS_NMS_BENCHMARK=OFF
+          -DBAAS_FETCH_RESOURCES=OFF
+
+      - name: Build HTTP compatibility tests
+        run: >-
+          cmake --build build/httplib-http
+          --config ${{ matrix.build_type }}
+          --parallel 4
+          --target BAAS_httplib_upgrade_contract_tests
+          BAAS_service_origin_policy_tests
+          BAAS_service_httplib_adapter_tests
+          BAAS_service_http_host_tests
+
+      - name: Run HTTP compatibility tests
+        run: >-
+          ctest --test-dir build/httplib-http
+          --build-config ${{ matrix.build_type }}
+          --output-on-failure
+          --timeout 60
+          -R "BAAS_(httplib_upgrade_contract|service_origin_policy|service_httplib_adapter|service_http_host)_tests"
+
+      - name: Repeat fixed worker and queue lifecycle gate
+        run: >-
+          ctest --test-dir build/httplib-http
+          --build-config ${{ matrix.build_type }}
+          --output-on-failure
+          --timeout 60
+          --repeat until-fail:5
+          -R "BAAS_(httplib_upgrade_contract|service_http_host)_tests"

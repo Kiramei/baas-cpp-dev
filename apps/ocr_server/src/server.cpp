@@ -29,6 +29,10 @@ Server::Server(){
 
 void Server::start()
 {
+    // Do not inherit cpp-httplib's release-dependent default. This bounds the
+    // complete HTTP body. Route helpers separately enforce a 64 MiB image and
+    // 1 MiB JSON field, leaving 64 KiB for multipart framing and headers.
+    http_contract::configure_server(svr);
     svr.Post("/create_shared_memory", [](const httplib::Request &req, httplib::Response &res) {
         BAAS_OCR::Server::handle_create_shared_memory(req, res);
     });
@@ -162,18 +166,10 @@ void Server::handle_ocr(
         long long t_start = BAASChronoUtil::getCurrentTimeMS();
         BAASGlobalLogger->sub_title("OCR");
         BAASConfig temp;
-        if (req.has_file("data")){
-            temp =  BAASConfig(
-                    nlohmann::json::parse(req.get_file_value("data").content),
-                    (BAASLogger*)BAASGlobalLogger
-            );
-        }
-        else{
-            temp = BAASConfig(
-                    nlohmann::json::parse(req.body),
-                    (BAASLogger*)BAASGlobalLogger
-            );
-        }
+        temp = BAASConfig(
+                nlohmann::json::parse(http_contract::request_json_payload(req)),
+                (BAASLogger*)BAASGlobalLogger
+        );
         out_req_params(temp.get_config());
 
         if (!temp.contains("language")){
@@ -233,18 +229,10 @@ void Server::handle_ocr_for_single_line(
         long long t_start = BAASChronoUtil::getCurrentTimeMS();
         BAASGlobalLogger->sub_title("OCR for single line");
         BAASConfig temp;
-        if (req.has_file("data")){
-            temp =  BAASConfig(
-                    nlohmann::json::parse(req.get_file_value("data").content),
-                    (BAASLogger*)BAASGlobalLogger
-            );
-        }
-        else{
-            temp = BAASConfig(
-                    nlohmann::json::parse(req.body),
-                    (BAASLogger*)BAASGlobalLogger
-            );
-        }
+        temp = BAASConfig(
+                nlohmann::json::parse(http_contract::request_json_payload(req)),
+                (BAASLogger*)BAASGlobalLogger
+        );
 
         out_req_params(temp.get_config());
         if (!temp.contains("language")){
@@ -303,18 +291,10 @@ void Server::handle_get_text_boxes(
         long long t_start = BAASChronoUtil::getCurrentTimeMS();
         BAASGlobalLogger->sub_title("Get Text Boxes");
         BAASConfig temp;
-        if (req.has_file("data")){
-            temp =  BAASConfig(
-                    nlohmann::json::parse(req.get_file_value("data").content),
-                    (BAASLogger*)BAASGlobalLogger
-            );
-        }
-        else{
-            temp = BAASConfig(
-                    nlohmann::json::parse(req.body),
-                    (BAASLogger*)BAASGlobalLogger
-            );
-        }
+        temp = BAASConfig(
+                nlohmann::json::parse(http_contract::request_json_payload(req)),
+                (BAASLogger*)BAASGlobalLogger
+        );
         out_req_params(temp.get_config());
 
         if (!temp.contains("language")){
@@ -403,11 +383,11 @@ int Server::req_get_image(
     }
     unsigned int pass_method = image_info.getUInt("pass_method");
     bool is_remote = req_is_remote(req);
-    std::string pass_method_name = image_pass_method_names[pass_method];
     if(pass_method >= 3){
         BAASGlobalLogger->BAASError("Invalid pass method : " + std::to_string(pass_method));
         return 1;
     }
+    std::string pass_method_name = image_pass_method_names[pass_method];
     if (is_remote and (pass_method == 0 or pass_method == 2) ){
         BAASGlobalLogger->BAASError("Remote request invalid pass_method : " + pass_method_name);
         return 1;
@@ -454,13 +434,17 @@ int Server::req_get_image(
 #endif // __ANDROID__
     }
     else if (pass_method == 1) {
-        const auto& file = req.get_file_value("image");
-        if (file.content.empty()){
+        auto file = http_contract::request_image_file(req);
+        if (file == nullptr) {
+            BAASGlobalLogger->BAASError("Request must contain exactly one 'image' file.");
+            return 1;
+        }
+        if (file->content.empty()){
             BAASGlobalLogger->BAASError("Request doesn't contain 'image' file.");
             return 1;
         }
-        const auto* image_data = (const uchar*)file.content.data();
-        ret = cv::imdecode(cv::Mat(1, int(file.content.size()), CV_8UC1, (void*)image_data), cv::IMREAD_COLOR);
+        const auto* image_data = (const uchar*)file->content.data();
+        ret = cv::imdecode(cv::Mat(1, int(file->content.size()), CV_8UC1, (void*)image_data), cv::IMREAD_COLOR);
     }
         // local file
     else {

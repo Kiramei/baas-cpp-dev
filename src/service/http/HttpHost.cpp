@@ -93,7 +93,9 @@ public:
         std::atomic<std::size_t>& rejections,
         const void* owner
     )
-        : pool_(workers, queued_requests), rejections_(rejections), owner_(owner)
+        : pool_(workers, workers, queued_requests),
+          rejections_(rejections),
+          owner_(owner)
     {}
 
     bool enqueue(std::function<void()> task) override

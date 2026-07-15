@@ -1,5 +1,7 @@
 include_guard(GLOBAL)
 
+find_package(Threads REQUIRED)
+
 add_library(
         BAAS_service_http
         STATIC
@@ -18,6 +20,7 @@ target_link_libraries(
         BAAS_service_origin_policy
         BAAS_service_router
         BAAS::httplib
+        Threads::Threads
 )
 
 if(MSVC)
@@ -28,6 +31,31 @@ endif()
 
 if(BUILD_SERVICE_HTTP_TESTS)
     include(CTest)
+    add_executable(
+            BAAS_httplib_upgrade_contract_tests
+            "${BAAS_PROJECT_PATH}/tests/service/HttplibUpgradeContractTests.cpp"
+    )
+    target_compile_features(BAAS_httplib_upgrade_contract_tests PRIVATE cxx_std_20)
+    target_include_directories(
+            BAAS_httplib_upgrade_contract_tests
+            PRIVATE
+            "${BAAS_PROJECT_PATH}/apps/ocr_server/include"
+    )
+    target_link_libraries(
+            BAAS_httplib_upgrade_contract_tests
+            PRIVATE
+            BAAS::httplib
+            Threads::Threads
+    )
+    add_test(
+            NAME BAAS_httplib_upgrade_contract_tests
+            COMMAND BAAS_httplib_upgrade_contract_tests
+    )
+    set_tests_properties(
+            BAAS_httplib_upgrade_contract_tests
+            PROPERTIES TIMEOUT 15
+    )
+
     add_executable(
             BAAS_service_httplib_adapter_tests
             "${BAAS_PROJECT_PATH}/tests/service/HttplibAdapterTests.cpp"

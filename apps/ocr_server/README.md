@@ -50,7 +50,8 @@
 3. ONNXRuntime Build Tips : 
    - Onnxruntime version : 1.22.1 
    - NDK version >= 26
-   - Architectures : arm64-v8a, x86_64, armeabi-v7a, x86
+   - Supported architectures: arm64-v8a and x86_64. cpp-httplib 0.50.1 no
+     longer supports 32-bit targets, so armeabi-v7a and x86 are not offered.
 
 4. build command
 Use the Conan Android profile for the target ABI. The NDK path is supplied
@@ -75,3 +76,18 @@ cmake --preset conan-android-clang-release-ocr-arm64-v8a
 ```shell
 cmake --build --preset conan-android-clang-release-ocr-arm64-v8a
 ```
+
+### HTTP upload limits
+
+HTTP request bodies are bounded explicitly. Multipart OCR uploads allow one
+image of at most 64 MiB, one JSON `data` field of at most 1 MiB, and at most
+64 KiB of multipart framing/header overhead. cpp-httplib rejects a complete
+request above that combined limit before handler dispatch; the handler also
+checks each retained part before JSON parsing or image decoding.
+
+OCR HTTP dispatch uses 8 fixed workers and a bounded queue of 16 waiting
+requests. Since a request may retain about 68 MiB at the transport boundary,
+the server does not use cpp-httplib 0.50.1's dynamically expanding default
+pool or its default unbounded waiting queue. Multipart OCR requests must carry
+exactly one valid `Content-Length`; chunked multipart uploads have no such
+header and therefore fail closed before JSON parsing or image decoding.

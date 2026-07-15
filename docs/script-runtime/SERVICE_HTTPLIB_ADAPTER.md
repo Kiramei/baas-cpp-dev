@@ -115,10 +115,27 @@ budgets as a second boundary.
 `worker_count` is required in `1..256`. `max_queued_requests` is required in
 `1..65536`; zero is rejected because cpp-httplib defines it as an unbounded
 queue, while values above the explicit host bound (including `SIZE_MAX`) are
-also rejected. The current cpp-httplib 0.18.0 `ThreadPool` counts only waiting
-tasks against this limit; active worker tasks are additional. When enqueue rejects an accepted
+also rejected. BAAS pins cpp-httplib 0.50.1. Its `ThreadPool` constructor now
+takes base threads, maximum threads, and maximum queued requests separately;
+the host passes `(worker_count, worker_count, max_queued_requests)` so it cannot
+dynamically exceed the configured worker bound. The queue bound counts waiting
+tasks; active worker tasks are additional. When enqueue rejects an accepted
 connection, cpp-httplib closes its socket without fabricating an HTTP response,
 and `queue_rejections()` records the event.
+
+The OCR server separately installs 8 fixed workers and a bounded queue of 16
+waiting requests through `Server::new_task_queue`. This replaces cpp-httplib
+0.50.1's dynamically expanding default pool and default unbounded queue for
+requests whose transport cap is about 68 MiB each. Multipart OCR requests must
+have exactly one valid `Content-Length`; chunked multipart requests omit that
+header and fail closed before JSON parsing or image decoding.
+
+The Conan `BAAS::httplib` target publishes
+`CPPHTTPLIB_WEBSOCKET_MAX_PAYLOAD_LENGTH=67108864` to every consumer. Because
+cpp-httplib is header-only, this process-wide target definition prevents
+different service/OCR translation units from compiling incompatible inline
+definitions. It reserves protocol-compatible 64 MiB WebSocket frames for the
+future WebSocket owner; this HTTP upgrade does not implement WebSocket routing.
 
 HTTP header count/size, total open connection count, aggregate memory,
 per-client rate, and global load shedding are not implemented. They remain
@@ -144,21 +161,26 @@ cmake -S . -B build\service-http-release -G Ninja `
   -DBUILD_SERVICE_HTTP_TESTS=ON `
   -DBAAS_FETCH_RESOURCES=OFF
 cmake --build build\service-http-release --parallel 4 `
-  --target BAAS_service_origin_policy_tests `
+  --target BAAS_httplib_upgrade_contract_tests `
+           BAAS_service_origin_policy_tests `
            BAAS_service_httplib_adapter_tests BAAS_service_http_host_tests
 ctest --test-dir build\service-http-release --output-on-failure `
-  -R BAAS_service_
+  -R "BAAS_(httplib_upgrade_contract|service_(origin_policy|httplib_adapter|http_host))_tests"
 ctest --test-dir build\service-http-release --output-on-failure `
   --repeat until-fail:20 -R BAAS_service_http_host_tests
 ```
 
-The tests have three layers:
+The tests have four layers:
 
+- the package/upgrade contract checks the exact 0.50.1 header, process-wide
+  WebSocket macro, v0.50 multipart field/file split, zero-copy OCR file access,
+  and fixed-worker/one-waiting-task queue semantics without opening a socket;
 - direct cpp-httplib request/response objects verify exact field mapping,
   headers, errors, and transport-before-Router budgets;
 - a real server binds only `127.0.0.1:0`, waits at most two seconds for ready,
   uses two-second client/server I/O timeouts, exercises health/method/body-limit
-  responses, then calls `stop()` and joins the listener thread. CTest has a
+  responses (including cpp-httplib's wire-level `set_payload_max_length` 413
+  path), then calls `stop()` and joins the listener thread. CTest has a
   15-second outer timeout;
 - the owned-host suite covers repeated start/stop, ephemeral and fixed ports,
   fixed-port conflict and recovery, starting/ready/failed readiness across
