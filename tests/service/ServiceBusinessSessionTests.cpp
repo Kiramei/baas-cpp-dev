@@ -256,6 +256,49 @@ public:
     bool defer_next{};
 };
 
+class RecordingBusinessCompletion final : public ws::BusinessBatchCompletion {
+public:
+    void complete(const ws::BusinessBatchWriteResult value) noexcept override
+    {
+        result.store(value);
+        if (auto output = outbound.lock()) {
+            callback_outside_outbound_lock.store(output->mutex.try_lock());
+            if (callback_outside_outbound_lock.load()) output->mutex.unlock();
+        }
+        if (auto target = sink.lock()) {
+            reentrant_emit.store(target->emit({"completion-reentry", false}));
+        }
+        calls.fetch_add(1);
+    }
+
+    std::weak_ptr<RecordingOutbound> outbound;
+    std::weak_ptr<ws::BusinessPlaintextSink> sink;
+    std::atomic<ws::BusinessBatchWriteResult> result{
+        ws::BusinessBatchWriteResult::failed};
+    std::atomic<ws::BusinessEmitResult> reentrant_emit{ws::BusinessEmitResult::closed};
+    std::atomic_size_t calls{};
+    std::atomic_bool callback_outside_outbound_lock{};
+};
+
+class LegacyPlaintextSink final : public ws::BusinessPlaintextSink {
+public:
+    using ws::BusinessPlaintextSink::emit;
+    using ws::BusinessPlaintextSink::emit_batch;
+
+    ws::BusinessEmitResult emit(ws::BusinessOutboundMessage) noexcept override
+    {
+        ++legacy_calls;
+        return ws::BusinessEmitResult::accepted;
+    }
+    ws::BusinessEmitResult emit_batch(
+        std::vector<ws::BusinessOutboundMessage>) noexcept override
+    {
+        ++legacy_calls;
+        return ws::BusinessEmitResult::accepted;
+    }
+    std::size_t legacy_calls{};
+};
+
 struct HandlerState {
     std::mutex mutex;
     std::shared_ptr<ws::BusinessPlaintextSink> sink;
@@ -601,6 +644,77 @@ void test_sink_failures_final_and_weak_lifetime()
           "clean close requires both authenticated and written FINAL latches");
 }
 
+void test_observed_batch_write_receipts()
+{
+    AuthFixture fixture;
+    auto session = fixture.session();
+
+    auto written_stream = open_stream(fixture, session);
+    written_stream.outbound->defer_next = true;
+    auto written = std::make_shared<RecordingBusinessCompletion>();
+    written->outbound = written_stream.outbound;
+    written->sink = written_stream.handler->sink;
+    check(written_stream.handler->sink->emit_batch(
+              {{"json", false}, {"binary", false}}, written)
+              == ws::BusinessEmitResult::accepted
+              && written->calls.load() == 0,
+          "accepted observed batch must wait for whole-batch write completion");
+    written_stream.outbound->complete_one(ws::BatchWriteResult::written);
+    check(written->calls.load() == 1
+              && written->result.load() == ws::BusinessBatchWriteResult::written
+              && written->callback_outside_outbound_lock.load()
+              && written->reentrant_emit.load() == ws::BusinessEmitResult::accepted,
+          "written receipt must run once outside outbound and secure-writer locks");
+
+    auto failed_stream = open_stream(fixture, session);
+    failed_stream.outbound->defer_next = true;
+    auto failed = std::make_shared<RecordingBusinessCompletion>();
+    failed->outbound = failed_stream.outbound;
+    failed->sink = failed_stream.handler->sink;
+    check(failed_stream.handler->sink->emit({"later-fail", false}, failed)
+              == ws::BusinessEmitResult::accepted,
+          "failed observed write must first be admitted");
+    failed_stream.outbound->complete_one(ws::BatchWriteResult::failed);
+    check(failed->calls.load() == 1
+              && failed->result.load() == ws::BusinessBatchWriteResult::failed
+              && failed->callback_outside_outbound_lock.load()
+              && failed->reentrant_emit.load() == ws::BusinessEmitResult::closed
+              && failed_stream.outbound->terminal == ws::TerminalAction::internal_error,
+          "asynchronous failed receipt must fail the sink before one unlocked callback");
+
+    auto rejected_stream = open_stream(fixture, session);
+    rejected_stream.outbound->reject_next = true;
+    auto rejected = std::make_shared<RecordingBusinessCompletion>();
+    rejected->outbound = rejected_stream.outbound;
+    rejected->sink = rejected_stream.handler->sink;
+    check(rejected_stream.handler->sink->emit({"reject", false}, rejected)
+              == ws::BusinessEmitResult::queue_full
+              && rejected->calls.load() == 1
+              && rejected->result.load() == ws::BusinessBatchWriteResult::failed
+              && rejected->callback_outside_outbound_lock.load()
+              && rejected->reentrant_emit.load() == ws::BusinessEmitResult::closed,
+          "rejected observed admission must synchronously fail outside writer locks");
+
+    auto synchronous_stream = open_stream(fixture, session);
+    auto synchronous = std::make_shared<RecordingBusinessCompletion>();
+    synchronous->outbound = synchronous_stream.outbound;
+    synchronous->sink = synchronous_stream.handler->sink;
+    check(synchronous_stream.handler->sink->emit({"written-now", false}, synchronous)
+              == ws::BusinessEmitResult::accepted
+              && synchronous->calls.load() == 1
+              && synchronous->result.load() == ws::BusinessBatchWriteResult::written,
+          "synchronously written accepted batch must complete before emit returns");
+
+    LegacyPlaintextSink legacy;
+    auto unsupported = std::make_shared<RecordingBusinessCompletion>();
+    check(legacy.emit({"legacy", false}, unsupported)
+              == ws::BusinessEmitResult::completion_unsupported
+              && unsupported->calls.load() == 1
+              && unsupported->result.load() == ws::BusinessBatchWriteResult::failed
+              && legacy.legacy_calls == 0,
+          "legacy sink remains source-compatible and fails observed admission explicitly");
+}
+
 void test_multi_producer_and_server_final_first()
 {
     AuthFixture fixture;
@@ -937,6 +1051,7 @@ int main()
     try {
         test_immediate_atomic_async_and_crypto_failures();
         test_sink_failures_final_and_weak_lifetime();
+        test_observed_batch_write_receipts();
         test_multi_producer_and_server_final_first();
         test_ready_and_async_authorization_gates();
         test_late_completions_cannot_override_terminal();

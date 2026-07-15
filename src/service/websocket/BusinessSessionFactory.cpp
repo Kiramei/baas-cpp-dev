@@ -393,6 +393,13 @@ public:
 
     [[nodiscard]] BusinessEmitResult emit(BusinessOutboundMessage message) noexcept override
     {
+        return emit(std::move(message), {});
+    }
+
+    [[nodiscard]] BusinessEmitResult emit(
+        BusinessOutboundMessage message,
+        std::shared_ptr<BusinessBatchCompletion> completion) noexcept override
+    {
         OutboundMessageWiper message_wiper{message};
         std::vector<BusinessOutboundMessage> batch;
         try {
@@ -400,30 +407,48 @@ public:
         }
         catch (...) {
             fail();
+            if (completion) completion->complete(BusinessBatchWriteResult::failed);
             return BusinessEmitResult::resource_exhausted;
         }
-        return emit_batch(std::move(batch));
+        return emit_batch(std::move(batch), std::move(completion));
     }
 
     [[nodiscard]] BusinessEmitResult emit_batch(
         std::vector<BusinessOutboundMessage> messages) noexcept override
     {
+        return emit_batch(std::move(messages), {});
+    }
+
+    [[nodiscard]] BusinessEmitResult emit_batch(
+        std::vector<BusinessOutboundMessage> messages,
+        std::shared_ptr<BusinessBatchCompletion> completion) noexcept override
+    {
         OutboundMessageWiper messages_wiper{messages};
+        const auto reject = [&completion](const BusinessEmitResult result) noexcept {
+            if (completion) completion->complete(BusinessBatchWriteResult::failed);
+            return result;
+        };
         if (!active_.load(std::memory_order_acquire)
-            || !is_open()) return BusinessEmitResult::closed;
-        if (messages.empty() || messages.size() > 2) return BusinessEmitResult::queue_full;
+            || !is_open()) return reject(BusinessEmitResult::closed);
+        if (messages.empty() || messages.size() > 2)
+            return reject(BusinessEmitResult::queue_full);
         const auto authorized = authorization_->authorize();
-        if (authorized == TerminalAction::complete) return BusinessEmitResult::closed;
+        if (authorized == TerminalAction::complete)
+            return reject(BusinessEmitResult::closed);
         if (authorized != TerminalAction::none) {
             terminate_once(authorized);
-            return BusinessEmitResult::closed;
+            return reject(BusinessEmitResult::closed);
         }
         try {
-            std::lock_guard lock{writer_mutex_};
+            std::unique_lock lock{writer_mutex_};
             if (!active_.load(std::memory_order_acquire)
-                || !is_open()) return BusinessEmitResult::closed;
+                || !is_open()) {
+                lock.unlock();
+                return reject(BusinessEmitResult::closed);
+            }
             if (server_final_enqueued_.load(std::memory_order_acquire)) {
-                return BusinessEmitResult::closed;
+                lock.unlock();
+                return reject(BusinessEmitResult::closed);
             }
             OutboundBatch batch;
             batch.frames.reserve(messages.size());
@@ -433,22 +458,29 @@ public:
                 const auto& message = messages[index];
                 if (message.payload.size() > maximum_plaintext_ - total_plaintext
                     || (message.final && index + 1 != messages.size())) {
-                    return BusinessEmitResult::message_too_large;
+                    lock.unlock();
+                    return reject(BusinessEmitResult::message_too_large);
                 }
                 total_plaintext += message.payload.size();
                 contains_final = message.final;
             }
             for (auto& message : messages) {
-                if (!push_) return BusinessEmitResult::closed;
+                if (!push_) {
+                    lock.unlock();
+                    return reject(BusinessEmitResult::closed);
+                }
                 auto encrypted = push_->push(
                     bytes_of(message.payload),
                     message.final ? auth::SecretStreamTag::final
                                   : auth::SecretStreamTag::message);
                 if (!encrypted) {
-                    fail();
-                    return encrypted.error == auth::SecretStreamError::resource_exhausted
+                    const auto result =
+                        encrypted.error == auth::SecretStreamError::resource_exhausted
                         ? BusinessEmitResult::resource_exhausted
                         : BusinessEmitResult::closed;
+                    lock.unlock();
+                    fail();
+                    return reject(result);
                 }
                 batch.frames.push_back({
                     FrameKind::binary, byte_string(encrypted.ciphertext)});
@@ -457,27 +489,79 @@ public:
             public:
                 Completion(
                     std::weak_ptr<SecureBusinessSink> owner,
-                    const bool contains_final) noexcept
-                    : owner_(std::move(owner)), contains_final_(contains_final)
+                    const bool contains_final,
+                    std::shared_ptr<BusinessBatchCompletion> observer) noexcept
+                    : owner_(std::move(owner)), contains_final_(contains_final),
+                      observer_(std::move(observer))
                 {}
                 void complete(const BatchWriteResult result) noexcept override
+                {
+                    bool deliver{};
+                    {
+                        std::lock_guard lock(mutex_);
+                        if (completed_) return;
+                        completed_ = true;
+                        result_ = result;
+                        if (armed_) {
+                            delivered_ = true;
+                            deliver = true;
+                        }
+                    }
+                    if (deliver) deliver_result(result);
+                }
+                void reject_and_arm() noexcept
+                {
+                    complete(BatchWriteResult::failed);
+                    arm();
+                }
+                void arm() noexcept
+                {
+                    bool deliver{};
+                    BatchWriteResult result{BatchWriteResult::failed};
+                    {
+                        std::lock_guard lock(mutex_);
+                        armed_ = true;
+                        if (completed_ && !delivered_) {
+                            delivered_ = true;
+                            result = result_;
+                            deliver = true;
+                        }
+                    }
+                    if (deliver) deliver_result(result);
+                }
+            private:
+                void deliver_result(const BatchWriteResult result) noexcept
                 {
                     if (auto owner = owner_.lock()) {
                         if (result == BatchWriteResult::failed) owner->fail();
                         else if (contains_final_) owner->final_written();
                     }
+                    if (observer_) {
+                        observer_->complete(
+                            result == BatchWriteResult::written
+                                ? BusinessBatchWriteResult::written
+                                : BusinessBatchWriteResult::failed);
+                    }
                 }
-            private:
+                std::mutex mutex_;
                 std::weak_ptr<SecureBusinessSink> owner_;
                 bool contains_final_{};
+                std::shared_ptr<BusinessBatchCompletion> observer_;
+                BatchWriteResult result_{BatchWriteResult::failed};
+                bool armed_{};
+                bool completed_{};
+                bool delivered_{};
             };
-            auto completion = std::make_shared<Completion>(weak_from_this(), contains_final);
+            auto bridge = std::make_shared<Completion>(
+                weak_from_this(), contains_final, completion);
             auto outbound = outbound_.lock();
             if (!outbound) {
+                lock.unlock();
+                bridge->reject_and_arm();
                 fail();
                 return BusinessEmitResult::closed;
             }
-            const auto enqueued = outbound->enqueue(std::move(batch), std::move(completion));
+            const auto enqueued = outbound->enqueue(std::move(batch), bridge);
             if (enqueued == EnqueueResult::accepted) {
                 if (contains_final) {
                     server_final_tick_.store(
@@ -485,9 +569,12 @@ public:
                         std::memory_order_release);
                     server_final_enqueued_.store(true, std::memory_order_release);
                 }
+                lock.unlock();
+                bridge->arm();
                 return BusinessEmitResult::accepted;
             }
-            fail();
+            lock.unlock();
+            bridge->reject_and_arm();
             switch (enqueued) {
                 case EnqueueResult::queue_full: return BusinessEmitResult::queue_full;
                 case EnqueueResult::queued_bytes_exceeded:
@@ -501,7 +588,7 @@ public:
         }
         catch (...) {
             fail();
-            return BusinessEmitResult::resource_exhausted;
+            return reject(BusinessEmitResult::resource_exhausted);
         }
     }
 

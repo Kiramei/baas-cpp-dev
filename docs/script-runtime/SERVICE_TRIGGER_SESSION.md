@@ -85,6 +85,15 @@ correlation. Duplicate acknowledgements return `no_active_lease`; an old lease
 presented while a newer send is active returns `lease_mismatch`. Neither case
 changes queue state or counters.
 
+`observe_output_ready()` installs one weak, cancellable observer for transport
+wakeup. It is invoked, without the session mutex held, when the output queue
+changes from empty to non-empty. Registration while output is already queued
+performs one immediate level-recovery notification, avoiding a lost edge during
+host installation. The move-only subscription unregisters by generation;
+session close/destruction cancels future delivery, while an already-running
+callback owns a strong observer reference and may finish safely. A rejected
+publish (including queue backpressure) does not create a false ready edge.
+
 Any write error, including failure after only one frame of a JSON/binary batch,
 is reported through `fail_send()`. A matching failure permanently closes the
 session, invalidates the active send, drops every queued batch, and returns all

@@ -10,7 +10,9 @@
 #include <chrono>
 #include <memory>
 #include <stop_token>
+#include <span>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace baas::service::websocket {
@@ -58,6 +60,18 @@ enum class BusinessEmitResult : std::uint8_t {
     queue_full,
     queued_bytes_exceeded,
     resource_exhausted,
+    completion_unsupported,
+};
+
+enum class BusinessBatchWriteResult : std::uint8_t { written, failed };
+
+// Optional plaintext-batch observer. A production sink completes it exactly
+// once: synchronously with failed on admission rejection, or after every frame
+// in an accepted batch is actually written or becomes permanently unsendable.
+class BusinessBatchCompletion {
+public:
+    virtual ~BusinessBatchCompletion() = default;
+    virtual void complete(BusinessBatchWriteResult result) noexcept = 0;
 };
 
 // Thread-safe immediate plaintext admission. One shared writer serializes
@@ -69,6 +83,33 @@ public:
         BusinessOutboundMessage message) noexcept = 0;
     [[nodiscard]] virtual BusinessEmitResult emit_batch(
         std::vector<BusinessOutboundMessage> messages) noexcept = 0;
+
+    // Backward-compatible observed overloads. Legacy sinks fail an observed
+    // admission synchronously instead of claiming an unobservable acceptance.
+    [[nodiscard]] virtual BusinessEmitResult emit(
+        BusinessOutboundMessage message,
+        std::shared_ptr<BusinessBatchCompletion> completion) noexcept
+    {
+        if (!completion) return emit(std::move(message));
+        auth::secure_zero(std::as_writable_bytes(
+            std::span{message.payload.data(), message.payload.size()}));
+        message.payload.clear();
+        completion->complete(BusinessBatchWriteResult::failed);
+        return BusinessEmitResult::completion_unsupported;
+    }
+    [[nodiscard]] virtual BusinessEmitResult emit_batch(
+        std::vector<BusinessOutboundMessage> messages,
+        std::shared_ptr<BusinessBatchCompletion> completion) noexcept
+    {
+        if (!completion) return emit_batch(std::move(messages));
+        for (auto& message : messages) {
+            auth::secure_zero(std::as_writable_bytes(
+                std::span{message.payload.data(), message.payload.size()}));
+            message.payload.clear();
+        }
+        completion->complete(BusinessBatchWriteResult::failed);
+        return BusinessEmitResult::completion_unsupported;
+    }
 };
 
 enum class BusinessCloseReason : std::uint8_t {
