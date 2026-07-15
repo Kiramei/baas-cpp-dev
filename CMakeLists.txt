@@ -122,6 +122,8 @@ option(BUILD_SERVICE_REMOTE_HANDLER "Build the transport-independent remote hand
 option(BUILD_SERVICE_REMOTE_HANDLER_TESTS "Build deterministic remote-handler tests" OFF)
 option(BUILD_SERVICE_TRIGGER_HANDLER "Build the production trigger business handler" OFF)
 option(BUILD_SERVICE_TRIGGER_HANDLER_TESTS "Build deterministic trigger-handler tests" OFF)
+option(BUILD_SERVICE_STATUS_TRIGGER "Build the production status trigger registration" OFF)
+option(BUILD_SERVICE_STATUS_TRIGGER_TESTS "Build deterministic status trigger registration tests" OFF)
 option(BUILD_SERVICE_COMMAND_LINE "Build the bounded service command-line contract" OFF)
 option(BUILD_SERVICE_COMMAND_LINE_TESTS "Build deterministic service command-line tests" OFF)
 option(BUILD_SERVICE_SHUTDOWN_COORDINATOR "Build the service main-thread shutdown coordinator" OFF)
@@ -229,6 +231,18 @@ endif()
 
 if(BUILD_SERVICE_TRIGGER_HANDLER)
     set(BUILD_SERVICE_BUSINESS_SESSION ON CACHE BOOL "Build authenticated business WebSocket drivers" FORCE)
+    set(BUILD_SERVICE_TRIGGER_EXECUTOR ON CACHE BOOL "Build the bounded trigger execution owner" FORCE)
+endif()
+
+if(BUILD_SERVICE_STATUS_TRIGGER_TESTS AND NOT BUILD_SERVICE_STATUS_TRIGGER)
+    set(BUILD_SERVICE_STATUS_TRIGGER ON CACHE BOOL "Build the production status trigger registration" FORCE)
+endif()
+
+if(BUILD_SERVICE_STATUS_TRIGGER AND NOT BUILD_SERVICE_TRIGGER_DISPATCH)
+    set(BUILD_SERVICE_TRIGGER_DISPATCH ON CACHE BOOL "Build the transport-independent trigger dispatcher" FORCE)
+endif()
+
+if(BUILD_SERVICE_STATUS_TRIGGER_TESTS AND NOT BUILD_SERVICE_TRIGGER_EXECUTOR)
     set(BUILD_SERVICE_TRIGGER_EXECUTOR ON CACHE BOOL "Build the bounded trigger execution owner" FORCE)
 endif()
 
@@ -488,6 +502,10 @@ endif()
 
 if(BUILD_SERVICE_TRIGGER_EXECUTOR)
     include("${CMAKE_CURRENT_LIST_DIR}/cmake/ServiceTriggerExecutor.cmake")
+endif()
+
+if(BUILD_SERVICE_STATUS_TRIGGER)
+    include("${CMAKE_CURRENT_LIST_DIR}/cmake/ServiceStatusTrigger.cmake")
 endif()
 
 if(BUILD_SERVICE_ROUTER)
