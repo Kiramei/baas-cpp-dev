@@ -41,6 +41,9 @@ class ServiceTriggerSessionTests(unittest.TestCase):
         cls.ingress_tests = (
             ROOT / "tests/service/TriggerIngressTests.cpp"
         ).read_text(encoding="utf-8")
+        cls.egress_tests = (
+            ROOT / "tests/service/TriggerEgressTests.cpp"
+        ).read_text(encoding="utf-8")
         cls.cmake = (ROOT / "cmake/ServiceProtocol.cmake").read_text(encoding="utf-8")
         cls.workflow = (
             ROOT / ".github/workflows/foundation-runtime.yml"
@@ -85,7 +88,11 @@ class ServiceTriggerSessionTests(unittest.TestCase):
             "queued_bytes_exceeded",
         ):
             self.assertIn(anchor, self.header + self.source)
-        self.assertIn("if (result.terminal()) entries_.erase(result.timestamp());", self.source)
+        self.assertIn("BeginSendResult TriggerSession::begin_send()", self.source)
+        self.assertIn("CompleteSendResult TriggerSession::complete_send", self.source)
+        self.assertIn("if (batch.terminal()) entries_.erase(batch.timestamp());", self.source)
+        self.assertIn("FailSendResult TriggerSession::fail_send", self.source)
+        self.assertIn("return {SendTransitionError::none, close_locked()};", self.source)
         self.assertIn("response_mode_mismatch", self.header + self.source)
         self.assertIn("if (!entry.terminal_queued)", self.source)
         self.assertIn("std::lock_guard lock(mutex_)", self.source)
@@ -138,6 +145,11 @@ class ServiceTriggerSessionTests(unittest.TestCase):
         ):
             self.assertIn(test_name, self.native_tests)
         self.assertIn("BAAS_service_trigger_session_tests", self.cmake)
+        self.assertIn("BAAS_service_trigger_egress_tests", self.cmake)
+        self.assertIn("test_lease_retains_queue_budget_and_correlation", self.egress_tests)
+        self.assertIn("test_send_failure_is_connection_fatal_and_deterministic", self.egress_tests)
+        self.assertIn("test_complete_close_race_is_linearizable", self.egress_tests)
+        self.assertIn("test_fail_close_race_returns_cancellation_once", self.egress_tests)
         self.assertIn("PROPERTIES TIMEOUT 30", self.cmake)
 
     def test_ingress_owns_strict_bounded_input_state(self) -> None:
