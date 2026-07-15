@@ -4,8 +4,9 @@
 foundation used by `HttpHost`. It owns transport admission and lifecycle, but
 delegates the channel protocol to an injected stateful `SessionFactory`.
 `ProductionSessionFactory` now composes the control driver with encrypted
-business-session drivers; concrete provider/sync/trigger/remote business logic
-remains injected behind transport-independent handler factories.
+business-session drivers. Provider, sync, and trigger adapters are available as
+injected transport-independent handler factories; remote and the final
+composition root remain pending.
 
 The owner and ordinary HTTP adapter are installed on the same
 `httplib::Server`, so they share one IPv4 loopback listener and one bounded
@@ -186,8 +187,8 @@ or Tauri process.
 
 ## Still incomplete
 
-- production host wiring and concrete provider/sync/trigger/remote handler
-  implementations above the authenticated session-driver boundary;
+- production host wiring, concrete remote handling, and real trigger runtime
+  command registrations above the authenticated session-driver boundary;
 - higher-volume real-wire load, malformed-frame fuzzing, and teardown-race
   evidence beyond the deterministic transport and lifecycle gates;
 - TLS, authenticated LAN exposure, per-principal rate limits, and policy above

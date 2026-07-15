@@ -118,6 +118,8 @@ option(BUILD_SERVICE_PRODUCTION_HTTP_HOST "Build the production HTTP host compos
 option(BUILD_SERVICE_PRODUCTION_HTTP_HOST_TESTS "Build production HTTP host composition tests" OFF)
 option(BUILD_SERVICE_REMOTE_HANDLER "Build the transport-independent remote handler" OFF)
 option(BUILD_SERVICE_REMOTE_HANDLER_TESTS "Build deterministic remote-handler tests" OFF)
+option(BUILD_SERVICE_TRIGGER_HANDLER "Build the production trigger business handler" OFF)
+option(BUILD_SERVICE_TRIGGER_HANDLER_TESTS "Build deterministic trigger-handler tests" OFF)
 
 # BAAS_APP owns the production script Host adapters. Standalone runtime builds
 # stay opt-in, while application builds always compile the runtime and its
@@ -204,6 +206,15 @@ endif()
 
 if(BUILD_SERVICE_REMOTE_HANDLER AND NOT BUILD_SERVICE_BUSINESS_SESSION)
     set(BUILD_SERVICE_BUSINESS_SESSION ON CACHE BOOL "Build authenticated business WebSocket drivers" FORCE)
+endif()
+
+if(BUILD_SERVICE_TRIGGER_HANDLER_TESTS AND NOT BUILD_SERVICE_TRIGGER_HANDLER)
+    set(BUILD_SERVICE_TRIGGER_HANDLER ON CACHE BOOL "Build the production trigger business handler" FORCE)
+endif()
+
+if(BUILD_SERVICE_TRIGGER_HANDLER)
+    set(BUILD_SERVICE_BUSINESS_SESSION ON CACHE BOOL "Build authenticated business WebSocket drivers" FORCE)
+    set(BUILD_SERVICE_TRIGGER_EXECUTOR ON CACHE BOOL "Build the bounded trigger execution owner" FORCE)
 endif()
 
 if(BUILD_SERVICE_BUSINESS_SESSION_TESTS AND NOT BUILD_SERVICE_BUSINESS_SESSION)
@@ -394,6 +405,7 @@ list(FILTER BAAS_CORE_SOURCES EXCLUDE REGEX "/src/service/websocket/.*\\.cpp$")
 list(FILTER BAAS_CORE_SOURCES EXCLUDE REGEX "/src/service/auth/.*\\.cpp$")
 list(FILTER BAAS_CORE_SOURCES EXCLUDE REGEX "/src/service/channels/SyncHandler\\.cpp$")
 list(FILTER BAAS_CORE_SOURCES EXCLUDE REGEX "/src/service/channels/RemoteHandler\\.cpp$")
+list(FILTER BAAS_CORE_SOURCES EXCLUDE REGEX "/src/service/channels/TriggerHandler\\.cpp$")
 
 if(TARGET_OS_NAME STREQUAL "Windows")
     list(REMOVE_ITEM BAAS_CORE_SOURCES "${CMAKE_CURRENT_LIST_DIR}/src/simdutf.cpp")
@@ -488,6 +500,10 @@ endif()
 
 if(BUILD_SERVICE_REMOTE_HANDLER)
     include("${CMAKE_CURRENT_LIST_DIR}/cmake/ServiceRemoteHandler.cmake")
+endif()
+
+if(BUILD_SERVICE_TRIGGER_HANDLER)
+    include("${CMAKE_CURRENT_LIST_DIR}/cmake/ServiceTriggerHandler.cmake")
 endif()
 
 if(BUILD_SERVICE_HTTP)

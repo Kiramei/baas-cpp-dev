@@ -114,7 +114,8 @@ by the adjacent ingress integration suite, not duplicated in this codec suite.
 Still required before Phase 4 task APIs are complete:
 
 - command-specific payload/result schemas beyond the implemented inventory;
-- actual runtime/executor ownership, deadlines, and stale-task cleanup;
+- actual BAAS runtime registrations, deadlines, and stale-task cleanup (the
+  bounded executor and authenticated WebSocket adapter are implemented);
 - a coordinated cancellation envelope or exact legacy stop-command mapping;
-- authenticated WebSocket and local Pipe trigger hosts using this codec/session;
+- local Pipe trigger integration using this codec/session;
 - shared Python/C++/Tauri fixtures, load tests, and end-to-end execution.

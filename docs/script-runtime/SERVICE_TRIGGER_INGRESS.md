@@ -128,7 +128,8 @@ admission, every error-to-disposition mapping, correlated rejection identity,
 static safe messages, independent limits, fatal closure, command-level
 continuation, reset, explicit close, and late frames.
 
-Still pending are authenticated WebSocket/Pipe hosts, frame decryption/decoding
-adapters, command-specific payload schemas, real runtime execution,
-cancellation propagation, and shared
+The authenticated WebSocket plaintext adapter is now implemented by
+`TriggerHandlerFactory` and documented in `SERVICE_TRIGGER_HANDLER.md`. Still
+pending are live Pipe integration, command-specific payload schemas, real
+runtime execution, and shared
 Python/C++/Tauri end-to-end fixtures.
