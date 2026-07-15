@@ -35,6 +35,16 @@ admission. Up to two plaintext messages are encrypted and admitted as one
 batch, preserving atomic trigger JSON-plus-binary output without interleaving
 from concurrent producers.
 
+`BusinessPlaintextSink` now exposes an optional batch write-completion receipt.
+An accepted emission is reported `written` only after every encrypted frame in
+the admitted batch has reached the transport; a later write/discard failure and
+a synchronous admission rejection are reported `failed`. The callback runs
+without the plaintext writer mutex or outbound queue mutex held, so a trigger
+host can safely translate it to `TriggerSession::complete_send()` or
+`fail_send()`. Legacy sink implementations remain source-compatible; their
+default observed overload rejects with `completion_unsupported` and completes
+the receipt as failed rather than treating admission as delivery.
+
 The sink and its write-completion observer retain only weak references across
 the transport boundary. Synchronous queue rejection or later write failure
 atomically closes output and requests an internal-error termination. Plaintext
@@ -78,7 +88,8 @@ encrypts every business frame after `stream_ready`.
 Configure `BUILD_SERVICE_BUSINESS_SESSION_TESTS=ON`. The deterministic Debug
 and Release gate reconstructs the client handshake, decrypts real output,
 covers immediate/multi-producer and atomic two-frame output, replay/corruption,
-queue rejection and asynchronous write failure, weak lifetimes, both FINAL
+observed accepted/written, synchronous rejection and asynchronous write failure,
+callback re-entry, weak lifetimes, both FINAL
 orders and timeout, revocation, default bounds, strict routing, and remote
 policy. CI also cross-builds the library for Android, where `/ws/remote` is
 unavailable.

@@ -127,6 +127,33 @@ bool wait_until(Predicate predicate)
     return begun && session.complete_send(*begun.lease);
 }
 
+class ExecutorReadyObserver final : public protocol::OutputReadyObserver {
+public:
+    void output_ready() noexcept override
+    {
+        if (connection != nullptr) {
+            const auto snapshot = connection->stats();
+            observed_active.store(snapshot.active_tasks);
+        }
+        calls.fetch_add(1);
+        changed.notify_all();
+    }
+
+    [[nodiscard]] bool wait_for_call(const std::size_t expected)
+    {
+        std::unique_lock lock(mutex);
+        return changed.wait_for(lock, 500ms, [&] {
+            return calls.load() >= expected;
+        });
+    }
+
+    trigger::TriggerConnectionOwner* connection{};
+    std::mutex mutex;
+    std::condition_variable changed;
+    std::atomic_size_t calls{};
+    std::atomic_size_t observed_active{};
+};
+
 void test_reserve_before_admit_and_queue_saturation()
 {
     std::mutex gate_mutex;
@@ -1873,6 +1900,46 @@ void test_concurrent_connections_respect_global_bound()
         check(confirm_one(*session_item), "each connection terminal must drain");
 }
 
+void test_executor_output_ready_observer_is_immediate_and_cancellable()
+{
+    auto dispatcher = dispatcher_with({
+        {"status", [](const trigger::AdmittedTriggerRequest&,
+                       trigger::TriggerResponseSink& sink, std::stop_token) {
+            static_cast<void>(sink.success());
+        }},
+    });
+    trigger::TriggerExecutor executor(dispatcher, {1, 4, 4, 4});
+    protocol::TriggerSession session;
+    auto connection = executor.connect(borrowed_session(session));
+    auto observer = std::make_shared<ExecutorReadyObserver>();
+    observer->connection = &connection;
+    auto subscription = connection.observe_output_ready(observer);
+    check(subscription, "connection owner must expose the session ready observer seam");
+
+    auto first = ingress_item("status", 901);
+    check(connection.submit(std::move(*first)), "ready observer task must submit");
+    check(observer->wait_for_call(1) && session.stats().queued_batches == 1,
+          "worker publication must wake egress immediately without a heartbeat poll");
+    auto lease = session.begin_send();
+    check(lease && connection.complete_send(*lease.lease),
+          "ready observer response must drain through connection send ownership");
+
+    subscription.reset();
+    auto second = ingress_item("status", 902);
+    check(connection.submit(std::move(*second)), "post-unsubscribe task must submit");
+    check(wait_until([&] { return session.stats().queued_batches == 1; })
+              && observer->calls.load() == 1,
+          "unsubscribed executor observer must receive no later edge");
+    lease = session.begin_send();
+    check(lease && connection.complete_send(*lease.lease),
+          "post-unsubscribe response must remain drainable");
+
+    auto closing_subscription = connection.observe_output_ready(observer);
+    static_cast<void>(connection.close());
+    check(!closing_subscription,
+          "connection close must cancel the delegated observer generation");
+}
+
 }  // namespace
 
 int main()
@@ -1912,6 +1979,7 @@ int main()
     test_terminal_already_queued_never_requests_task_stop();
     test_whole_service_teardown_from_worker_keeps_shared_session_alive();
     test_concurrent_connections_respect_global_bound();
+    test_executor_output_ready_observer_is_immediate_and_cancellable();
 
     if (failures != 0) {
         std::cerr << failures << " trigger executor test(s) failed\n";

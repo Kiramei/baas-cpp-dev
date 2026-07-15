@@ -22,6 +22,38 @@ using Timestamp = std::uint64_t;
 inline constexpr Timestamp maximum_safe_timestamp = 9'007'199'254'740'991ULL;
 
 class TriggerSession;
+class OutputReadyRegistry;
+
+class OutputReadyObserver {
+public:
+    virtual ~OutputReadyObserver() = default;
+    virtual void output_ready() noexcept = 0;
+};
+
+// Move-only cancellation handle. The registry is shared independently from
+// TriggerSession, so reset/destruction stays safe after connection teardown.
+class OutputReadySubscription final {
+public:
+    OutputReadySubscription() noexcept = default;
+    ~OutputReadySubscription();
+    OutputReadySubscription(const OutputReadySubscription&) = delete;
+    OutputReadySubscription& operator=(const OutputReadySubscription&) = delete;
+    OutputReadySubscription(OutputReadySubscription&& other) noexcept;
+    OutputReadySubscription& operator=(OutputReadySubscription&& other) noexcept;
+
+    void reset() noexcept;
+    [[nodiscard]] explicit operator bool() const noexcept;
+
+private:
+    OutputReadySubscription(
+        std::shared_ptr<OutputReadyRegistry> registry,
+        std::uint64_t generation) noexcept;
+
+    std::shared_ptr<OutputReadyRegistry> registry_;
+    std::uint64_t generation_{};
+
+    friend class TriggerSession;
+};
 
 // Session-minted correlation capability. The generation prevents an old
 // handler from publishing into a later command that reuses the same timestamp.
@@ -324,6 +356,7 @@ struct TriggerSessionStats {
 class TriggerSession final {
 public:
     explicit TriggerSession(TriggerSessionLimits limits = {});
+    ~TriggerSession() noexcept;
 
     TriggerSession(const TriggerSession&) = delete;
     TriggerSession& operator=(const TriggerSession&) = delete;
@@ -335,6 +368,10 @@ public:
     [[nodiscard]] CancelDecision request_cancel(Timestamp timestamp);
     [[nodiscard]] PublishResult publish(
         const AdmissionReceipt& receipt, OutboundBatch&& batch);
+    // Only the queue empty->nonempty edge is signalled. Registration while
+    // output is already queued emits one immediate level-recovery signal.
+    [[nodiscard]] OutputReadySubscription observe_output_ready(
+        std::weak_ptr<OutputReadyObserver> observer);
     [[nodiscard]] BeginSendResult begin_send();
 
     // Confirms that every frame in the leased batch was written successfully.
@@ -379,6 +416,7 @@ private:
     [[nodiscard]] SendLeaseId next_lease_id() noexcept;
 
     std::deque<std::shared_ptr<const OutboundBatch>> outbound_;
+    std::shared_ptr<OutputReadyRegistry> output_ready_;
     // Reserved once at construction so close/fail-send handoff does not
     // allocate after the session transition begins.
     std::vector<ActiveCommand> cancellation_handoff_;

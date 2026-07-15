@@ -1038,6 +1038,14 @@ TriggerRetryResult TriggerConnectionOwner::retry_pending()
     return result;
 }
 
+trigger_protocol::OutputReadySubscription
+TriggerConnectionOwner::observe_output_ready(
+    std::weak_ptr<trigger_protocol::OutputReadyObserver> observer)
+{
+    if (!state_) return {};
+    return state_->session->observe_output_ready(std::move(observer));
+}
+
 TriggerCompleteSendResult TriggerConnectionOwner::complete_send(
     const trigger_protocol::SendLease& lease)
 {
