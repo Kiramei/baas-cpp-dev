@@ -1,4 +1,4 @@
-name: Service auth crypto
+name: Service authentication
 
 on:
   workflow_dispatch:
@@ -17,9 +17,10 @@ on:
       - 'deploy/conan/scripts/manage_recipes.py'
       - 'include/service/auth/**'
       - 'src/service/auth/**'
-      - 'tests/service/ServiceAuthCryptoTests.cpp'
+      - 'tests/service/ServiceAuth*Tests.cpp'
       - 'tests/service_contract/**'
       - 'docs/script-runtime/SERVICE_AUTH_CRYPTO.md'
+      - 'docs/script-runtime/SERVICE_AUTH_OWNER.md'
       - 'docs/script-runtime/SERVICE_PROTOCOL_V1.md'
   pull_request:
     branches:
@@ -40,9 +41,10 @@ on:
       - 'deploy/conan/scripts/manage_recipes.py'
       - 'include/service/auth/**'
       - 'src/service/auth/**'
-      - 'tests/service/ServiceAuthCryptoTests.cpp'
+      - 'tests/service/ServiceAuth*Tests.cpp'
       - 'tests/service_contract/**'
       - 'docs/script-runtime/SERVICE_AUTH_CRYPTO.md'
+      - 'docs/script-runtime/SERVICE_AUTH_OWNER.md'
       - 'docs/script-runtime/SERVICE_PROTOCOL_V1.md'
 
 permissions:
@@ -53,7 +55,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  host-auth-crypto:
+  host-auth:
     name: ${{ matrix.os }} / ${{ matrix.build_type }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
@@ -120,13 +122,14 @@ jobs:
           --build=missing
           --no-remote
 
-      - name: Configure service auth crypto tests
+      - name: Configure service authentication tests
         run: >-
           cmake -S . -B build/service-auth
           "-DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}/build/conan/service-auth/conan_toolchain.cmake"
           -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
           -DBUILD_TESTING=ON
           -DBUILD_SERVICE_AUTH_CRYPTO_TESTS=ON
+          -DBUILD_SERVICE_AUTH_OWNER_TESTS=ON
           -DBUILD_APP_BAAS=OFF
           -DBUILD_APP_ISA=OFF
           -DBUILD_BAAS_OCR=OFF
@@ -134,24 +137,24 @@ jobs:
           -DBUILD_BAAS_NMS_BENCHMARK=OFF
           -DBAAS_FETCH_RESOURCES=OFF
 
-      - name: Build service auth crypto tests
+      - name: Build service authentication tests
         run: >-
           cmake --build build/service-auth
           --config ${{ matrix.build_type }}
           --parallel 4
-          --target BAAS_service_auth_crypto_tests
+          --target BAAS_service_auth_crypto_tests BAAS_service_auth_owner_tests
 
-      - name: Run service auth crypto contract tests
+      - name: Run service authentication tests
         run: >-
           ctest --test-dir build/service-auth
           --build-config ${{ matrix.build_type }}
           --output-on-failure
           --timeout 60
-          -R "^BAAS_service_auth_crypto_tests$"
+          -R "^BAAS_service_auth_(crypto|owner)_tests$"
 
-  android-auth-crypto:
+  android-auth:
     name: Android ${{ matrix.abi }} / Release
-    needs: host-auth-crypto
+    needs: host-auth
     runs-on: ubuntu-latest
     timeout-minutes: 60
     strategy:
@@ -216,7 +219,7 @@ jobs:
           --build=missing
           --no-remote
 
-      - name: Configure Android service auth crypto
+      - name: Configure Android service authentication
         shell: bash
         run: >-
           cmake -S . -B build/service-auth-android-${{ matrix.abi }}
@@ -225,6 +228,8 @@ jobs:
           -DBUILD_TESTING=OFF
           -DBUILD_SERVICE_AUTH_CRYPTO=ON
           -DBUILD_SERVICE_AUTH_CRYPTO_TESTS=OFF
+          -DBUILD_SERVICE_AUTH_OWNER=ON
+          -DBUILD_SERVICE_AUTH_OWNER_TESTS=OFF
           -DBUILD_APP_BAAS=OFF
           -DBUILD_APP_ISA=OFF
           -DBUILD_BAAS_OCR=OFF
@@ -232,10 +237,10 @@ jobs:
           -DBUILD_BAAS_NMS_BENCHMARK=OFF
           -DBAAS_FETCH_RESOURCES=OFF
 
-      - name: Cross-build Android service auth crypto
+      - name: Cross-build Android service authentication
         shell: bash
         run: >-
           cmake --build build/service-auth-android-${{ matrix.abi }}
           --config Release
           --parallel 4
-          --target BAAS_service_auth_crypto
+          --target BAAS_service_auth_crypto BAAS_service_auth_owner
