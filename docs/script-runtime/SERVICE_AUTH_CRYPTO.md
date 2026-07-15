@@ -1,7 +1,8 @@
 # Service v1 cryptographic foundation
 
 `BAAS_service_auth_crypto` is the transport-independent C++ foundation for the
-BAAS service v1 control handshake and secure JSON envelopes. It links the
+BAAS service v1 control handshake, secure JSON envelopes, and authenticated
+XChaCha20-Poly1305 streams. It links the
 private `BAAS::sodium` target and fails every operation closed when
 `sodium_init()` cannot initialize the process-wide runtime.
 
@@ -68,6 +69,43 @@ Transmit and receive keys remain separate because v1 derives
 `preauth:server-tx` and `preauth:server-rx` independently. A production driver
 must not substitute one bidirectional key.
 
+## Authenticated secret streams
+
+`SecretStreamPush` and `SecretStreamPull` are move-only, single-direction
+owners around libsodium XChaCha20-Poly1305 secretstream state. The public
+header does not expose the libsodium state layout. A push owner generates one
+public 24-byte header; the peer constructs a pull owner with that header and
+the matching 32-byte directional key.
+
+For each record the owner authenticates `aad_prefix || uint64_be(sequence)`.
+The sequence begins at zero, belongs to the owner, and advances exactly once
+after a successful native operation. Ciphertext is plaintext plus the fixed
+17-byte secretstream overhead. Protocol v1 accepts only `MESSAGE` and `FINAL`:
+
+- `FINAL` authenticates and returns its plaintext, then permanently closes the
+  direction;
+- authenticated `PUSH` or `REKEY` tags are protocol errors and poison the
+  receive owner;
+- a wrong key, header, prefix, sequence, truncated or modified record, replay,
+  reorder, and every other authentication failure permanently poison the
+  receive owner;
+- a poisoned, closed, exhausted, or moved-from owner never calls libsodium
+  again and returns a stable typed error;
+- the native state is wiped on destruction and decrypted plaintext uses
+  `SecretBuffer`.
+
+Allocation and size validation occur before a native state transition. The
+wrapper checks libsodium's message bound before calling it, so oversized input
+cannot enter the library's misuse/abort path. Calls are not internally locked;
+the owning session executor must serialize each direction.
+Output allocation failure leaves the native state and sequence unchanged, so
+the owning driver may retry the same operation or terminate the channel.
+
+A graceful protocol close must exchange `FINAL`. Transport EOF or WebSocket
+close without an authenticated `FINAL` is an unclean/truncated stream, because
+the crypto layer cannot distinguish a deliberately shortened stream by
+itself.
+
 ## Verification
 
 Configure `BUILD_SERVICE_AUTH_CRYPTO_TESTS=ON` and build
@@ -80,7 +118,9 @@ Configure `BUILD_SERVICE_AUTH_CRYPTO_TESTS=ON` and build
 - invalid padding/alphabet/unused bits, wrong key/signature/tag, replay/gap,
   duplicate JSON keys, invalid UTF-8, unsafe integers, and noncanonical secure
   plaintext;
-- secretstream AAD prefix plus its full uint64 big-endian suffix.
+- secretstream widths, empty/multi-record roundtrips, native AAD cross-check,
+  wrong key/header/prefix, tamper/truncation, replay/reorder, unexpected tags,
+  FINAL closure, poisoning, and move-only state transfer.
 
 The fixture contains one secretstream uint64 metadata value above the JSON safe
 integer range. The test loader tags only that non-protocol metadata value; the
@@ -91,7 +131,6 @@ production canonical parser remains strict.
 - persistent signing/password state, epoch changes, tickets, remember cookies,
   TTL, revocation, and an `AuthOwner`;
 - control `SessionDriver` and production `SessionFactory` integration;
-- business resume and XChaCha20-Poly1305 secretstream framing;
 - deterministic secretstream header/ciphertext cross-language evidence;
 - password/secret-bearing schema types with field-specific lifetime policy;
 - Tauri/Python live interoperability, restart, hostile-input, and platform
