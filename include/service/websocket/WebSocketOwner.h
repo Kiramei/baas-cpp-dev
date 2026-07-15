@@ -83,6 +83,7 @@ enum class TerminalAction : std::uint8_t {
     none,
     authentication_failed,
     protocol_failed,
+    capacity,
     internal_error,
     complete,
 };
@@ -114,7 +115,7 @@ public:
     // Creation allocates channel state only. It MUST NOT authenticate: Origin
     // has been checked, but protocol authentication begins with driver input.
     [[nodiscard]] virtual std::unique_ptr<SessionDriver> create(
-        const RequestMetadata& request,
+        RequestMetadata request,
         std::shared_ptr<OutboundSink> outbound,
         std::stop_token stop
     ) = 0;

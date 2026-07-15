@@ -60,6 +60,19 @@ namespace {
     return {std::nullopt, error};
 }
 
+class StringWiper final {
+public:
+    explicit StringWiper(std::string& value) noexcept : value_(value) {}
+    ~StringWiper()
+    {
+        secure_zero(std::as_writable_bytes(
+            std::span{value_.data(), value_.size()}));
+        value_.clear();
+    }
+private:
+    std::string& value_;
+};
+
 }  // namespace
 
 std::string_view secure_envelope_error_name(const SecureEnvelopeError error) noexcept
@@ -150,9 +163,10 @@ SecureEnvelopeEncodeResult SecureEnvelopeCipher::encrypt(
     if (next_send_sequence_ > static_cast<std::uint64_t>(maximum_safe_json_integer))
         return encode_error(SecureEnvelopeError::sequence_exhausted);
     try {
-        const auto encoded_plaintext = encode_canonical_json_value(plaintext);
+        auto encoded_plaintext = encode_canonical_json_value(plaintext);
         if (!encoded_plaintext)
             return encode_error(SecureEnvelopeError::invalid_plaintext);
+        StringWiper plaintext_wiper{encoded_plaintext.text};
         const auto nonce = control_sequence_nonce(next_send_sequence_);
         const auto aad = control_sequence_aad(next_send_sequence_);
         if (!aad) return encode_error(map_crypto_error(aad.error));
@@ -209,7 +223,8 @@ SecureEnvelopeDecodeResult SecureEnvelopeCipher::decrypt(
         auto parsed_plaintext = parse_canonical_json_value(plaintext_text);
         if (!parsed_plaintext)
             return decode_error(SecureEnvelopeError::invalid_plaintext);
-        const auto canonical = encode_canonical_json_value(*parsed_plaintext.value);
+        auto canonical = encode_canonical_json_value(*parsed_plaintext.value);
+        StringWiper canonical_wiper{canonical.text};
         if (!canonical || canonical.text != plaintext_text)
             return decode_error(SecureEnvelopeError::invalid_plaintext);
         ++next_receive_sequence_;

@@ -60,6 +60,8 @@ struct SharedStats {
         case TerminalAction::authentication_failed:
         case TerminalAction::protocol_failed:
             return {websocket_close_authentication_failed, "authentication failed"};
+        case TerminalAction::capacity:
+            return {websocket_close_capacity, "capacity exhausted"};
         case TerminalAction::internal_error:
             return {websocket_close_internal_error, "internal channel failure"};
         case TerminalAction::complete:
@@ -355,6 +357,8 @@ public:
                 counter = &stats->authentication_rejections;
             } else if (action == TerminalAction::protocol_failed) {
                 counter = &stats->protocol_rejections;
+            } else if (action == TerminalAction::capacity) {
+                counter = &stats->capacity_rejections;
             } else if (action == TerminalAction::complete) {
                 return;
             }
@@ -613,7 +617,7 @@ public:
             } else {
                 std::lock_guard<std::mutex> lock{slot->driver_mutex};
                 slot->driver = sessions_->create(
-                    request, slot, slot->stop_source.get_token()
+                    std::move(request), slot, slot->stop_source.get_token()
                 );
             }
             if (slot->terminal.load(std::memory_order_acquire) == TerminalAction::none
@@ -631,6 +635,11 @@ public:
                     break;
                 }
                 {
+                    // This loop already owns the connection's sole reader. A
+                    // frame has been removed from the transport queue, so it
+                    // must wait for an in-flight heartbeat instead of being
+                    // dropped. Only the shared scheduler may skip a busy
+                    // driver with try_lock.
                     std::lock_guard<std::mutex> lock{slot->driver_mutex};
                     auto result = slot->driver->input(
                         std::move(frame), slot->stop_source.get_token()
@@ -960,7 +969,9 @@ private:
                     // and re-check after acquiring the driver lock. A frame
                     // that completed authentication at the deadline must win
                     // over the scheduler's stale handshaking observation.
-                    std::lock_guard<std::mutex> lock{slot->driver_mutex};
+                    std::unique_lock<std::mutex> lock{
+                        slot->driver_mutex, std::try_to_lock};
+                    if (!lock.owns_lock()) continue;
                     if (!slot->stop_source.stop_requested()
                         && slot->phase.load(std::memory_order_acquire)
                             == SessionPhase::handshaking) {
@@ -979,7 +990,9 @@ private:
                 }
                 try {
                     {
-                        std::lock_guard<std::mutex> lock{slot->driver_mutex};
+                        std::unique_lock<std::mutex> lock{
+                            slot->driver_mutex, std::try_to_lock};
+                        if (!lock.owns_lock()) continue;
                         if (!slot->driver) continue;
                         auto result = slot->driver->heartbeat(
                             slot->stop_source.get_token()

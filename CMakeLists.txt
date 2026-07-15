@@ -104,6 +104,8 @@ option(BUILD_SERVICE_AUTH_CRYPTO "Build the service v1 cryptographic foundation"
 option(BUILD_SERVICE_AUTH_CRYPTO_TESTS "Build service v1 cryptographic contract tests" OFF)
 option(BUILD_SERVICE_AUTH_OWNER "Build the persistent service authentication owner" OFF)
 option(BUILD_SERVICE_AUTH_OWNER_TESTS "Build deterministic AuthOwner tests" OFF)
+option(BUILD_SERVICE_CONTROL_SESSION "Build the authenticated control WebSocket driver" OFF)
+option(BUILD_SERVICE_CONTROL_SESSION_TESTS "Build deterministic control-driver tests" OFF)
 
 # BAAS_APP owns the production script Host adapters. Standalone runtime builds
 # stay opt-in, while application builds always compile the runtime and its
@@ -133,6 +135,16 @@ if(BUILD_SERVICE_AUTH_OWNER_TESTS AND NOT BUILD_SERVICE_AUTH_OWNER)
 endif()
 
 if(BUILD_SERVICE_AUTH_OWNER AND NOT BUILD_SERVICE_AUTH_CRYPTO)
+    set(BUILD_SERVICE_AUTH_CRYPTO ON CACHE BOOL "Build the service v1 cryptographic foundation" FORCE)
+endif()
+
+if(BUILD_SERVICE_CONTROL_SESSION_TESTS AND NOT BUILD_SERVICE_CONTROL_SESSION)
+    set(BUILD_SERVICE_CONTROL_SESSION ON CACHE BOOL "Build the authenticated control WebSocket driver" FORCE)
+endif()
+
+if(BUILD_SERVICE_CONTROL_SESSION)
+    set(BUILD_SERVICE_WEBSOCKET ON CACHE BOOL "Build the bounded cpp-httplib WebSocket owner" FORCE)
+    set(BUILD_SERVICE_AUTH_OWNER ON CACHE BOOL "Build the persistent service authentication owner" FORCE)
     set(BUILD_SERVICE_AUTH_CRYPTO ON CACHE BOOL "Build the service v1 cryptographic foundation" FORCE)
 endif()
 
@@ -377,6 +389,10 @@ endif()
 
 if(BUILD_SERVICE_AUTH_CRYPTO OR BUILD_SERVICE_AUTH_OWNER)
     include("${CMAKE_CURRENT_LIST_DIR}/cmake/ServiceAuth.cmake")
+endif()
+
+if(BUILD_SERVICE_CONTROL_SESSION)
+    include("${CMAKE_CURRENT_LIST_DIR}/cmake/ServiceControlSession.cmake")
 endif()
 
 if(BUILD_SERVICE_HTTP)

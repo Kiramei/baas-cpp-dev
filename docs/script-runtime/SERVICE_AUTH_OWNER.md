@@ -74,8 +74,9 @@ clearing a browser cookie.
 
 Password change/reset increments the epoch, removes all sessions and remembered
 logins, and places a bounded `auth_revoked` event on every control subscription.
-The future control driver drains these events from its serialized heartbeat or
-input executor and closes with service-v1 authentication status `4401`.
+`ControlSessionFactory` drains these events before each authenticated input and
+on its serialized heartbeat, emits encrypted `auth_revoked`, and closes with
+service-v1 authentication status `4401`.
 
 ## Verification
 

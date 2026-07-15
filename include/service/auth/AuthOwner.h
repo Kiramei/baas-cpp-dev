@@ -177,6 +177,17 @@ struct HandshakeMaterial {
     HandshakeMaterial& operator=(HandshakeMaterial&&) noexcept = default;
 };
 
+struct ControlClientHello {
+    std::int64_t timestamp{};
+    PublicBytes client_nonce;
+    PublicBytes client_kx_public;
+};
+
+struct ControlHandshakeMaterial {
+    std::string server_hello_json;
+    HandshakeMaterial authentication;
+};
+
 struct ControlSessionMaterial {
     std::string session_id;
     std::int64_t expires_at{};
@@ -184,6 +195,7 @@ struct ControlSessionMaterial {
     SecretBuffer resume_ticket;
     SecretBuffer control_server_tx;
     SecretBuffer control_server_rx;
+    PasswordPublicState password_state;
     // Only remember-cookie resume discloses fresh session secrets to the
     // already authenticated client, matching the Python preauth envelope.
     std::optional<SecretBuffer> disclosed_master_secret;
@@ -222,6 +234,10 @@ public:
 
     [[nodiscard]] PasswordPublicState password_state() const;
     [[nodiscard]] PublicBytes signing_public_key() const;
+    // Builds and signs the exact v1 control transcript internally, so the
+    // signing seed cannot be used as a general message-signing oracle.
+    [[nodiscard]] AuthResult<ControlHandshakeMaterial> begin_control_handshake(
+        ControlClientHello hello) noexcept;
 
     [[nodiscard]] AuthStatus initialize_password(SecretBuffer password) noexcept;
     [[nodiscard]] AuthResult<ControlSessionMaterial> initialize_control(
@@ -245,6 +261,8 @@ public:
     [[nodiscard]] AuthStatus verify_resume_ticket(
         std::string_view session_id,
         std::span<const std::byte> ticket) noexcept;
+    [[nodiscard]] AuthStatus validate_session(
+        std::string_view session_id) noexcept;
 
     void close_session(std::string_view session_id) noexcept;
     [[nodiscard]] std::size_t active_session_count() const noexcept;

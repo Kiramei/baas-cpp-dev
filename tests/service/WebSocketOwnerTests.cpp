@@ -240,7 +240,7 @@ public:
     explicit FunctionFactory(Builder builder) : builder_(std::move(builder)) {}
 
     [[nodiscard]] std::unique_ptr<service_ws::SessionDriver> create(
-        const service_ws::RequestMetadata& request,
+        service_ws::RequestMetadata request,
         std::shared_ptr<service_ws::OutboundSink> outbound,
         std::stop_token
     ) override
@@ -347,6 +347,7 @@ void test_terminal_mapping_and_single_reader()
     for (const auto [action, code] : {
         std::pair{service_ws::TerminalAction::authentication_failed, std::uint16_t{4401}},
         std::pair{service_ws::TerminalAction::protocol_failed, std::uint16_t{4401}},
+        std::pair{service_ws::TerminalAction::capacity, std::uint16_t{1013}},
         std::pair{service_ws::TerminalAction::internal_error, std::uint16_t{1011}},
     }) {
         auto factory = std::make_shared<FunctionFactory>([action] {
@@ -620,6 +621,138 @@ void test_handshake_deadline_and_heartbeat_tick()
     check(heartbeat_owner.finish_shutdown(), "heartbeat session must shut down");
 }
 
+void test_busy_driver_does_not_starve_other_heartbeats()
+{
+    struct BlockState {
+        std::mutex mutex;
+        std::condition_variable changed;
+        bool entered{};
+        bool released{};
+    };
+    auto blocked = std::make_shared<BlockState>();
+    auto creates = std::make_shared<std::atomic<std::size_t>>(0);
+    auto heartbeats = std::make_shared<std::atomic<std::size_t>>(0);
+    auto factory = std::make_shared<FunctionFactory>(
+        [blocked, creates, heartbeats]() -> std::unique_ptr<service_ws::SessionDriver> {
+            if (creates->fetch_add(1) == 0) {
+                return std::make_unique<FunctionDriver>([blocked](service_ws::Frame) {
+                    std::unique_lock lock{blocked->mutex};
+                    blocked->entered = true;
+                    blocked->changed.notify_all();
+                    blocked->changed.wait(lock, [&] { return blocked->released; });
+                    return service_ws::DriverResult{
+                        service_ws::SessionPhase::streaming,
+                        service_ws::TerminalAction::none,
+                        {},
+                    };
+                });
+            }
+            return std::make_unique<FunctionDriver>(
+                [](service_ws::Frame) {
+                    return service_ws::DriverResult{
+                        service_ws::SessionPhase::streaming,
+                        service_ws::TerminalAction::none,
+                        {},
+                    };
+                },
+                [heartbeats] {
+                    heartbeats->fetch_add(1);
+                    return service_ws::DriverResult{
+                        service_ws::SessionPhase::streaming,
+                        service_ws::TerminalAction::none,
+                        {},
+                    };
+                });
+        });
+    auto config = test_config();
+    config.handshake_timeout = 30ms;
+    service_ws::WebSocketOwner owner{config, {}, factory};
+    FakeTransport slow_transport;
+    slow_transport.push(frame(service_ws::FrameKind::text, "slow"));
+    std::jthread slow_session([&] {
+        owner.serve(std::nullopt, false, metadata(), slow_transport);
+    });
+    {
+        std::unique_lock lock{blocked->mutex};
+        blocked->changed.wait(lock, [&] { return blocked->entered; });
+    }
+    // Let the blocked handshaking slot pass its deadline. The global
+    // scheduler must skip its busy driver lock and continue serving others.
+    std::this_thread::sleep_for(50ms);
+
+    FakeTransport healthy_transport;
+    healthy_transport.push(frame(service_ws::FrameKind::text, "ready"));
+    std::jthread healthy_session([&] {
+        owner.serve(std::nullopt, false, metadata(), healthy_transport);
+    });
+    check(wait_until([&] { return heartbeats->load() != 0; }, 250ms),
+          "one busy driver must not block every other connection heartbeat");
+    {
+        std::lock_guard lock{blocked->mutex};
+        blocked->released = true;
+        blocked->changed.notify_all();
+    }
+    owner.begin_shutdown();
+    check(owner.finish_shutdown(), "busy-driver scheduler test must shut down");
+}
+
+void test_input_waits_for_heartbeat_without_dropping_frame()
+{
+    struct HeartbeatState {
+        std::mutex mutex;
+        std::condition_variable changed;
+        bool entered{};
+        bool released{};
+    };
+    auto heartbeat = std::make_shared<HeartbeatState>();
+    auto inputs = std::make_shared<std::atomic<std::size_t>>(0);
+    auto factory = std::make_shared<FunctionFactory>([heartbeat, inputs] {
+        return std::make_unique<FunctionDriver>(
+            [inputs](service_ws::Frame) {
+                inputs->fetch_add(1);
+                return service_ws::DriverResult{
+                    service_ws::SessionPhase::streaming,
+                    service_ws::TerminalAction::none,
+                    {},
+                };
+            },
+            [heartbeat] {
+                std::unique_lock lock{heartbeat->mutex};
+                heartbeat->entered = true;
+                heartbeat->changed.notify_all();
+                heartbeat->changed.wait(lock, [&] { return heartbeat->released; });
+                return service_ws::DriverResult{
+                    service_ws::SessionPhase::streaming,
+                    service_ws::TerminalAction::none,
+                    {},
+                };
+            });
+    });
+    service_ws::WebSocketOwner owner{test_config(), {}, factory};
+    FakeTransport transport;
+    transport.push(frame(service_ws::FrameKind::text, "ready"));
+    std::jthread session([&] {
+        owner.serve(std::nullopt, false, metadata(), transport);
+    });
+    {
+        std::unique_lock lock{heartbeat->mutex};
+        heartbeat->changed.wait(lock, [&] { return heartbeat->entered; });
+    }
+    transport.push(frame(service_ws::FrameKind::text, "after-heartbeat"));
+    std::this_thread::sleep_for(10ms);
+    check(inputs->load() == 1,
+          "input must wait while the heartbeat owns the driver lock");
+    {
+        std::lock_guard lock{heartbeat->mutex};
+        heartbeat->released = true;
+        heartbeat->changed.notify_all();
+    }
+    check(wait_until([&] { return inputs->load() == 2; }, 250ms),
+          "a frame read during heartbeat processing must not be dropped");
+    owner.begin_shutdown();
+    check(owner.finish_shutdown(), "heartbeat/input serialization test must shut down");
+}
+
 }  // namespace
 
 int main()
@@ -634,6 +767,8 @@ int main()
     test_terminal_write_failure_releases_queued_budget();
     test_successful_input_wins_handshake_deadline_race();
     test_handshake_deadline_and_heartbeat_tick();
+    test_busy_driver_does_not_starve_other_heartbeats();
+    test_input_waits_for_heartbeat_without_dropping_frame();
     if (failures != 0) {
         std::cerr << failures << " WebSocket owner test(s) failed\n";
         return EXIT_FAILURE;

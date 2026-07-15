@@ -1148,6 +1148,14 @@ public:
             if (!resume) {
                 return result_error<ControlSessionMaterial>(crypto_to_auth(resume.error));
             }
+            // Finish the only allocating public snapshot before persistence
+            // or session insertion. Once the password file is committed, the
+            // remaining moves must not turn success into a hidden live session
+            // reported as failure under memory pressure.
+            PasswordPublicState committed_state{
+                derived.value->initialized,
+                derived.value->epoch,
+                derived.value->salt};
 
             std::lock_guard persistence_lock(persistence_mutex_);
             std::lock_guard lock(mutex_);
@@ -1167,6 +1175,7 @@ public:
                 return result_error<ControlSessionMaterial>(AuthError::storage_failure);
             }
             password_ = std::move(*derived.value);
+            session->password_state = std::move(committed_state);
             return session;
         }
         catch (...) {
@@ -1326,6 +1335,8 @@ public:
             material.resume_ticket = std::move(*ticket.value);
             material.control_server_tx = std::move(*tx.value);
             material.control_server_rx = std::move(*rx.value);
+            material.password_state = {
+                password_.initialized, password_.epoch, password_.salt};
             if (disclose) {
                 material.disclosed_master_secret.emplace(master.bytes());
                 material.disclosed_resume_secret.emplace(resume.bytes());
@@ -1469,6 +1480,117 @@ PublicBytes AuthOwner::signing_public_key() const
 {
     std::lock_guard lock(impl_->mutex_);
     return impl_->signing_public_;
+}
+
+AuthResult<ControlHandshakeMaterial> AuthOwner::begin_control_handshake(
+    ControlClientHello hello) noexcept
+{
+    try {
+        if (hello.timestamp < 0
+            || hello.timestamp > maximum_safe_json_integer
+            || hello.client_nonce.size() != x25519_key_bytes
+            || hello.client_kx_public.size() != x25519_key_bytes) {
+            return result_error<ControlHandshakeMaterial>(AuthError::invalid_argument);
+        }
+        std::lock_guard lock(impl_->mutex_);
+        SecretBuffer server_private{x25519_key_bytes};
+        PublicBytes server_nonce(x25519_key_bytes);
+        if (!impl_->dependencies_.random->fill(server_private.mutable_bytes())
+            || !impl_->dependencies_.random->fill(server_nonce)) {
+            return result_error<ControlHandshakeMaterial>(AuthError::entropy_failure);
+        }
+        auto server_public = x25519_public_key(server_private.bytes());
+        auto shared = x25519_shared_secret(
+            server_private.bytes(), hello.client_kx_public);
+        auto client_nonce_b64 = b64(hello.client_nonce);
+        auto client_public_b64 = b64(hello.client_kx_public);
+        auto server_nonce_b64 = b64(server_nonce);
+        auto server_public_b64 = server_public ? b64(*server_public.value) : std::nullopt;
+        std::optional<std::string> salt_b64;
+        if (impl_->password_.initialized) salt_b64 = b64(impl_->password_.salt);
+        if (!shared) {
+            return result_error<ControlHandshakeMaterial>(
+                AuthError::authentication_failed);
+        }
+        if (!server_public || !client_nonce_b64 || !client_public_b64
+            || !server_nonce_b64 || !server_public_b64
+            || (impl_->password_.initialized && !salt_b64)) {
+            return result_error<ControlHandshakeMaterial>(AuthError::crypto_failure);
+        }
+
+        CanonicalJsonValue client{CanonicalJsonValue::Object{
+            {"type", string_value("client_hello")},
+            {"kind", string_value("control")},
+            {"channel", string_value("control")},
+            {"version", CanonicalJsonValue{std::int64_t{1}}},
+            {"timestamp", CanonicalJsonValue{hello.timestamp}},
+            {"client_nonce", string_value(std::move(*client_nonce_b64))},
+            {"client_kx_pub", string_value(std::move(*client_public_b64))},
+        }};
+        CanonicalJsonValue argon2{CanonicalJsonValue::Object{
+            {"algorithm", string_value("argon2id")},
+            {"hash_bytes", CanonicalJsonValue{
+                static_cast<std::int64_t>(argon2id_output_bytes)}},
+            {"memlimit", CanonicalJsonValue{
+                static_cast<std::int64_t>(argon2id_v1_memlimit)}},
+            {"opslimit", CanonicalJsonValue{
+                static_cast<std::int64_t>(argon2id_v1_opslimit)}},
+            {"salt_bytes", CanonicalJsonValue{
+                static_cast<std::int64_t>(argon2id_salt_bytes)}},
+        }};
+        CanonicalJsonValue server_core{CanonicalJsonValue::Object{
+            {"type", string_value("server_hello")},
+            {"kind", string_value("control")},
+            {"channel", string_value("control")},
+            {"version", CanonicalJsonValue{std::int64_t{1}}},
+            {"initialized", CanonicalJsonValue{impl_->password_.initialized}},
+            {"pwd_epoch", CanonicalJsonValue{
+                static_cast<std::int64_t>(impl_->password_.epoch)}},
+            {"pwd_salt", impl_->password_.initialized
+                ? string_value(std::move(*salt_b64)) : CanonicalJsonValue{}},
+            {"argon2", std::move(argon2)},
+            {"server_nonce", string_value(std::move(*server_nonce_b64))},
+            {"server_kx_pub", string_value(std::move(*server_public_b64))},
+        }};
+        CanonicalJsonValue transcript{CanonicalJsonValue::Object{
+            {"kind", string_value("control")},
+            {"channel", string_value("control")},
+            {"client", std::move(client)},
+            {"server", server_core},
+        }};
+        auto encoded_transcript = encode_canonical_json_value(transcript);
+        if (!encoded_transcript) {
+            return result_error<ControlHandshakeMaterial>(AuthError::crypto_failure);
+        }
+        auto signature = ed25519_sign(
+            impl_->signing_seed_.bytes(), bytes_of(encoded_transcript.text));
+        auto transcript_hash = sha256(bytes_of(encoded_transcript.text));
+        auto signature_b64 = signature ? b64(*signature.value) : std::nullopt;
+        auto sign_public_b64 = b64(impl_->signing_public_);
+        if (!signature || !transcript_hash || !signature_b64 || !sign_public_b64) {
+            return result_error<ControlHandshakeMaterial>(AuthError::crypto_failure);
+        }
+        auto response_object = *server_core.as_object();
+        response_object.emplace_back(
+            "signature", string_value(std::move(*signature_b64)));
+        response_object.emplace_back(
+            "server_sign_pub", string_value(std::move(*sign_public_b64)));
+        auto response = encode_canonical_json_value(
+            CanonicalJsonValue{std::move(response_object)});
+        if (!response) {
+            return result_error<ControlHandshakeMaterial>(AuthError::crypto_failure);
+        }
+        ControlHandshakeMaterial material{
+            std::move(response.text),
+            HandshakeMaterial{
+                std::move(*shared.value), std::move(*transcript_hash.value)}};
+        return {
+            std::optional<ControlHandshakeMaterial>{std::move(material)},
+            AuthError::none};
+    }
+    catch (...) {
+        return result_error<ControlHandshakeMaterial>(AuthError::crypto_failure);
+    }
 }
 
 AuthStatus AuthOwner::initialize_password(SecretBuffer password) noexcept
@@ -1764,6 +1886,17 @@ AuthStatus AuthOwner::verify_resume_ticket(
     }
     catch (...) {
         return status(AuthError::invalid_resume_ticket);
+    }
+}
+
+AuthStatus AuthOwner::validate_session(const std::string_view session_id) noexcept
+{
+    try {
+        std::lock_guard lock(impl_->mutex_);
+        return status(impl_->require_session_locked(session_id));
+    }
+    catch (...) {
+        return status(AuthError::crypto_failure);
     }
 }
 

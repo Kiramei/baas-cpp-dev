@@ -449,7 +449,7 @@ public:
     explicit TestFactory(const bool fail = false) : fail_(fail) {}
 
     [[nodiscard]] std::unique_ptr<service_ws::SessionDriver> create(
-        const service_ws::RequestMetadata&,
+        service_ws::RequestMetadata,
         std::shared_ptr<service_ws::OutboundSink>,
         std::stop_token
     ) override
@@ -511,7 +511,7 @@ public:
     {}
 
     [[nodiscard]] std::unique_ptr<service_ws::SessionDriver> create(
-        const service_ws::RequestMetadata&,
+        service_ws::RequestMetadata,
         std::shared_ptr<service_ws::OutboundSink>,
         std::stop_token
     ) override
