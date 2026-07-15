@@ -39,6 +39,7 @@ using baas::service::adb::AdbStreamStatus;
 using baas::service::adb::AdbTransportError;
 using baas::service::adb::ServiceAdbTransport;
 using baas::service::adb::ServiceAdbTransportLimits;
+using baas::service::adb::open_native_adb_stream;
 
 namespace {
 
@@ -203,8 +204,9 @@ bool prepare_test_sockets() noexcept { return true; }
 
 class LoopbackAdbServer final {
 public:
-    explicit LoopbackAdbServer(const std::size_t sessions)
-        : sessions_(sessions)
+    explicit LoopbackAdbServer(
+        const std::size_t sessions, const bool speak_adb = true)
+        : sessions_(sessions), speak_adb_(speak_adb)
     {
         if (!prepare_test_sockets()) throw CheckFailure("test socket startup");
         listener_ = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
@@ -240,29 +242,41 @@ public:
             throw CheckFailure("test getsockname");
         }
         port_ = ntohs(address.sin_port);
-        worker_ = std::thread([this] { run(); });
+        try {
+            worker_ = std::thread([this] { run(); });
+        } catch (...) {
+            close_test_socket(listener_);
+            listener_ = invalid_test_socket;
+            throw;
+        }
     }
 
     ~LoopbackAdbServer()
     {
+        TestSocket listener_snapshot{invalid_test_socket};
         {
             std::lock_guard lock(mutex_);
             stopping_ = true;
             released_ = sessions_;
+            listener_snapshot = listener_;
         }
         changed_.notify_all();
+        wake_accept();
 #if defined(_WIN32)
-        if (listener_ != invalid_test_socket) {
-            static_cast<void>(::shutdown(listener_, SD_BOTH));
+        if (listener_snapshot != invalid_test_socket) {
+            static_cast<void>(::shutdown(listener_snapshot, SD_BOTH));
         }
 #else
-        if (listener_ != invalid_test_socket) {
-            static_cast<void>(::shutdown(listener_, SHUT_RDWR));
+        if (listener_snapshot != invalid_test_socket) {
+            static_cast<void>(::shutdown(listener_snapshot, SHUT_RDWR));
         }
 #endif
-        close_test_socket(listener_);
-        listener_ = invalid_test_socket;
         if (worker_.joinable()) worker_.join();
+        {
+            std::lock_guard lock(mutex_);
+            if (listener_ == listener_snapshot) listener_ = invalid_test_socket;
+        }
+        close_test_socket(listener_snapshot);
     }
 
     [[nodiscard]] std::uint16_t port() const noexcept { return port_; }
@@ -293,6 +307,19 @@ public:
     }
 
 private:
+    void wake_accept() const noexcept
+    {
+        const auto socket = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+        if (socket == invalid_test_socket) return;
+        sockaddr_in address{};
+        address.sin_family = AF_INET;
+        address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        address.sin_port = htons(port_);
+        static_cast<void>(::connect(
+            socket, reinterpret_cast<const sockaddr*>(&address), sizeof(address)));
+        close_test_socket(socket);
+    }
+
     static bool receive_exact(
         const TestSocket socket, char* output, std::size_t remaining)
     {
@@ -357,15 +384,32 @@ private:
     {
         try {
             for (std::size_t index{}; index < sessions_; ++index) {
+                TestSocket listener_snapshot{invalid_test_socket};
                 {
                     std::lock_guard lock(mutex_);
                     if (stopping_) break;
+                    listener_snapshot = listener_;
                 }
-                const auto client = ::accept(listener_, nullptr, nullptr);
+                const auto client = ::accept(listener_snapshot, nullptr, nullptr);
                 if (client == invalid_test_socket) {
                     std::lock_guard lock(mutex_);
                     if (stopping_) break;
                     throw CheckFailure("fake ADB accept");
+                }
+                {
+                    std::lock_guard lock(mutex_);
+                    if (stopping_) {
+                        close_test_socket(client);
+                        break;
+                    }
+                }
+                if (!speak_adb_) {
+                    close_test_socket(client);
+                    std::lock_guard lock(mutex_);
+                    ready_ = index + 1;
+                    completed_ = index + 1;
+                    changed_.notify_all();
+                    continue;
                 }
                 const int receive_buffer = 1'024;
                 static_cast<void>(setsockopt(
@@ -417,6 +461,7 @@ private:
     }
 
     std::size_t sessions_{};
+    bool speak_adb_{};
     TestSocket listener_{invalid_test_socket};
     std::uint16_t port_{};
     std::thread worker_;
@@ -625,6 +670,25 @@ void independent_connections()
     CHECK(factory.state->endpoints.size() == 2);
 }
 
+void native_connector_deadline_edges()
+{
+    LoopbackAdbServer server(1, false);
+    const auto expired = open_native_adb_stream(
+        {"127.0.0.1", server.port()},
+        std::chrono::steady_clock::now() + 1ns);
+    CHECK(expired.error == AdbTransportError::timeout);
+    CHECK(expired.stream == nullptr);
+    server.finish();
+
+    std::stop_source source;
+    source.request_stop();
+    const auto cancelled = open_native_adb_stream(
+        {"127.0.0.1", server.port()},
+        std::chrono::steady_clock::now() + 1s, source.get_token());
+    CHECK(cancelled.error == AdbTransportError::cancelled);
+    CHECK(cancelled.stream == nullptr);
+}
+
 void native_close_io_lease_stress()
 {
     constexpr std::size_t read_sessions = 48;
@@ -751,6 +815,7 @@ int main(const int argc, char** argv)
         forwarding_and_parsing,
         raw_stream_raii_stop_and_destructor,
         independent_connections,
+        native_connector_deadline_edges,
         native_close_io_lease_stress,
         input_validation,
     };

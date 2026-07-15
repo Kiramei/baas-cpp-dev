@@ -104,6 +104,12 @@ using AdbStreamFactory = std::function<AdbStreamOpenResult(
     AdbByteStream::Deadline deadline,
     std::stop_token stop)>;
 
+// Production numeric TCP connector used when no custom stream factory is set.
+[[nodiscard]] AdbStreamOpenResult open_native_adb_stream(
+    const AdbEndpoint& endpoint,
+    AdbByteStream::Deadline deadline,
+    std::stop_token stop = {});
+
 class AdbServiceStream {
 public:
     AdbServiceStream() = default;

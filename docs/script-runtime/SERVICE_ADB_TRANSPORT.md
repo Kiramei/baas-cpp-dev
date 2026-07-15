@@ -42,8 +42,10 @@ The default endpoint is `127.0.0.1:5037`; callers may inject an endpoint and
 stream factory. Endpoint hosts must already be resolved numeric IPv4 or IPv6
 literals. DNS names are rejected at construction, and the native connector
 uses `AI_NUMERICHOST | AI_NUMERICSERV`, so name resolution cannot escape the
-connect deadline or cancellation boundary. Each public operation opens an
-independent ADB connection.
+connect deadline or cancellation boundary. The exported
+`open_native_adb_stream` factory re-checks cancellation and the absolute
+deadline before returning either an immediate or asynchronously connected
+socket. Each public operation opens an independent ADB connection.
 Access to each connection is serialized, while unrelated connections can make
 progress concurrently. `AdbServiceStream` is move-only. `stop()` and transport
 destruction strongly close all active streams. Native close first rejects new

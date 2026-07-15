@@ -334,7 +334,7 @@ bool numeric_endpoint_host(const std::string& host) noexcept
     return result == 0;
 }
 
-AdbStreamOpenResult open_native_stream(
+AdbStreamOpenResult open_native_stream_impl(
     const AdbEndpoint& endpoint, const Deadline deadline,
     const std::stop_token stop)
 {
@@ -387,6 +387,16 @@ AdbStreamOpenResult open_native_stream(
         const int connected = ::connect(
             socket, address->ai_addr, static_cast<int>(address->ai_addrlen));
         if (connected == 0) {
+            if (stop.stop_requested()) {
+                close_socket(socket);
+                return {nullptr, AdbTransportError::cancelled,
+                        "ADB connect cancelled"};
+            }
+            if (std::chrono::steady_clock::now() >= deadline) {
+                close_socket(socket);
+                return {nullptr, AdbTransportError::timeout,
+                        "ADB connect timed out"};
+            }
             return {std::make_unique<NativeAdbStream>(socket),
                     AdbTransportError::none, {}};
         }
@@ -423,6 +433,16 @@ AdbStreamOpenResult open_native_stream(
                     socket, SOL_SOCKET, SO_ERROR, &error, &length) == 0;
 #endif
                 if (valid && error == 0) {
+                    if (stop.stop_requested()) {
+                        close_socket(socket);
+                        return {nullptr, AdbTransportError::cancelled,
+                                "ADB connect cancelled"};
+                    }
+                    if (std::chrono::steady_clock::now() >= deadline) {
+                        close_socket(socket);
+                        return {nullptr, AdbTransportError::timeout,
+                                "ADB connect timed out"};
+                    }
                     return {std::make_unique<NativeAdbStream>(socket),
                             AdbTransportError::none, {}};
                 }
@@ -442,6 +462,13 @@ AdbStreamOpenResult open_native_stream(
 }
 
 }  // namespace
+
+AdbStreamOpenResult open_native_adb_stream(
+    const AdbEndpoint& endpoint, const AdbByteStream::Deadline deadline,
+    const std::stop_token stop)
+{
+    return open_native_stream_impl(endpoint, deadline, stop);
+}
 
 class AdbServiceStream::State {
 public:
@@ -783,7 +810,7 @@ ServiceAdbTransport::ServiceAdbTransport(
         || endpoint.port == 0) {
         throw std::invalid_argument("invalid ADB transport configuration");
     }
-    if (!stream_factory) stream_factory = open_native_stream;
+    if (!stream_factory) stream_factory = open_native_adb_stream;
     impl_ = std::make_shared<Impl>(
         std::move(endpoint), std::move(stream_factory), limits);
 }
