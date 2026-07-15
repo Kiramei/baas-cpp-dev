@@ -10,6 +10,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace baas::service::auth {
@@ -207,15 +208,42 @@ struct BusinessClientHello {
     SecretBuffer resume_ticket;
 };
 
-// The ticket is carried forward so the caller never needs a second public
-// parse/fetch step between the signed handshake and the atomic resume.
-struct BusinessHandshakeMaterial {
-    std::string server_hello_json;
-    HandshakeMaterial authentication;
-    BusinessChannel channel{BusinessChannel::provider};
-    std::string session_id;
-    std::string socket_id;
-    SecretBuffer resume_ticket;
+// An unforgeable, move-only capability binding the signed hello to resume.
+// Only AuthOwner can construct it; callers may read preauth key material and
+// move out the server hello, but cannot alter its resume context.
+class BusinessHandshakeMaterial final {
+public:
+    BusinessHandshakeMaterial() = delete;
+    BusinessHandshakeMaterial(const BusinessHandshakeMaterial&) = delete;
+    BusinessHandshakeMaterial& operator=(const BusinessHandshakeMaterial&) = delete;
+    BusinessHandshakeMaterial(BusinessHandshakeMaterial&&) noexcept = default;
+    BusinessHandshakeMaterial& operator=(BusinessHandshakeMaterial&&) noexcept = default;
+
+    [[nodiscard]] const HandshakeMaterial& authentication() const noexcept
+    {
+        return authentication_;
+    }
+    [[nodiscard]] std::string take_server_hello_json() noexcept
+    {
+        return std::move(server_hello_json_);
+    }
+
+private:
+    friend class AuthOwner;
+    BusinessHandshakeMaterial(
+        std::string server_hello_json,
+        HandshakeMaterial authentication,
+        BusinessChannel channel,
+        std::string session_id,
+        std::string socket_id,
+        SecretBuffer resume_ticket) noexcept;
+
+    std::string server_hello_json_;
+    HandshakeMaterial authentication_;
+    BusinessChannel channel_;
+    std::string session_id_;
+    std::string socket_id_;
+    SecretBuffer resume_ticket_;
 };
 
 struct ControlSessionMaterial {
@@ -249,15 +277,6 @@ struct RevocationEvent {
 };
 
 using SubscriptionId = std::uint64_t;
-
-struct BusinessResumeRequest {
-    BusinessChannel channel{BusinessChannel::provider};
-    std::string session_id;
-    std::string socket_id;
-    PublicBytes transcript_hash;
-    SecretBuffer resume_ticket;
-    SecretBuffer resume_mac;
-};
 
 struct BusinessSessionMaterial {
     BusinessChannel channel{BusinessChannel::provider};
@@ -317,7 +336,8 @@ public:
     // Ticket, session epoch/expiry, resume MAC, key derivation, and revocation
     // subscription installation share one mutex linearization point.
     [[nodiscard]] AuthResult<BusinessSessionMaterial> resume_business(
-        BusinessResumeRequest request) noexcept;
+        BusinessHandshakeMaterial handshake,
+        SecretBuffer resume_mac) noexcept;
     [[nodiscard]] AuthStatus validate_session(
         std::string_view session_id) noexcept;
 

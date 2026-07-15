@@ -28,11 +28,11 @@ namespace {
 
 static_assert(!std::is_copy_constructible_v<auth::BusinessClientHello>);
 static_assert(!std::is_copy_constructible_v<auth::BusinessHandshakeMaterial>);
-static_assert(!std::is_copy_constructible_v<auth::BusinessResumeRequest>);
 static_assert(!std::is_copy_constructible_v<auth::BusinessSessionMaterial>);
+static_assert(!std::is_default_constructible_v<auth::BusinessHandshakeMaterial>);
+static_assert(!std::is_aggregate_v<auth::BusinessHandshakeMaterial>);
 static_assert(std::is_nothrow_move_constructible_v<auth::BusinessClientHello>);
 static_assert(std::is_nothrow_move_constructible_v<auth::BusinessHandshakeMaterial>);
-static_assert(std::is_nothrow_move_constructible_v<auth::BusinessResumeRequest>);
 static_assert(std::is_nothrow_move_constructible_v<auth::BusinessSessionMaterial>);
 
 int failures = 0;
@@ -370,6 +370,29 @@ struct Fixture {
     return auth::SecretBuffer{*mac.value};
 }
 
+[[nodiscard]] auth::AuthResult<auth::BusinessHandshakeMaterial> begin_business(
+    auth::AuthOwner& owner,
+    const auth::BusinessChannel channel,
+    const std::string_view session_id,
+    const std::string_view socket_id,
+    const std::span<const std::byte> ticket,
+    const std::int64_t timestamp)
+{
+    auth::SecretBuffer client_private{auth::x25519_key_bytes};
+    std::fill(client_private.mutable_bytes().begin(),
+              client_private.mutable_bytes().end(), std::byte{0x6A});
+    auto client_public = auth::x25519_public_key(client_private.bytes());
+    if (!client_public) throw std::runtime_error("business client public key failed");
+    return owner.begin_business_handshake(auth::BusinessClientHello{
+        channel,
+        timestamp,
+        auth::PublicBytes(auth::x25519_key_bytes, std::byte{0x20}),
+        std::move(*client_public.value),
+        std::string{session_id},
+        std::string{socket_id},
+        auth::SecretBuffer{ticket}});
+}
+
 [[nodiscard]] auth::PublicBytes hex_bytes(const std::string_view value)
 {
     if ((value.size() % 2) != 0) throw std::runtime_error("odd fixture hex");
@@ -566,7 +589,9 @@ void test_typed_business_handshake_resume_keys_and_revocation()
         check(begun, "each strict business channel must begin a typed handshake");
         if (!begun) continue;
 
-        auto parsed = auth::parse_canonical_json_value(begun->server_hello_json);
+        const auto business_transcript = begun->authentication().transcript_hash;
+        auto server_hello_json = begun->take_server_hello_json();
+        auto parsed = auth::parse_canonical_json_value(server_hello_json);
         check(parsed && parsed.value->find("kind") != nullptr
                   && *parsed.value->find("kind")->as_string() == "resume"
                   && *parsed.value->find("channel")->as_string()
@@ -580,8 +605,8 @@ void test_typed_business_handshake_resume_keys_and_revocation()
                 }
             }
             const auto ticket_text = std::string{
-                reinterpret_cast<const char*>(begun->resume_ticket.bytes().data()),
-                begun->resume_ticket.size()};
+                reinterpret_cast<const char*>(session->resume_ticket.bytes().data()),
+                session->resume_ticket.size()};
             auth::CanonicalJsonValue client{auth::CanonicalJsonValue::Object{
                 {"type", auth::CanonicalJsonValue{std::string{"client_hello"}}},
                 {"kind", auth::CanonicalJsonValue{std::string{"resume"}}},
@@ -610,7 +635,7 @@ void test_typed_business_handshake_resume_keys_and_revocation()
                 *parsed.value->find("signature")->as_string(), auth::ed25519_signature_bytes);
             check(signed_hash && signature
                       && auth::constant_time_equal(
-                          *signed_hash.value, begun->authentication.transcript_hash)
+                          *signed_hash.value, begun->authentication().transcript_hash)
                       && auth::ed25519_verify(
                           owner->signing_public_key(), bytes(signed_transcript.text),
                           *signature.value) == auth::CryptoError::none,
@@ -618,25 +643,20 @@ void test_typed_business_handshake_resume_keys_and_revocation()
         }
 
         if (index == 0) {
+            auto rejected = begin_business(
+                *owner, channels[index], session->session_id, socket_id,
+                session->resume_ticket.bytes(), 1'700'001'123);
             auth::SecretBuffer bad_mac{auth::hmac_sha256_bytes};
-            check(owner->resume_business(auth::BusinessResumeRequest{
-                      channels[index], session->session_id, socket_id,
-                      begun->authentication.transcript_hash,
-                      auth::SecretBuffer{begun->resume_ticket.bytes()},
-                      std::move(bad_mac)}).error == auth::AuthError::authentication_failed,
+            check(rejected && owner->resume_business(
+                      std::move(*rejected.value), std::move(bad_mac)).error
+                      == auth::AuthError::authentication_failed,
                   "bad resume MAC must fail before installing a subscription");
         }
         auto mac = business_resume_mac(
             resume, channels[index], state.pwd_epoch, session->session_id,
-            socket_id, begun->authentication.transcript_hash);
-        const auto business_transcript = begun->authentication.transcript_hash;
-        auto resumed = owner->resume_business(auth::BusinessResumeRequest{
-            channels[index],
-            session->session_id,
-            socket_id,
-            business_transcript,
-            std::move(begun->resume_ticket),
-            std::move(mac)});
+            socket_id, business_transcript);
+        auto resumed = owner->resume_business(
+            std::move(*begun.value), std::move(mac));
         check(resumed && resumed->stream_server_tx_key.size() == auth::auth_key_bytes
                   && resumed->stream_server_rx_key.size() == auth::auth_key_bytes,
               "atomic business resume must return final directional keys only");
@@ -713,51 +733,96 @@ void test_business_negative_capacity_expiry_and_concurrency()
         auto resume = resume_secret(key, control_hash, hash);
         const auto socket = std::string{"bounded-socket"};
 
-        const auto first_hash = transcript("bounded-business-first");
-        auto first_mac = business_resume_mac(
-            resume, auth::BusinessChannel::sync, state.pwd_epoch,
-            session->session_id, socket, first_hash);
         auto tampered_ticket = auth::SecretBuffer{session->resume_ticket.bytes()};
         tampered_ticket.mutable_bytes().back() ^= std::byte{1};
-        check(owner->resume_business(auth::BusinessResumeRequest{
-                  auth::BusinessChannel::sync, session->session_id, socket,
-                  first_hash, std::move(tampered_ticket),
-                  auth::SecretBuffer{first_mac.bytes()}}).error
+        auto tampered = begin_business(
+            *owner, auth::BusinessChannel::sync, session->session_id, socket,
+            tampered_ticket.bytes(), 1'700'002'000);
+        auto tampered_mac = business_resume_mac(
+            resume, auth::BusinessChannel::sync, state.pwd_epoch,
+            session->session_id, socket, tampered->authentication().transcript_hash);
+        check(tampered && owner->resume_business(
+                  std::move(*tampered.value), std::move(tampered_mac)).error
                   == auth::AuthError::invalid_resume_ticket,
               "tampered business ticket must fail without consuming capacity");
-        check(owner->resume_business(auth::BusinessResumeRequest{
-                  static_cast<auth::BusinessChannel>(0xFF), session->session_id, socket,
-                  first_hash, auth::SecretBuffer{session->resume_ticket.bytes()},
-                  auth::SecretBuffer{first_mac.bytes()}}).error
-                  == auth::AuthError::invalid_argument,
-              "business resume must reject channels outside the strict four-value enum");
 
-        auto first = owner->resume_business(auth::BusinessResumeRequest{
+        const auto second_control_hash = transcript("bounded-business-control-2");
+        auto second_session = owner->authenticate_control(
+            handshake(key, second_control_hash),
+            password_proof(key, second_control_hash, hash, state.pwd_epoch));
+        check(second_session, "mismatch fixture must create a second live session");
+
+        auto first_handshake = begin_business(
+            *owner, auth::BusinessChannel::sync, session->session_id, socket,
+            session->resume_ticket.bytes(), 1'700'002'001);
+        auto first_mac = business_resume_mac(
+            resume, auth::BusinessChannel::sync, state.pwd_epoch,
+            session->session_id, socket,
+            first_handshake->authentication().transcript_hash);
+
+        const auto expect_cross_rejected = [&](const auth::BusinessChannel channel,
+                                                const std::string_view target_session,
+                                                const std::string_view target_socket,
+                                                const std::span<const std::byte> ticket,
+                                                const auth::AuthError expected,
+                                                const std::string_view message) {
+            auto target = begin_business(
+                *owner, channel, target_session, target_socket, ticket,
+                1'700'002'010);
+            check(target && owner->resume_business(
+                      std::move(*target.value), auth::SecretBuffer{first_mac.bytes()}).error
+                      == expected,
+                  message);
+        };
+        expect_cross_rejected(
             auth::BusinessChannel::sync, session->session_id, socket,
-            first_hash, auth::SecretBuffer{session->resume_ticket.bytes()},
-            std::move(first_mac)});
+            session->resume_ticket.bytes(), auth::AuthError::authentication_failed,
+            "resume MAC from one signed transcript must not authenticate another handshake");
+        expect_cross_rejected(
+            auth::BusinessChannel::provider, session->session_id, socket,
+            session->resume_ticket.bytes(), auth::AuthError::authentication_failed,
+            "resume cannot replace the channel bound by begin_business_handshake");
+        expect_cross_rejected(
+            auth::BusinessChannel::sync, session->session_id, "different-socket",
+            session->resume_ticket.bytes(), auth::AuthError::authentication_failed,
+            "resume cannot replace the socket bound by begin_business_handshake");
+        expect_cross_rejected(
+            auth::BusinessChannel::sync, second_session->session_id, socket,
+            session->resume_ticket.bytes(), auth::AuthError::invalid_resume_ticket,
+            "resume cannot pair a signed session id with another session's ticket");
+        expect_cross_rejected(
+            auth::BusinessChannel::sync, session->session_id, socket,
+            second_session->resume_ticket.bytes(), auth::AuthError::invalid_resume_ticket,
+            "resume cannot replace the ticket bound by begin_business_handshake");
+
+        auto first = owner->resume_business(
+            std::move(*first_handshake.value), std::move(first_mac));
         check(first, "first bounded business resume must install one subscription");
-        const auto second_hash = transcript("bounded-business-second");
+        auto second_handshake = begin_business(
+            *owner, auth::BusinessChannel::sync, session->session_id, socket,
+            session->resume_ticket.bytes(), 1'700'002'002);
         auto second_mac = business_resume_mac(
             resume, auth::BusinessChannel::sync, state.pwd_epoch,
-            session->session_id, socket, second_hash);
-        check(owner->resume_business(auth::BusinessResumeRequest{
-                  auth::BusinessChannel::sync, session->session_id, socket,
-                  second_hash, auth::SecretBuffer{session->resume_ticket.bytes()},
-                  std::move(second_mac)}).error == auth::AuthError::capacity_exceeded,
+            session->session_id, socket,
+            second_handshake->authentication().transcript_hash);
+        check(owner->resume_business(
+                  std::move(*second_handshake.value), std::move(second_mac)).error
+                  == auth::AuthError::capacity_exceeded,
               "subscription capacity must bound atomic business resumes");
 
         owner->unsubscribe_revocations(first->revocation_subscription);
+        auto expired_handshake = begin_business(
+            *owner, auth::BusinessChannel::sync, session->session_id, socket,
+            session->resume_ticket.bytes(), 1'700'002'003);
         fixture.clock->now = session->expires_at + 1;
-        const auto expired_hash = transcript("bounded-business-expired");
         auto expired_mac = business_resume_mac(
             resume, auth::BusinessChannel::sync, state.pwd_epoch,
-            session->session_id, socket, expired_hash);
-        check(owner->resume_business(auth::BusinessResumeRequest{
-                  auth::BusinessChannel::sync, session->session_id, socket,
-                  expired_hash, auth::SecretBuffer{session->resume_ticket.bytes()},
-                  std::move(expired_mac)}).error == auth::AuthError::session_expired,
-              "business resume must enforce the control session expiry boundary");
+            session->session_id, socket,
+            expired_handshake->authentication().transcript_hash);
+        check(owner->resume_business(
+                  std::move(*expired_handshake.value), std::move(expired_mac)).error
+                  == auth::AuthError::session_expired,
+              "a previously begun handshake cannot bypass the session expiry boundary");
     }
 
     {
@@ -774,23 +839,20 @@ void test_business_negative_capacity_expiry_and_concurrency()
             handshake(key, control_hash),
             password_proof(key, control_hash, hash, state.pwd_epoch));
         auto resume = resume_secret(key, control_hash, hash);
-        const auto business_hash = transcript("raced-business-resume");
+        auto request = begin_business(
+            *owner, auth::BusinessChannel::remote, session->session_id,
+            "race-socket", session->resume_ticket.bytes(), 1'700'003'000);
         auto mac = business_resume_mac(
             resume, auth::BusinessChannel::remote, state.pwd_epoch,
-            session->session_id, "race-socket", business_hash);
-        auth::BusinessResumeRequest request{
-            auth::BusinessChannel::remote,
-            session->session_id,
-            "race-socket",
-            business_hash,
-            auth::SecretBuffer{session->resume_ticket.bytes()},
-            std::move(mac)};
+            session->session_id, "race-socket",
+            request->authentication().transcript_hash);
         std::promise<void> start;
         auto gate = start.get_future().share();
         auto resume_future = std::async(std::launch::async,
-            [&owner, gate, request = std::move(request)]() mutable {
+            [&owner, gate, request = std::move(*request.value),
+             mac = std::move(mac)]() mutable {
                 gate.wait();
-                return owner->resume_business(std::move(request));
+                return owner->resume_business(std::move(request), std::move(mac));
             });
         auto rotate_future = std::async(std::launch::async,
             [&owner, gate, id = session->session_id] {

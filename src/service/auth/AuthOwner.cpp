@@ -36,11 +36,11 @@ namespace baas::service::auth {
 
 static_assert(!std::is_copy_constructible_v<BusinessClientHello>);
 static_assert(!std::is_copy_constructible_v<BusinessHandshakeMaterial>);
-static_assert(!std::is_copy_constructible_v<BusinessResumeRequest>);
 static_assert(!std::is_copy_constructible_v<BusinessSessionMaterial>);
+static_assert(!std::is_default_constructible_v<BusinessHandshakeMaterial>);
+static_assert(!std::is_aggregate_v<BusinessHandshakeMaterial>);
 static_assert(std::is_nothrow_move_constructible_v<BusinessClientHello>);
 static_assert(std::is_nothrow_move_constructible_v<BusinessHandshakeMaterial>);
-static_assert(std::is_nothrow_move_constructible_v<BusinessResumeRequest>);
 static_assert(std::is_nothrow_move_constructible_v<BusinessSessionMaterial>);
 static_assert(std::is_nothrow_move_constructible_v<AuthResult<BusinessSessionMaterial>>);
 
@@ -778,6 +778,21 @@ std::string_view business_channel_name(const BusinessChannel channel) noexcept
     }
     return {};
 }
+
+BusinessHandshakeMaterial::BusinessHandshakeMaterial(
+    std::string server_hello_json,
+    HandshakeMaterial authentication,
+    const BusinessChannel channel,
+    std::string session_id,
+    std::string socket_id,
+    SecretBuffer resume_ticket) noexcept
+    : server_hello_json_(std::move(server_hello_json)),
+      authentication_(std::move(authentication)),
+      channel_(channel),
+      session_id_(std::move(session_id)),
+      socket_id_(std::move(socket_id)),
+      resume_ticket_(std::move(resume_ticket))
+{}
 
 std::shared_ptr<AuthStorage> make_file_auth_storage(std::filesystem::path project_root)
 {
@@ -2077,31 +2092,32 @@ AuthStatus AuthOwner::verify_resume_ticket(
 }
 
 AuthResult<BusinessSessionMaterial> AuthOwner::resume_business(
-    BusinessResumeRequest request) noexcept
+    BusinessHandshakeMaterial handshake,
+    SecretBuffer resume_mac) noexcept
 {
     try {
-        const auto channel = business_channel_name(request.channel);
+        const auto channel = business_channel_name(handshake.channel_);
         if (channel.empty()
-            || !valid_identifier(request.session_id, impl_->config_.max_identifier_bytes)
-            || !valid_identifier(request.socket_id, impl_->config_.max_identifier_bytes)
-            || request.transcript_hash.size() != sha256_bytes) {
+            || !valid_identifier(handshake.session_id_, impl_->config_.max_identifier_bytes)
+            || !valid_identifier(handshake.socket_id_, impl_->config_.max_identifier_bytes)
+            || handshake.authentication_.transcript_hash.size() != sha256_bytes) {
             return result_error<BusinessSessionMaterial>(AuthError::invalid_argument);
         }
-        if (request.resume_ticket.empty()
-            || request.resume_ticket.size() > impl_->config_.max_token_bytes) {
+        if (handshake.resume_ticket_.empty()
+            || handshake.resume_ticket_.size() > impl_->config_.max_token_bytes) {
             return result_error<BusinessSessionMaterial>(AuthError::invalid_resume_ticket);
         }
-        if (request.resume_mac.size() != hmac_sha256_bytes) {
+        if (resume_mac.size() != hmac_sha256_bytes) {
             return result_error<BusinessSessionMaterial>(AuthError::authentication_failed);
         }
 
         std::lock_guard lock(impl_->mutex_);
         auto verified = impl_->verify_resume_ticket_locked(
-            request.session_id, request.resume_ticket.bytes());
+            handshake.session_id_, handshake.resume_ticket_.bytes());
         if (!verified) return result_error<BusinessSessionMaterial>(verified.error);
         auto* session = *verified.value;
 
-        auto transcript_b64 = b64(request.transcript_hash);
+        auto transcript_b64 = b64(handshake.authentication_.transcript_hash);
         if (!transcript_b64) {
             return result_error<BusinessSessionMaterial>(AuthError::crypto_failure);
         }
@@ -2111,7 +2127,7 @@ AuthResult<BusinessSessionMaterial> AuthOwner::resume_business(
                 {"pwd_epoch", CanonicalJsonValue{
                     static_cast<std::int64_t>(session->epoch)}},
                 {"session_id", string_value(session->id)},
-                {"socket_id", string_value(request.socket_id)},
+                {"socket_id", string_value(handshake.socket_id_)},
                 {"transcript_hash", string_value(std::move(*transcript_b64))},
             }});
         if (!resume_context) {
@@ -2124,7 +2140,7 @@ AuthResult<BusinessSessionMaterial> AuthOwner::resume_business(
         }
         WipingBytes expected_mac_bytes;
         expected_mac_bytes.value.swap(*expected_mac.value);
-        if (!constant_time_equal(expected_mac_bytes.value, request.resume_mac.bytes())) {
+        if (!constant_time_equal(expected_mac_bytes.value, resume_mac.bytes())) {
             return result_error<BusinessSessionMaterial>(AuthError::authentication_failed);
         }
 
@@ -2139,19 +2155,20 @@ AuthResult<BusinessSessionMaterial> AuthOwner::resume_business(
                     static_cast<std::int64_t>(session->epoch)}},
                 {"scope", string_value("ws")},
                 {"session_id", string_value(session->id)},
-                {"socket_id", string_value(request.socket_id)},
+                {"socket_id", string_value(handshake.socket_id_)},
             }});
         if (!scope) return result_error<BusinessSessionMaterial>(AuthError::crypto_failure);
         auto base = hkdf_sha256(
-            session->master.bytes(), request.transcript_hash,
+            session->master.bytes(), handshake.authentication_.transcript_hash,
             bytes_of(scope.text), auth_key_bytes * 2);
         if (!base) return result_error<BusinessSessionMaterial>(AuthError::crypto_failure);
         const auto base_bytes = base.value->bytes();
         auto tx = hkdf_sha256(
-            base_bytes.first(auth_key_bytes), request.transcript_hash,
+            base_bytes.first(auth_key_bytes), handshake.authentication_.transcript_hash,
             bytes_of("secretstream:server-tx"), auth_key_bytes);
         auto rx = hkdf_sha256(
-            base_bytes.subspan(auth_key_bytes, auth_key_bytes), request.transcript_hash,
+            base_bytes.subspan(auth_key_bytes, auth_key_bytes),
+            handshake.authentication_.transcript_hash,
             bytes_of("secretstream:server-rx"), auth_key_bytes);
         if (!tx || !rx) {
             return result_error<BusinessSessionMaterial>(AuthError::crypto_failure);
@@ -2162,16 +2179,16 @@ AuthResult<BusinessSessionMaterial> AuthOwner::resume_business(
                 {"pwd_epoch", CanonicalJsonValue{
                     static_cast<std::int64_t>(session->epoch)}},
                 {"session_id", string_value(session->id)},
-                {"socket_id", string_value(request.socket_id)},
+                {"socket_id", string_value(handshake.socket_id_)},
             }});
         if (!aad) return result_error<BusinessSessionMaterial>(AuthError::crypto_failure);
 
         const auto subscription = impl_->next_subscription_;
         const auto aad_bytes = bytes_of(aad.text);
         BusinessSessionMaterial material{
-            request.channel,
+            handshake.channel_,
             session->id,
-            std::move(request.socket_id),
+            std::move(handshake.socket_id_),
             session->expires_at,
             session->epoch,
             std::move(*tx.value),
