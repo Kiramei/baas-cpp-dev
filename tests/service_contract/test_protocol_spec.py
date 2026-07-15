@@ -157,7 +157,8 @@ class ServiceProtocolSpecTests(unittest.TestCase):
             self.assertIn(implemented, self.http_host_spec)
         for remaining in (
             "real runtime/auth subsystem owners",
-            "authentication, cookie, TLS, WebSocket Origin, and LAN-exposure policy",
+            "production WebSocket authentication/cookie protocol drivers, TLS",
+            "authenticated LAN-exposure policy",
             "complete graceful in-flight",
             "Tauri probe and pipe-mode dynamic HTTP address",
         ):

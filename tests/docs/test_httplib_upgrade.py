@@ -40,11 +40,26 @@ class HttplibUpgradeContractTests(unittest.TestCase):
             'self.cpp_info.defines = ["CPPHTTPLIB_WEBSOCKET_MAX_PAYLOAD_LENGTH=67108864"]',
             conanfile,
         )
+        self.assertIn(
+            'self.cpp_info.defines.append("CPPHTTPLIB_HEADER_MAX_TOTAL_LENGTH=32768")',
+            conanfile,
+        )
+        self.assertIn(
+            '"CPPHTTPLIB_WEBSOCKET_INTERRUPT_POLL_INTERVAL_MICROSECONDS=100000"',
+            conanfile,
+        )
+        patch = (RECIPE / "patches" / "websocket-interrupt.patch").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("CPPHTTPLIB_HEADER_MAX_TOTAL_LENGTH", patch)
+        self.assertIn("WebSocket::request_close", patch)
+        self.assertIn("WebSocket::interrupt", patch)
         contract = (
             ROOT / "tests" / "service" / "HttplibUpgradeContractTests.cpp"
         ).read_text(encoding="utf-8")
         self.assertIn('CPPHTTPLIB_VERSION} == "0.50.1"', contract)
         self.assertIn("CPPHTTPLIB_WEBSOCKET_MAX_PAYLOAD_LENGTH == 67'108'864", contract)
+        self.assertIn("CPPHTTPLIB_HEADER_MAX_TOTAL_LENGTH == 32'768", contract)
 
     def test_thread_pool_and_ocr_multipart_api_match_v050(self) -> None:
         host = (ROOT / "src" / "service" / "http" / "HttpHost.cpp").read_text(
@@ -84,6 +99,9 @@ class HttplibUpgradeContractTests(unittest.TestCase):
         documentation = (
             ROOT / "docs" / "script-runtime" / "SERVICE_HTTPLIB_ADAPTER.md"
         ).read_text(encoding="utf-8")
+        websocket_documentation = (
+            ROOT / "docs" / "script-runtime" / "SERVICE_WEBSOCKET_OWNER.md"
+        ).read_text(encoding="utf-8")
         ocr_documentation = (ROOT / "apps" / "ocr_server" / "README.md").read_text(
             encoding="utf-8"
         )
@@ -100,10 +118,26 @@ class HttplibUpgradeContractTests(unittest.TestCase):
             "tests/docs/test_httplib_upgrade.py",
             "apps/ocr_server/README.md",
             "deploy/conan/README.md",
+            "cmake/ServiceWebSocket.cmake",
+            "src/service/websocket/**",
+            "tests/service/WebSocket*Tests.cpp",
+            "docs/script-runtime/SERVICE_WEBSOCKET_OWNER.md",
+            "docs/script-runtime/ROADMAP.md",
         ):
             self.assertEqual(workflow.count(f"- '{path}'"), 2)
+        self.assertIn("-DBUILD_SERVICE_WEBSOCKET_TESTS=ON", workflow)
+        self.assertIn("BAAS_service_websocket_handshake_tests", workflow)
+        self.assertIn("BAAS_service_websocket_owner_tests", workflow)
+        self.assertIn("BAAS_service_websocket_wire_tests", workflow)
+        self.assertIn("service_websocket_.*", workflow)
         self.assertIn("cpp-httplib 0.50.1", documentation)
         self.assertIn("BAAS_(httplib_upgrade_contract|service_", documentation)
+        self.assertIn("CPPHTTPLIB_HEADER_MAX_TOTAL_LENGTH=32768", documentation)
+        self.assertIn("SERVICE_WEBSOCKET_OWNER.md", documentation)
+        self.assertIn(
+            "CPPHTTPLIB_WEBSOCKET_INTERRUPT_POLL_INTERVAL_MICROSECONDS=100000",
+            websocket_documentation,
+        )
         self.assertIn("8 fixed workers", documentation)
         self.assertRegex(documentation, r"16\s+waiting requests")
         self.assertIn("chunked multipart", documentation)
@@ -111,7 +145,14 @@ class HttplibUpgradeContractTests(unittest.TestCase):
         self.assertIn("16 waiting", ocr_documentation)
         self.assertIn("chunked multipart", ocr_documentation)
         self.assertNotIn("current cpp-httplib 0.18.0", documentation)
-        self.assertIn("does not implement WebSocket routing", documentation)
+        self.assertNotIn("does not implement WebSocket routing", documentation)
+        for route in ("control", "provider", "sync", "trigger", "remote"):
+            self.assertIn(f"`/ws/{route}`", websocket_documentation)
+        self.assertIn("32 KiB", websocket_documentation)
+        self.assertIn("request_close()", websocket_documentation)
+        self.assertIn("max_connections + http_worker_reserve", websocket_documentation)
+        self.assertIn("BAAS_service_websocket_wire_tests", websocket_documentation)
+        self.assertIn("partial masked frames", websocket_documentation)
 
 
 if __name__ == "__main__":
