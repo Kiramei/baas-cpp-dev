@@ -439,7 +439,8 @@ PipeHostError PipeConnectionWriter::write_frame(
     bool reserved{};
     try {
         std::lock_guard lock(mutex_);
-        if (transport_poisoned_) return PipeHostError::write_failed;
+        if (close_requested_.load(std::memory_order_acquire)
+            || transport_poisoned_) return PipeHostError::write_failed;
         if (kind == bpip::FrameKind::close && !payload.empty())
             return PipeHostError::nonempty_close;
         if (kind == bpip::FrameKind::error && !payload.empty()
@@ -464,7 +465,8 @@ PipeHostError PipeConnectionWriter::write_frame(
         const auto result = stream_.write_all(output, write_timeout_);
         host_.release_egress(wire_size);
         reserved = false;
-        if (result.error || result.eof || result.timed_out
+        if (close_requested_.load(std::memory_order_acquire)
+            || result.error || result.eof || result.timed_out
             || result.bytes != output.size()) {
             return PipeHostError::write_failed;
         }
@@ -482,7 +484,8 @@ PipeHostError PipeConnectionWriter::write_batch(const std::span<const bpip::Fram
     bool reserved{};
     try {
         std::lock_guard lock(mutex_);
-        if (transport_poisoned_) return PipeHostError::write_failed;
+        if (close_requested_.load(std::memory_order_acquire)
+            || transport_poisoned_) return PipeHostError::write_failed;
         for (const auto& frame : frames) {
             if (!bpip::is_known_kind(frame.kind))
                 return PipeHostError::unsupported_frame_kind;
@@ -522,7 +525,8 @@ PipeHostError PipeConnectionWriter::write_batch(const std::span<const bpip::Fram
         const auto result = stream_.write_all(output, write_timeout_);
         host_.release_egress(wire_size);
         reserved = false;
-        if (result.error || result.eof || result.timed_out
+        if (close_requested_.load(std::memory_order_acquire)
+            || result.error || result.eof || result.timed_out
             || result.bytes != output.size()) {
             return PipeHostError::write_failed;
         }
@@ -537,7 +541,14 @@ PipeHostError PipeConnectionWriter::write_batch(const std::span<const bpip::Fram
 bool PipeConnectionWriter::transport_poisoned() noexcept
 {
     std::lock_guard lock(mutex_);
-    return transport_poisoned_;
+    return close_requested_.load(std::memory_order_acquire)
+        || transport_poisoned_;
+}
+
+void PipeConnectionWriter::close_connection() noexcept
+{
+    close_requested_.store(true, std::memory_order_release);
+    stream_.close();
 }
 
 PipeHost::PipeHost(

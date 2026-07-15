@@ -90,6 +90,8 @@ option(BUILD_SERVICE_TRIGGER_DISPATCH "Build the transport-independent trigger d
 option(BUILD_SERVICE_TRIGGER_DISPATCH_TESTS "Build native tests for trigger dispatch" OFF)
 option(BUILD_SERVICE_PIPE_HOST "Build the bounded native Pipe host" OFF)
 option(BUILD_SERVICE_PIPE_HOST_TESTS "Build deterministic tests for the Pipe host" OFF)
+option(BUILD_SERVICE_TRIGGER_PIPE_CHANNEL "Build the production Trigger Pipe adapter" OFF)
+option(BUILD_SERVICE_TRIGGER_PIPE_CHANNEL_TESTS "Build Trigger Pipe adapter tests" OFF)
 option(BUILD_SERVICE_TRIGGER_EXECUTOR "Build the bounded trigger execution owner" OFF)
 option(BUILD_SERVICE_TRIGGER_EXECUTOR_TESTS "Build native tests for trigger execution ownership" OFF)
 option(BUILD_SERVICE_ROUTER     "Build the transport-independent BAAS service router" OFF)
@@ -302,6 +304,15 @@ if(BUILD_SERVICE_PIPE_HOST_TESTS AND NOT BUILD_SERVICE_PIPE_HOST)
     set(BUILD_SERVICE_PIPE_HOST ON CACHE BOOL "Build the bounded native Pipe host" FORCE)
 endif()
 
+if(BUILD_SERVICE_TRIGGER_PIPE_CHANNEL_TESTS AND NOT BUILD_SERVICE_TRIGGER_PIPE_CHANNEL)
+    set(BUILD_SERVICE_TRIGGER_PIPE_CHANNEL ON CACHE BOOL "Build the production Trigger Pipe adapter" FORCE)
+endif()
+
+if(BUILD_SERVICE_TRIGGER_PIPE_CHANNEL)
+    set(BUILD_SERVICE_PIPE_HOST ON CACHE BOOL "Build the bounded native Pipe host" FORCE)
+    set(BUILD_SERVICE_TRIGGER_EXECUTOR ON CACHE BOOL "Build the bounded trigger execution owner" FORCE)
+endif()
+
 if(BUILD_SERVICE_PIPE_HOST AND NOT BUILD_SERVICE_PROTOCOL)
     set(BUILD_SERVICE_PROTOCOL ON CACHE BOOL "Build the standalone BAAS service protocol library" FORCE)
 endif()
@@ -510,6 +521,10 @@ endif()
 
 if(BUILD_SERVICE_TRIGGER_EXECUTOR)
     include("${CMAKE_CURRENT_LIST_DIR}/cmake/ServiceTriggerExecutor.cmake")
+endif()
+
+if(BUILD_SERVICE_TRIGGER_PIPE_CHANNEL)
+    include("${CMAKE_CURRENT_LIST_DIR}/cmake/ServiceTriggerPipeChannel.cmake")
 endif()
 
 if(BUILD_SERVICE_STATUS_TRIGGER)
