@@ -318,9 +318,24 @@ bind/readiness/listener failures; and provides repeatable stop/drain/join and
 destructor cleanup. Tests cover port conflicts, concurrent health, in-flight
 stop, provider lifetime, and queue overflow with bounded I/O/readiness/CTest
 timeouts. It is not yet the production service: real runtime/auth provider
-wiring, auth/origin/TLS policy, complete graceful in-flight semantics, global
+wiring, authentication/TLS policy, complete graceful in-flight semantics, global
 connection/load limits, and Tauri E2E remain open as recorded in
 `SERVICE_HTTPLIB_ADAPTER.md`.
+
+Bounded WebSocket transport foundation: `BAAS_service_websocket` now installs
+strict pre-routing for the four common exact `/ws/*` routes plus desktop
+`/ws/remote`, and `HttpHost` owns it on the same loopback listener. The pinned
+cpp-httplib 0.50.1 patch enforces 32 KiB raw headers and supplies non-reading
+close plus socket interrupt. The owner bounds connections, frames, per-session
+and global outbound bytes, handshake time, heartbeat, and shutdown; preserves
+HTTP worker reserve; and serializes one stateful driver per session. Pure
+handshake, fake-transport lifecycle/concurrency, and real-loopback wire tests
+run on Windows, Linux, and macOS in Debug and Release. Wire gates cover
+upgrade/rejection, close codes, partial masked frames, capacity/health reserve,
+and bounded stop. Production protocol/auth drivers, high-volume/fuzz/race
+evidence, runtime-wide load limits, and Tauri/device E2E remain open, so the
+broader service item stays incomplete. See
+`SERVICE_WEBSOCKET_OWNER.md`.
 
 HTTP Origin/CORS foundation: `BAAS_service_origin_policy` now provides a strict,
 bounded, exact allowlist with only the three repository-evidenced Tauri origins
@@ -329,10 +344,11 @@ same decision to actual requests, preflight, stable rejection, and cpp-httplib's
 pre-handler 413 path; `HttpHostConfig` carries the policy while the host remains
 IPv4 loopback-only. Pure matrix/concurrency tests run in standard Debug/Release
 foundation CI and Conan-backed tests cover direct adapter and real loopback host
-integration. This closes only the HTTP CORS foundation slice: browser Origin is
-not authentication, and auth/cookies/TLS/WebSocket Origin, shared Tauri schema,
-browser E2E, LAN policy, and the protocol-wide security review remain open, so
-the broader Phase 4 checklist item stays incomplete. See
+integration. The WebSocket owner reuses the same strict Origin decision after
+upgrade and before driver creation. This closes only the loopback Origin/CORS
+foundation slice: browser Origin is not authentication, and auth/cookies/TLS,
+shared Tauri schema, browser E2E, LAN policy, and the protocol-wide security
+review remain open, so the broader Phase 4 checklist item stays incomplete. See
 `SERVICE_ORIGIN_POLICY.md`.
 
 Verified foundation evidence: commit `fec6db0` adds production-anchored service

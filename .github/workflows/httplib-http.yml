@@ -1,4 +1,4 @@
-name: cpp-httplib HTTP compatibility
+name: cpp-httplib HTTP and WebSocket compatibility
 
 on:
   workflow_dispatch:
@@ -10,6 +10,7 @@ on:
       - 'CMakeLists.txt'
       - 'cmake/BAASDependency.cmake'
       - 'cmake/ServiceHttp.cmake'
+      - 'cmake/ServiceWebSocket.cmake'
       - 'deploy/conan/profiles/dependency-versions-default'
       - 'deploy/conan/recipes/baas-cpp-httplib/**'
       - 'deploy/conan/README.md'
@@ -17,15 +18,19 @@ on:
       - 'src/service/http/**'
       - 'src/service/origin/**'
       - 'src/service/router/**'
+      - 'src/service/websocket/**'
       - 'tests/service/HttplibAdapterTests.cpp'
       - 'tests/service/HttpHostTests.cpp'
       - 'tests/service/HttplibUpgradeContractTests.cpp'
+      - 'tests/service/WebSocket*Tests.cpp'
       - 'tests/docs/test_httplib_upgrade.py'
       - 'apps/ocr_server/README.md'
       - 'apps/ocr_server/include/http_contract.h'
       - 'apps/ocr_server/include/server.h'
       - 'apps/ocr_server/src/server.cpp'
       - 'docs/script-runtime/SERVICE_HTTPLIB_ADAPTER.md'
+      - 'docs/script-runtime/SERVICE_WEBSOCKET_OWNER.md'
+      - 'docs/script-runtime/ROADMAP.md'
   pull_request:
     branches:
       - main
@@ -38,6 +43,7 @@ on:
       - 'CMakeLists.txt'
       - 'cmake/BAASDependency.cmake'
       - 'cmake/ServiceHttp.cmake'
+      - 'cmake/ServiceWebSocket.cmake'
       - 'deploy/conan/profiles/dependency-versions-default'
       - 'deploy/conan/recipes/baas-cpp-httplib/**'
       - 'deploy/conan/README.md'
@@ -45,15 +51,19 @@ on:
       - 'src/service/http/**'
       - 'src/service/origin/**'
       - 'src/service/router/**'
+      - 'src/service/websocket/**'
       - 'tests/service/HttplibAdapterTests.cpp'
       - 'tests/service/HttpHostTests.cpp'
       - 'tests/service/HttplibUpgradeContractTests.cpp'
+      - 'tests/service/WebSocket*Tests.cpp'
       - 'tests/docs/test_httplib_upgrade.py'
       - 'apps/ocr_server/README.md'
       - 'apps/ocr_server/include/http_contract.h'
       - 'apps/ocr_server/include/server.h'
       - 'apps/ocr_server/src/server.cpp'
       - 'docs/script-runtime/SERVICE_HTTPLIB_ADAPTER.md'
+      - 'docs/script-runtime/SERVICE_WEBSOCKET_OWNER.md'
+      - 'docs/script-runtime/ROADMAP.md'
 
 permissions:
   contents: read
@@ -63,7 +73,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  host-http:
+  host-http-websocket:
     name: ${{ matrix.os }} / ${{ matrix.build_type }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
@@ -119,13 +129,14 @@ jobs:
           --build=missing
           --no-remote
 
-      - name: Configure HTTP tests
+      - name: Configure HTTP and WebSocket tests
         run: >-
           cmake -S . -B build/httplib-http
           "-DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}/build/conan/httplib-http/conan_toolchain.cmake"
           -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
           -DBUILD_TESTING=ON
           -DBUILD_SERVICE_HTTP_TESTS=ON
+          -DBUILD_SERVICE_WEBSOCKET_TESTS=ON
           -DBUILD_APP_BAAS=OFF
           -DBUILD_APP_ISA=OFF
           -DBUILD_BAAS_OCR=OFF
@@ -133,7 +144,7 @@ jobs:
           -DBUILD_BAAS_NMS_BENCHMARK=OFF
           -DBAAS_FETCH_RESOURCES=OFF
 
-      - name: Build HTTP compatibility tests
+      - name: Build HTTP and WebSocket compatibility tests
         run: >-
           cmake --build build/httplib-http
           --config ${{ matrix.build_type }}
@@ -142,20 +153,23 @@ jobs:
           BAAS_service_origin_policy_tests
           BAAS_service_httplib_adapter_tests
           BAAS_service_http_host_tests
+          BAAS_service_websocket_handshake_tests
+          BAAS_service_websocket_owner_tests
+          BAAS_service_websocket_wire_tests
 
-      - name: Run HTTP compatibility tests
+      - name: Run HTTP and WebSocket compatibility tests
         run: >-
           ctest --test-dir build/httplib-http
           --build-config ${{ matrix.build_type }}
           --output-on-failure
           --timeout 60
-          -R "BAAS_(httplib_upgrade_contract|service_origin_policy|service_httplib_adapter|service_http_host)_tests"
+          -R "BAAS_(httplib_upgrade_contract|service_origin_policy|service_httplib_adapter|service_http_host|service_websocket_.*)_tests"
 
-      - name: Repeat fixed worker and queue lifecycle gate
+      - name: Repeat HTTP and WebSocket lifecycle gates
         run: >-
           ctest --test-dir build/httplib-http
           --build-config ${{ matrix.build_type }}
           --output-on-failure
           --timeout 60
           --repeat until-fail:5
-          -R "BAAS_(httplib_upgrade_contract|service_http_host)_tests"
+          -R "BAAS_(httplib_upgrade_contract|service_http_host|service_websocket_.*)_tests"

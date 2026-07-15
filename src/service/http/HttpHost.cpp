@@ -83,6 +83,17 @@ void validate_host_config(const HttpHostConfig& config)
         || config.idle_interval <= std::chrono::milliseconds::zero()) {
         throw std::invalid_argument("HTTP host timeouts and idle interval must be positive");
     }
+    if (config.websocket.enabled) {
+        if (config.websocket.max_connections
+            > std::numeric_limits<std::size_t>::max()
+                - config.websocket.http_worker_reserve
+            || config.worker_count < config.websocket.max_connections
+                + config.websocket.http_worker_reserve) {
+            throw std::invalid_argument(
+                "HTTP workers must cover the WebSocket cap and HTTP reserve"
+            );
+        }
+    }
 }
 
 class TrackingTaskQueue final : public httplib::TaskQueue {
@@ -128,6 +139,11 @@ public:
         const HttpHostConfig host_config
     )
         : shutdown_intent_(std::move(router_config.shutdown_intent)),
+          websocket_owner_(
+              host_config.websocket,
+              host_config.cors_policy,
+              std::move(router_config.websocket_sessions)
+          ),
           router_(make_router(
               std::move(router_config), shutdown_intent_
           )),
@@ -155,6 +171,21 @@ public:
         if (!join_stale_listener()) {
             return {false, HttpHostStartError::listener_start_failed, 0};
         }
+        if (!websocket_owner_.prepare_start()) {
+            record_start_failure_noexcept(
+                HttpHostStartError::websocket_not_stopped,
+                "WebSocket owner did not complete its previous shutdown"
+            );
+            return {false, HttpHostStartError::websocket_not_stopped, 0};
+        }
+        struct WebSocketStartGuard final {
+            websocket::WebSocketOwner& owner;
+            bool armed{true};
+            ~WebSocketStartGuard()
+            {
+                if (armed) static_cast<void>(owner.shutdown());
+            }
+        } websocket_start_guard{websocket_owner_};
         {
             std::lock_guard<std::mutex> lock{state_mutex_};
             state_ = HttpHostState::starting;
@@ -201,6 +232,7 @@ public:
             );
         };
         adapter_.install(*server);
+        websocket_owner_.install(*server);
         // Allocate the bind address before a listener thread exists. This
         // keeps native allocation failure from stranding a launch waiter.
         const std::string loopback_address{http_host_loopback_address};
@@ -366,6 +398,7 @@ public:
             return {false, error, 0};
         }
         state_ = HttpHostState::running;
+        websocket_start_guard.armed = false;
         return {true, HttpHostStartError::none, public_port};
     }
 
@@ -391,6 +424,7 @@ public:
                 }
             }
             if (request_server_stop) {
+                websocket_owner_.begin_shutdown();
                 try {
                     server->stop();
                 } catch (const std::exception&) {
@@ -398,12 +432,21 @@ public:
                     // before any diagnostic string allocation can fail.
                     server_stop_failed_ = true;
                     record_server_stop_failure_noexcept();
+                    static_cast<void>(websocket_owner_.finish_shutdown());
                     return false;
                 } catch (...) {
                     server_stop_failed_ = true;
                     record_server_stop_failure_noexcept();
+                    static_cast<void>(websocket_owner_.finish_shutdown());
                     return false;
                 }
+            }
+            if (!websocket_owner_.finish_shutdown()) {
+                record_stop_failure_noexcept(
+                    "WebSocket owner did not drain within its shutdown deadline",
+                    true
+                );
+                return false;
             }
             if (active_http_host == this) {
                 record_stop_failure_noexcept(
@@ -473,6 +516,11 @@ public:
     [[nodiscard]] std::size_t queue_rejections() const noexcept
     {
         return queue_rejections_.load(std::memory_order_relaxed);
+    }
+
+    [[nodiscard]] websocket::WebSocketOwnerStats websocket_stats() const noexcept
+    {
+        return websocket_owner_.stats();
     }
 
     [[nodiscard]] const HttpHostConfig& config() const noexcept { return config_; }
@@ -565,6 +613,7 @@ private:
     // This shared owner precedes Router so it outlives every Router request.
     // Router directly retains the health provider shared owner.
     std::shared_ptr<router::ShutdownIntent> shutdown_intent_;
+    websocket::WebSocketOwner websocket_owner_;
     router::Router router_;
     HttplibAdapter adapter_;
     HttpHostConfig config_;
@@ -642,6 +691,11 @@ std::string HttpHost::last_error_message() const
 std::size_t HttpHost::queue_rejections() const noexcept
 {
     return impl_->queue_rejections();
+}
+
+websocket::WebSocketOwnerStats HttpHost::websocket_stats() const noexcept
+{
+    return impl_->websocket_stats();
 }
 
 const HttpHostConfig& HttpHost::config() const noexcept

@@ -4,6 +4,7 @@
 
 #include <atomic>
 #include <condition_variable>
+#include <concepts>
 #include <cstdlib>
 #include <functional>
 #include <iostream>
@@ -15,6 +16,19 @@
 #if !defined(CPPHTTPLIB_WEBSOCKET_MAX_PAYLOAD_LENGTH)
 #error "BAAS::httplib must publish the WebSocket payload limit to every consumer"
 #endif
+
+#if !defined(BAAS_CPP_HTTPLIB_HAS_WEBSOCKET_INTERRUPT)
+#error "BAAS::httplib 0.50.1 must expose the bounded WebSocket interrupt extension"
+#endif
+
+static_assert(requires(httplib::ws::WebSocket& socket) {
+    { socket.request_close() } noexcept -> std::same_as<bool>;
+    { socket.interrupt() } noexcept;
+});
+static_assert(CPPHTTPLIB_HEADER_MAX_TOTAL_LENGTH == 32'768);
+static_assert(
+    CPPHTTPLIB_WEBSOCKET_INTERRUPT_POLL_INTERVAL_MICROSECONDS == 100'000
+);
 
 namespace {
 
@@ -34,6 +48,8 @@ void test_pinned_version_and_process_wide_configuration()
           "the imported package must expose cpp-httplib 0.50.1");
     check(CPPHTTPLIB_WEBSOCKET_MAX_PAYLOAD_LENGTH == 67'108'864,
           "all header-only consumers must observe the BAAS 64 MiB WebSocket limit");
+    check(CPPHTTPLIB_WEBSOCKET_INTERRUPT_POLL_INTERVAL_MICROSECONDS == 100'000,
+          "all header-only consumers must observe the bounded interrupt poll");
     check(BAAS_OCR::http_contract::image_max_length == 67'108'864
               && BAAS_OCR::http_contract::json_max_length == 1'048'576
               && BAAS_OCR::http_contract::multipart_overhead_max_length == 65'536

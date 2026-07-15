@@ -67,6 +67,7 @@ void check(const bool condition, const std::string_view message)
 [[nodiscard]] service_http::HttpHostConfig host_config()
 {
     service_http::HttpHostConfig result;
+    result.websocket.enabled = false;
     result.worker_count = 3;
     result.max_queued_requests = 16;
     result.ready_timeout = 1s;
