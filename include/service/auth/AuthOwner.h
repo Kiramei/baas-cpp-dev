@@ -188,6 +188,36 @@ struct ControlHandshakeMaterial {
     HandshakeMaterial authentication;
 };
 
+enum class BusinessChannel : std::uint8_t {
+    provider,
+    sync,
+    trigger,
+    remote,
+};
+
+[[nodiscard]] std::string_view business_channel_name(BusinessChannel channel) noexcept;
+
+struct BusinessClientHello {
+    BusinessChannel channel{BusinessChannel::provider};
+    std::int64_t timestamp{};
+    PublicBytes client_nonce;
+    PublicBytes client_kx_public;
+    std::string session_id;
+    std::string socket_id;
+    SecretBuffer resume_ticket;
+};
+
+// The ticket is carried forward so the caller never needs a second public
+// parse/fetch step between the signed handshake and the atomic resume.
+struct BusinessHandshakeMaterial {
+    std::string server_hello_json;
+    HandshakeMaterial authentication;
+    BusinessChannel channel{BusinessChannel::provider};
+    std::string session_id;
+    std::string socket_id;
+    SecretBuffer resume_ticket;
+};
+
 struct ControlSessionMaterial {
     std::string session_id;
     std::int64_t expires_at{};
@@ -220,6 +250,27 @@ struct RevocationEvent {
 
 using SubscriptionId = std::uint64_t;
 
+struct BusinessResumeRequest {
+    BusinessChannel channel{BusinessChannel::provider};
+    std::string session_id;
+    std::string socket_id;
+    PublicBytes transcript_hash;
+    SecretBuffer resume_ticket;
+    SecretBuffer resume_mac;
+};
+
+struct BusinessSessionMaterial {
+    BusinessChannel channel{BusinessChannel::provider};
+    std::string session_id;
+    std::string socket_id;
+    std::int64_t expires_at{};
+    std::uint64_t pwd_epoch{};
+    SecretBuffer stream_server_tx_key;
+    SecretBuffer stream_server_rx_key;
+    PublicBytes stream_aad_prefix;
+    SubscriptionId revocation_subscription{};
+};
+
 class AuthOwner final {
 public:
     [[nodiscard]] static AuthResult<std::unique_ptr<AuthOwner>> open(
@@ -238,6 +289,8 @@ public:
     // signing seed cannot be used as a general message-signing oracle.
     [[nodiscard]] AuthResult<ControlHandshakeMaterial> begin_control_handshake(
         ControlClientHello hello) noexcept;
+    [[nodiscard]] AuthResult<BusinessHandshakeMaterial> begin_business_handshake(
+        BusinessClientHello hello) noexcept;
 
     [[nodiscard]] AuthStatus initialize_password(SecretBuffer password) noexcept;
     [[nodiscard]] AuthResult<ControlSessionMaterial> initialize_control(
@@ -261,6 +314,10 @@ public:
     [[nodiscard]] AuthStatus verify_resume_ticket(
         std::string_view session_id,
         std::span<const std::byte> ticket) noexcept;
+    // Ticket, session epoch/expiry, resume MAC, key derivation, and revocation
+    // subscription installation share one mutex linearization point.
+    [[nodiscard]] AuthResult<BusinessSessionMaterial> resume_business(
+        BusinessResumeRequest request) noexcept;
     [[nodiscard]] AuthStatus validate_session(
         std::string_view session_id) noexcept;
 

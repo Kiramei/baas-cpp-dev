@@ -15,6 +15,7 @@
 #include <mutex>
 #include <stdexcept>
 #include <system_error>
+#include <type_traits>
 #include <unordered_map>
 #include <utility>
 
@@ -32,6 +33,17 @@
 #endif
 
 namespace baas::service::auth {
+
+static_assert(!std::is_copy_constructible_v<BusinessClientHello>);
+static_assert(!std::is_copy_constructible_v<BusinessHandshakeMaterial>);
+static_assert(!std::is_copy_constructible_v<BusinessResumeRequest>);
+static_assert(!std::is_copy_constructible_v<BusinessSessionMaterial>);
+static_assert(std::is_nothrow_move_constructible_v<BusinessClientHello>);
+static_assert(std::is_nothrow_move_constructible_v<BusinessHandshakeMaterial>);
+static_assert(std::is_nothrow_move_constructible_v<BusinessResumeRequest>);
+static_assert(std::is_nothrow_move_constructible_v<BusinessSessionMaterial>);
+static_assert(std::is_nothrow_move_constructible_v<AuthResult<BusinessSessionMaterial>>);
+
 namespace {
 
 constexpr std::string_view fixed_signing_seed_b64 =
@@ -80,6 +92,21 @@ class WipingString final {
 public:
     ~WipingString() { wipe(value); }
     std::string value;
+};
+
+class WipingBytes final {
+public:
+    ~WipingBytes() { wipe(value); }
+    PublicBytes value;
+};
+
+class CanonicalValueWiper final {
+public:
+    explicit CanonicalValueWiper(CanonicalJsonValue& value) noexcept : value_(&value) {}
+    ~CanonicalValueWiper() { value_->wipe_strings(); }
+
+private:
+    CanonicalJsonValue* value_;
 };
 
 [[nodiscard]] std::filesystem::path path_for(
@@ -741,6 +768,17 @@ std::string_view auth_error_name(const AuthError error) noexcept
     return "unknown";
 }
 
+std::string_view business_channel_name(const BusinessChannel channel) noexcept
+{
+    switch (channel) {
+        case BusinessChannel::provider: return "provider";
+        case BusinessChannel::sync: return "sync";
+        case BusinessChannel::trigger: return "trigger";
+        case BusinessChannel::remote: return "remote";
+    }
+    return {};
+}
+
 std::shared_ptr<AuthStorage> make_file_auth_storage(std::filesystem::path project_root)
 {
     return std::make_shared<FileAuthStorage>(std::move(project_root));
@@ -1253,6 +1291,65 @@ public:
         return AuthError::none;
     }
 
+    // The caller holds mutex_. Keeping ticket authentication and the session
+    // lookup in this private operation prevents verify-then-fetch races.
+    [[nodiscard]] AuthResult<Session*> verify_resume_ticket_locked(
+        const std::string_view session_id,
+        const std::span<const std::byte> ticket)
+    {
+        if (!valid_identifier(session_id, config_.max_identifier_bytes)
+            || ticket.empty() || ticket.size() > config_.max_token_bytes) {
+            return result_error<Session*>(AuthError::invalid_resume_ticket);
+        }
+        const auto text = text_of(ticket);
+        const auto dot = text.find('.');
+        if (dot == std::string_view::npos || text.find('.', dot + 1) != std::string_view::npos) {
+            return result_error<Session*>(AuthError::invalid_resume_ticket);
+        }
+        auto payload = decode_base64url_canonical(text.substr(0, dot));
+        auto signature = decode_base64url_canonical(
+            text.substr(dot + 1), hmac_sha256_bytes);
+        if (!payload || !signature || payload.value->size() > config_.max_file_bytes) {
+            return result_error<Session*>(AuthError::invalid_resume_ticket);
+        }
+        WipingBytes signature_bytes;
+        signature_bytes.value.swap(*signature.value);
+        auto expected = hmac_sha256(ticket_key_.bytes(), *payload.value);
+        if (!expected) return result_error<Session*>(AuthError::crypto_failure);
+        WipingBytes expected_bytes;
+        expected_bytes.value.swap(*expected.value);
+        if (!constant_time_equal(expected_bytes.value, signature_bytes.value)) {
+            return result_error<Session*>(AuthError::invalid_resume_ticket);
+        }
+
+        const auto payload_text = text_of(*payload.value);
+        auto parsed = parse_canonical_json_value(payload_text);
+        if (!parsed || parsed.value->as_object() == nullptr) {
+            return result_error<Session*>(AuthError::invalid_resume_ticket);
+        }
+        CanonicalValueWiper parsed_wiper{*parsed.value};
+        if (!exact_object_fields(
+                *parsed.value->as_object(), {"session_id", "pwd_epoch", "expires_at"})) {
+            return result_error<Session*>(AuthError::invalid_resume_ticket);
+        }
+        auto canonical = encode_canonical_json_value(*parsed.value);
+        const auto* id = parsed.value->find("session_id")->as_string();
+        const auto epoch = as_epoch(parsed.value->find("pwd_epoch"));
+        const auto expires = as_time(parsed.value->find("expires_at"));
+        if (!canonical || canonical.text != payload_text || id == nullptr || !epoch || !expires
+            || *id != session_id) {
+            return result_error<Session*>(AuthError::invalid_resume_ticket);
+        }
+
+        const auto required = require_session_locked(session_id);
+        if (required != AuthError::none) return result_error<Session*>(required);
+        auto& session = sessions_.at(std::string{session_id});
+        if (*epoch != session.epoch || *expires != session.expires_at) {
+            return result_error<Session*>(AuthError::invalid_resume_ticket);
+        }
+        return {std::addressof(session), AuthError::none};
+    }
+
     [[nodiscard]] AuthResult<ControlSessionMaterial> password_session(
         HandshakeMaterial handshake,
         const std::span<const std::byte> proof) noexcept
@@ -1593,6 +1690,132 @@ AuthResult<ControlHandshakeMaterial> AuthOwner::begin_control_handshake(
     }
 }
 
+AuthResult<BusinessHandshakeMaterial> AuthOwner::begin_business_handshake(
+    BusinessClientHello hello) noexcept
+{
+    try {
+        const auto channel = business_channel_name(hello.channel);
+        if (channel.empty() || hello.timestamp < 0
+            || hello.timestamp > maximum_safe_json_integer
+            || hello.client_nonce.size() != x25519_key_bytes
+            || hello.client_kx_public.size() != x25519_key_bytes
+            || !valid_identifier(hello.session_id, impl_->config_.max_identifier_bytes)
+            || !valid_identifier(hello.socket_id, impl_->config_.max_identifier_bytes)
+            || hello.resume_ticket.empty()
+            || hello.resume_ticket.size() > impl_->config_.max_token_bytes) {
+            return result_error<BusinessHandshakeMaterial>(AuthError::invalid_argument);
+        }
+
+        std::lock_guard lock(impl_->mutex_);
+        SecretBuffer server_private{x25519_key_bytes};
+        PublicBytes server_nonce(x25519_key_bytes);
+        if (!impl_->dependencies_.random->fill(server_private.mutable_bytes())
+            || !impl_->dependencies_.random->fill(server_nonce)) {
+            return result_error<BusinessHandshakeMaterial>(AuthError::entropy_failure);
+        }
+        auto server_public = x25519_public_key(server_private.bytes());
+        auto shared = x25519_shared_secret(server_private.bytes(), hello.client_kx_public);
+        auto client_nonce_b64 = b64(hello.client_nonce);
+        auto client_public_b64 = b64(hello.client_kx_public);
+        auto server_nonce_b64 = b64(server_nonce);
+        auto server_public_b64 = server_public ? b64(*server_public.value) : std::nullopt;
+        std::optional<std::string> salt_b64;
+        if (impl_->password_.initialized) salt_b64 = b64(impl_->password_.salt);
+        if (!shared) {
+            return result_error<BusinessHandshakeMaterial>(AuthError::authentication_failed);
+        }
+        if (!server_public || !client_nonce_b64 || !client_public_b64
+            || !server_nonce_b64 || !server_public_b64
+            || (impl_->password_.initialized && !salt_b64)) {
+            return result_error<BusinessHandshakeMaterial>(AuthError::crypto_failure);
+        }
+
+        WipingString ticket_text;
+        ticket_text.value.assign(text_of(hello.resume_ticket.bytes()));
+        CanonicalJsonValue client{CanonicalJsonValue::Object{
+            {"type", string_value("client_hello")},
+            {"kind", string_value("resume")},
+            {"channel", string_value(std::string{channel})},
+            {"version", CanonicalJsonValue{std::int64_t{1}}},
+            {"timestamp", CanonicalJsonValue{hello.timestamp}},
+            {"client_nonce", string_value(std::move(*client_nonce_b64))},
+            {"client_kx_pub", string_value(std::move(*client_public_b64))},
+            {"session_id", string_value(hello.session_id)},
+            {"socket_id", string_value(hello.socket_id)},
+            {"resume_ticket", string_value(ticket_text.value)},
+        }};
+        CanonicalJsonValue argon2{CanonicalJsonValue::Object{
+            {"algorithm", string_value("argon2id")},
+            {"hash_bytes", CanonicalJsonValue{
+                static_cast<std::int64_t>(argon2id_output_bytes)}},
+            {"memlimit", CanonicalJsonValue{
+                static_cast<std::int64_t>(argon2id_v1_memlimit)}},
+            {"opslimit", CanonicalJsonValue{
+                static_cast<std::int64_t>(argon2id_v1_opslimit)}},
+            {"salt_bytes", CanonicalJsonValue{
+                static_cast<std::int64_t>(argon2id_salt_bytes)}},
+        }};
+        CanonicalJsonValue server_core{CanonicalJsonValue::Object{
+            {"type", string_value("server_hello")},
+            {"kind", string_value("resume")},
+            {"channel", string_value(std::string{channel})},
+            {"version", CanonicalJsonValue{std::int64_t{1}}},
+            {"initialized", CanonicalJsonValue{impl_->password_.initialized}},
+            {"pwd_epoch", CanonicalJsonValue{
+                static_cast<std::int64_t>(impl_->password_.epoch)}},
+            {"pwd_salt", impl_->password_.initialized
+                ? string_value(std::move(*salt_b64)) : CanonicalJsonValue{}},
+            {"argon2", std::move(argon2)},
+            {"server_nonce", string_value(std::move(*server_nonce_b64))},
+            {"server_kx_pub", string_value(std::move(*server_public_b64))},
+        }};
+        CanonicalJsonValue transcript{CanonicalJsonValue::Object{
+            {"kind", string_value("resume")},
+            {"channel", string_value(std::string{channel})},
+            {"client", std::move(client)},
+            {"server", server_core},
+        }};
+        CanonicalValueWiper transcript_wiper{transcript};
+        WipingString encoded_transcript;
+        auto encoded = encode_canonical_json_value(transcript);
+        if (!encoded) {
+            return result_error<BusinessHandshakeMaterial>(AuthError::crypto_failure);
+        }
+        encoded_transcript.value.swap(encoded.text);
+        auto signature = ed25519_sign(
+            impl_->signing_seed_.bytes(), bytes_of(encoded_transcript.value));
+        auto transcript_hash = sha256(bytes_of(encoded_transcript.value));
+        auto signature_b64 = signature ? b64(*signature.value) : std::nullopt;
+        auto sign_public_b64 = b64(impl_->signing_public_);
+        if (!signature || !transcript_hash || !signature_b64 || !sign_public_b64) {
+            return result_error<BusinessHandshakeMaterial>(AuthError::crypto_failure);
+        }
+        auto response_object = *server_core.as_object();
+        response_object.emplace_back("signature", string_value(std::move(*signature_b64)));
+        response_object.emplace_back(
+            "server_sign_pub", string_value(std::move(*sign_public_b64)));
+        auto response = encode_canonical_json_value(
+            CanonicalJsonValue{std::move(response_object)});
+        if (!response) {
+            return result_error<BusinessHandshakeMaterial>(AuthError::crypto_failure);
+        }
+        BusinessHandshakeMaterial material{
+            std::move(response.text),
+            HandshakeMaterial{
+                std::move(*shared.value), std::move(*transcript_hash.value)},
+            hello.channel,
+            std::move(hello.session_id),
+            std::move(hello.socket_id),
+            std::move(hello.resume_ticket)};
+        return {
+            std::optional<BusinessHandshakeMaterial>{std::move(material)},
+            AuthError::none};
+    }
+    catch (...) {
+        return result_error<BusinessHandshakeMaterial>(AuthError::crypto_failure);
+    }
+}
+
 AuthStatus AuthOwner::initialize_password(SecretBuffer password) noexcept
 {
     try {
@@ -1844,48 +2067,144 @@ AuthStatus AuthOwner::verify_resume_ticket(
     const std::span<const std::byte> ticket) noexcept
 {
     try {
-        if (!valid_identifier(session_id, impl_->config_.max_identifier_bytes)
-            || ticket.empty() || ticket.size() > impl_->config_.max_token_bytes) {
-            return status(AuthError::invalid_resume_ticket);
-        }
-        const auto text = text_of(ticket);
-        const auto dot = text.find('.');
-        if (dot == std::string_view::npos || text.find('.', dot + 1) != std::string_view::npos) {
-            return status(AuthError::invalid_resume_ticket);
-        }
-        auto payload = decode_base64url_canonical(text.substr(0, dot));
-        auto signature = decode_base64url_canonical(text.substr(dot + 1), hmac_sha256_bytes);
-        if (!payload || !signature || payload.value->size() > impl_->config_.max_file_bytes) {
-            return status(AuthError::invalid_resume_ticket);
-        }
-        auto expected = hmac_sha256(impl_->ticket_key_.bytes(), *payload.value);
-        if (!expected || !constant_time_equal(*expected.value, *signature.value)) {
-            return status(AuthError::invalid_resume_ticket);
-        }
-        const auto payload_text = text_of(*payload.value);
-        const auto parsed = parse_canonical_json_value(payload_text);
-        if (!parsed || parsed.value->as_object() == nullptr
-            || !exact_object_fields(*parsed.value->as_object(), {"session_id", "pwd_epoch", "expires_at"})) {
-            return status(AuthError::invalid_resume_ticket);
-        }
-        auto canonical = encode_canonical_json_value(*parsed.value);
-        const auto* id = parsed.value->find("session_id")->as_string();
-        const auto epoch = as_epoch(parsed.value->find("pwd_epoch"));
-        const auto expires = as_time(parsed.value->find("expires_at"));
-        if (!canonical || canonical.text != payload_text || id == nullptr || !epoch || !expires
-            || *id != session_id) return status(AuthError::invalid_resume_ticket);
-
         std::lock_guard lock(impl_->mutex_);
-        const auto required = impl_->require_session_locked(session_id);
-        if (required != AuthError::none) return status(required);
-        const auto& session = impl_->sessions_.at(std::string{session_id});
-        if (*epoch != session.epoch || *expires != session.expires_at) {
-            return status(AuthError::invalid_resume_ticket);
-        }
-        return status();
+        const auto verified = impl_->verify_resume_ticket_locked(session_id, ticket);
+        return status(verified ? AuthError::none : verified.error);
     }
     catch (...) {
         return status(AuthError::invalid_resume_ticket);
+    }
+}
+
+AuthResult<BusinessSessionMaterial> AuthOwner::resume_business(
+    BusinessResumeRequest request) noexcept
+{
+    try {
+        const auto channel = business_channel_name(request.channel);
+        if (channel.empty()
+            || !valid_identifier(request.session_id, impl_->config_.max_identifier_bytes)
+            || !valid_identifier(request.socket_id, impl_->config_.max_identifier_bytes)
+            || request.transcript_hash.size() != sha256_bytes) {
+            return result_error<BusinessSessionMaterial>(AuthError::invalid_argument);
+        }
+        if (request.resume_ticket.empty()
+            || request.resume_ticket.size() > impl_->config_.max_token_bytes) {
+            return result_error<BusinessSessionMaterial>(AuthError::invalid_resume_ticket);
+        }
+        if (request.resume_mac.size() != hmac_sha256_bytes) {
+            return result_error<BusinessSessionMaterial>(AuthError::authentication_failed);
+        }
+
+        std::lock_guard lock(impl_->mutex_);
+        auto verified = impl_->verify_resume_ticket_locked(
+            request.session_id, request.resume_ticket.bytes());
+        if (!verified) return result_error<BusinessSessionMaterial>(verified.error);
+        auto* session = *verified.value;
+
+        auto transcript_b64 = b64(request.transcript_hash);
+        if (!transcript_b64) {
+            return result_error<BusinessSessionMaterial>(AuthError::crypto_failure);
+        }
+        auto resume_context = encode_canonical_json_value(CanonicalJsonValue{
+            CanonicalJsonValue::Object{
+                {"channel", string_value(std::string{channel})},
+                {"pwd_epoch", CanonicalJsonValue{
+                    static_cast<std::int64_t>(session->epoch)}},
+                {"session_id", string_value(session->id)},
+                {"socket_id", string_value(request.socket_id)},
+                {"transcript_hash", string_value(std::move(*transcript_b64))},
+            }});
+        if (!resume_context) {
+            return result_error<BusinessSessionMaterial>(AuthError::crypto_failure);
+        }
+        auto expected_mac = hmac_sha256(
+            session->resume.bytes(), bytes_of(resume_context.text));
+        if (!expected_mac) {
+            return result_error<BusinessSessionMaterial>(AuthError::crypto_failure);
+        }
+        WipingBytes expected_mac_bytes;
+        expected_mac_bytes.value.swap(*expected_mac.value);
+        if (!constant_time_equal(expected_mac_bytes.value, request.resume_mac.bytes())) {
+            return result_error<BusinessSessionMaterial>(AuthError::authentication_failed);
+        }
+
+        if (impl_->subscriptions_.size() >= impl_->config_.max_subscriptions
+            || impl_->next_subscription_ == 0) {
+            return result_error<BusinessSessionMaterial>(AuthError::capacity_exceeded);
+        }
+        auto scope = encode_canonical_json_value(CanonicalJsonValue{
+            CanonicalJsonValue::Object{
+                {"channel", string_value(std::string{channel})},
+                {"pwd_epoch", CanonicalJsonValue{
+                    static_cast<std::int64_t>(session->epoch)}},
+                {"scope", string_value("ws")},
+                {"session_id", string_value(session->id)},
+                {"socket_id", string_value(request.socket_id)},
+            }});
+        if (!scope) return result_error<BusinessSessionMaterial>(AuthError::crypto_failure);
+        auto base = hkdf_sha256(
+            session->master.bytes(), request.transcript_hash,
+            bytes_of(scope.text), auth_key_bytes * 2);
+        if (!base) return result_error<BusinessSessionMaterial>(AuthError::crypto_failure);
+        const auto base_bytes = base.value->bytes();
+        auto tx = hkdf_sha256(
+            base_bytes.first(auth_key_bytes), request.transcript_hash,
+            bytes_of("secretstream:server-tx"), auth_key_bytes);
+        auto rx = hkdf_sha256(
+            base_bytes.subspan(auth_key_bytes, auth_key_bytes), request.transcript_hash,
+            bytes_of("secretstream:server-rx"), auth_key_bytes);
+        if (!tx || !rx) {
+            return result_error<BusinessSessionMaterial>(AuthError::crypto_failure);
+        }
+        auto aad = encode_canonical_json_value(CanonicalJsonValue{
+            CanonicalJsonValue::Object{
+                {"channel", string_value(std::string{channel})},
+                {"pwd_epoch", CanonicalJsonValue{
+                    static_cast<std::int64_t>(session->epoch)}},
+                {"session_id", string_value(session->id)},
+                {"socket_id", string_value(request.socket_id)},
+            }});
+        if (!aad) return result_error<BusinessSessionMaterial>(AuthError::crypto_failure);
+
+        const auto subscription = impl_->next_subscription_;
+        const auto aad_bytes = bytes_of(aad.text);
+        BusinessSessionMaterial material{
+            request.channel,
+            session->id,
+            std::move(request.socket_id),
+            session->expires_at,
+            session->epoch,
+            std::move(*tx.value),
+            std::move(*rx.value),
+            PublicBytes{aad_bytes.begin(), aad_bytes.end()},
+            subscription};
+        const auto [ignored, inserted] = impl_->subscriptions_.emplace(
+            subscription, Impl::Subscription{session->id, {}});
+        static_cast<void>(ignored);
+        if (!inserted) {
+            return result_error<BusinessSessionMaterial>(AuthError::capacity_exceeded);
+        }
+        struct SubscriptionRollback final {
+            Impl* impl;
+            SubscriptionId id;
+            SubscriptionId previous_next;
+            bool committed{};
+            ~SubscriptionRollback()
+            {
+                if (committed) return;
+                impl->subscriptions_.erase(id);
+                impl->next_subscription_ = previous_next;
+            }
+        } rollback{impl_.get(), subscription, impl_->next_subscription_};
+        ++impl_->next_subscription_;
+        AuthResult<BusinessSessionMaterial> result{
+            std::optional<BusinessSessionMaterial>{std::move(material)},
+            AuthError::none};
+        rollback.committed = true;
+        return result;
+    }
+    catch (...) {
+        return result_error<BusinessSessionMaterial>(AuthError::crypto_failure);
     }
 }
 

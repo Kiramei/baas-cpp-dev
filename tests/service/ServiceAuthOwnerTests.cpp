@@ -19,11 +19,21 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <type_traits>
 #include <unordered_map>
 #include <vector>
 
 namespace auth = baas::service::auth;
 namespace {
+
+static_assert(!std::is_copy_constructible_v<auth::BusinessClientHello>);
+static_assert(!std::is_copy_constructible_v<auth::BusinessHandshakeMaterial>);
+static_assert(!std::is_copy_constructible_v<auth::BusinessResumeRequest>);
+static_assert(!std::is_copy_constructible_v<auth::BusinessSessionMaterial>);
+static_assert(std::is_nothrow_move_constructible_v<auth::BusinessClientHello>);
+static_assert(std::is_nothrow_move_constructible_v<auth::BusinessHandshakeMaterial>);
+static_assert(std::is_nothrow_move_constructible_v<auth::BusinessResumeRequest>);
+static_assert(std::is_nothrow_move_constructible_v<auth::BusinessSessionMaterial>);
 
 int failures = 0;
 
@@ -307,6 +317,147 @@ struct Fixture {
     return std::move(*resume.value);
 }
 
+[[nodiscard]] auth::SecretBuffer master_secret(
+    const auth::PublicBytes& shared_key,
+    const auth::PublicBytes& transcript_hash,
+    const auth::SecretBuffer& hash)
+{
+    auth::SecretBuffer combined{shared_key.size() + hash.size()};
+    std::copy(shared_key.begin(), shared_key.end(), combined.mutable_bytes().begin());
+    std::copy(hash.bytes().begin(), hash.bytes().end(),
+              combined.mutable_bytes().begin() + shared_key.size());
+    auto master = auth::hkdf_sha256(
+        combined.bytes(), transcript_hash, bytes("master-secret"), auth::auth_key_bytes);
+    if (!master) throw std::runtime_error("master derivation failed");
+    return std::move(*master.value);
+}
+
+[[nodiscard]] std::string canonical_business_resume(
+    const auth::BusinessChannel channel,
+    const std::uint64_t epoch,
+    const std::string_view session_id,
+    const std::string_view socket_id,
+    const auth::PublicBytes& transcript_hash)
+{
+    auto transcript_b64 = auth::encode_base64url_padded(transcript_hash);
+    if (!transcript_b64) throw std::runtime_error("transcript base64 failed");
+    auto encoded = auth::encode_canonical_json_value(auth::CanonicalJsonValue{
+        auth::CanonicalJsonValue::Object{
+            {"channel", auth::CanonicalJsonValue{
+                std::string{auth::business_channel_name(channel)}}},
+            {"pwd_epoch", auth::CanonicalJsonValue{static_cast<std::int64_t>(epoch)}},
+            {"session_id", auth::CanonicalJsonValue{std::string{session_id}}},
+            {"socket_id", auth::CanonicalJsonValue{std::string{socket_id}}},
+            {"transcript_hash", auth::CanonicalJsonValue{
+                std::move(*transcript_b64.value)}},
+        }});
+    if (!encoded) throw std::runtime_error("business resume context failed");
+    return std::move(encoded.text);
+}
+
+[[nodiscard]] auth::SecretBuffer business_resume_mac(
+    const auth::SecretBuffer& resume,
+    const auth::BusinessChannel channel,
+    const std::uint64_t epoch,
+    const std::string_view session_id,
+    const std::string_view socket_id,
+    const auth::PublicBytes& transcript_hash)
+{
+    const auto context = canonical_business_resume(
+        channel, epoch, session_id, socket_id, transcript_hash);
+    auto mac = auth::hmac_sha256(resume.bytes(), bytes(context));
+    if (!mac) throw std::runtime_error("business resume MAC failed");
+    return auth::SecretBuffer{*mac.value};
+}
+
+[[nodiscard]] auth::PublicBytes hex_bytes(const std::string_view value)
+{
+    if ((value.size() % 2) != 0) throw std::runtime_error("odd fixture hex");
+    auth::PublicBytes output(value.size() / 2);
+    const auto digit = [](const char ch) -> unsigned int {
+        if (ch >= '0' && ch <= '9') return static_cast<unsigned int>(ch - '0');
+        if (ch >= 'a' && ch <= 'f') return static_cast<unsigned int>(ch - 'a' + 10);
+        throw std::runtime_error("invalid fixture hex");
+    };
+    for (std::size_t index = 0; index < output.size(); ++index) {
+        output[index] = static_cast<std::byte>(
+            (digit(value[index * 2]) << 4U) | digit(value[index * 2 + 1]));
+    }
+    return output;
+}
+
+[[nodiscard]] std::string load_contract_vectors()
+{
+    std::ifstream input{BAAS_SERVICE_CONTRACT_VECTOR_PATH, std::ios::binary};
+    if (!input) throw std::runtime_error("cannot open service contract vectors");
+    return std::string{
+        std::istreambuf_iterator<char>{input}, std::istreambuf_iterator<char>{}};
+}
+
+[[nodiscard]] std::string json_fixture_string(
+    const std::string_view object, const std::string_view key)
+{
+    const auto field = std::string{"\""} + std::string{key} + "\"";
+    auto cursor = object.find(field);
+    if (cursor == std::string_view::npos) {
+        throw std::runtime_error("missing fixture string: " + std::string{key});
+    }
+    cursor = object.find(':', cursor + field.size());
+    cursor = object.find('"', cursor + 1);
+    if (cursor == std::string_view::npos) throw std::runtime_error("invalid fixture string");
+    ++cursor;
+    std::string output;
+    while (cursor < object.size()) {
+        const char ch = object[cursor++];
+        if (ch == '"') return output;
+        if (ch != '\\') {
+            output.push_back(ch);
+            continue;
+        }
+        if (cursor >= object.size()) throw std::runtime_error("invalid fixture escape");
+        const char escaped = object[cursor++];
+        if (escaped == '"' || escaped == '\\' || escaped == '/') output.push_back(escaped);
+        else if (escaped == 'n') output.push_back('\n');
+        else if (escaped == 'r') output.push_back('\r');
+        else if (escaped == 't') output.push_back('\t');
+        else throw std::runtime_error("unsupported fixture escape");
+    }
+    throw std::runtime_error("unterminated fixture string");
+}
+
+[[nodiscard]] std::string_view fixture_derivation(
+    const std::string_view root, const std::string_view name)
+{
+    const auto marker = std::string{"\"name\": \""} + std::string{name} + "\"";
+    const auto name_at = root.find(marker);
+    if (name_at == std::string_view::npos) throw std::runtime_error("missing fixture derivation");
+    const auto marker_begin = root.rfind("\n      {", name_at);
+    const auto marker_end = root.find("\n      }", name_at);
+    const auto begin = marker_begin == std::string_view::npos
+        ? marker_begin : marker_begin + 7;
+    const auto end = marker_end == std::string_view::npos
+        ? marker_end : marker_end + 8;
+    if (begin == std::string_view::npos || end == std::string_view::npos) {
+        throw std::runtime_error("invalid fixture derivation");
+    }
+    return root.substr(begin, end - begin);
+}
+
+[[nodiscard]] std::size_t fixture_length(const std::string_view object)
+{
+    const auto field = object.find("\"length\"");
+    auto cursor = field == std::string_view::npos
+        ? field : object.find(':', field + 8);
+    if (cursor == std::string_view::npos) throw std::runtime_error("missing fixture length");
+    while (++cursor < object.size() && object[cursor] == ' ') {}
+    std::size_t value{};
+    while (cursor < object.size() && object[cursor] >= '0' && object[cursor] <= '9') {
+        value = value * 10 + static_cast<std::size_t>(object[cursor++] - '0');
+    }
+    if (value == 0) throw std::runtime_error("invalid fixture length");
+    return value;
+}
+
 [[nodiscard]] auth::PublicBytes remember_proof(
     const std::string_view session_id, const std::uint64_t epoch,
     const auth::SecretBuffer& resume)
@@ -321,6 +472,347 @@ struct Fixture {
     auto proof = auth::hmac_sha256(resume.bytes(), bytes(payload.text));
     if (!proof) throw std::runtime_error("remember proof failed");
     return std::move(*proof.value);
+}
+
+void test_existing_business_v1_vectors()
+{
+    const auto root = load_contract_vectors();
+    const auto resume_context = json_fixture_string(root, "business_resume_utf8");
+    const auto scope = json_fixture_string(root, "business_scope_utf8");
+    const auto aad = json_fixture_string(root, "stream_aad_prefix_utf8");
+    const auto resume = fixture_derivation(root, "resume_secret");
+    const auto resume_key = hex_bytes(json_fixture_string(resume, "output_hex"));
+    auto mac = auth::hmac_sha256(resume_key, bytes(resume_context));
+    check(mac && auth::constant_time_equal(
+              *mac.value,
+              hex_bytes(json_fixture_string(root, "business_resume_hmac_sha256_hex"))),
+          "existing v1 vector must fix the exact business resume MAC context");
+
+    const auto validate_hkdf = [&](const std::string_view name) {
+        const auto& item = fixture_derivation(root, name);
+        const auto ikm = hex_bytes(json_fixture_string(item, "ikm_hex"));
+        const auto salt = hex_bytes(json_fixture_string(item, "salt_hex"));
+        const auto info = json_fixture_string(item, "info_utf8");
+        auto derived = auth::hkdf_sha256(
+            ikm, salt, bytes(info), fixture_length(item));
+        check(derived && auth::constant_time_equal(
+                  derived.value->bytes(), hex_bytes(json_fixture_string(item, "output_hex"))),
+              std::string{"existing v1 vector must fix "} + std::string{name});
+        return info;
+    };
+    check(validate_hkdf("business_base") == scope,
+          "business key scope must be the existing canonical v1 scope");
+    static_cast<void>(validate_hkdf("secretstream_server_tx"));
+    static_cast<void>(validate_hkdf("secretstream_server_rx"));
+    check(aad
+              == "{\"channel\":\"trigger\",\"pwd_epoch\":7,\"session_id\":"
+                 "\"00000000-1111-4222-8333-444444444444\",\"socket_id\":"
+                 "\"aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee\"}",
+          "existing v1 vector must fix the stream AAD prefix bytes");
+}
+
+void test_typed_business_handshake_resume_keys_and_revocation()
+{
+    Fixture fixture;
+    auto opened = fixture.open();
+    auto owner = std::move(*opened.value);
+    check(owner->initialize_password(secret("business-password")),
+          "business fixture password must initialize");
+    const auto state = owner->password_state();
+    auto hash = password_hash("business-password", state.pwd_salt);
+    const auto control_shared = shared(std::byte{0x42});
+    const auto control_transcript = transcript("business-control");
+    const auto proof = password_proof(
+        control_shared, control_transcript, hash, state.pwd_epoch);
+    auto session = owner->authenticate_control(
+        handshake(control_shared, control_transcript), proof);
+    check(session, "business fixture must authenticate a control session");
+    auto master = master_secret(control_shared, control_transcript, hash);
+    auto resume = resume_secret(control_shared, control_transcript, hash);
+
+    auth::SecretBuffer client_private{auth::x25519_key_bytes};
+    std::fill(client_private.mutable_bytes().begin(),
+              client_private.mutable_bytes().end(), std::byte{0x6A});
+    auto client_public = auth::x25519_public_key(client_private.bytes());
+    if (!client_public) throw std::runtime_error("business client public key failed");
+    check(owner->begin_business_handshake(auth::BusinessClientHello{
+              static_cast<auth::BusinessChannel>(0xFF),
+              1'700'000'123,
+              auth::PublicBytes(auth::x25519_key_bytes, std::byte{0x20}),
+              *client_public.value,
+              session->session_id,
+              "invalid-channel",
+              auth::SecretBuffer{session->resume_ticket.bytes()}}).error
+              == auth::AuthError::invalid_argument,
+          "typed business handshake must reject channels outside the strict four");
+
+    const std::array channels{
+        auth::BusinessChannel::provider,
+        auth::BusinessChannel::sync,
+        auth::BusinessChannel::trigger,
+        auth::BusinessChannel::remote};
+    std::vector<auth::SubscriptionId> subscriptions;
+    for (std::size_t index = 0; index < channels.size(); ++index) {
+        const auto socket_id = std::string{"socket-"} + std::to_string(index);
+        auth::PublicBytes nonce(auth::x25519_key_bytes, static_cast<std::byte>(0x20 + index));
+        auto begun = owner->begin_business_handshake(auth::BusinessClientHello{
+            channels[index],
+            1'700'000'123 + static_cast<std::int64_t>(index),
+            nonce,
+            *client_public.value,
+            session->session_id,
+            socket_id,
+            auth::SecretBuffer{session->resume_ticket.bytes()}});
+        check(begun, "each strict business channel must begin a typed handshake");
+        if (!begun) continue;
+
+        auto parsed = auth::parse_canonical_json_value(begun->server_hello_json);
+        check(parsed && parsed.value->find("kind") != nullptr
+                  && *parsed.value->find("kind")->as_string() == "resume"
+                  && *parsed.value->find("channel")->as_string()
+                      == auth::business_channel_name(channels[index]),
+              "business server hello must bind resume kind and typed channel");
+        if (index == 0 && parsed && parsed.value->as_object() != nullptr) {
+            auth::CanonicalJsonValue::Object server_core;
+            for (const auto& [key, value] : *parsed.value->as_object()) {
+                if (key != "signature" && key != "server_sign_pub") {
+                    server_core.emplace_back(key, value);
+                }
+            }
+            const auto ticket_text = std::string{
+                reinterpret_cast<const char*>(begun->resume_ticket.bytes().data()),
+                begun->resume_ticket.size()};
+            auth::CanonicalJsonValue client{auth::CanonicalJsonValue::Object{
+                {"type", auth::CanonicalJsonValue{std::string{"client_hello"}}},
+                {"kind", auth::CanonicalJsonValue{std::string{"resume"}}},
+                {"channel", auth::CanonicalJsonValue{std::string{"provider"}}},
+                {"version", auth::CanonicalJsonValue{std::int64_t{1}}},
+                {"timestamp", auth::CanonicalJsonValue{std::int64_t{1'700'000'123}}},
+                {"client_nonce", auth::CanonicalJsonValue{
+                    std::move(*auth::encode_base64url_padded(nonce).value)}},
+                {"client_kx_pub", auth::CanonicalJsonValue{
+                    std::move(*auth::encode_base64url_padded(*client_public.value).value)}},
+                {"session_id", auth::CanonicalJsonValue{session->session_id}},
+                {"socket_id", auth::CanonicalJsonValue{socket_id}},
+                {"resume_ticket", auth::CanonicalJsonValue{ticket_text}},
+            }};
+            auto signed_transcript = auth::encode_canonical_json_value(
+                auth::CanonicalJsonValue{auth::CanonicalJsonValue::Object{
+                    {"kind", auth::CanonicalJsonValue{std::string{"resume"}}},
+                    {"channel", auth::CanonicalJsonValue{std::string{"provider"}}},
+                    {"client", std::move(client)},
+                    {"server", auth::CanonicalJsonValue{std::move(server_core)}},
+                }});
+            auto signed_hash = signed_transcript
+                ? auth::sha256(bytes(signed_transcript.text))
+                : auth::PublicBytesResult{};
+            auto signature = auth::decode_base64url_canonical(
+                *parsed.value->find("signature")->as_string(), auth::ed25519_signature_bytes);
+            check(signed_hash && signature
+                      && auth::constant_time_equal(
+                          *signed_hash.value, begun->authentication.transcript_hash)
+                      && auth::ed25519_verify(
+                          owner->signing_public_key(), bytes(signed_transcript.text),
+                          *signature.value) == auth::CryptoError::none,
+                  "signed transcript must include every business client field exactly");
+        }
+
+        if (index == 0) {
+            auth::SecretBuffer bad_mac{auth::hmac_sha256_bytes};
+            check(owner->resume_business(auth::BusinessResumeRequest{
+                      channels[index], session->session_id, socket_id,
+                      begun->authentication.transcript_hash,
+                      auth::SecretBuffer{begun->resume_ticket.bytes()},
+                      std::move(bad_mac)}).error == auth::AuthError::authentication_failed,
+                  "bad resume MAC must fail before installing a subscription");
+        }
+        auto mac = business_resume_mac(
+            resume, channels[index], state.pwd_epoch, session->session_id,
+            socket_id, begun->authentication.transcript_hash);
+        const auto business_transcript = begun->authentication.transcript_hash;
+        auto resumed = owner->resume_business(auth::BusinessResumeRequest{
+            channels[index],
+            session->session_id,
+            socket_id,
+            business_transcript,
+            std::move(begun->resume_ticket),
+            std::move(mac)});
+        check(resumed && resumed->stream_server_tx_key.size() == auth::auth_key_bytes
+                  && resumed->stream_server_rx_key.size() == auth::auth_key_bytes,
+              "atomic business resume must return final directional keys only");
+        if (!resumed) continue;
+
+        auto scope = auth::encode_canonical_json_value(auth::CanonicalJsonValue{
+            auth::CanonicalJsonValue::Object{
+                {"channel", auth::CanonicalJsonValue{
+                    std::string{auth::business_channel_name(channels[index])}}},
+                {"pwd_epoch", auth::CanonicalJsonValue{
+                    static_cast<std::int64_t>(state.pwd_epoch)}},
+                {"scope", auth::CanonicalJsonValue{std::string{"ws"}}},
+                {"session_id", auth::CanonicalJsonValue{session->session_id}},
+                {"socket_id", auth::CanonicalJsonValue{socket_id}},
+            }});
+        auto base = auth::hkdf_sha256(
+            master.bytes(), business_transcript, bytes(scope.text), auth::auth_key_bytes * 2);
+        auto expected_tx = auth::hkdf_sha256(
+            base.value->bytes().first(auth::auth_key_bytes), business_transcript,
+            bytes("secretstream:server-tx"), auth::auth_key_bytes);
+        auto expected_rx = auth::hkdf_sha256(
+            base.value->bytes().subspan(auth::auth_key_bytes), business_transcript,
+            bytes("secretstream:server-rx"), auth::auth_key_bytes);
+        check(expected_tx && expected_rx
+                  && auth::constant_time_equal(
+                      expected_tx.value->bytes(), resumed->stream_server_tx_key.bytes())
+                  && auth::constant_time_equal(
+                      expected_rx.value->bytes(), resumed->stream_server_rx_key.bytes()),
+              "business resume must implement the v1 scope and final key derivations");
+        auto expected_aad = auth::encode_canonical_json_value(auth::CanonicalJsonValue{
+            auth::CanonicalJsonValue::Object{
+                {"channel", auth::CanonicalJsonValue{
+                    std::string{auth::business_channel_name(channels[index])}}},
+                {"pwd_epoch", auth::CanonicalJsonValue{
+                    static_cast<std::int64_t>(state.pwd_epoch)}},
+                {"session_id", auth::CanonicalJsonValue{session->session_id}},
+                {"socket_id", auth::CanonicalJsonValue{socket_id}},
+            }});
+        const auto expected_aad_bytes = bytes(expected_aad.text);
+        check(auth::constant_time_equal(expected_aad_bytes, resumed->stream_aad_prefix),
+              "business resume must return the exact canonical v1 AAD prefix");
+        subscriptions.push_back(resumed->revocation_subscription);
+    }
+
+    check(subscriptions.size() == channels.size(),
+          "every successful business resume must atomically own one subscription");
+    check(owner->change_password(session->session_id, secret("business-password-2")),
+          "business revocation fixture password rotation must succeed");
+    for (const auto subscription : subscriptions) {
+        auto events = owner->drain_revocations(subscription, 4);
+        check(events && events->size() == 1
+                  && events->front().reason == auth::RevocationReason::password_changed,
+              "business resume subscription must observe a later password revocation");
+    }
+}
+
+void test_business_negative_capacity_expiry_and_concurrency()
+{
+    {
+        Fixture fixture;
+        auth::AuthOwnerConfig config;
+        config.max_subscriptions = 1;
+        auto opened = fixture.open(config);
+        auto owner = std::move(*opened.value);
+        check(owner->initialize_password(secret("bounded-business")),
+              "bounded business password must initialize");
+        const auto state = owner->password_state();
+        auto hash = password_hash("bounded-business", state.pwd_salt);
+        const auto key = shared(std::byte{0x71});
+        const auto control_hash = transcript("bounded-business-control");
+        auto session = owner->authenticate_control(
+            handshake(key, control_hash),
+            password_proof(key, control_hash, hash, state.pwd_epoch));
+        auto resume = resume_secret(key, control_hash, hash);
+        const auto socket = std::string{"bounded-socket"};
+
+        const auto first_hash = transcript("bounded-business-first");
+        auto first_mac = business_resume_mac(
+            resume, auth::BusinessChannel::sync, state.pwd_epoch,
+            session->session_id, socket, first_hash);
+        auto tampered_ticket = auth::SecretBuffer{session->resume_ticket.bytes()};
+        tampered_ticket.mutable_bytes().back() ^= std::byte{1};
+        check(owner->resume_business(auth::BusinessResumeRequest{
+                  auth::BusinessChannel::sync, session->session_id, socket,
+                  first_hash, std::move(tampered_ticket),
+                  auth::SecretBuffer{first_mac.bytes()}}).error
+                  == auth::AuthError::invalid_resume_ticket,
+              "tampered business ticket must fail without consuming capacity");
+        check(owner->resume_business(auth::BusinessResumeRequest{
+                  static_cast<auth::BusinessChannel>(0xFF), session->session_id, socket,
+                  first_hash, auth::SecretBuffer{session->resume_ticket.bytes()},
+                  auth::SecretBuffer{first_mac.bytes()}}).error
+                  == auth::AuthError::invalid_argument,
+              "business resume must reject channels outside the strict four-value enum");
+
+        auto first = owner->resume_business(auth::BusinessResumeRequest{
+            auth::BusinessChannel::sync, session->session_id, socket,
+            first_hash, auth::SecretBuffer{session->resume_ticket.bytes()},
+            std::move(first_mac)});
+        check(first, "first bounded business resume must install one subscription");
+        const auto second_hash = transcript("bounded-business-second");
+        auto second_mac = business_resume_mac(
+            resume, auth::BusinessChannel::sync, state.pwd_epoch,
+            session->session_id, socket, second_hash);
+        check(owner->resume_business(auth::BusinessResumeRequest{
+                  auth::BusinessChannel::sync, session->session_id, socket,
+                  second_hash, auth::SecretBuffer{session->resume_ticket.bytes()},
+                  std::move(second_mac)}).error == auth::AuthError::capacity_exceeded,
+              "subscription capacity must bound atomic business resumes");
+
+        owner->unsubscribe_revocations(first->revocation_subscription);
+        fixture.clock->now = session->expires_at + 1;
+        const auto expired_hash = transcript("bounded-business-expired");
+        auto expired_mac = business_resume_mac(
+            resume, auth::BusinessChannel::sync, state.pwd_epoch,
+            session->session_id, socket, expired_hash);
+        check(owner->resume_business(auth::BusinessResumeRequest{
+                  auth::BusinessChannel::sync, session->session_id, socket,
+                  expired_hash, auth::SecretBuffer{session->resume_ticket.bytes()},
+                  std::move(expired_mac)}).error == auth::AuthError::session_expired,
+              "business resume must enforce the control session expiry boundary");
+    }
+
+    {
+        Fixture fixture;
+        auto opened = fixture.open();
+        auto owner = std::move(*opened.value);
+        check(owner->initialize_password(secret("raced-business")),
+              "raced business password must initialize");
+        const auto state = owner->password_state();
+        auto hash = password_hash("raced-business", state.pwd_salt);
+        const auto key = shared(std::byte{0x72});
+        const auto control_hash = transcript("raced-business-control");
+        auto session = owner->authenticate_control(
+            handshake(key, control_hash),
+            password_proof(key, control_hash, hash, state.pwd_epoch));
+        auto resume = resume_secret(key, control_hash, hash);
+        const auto business_hash = transcript("raced-business-resume");
+        auto mac = business_resume_mac(
+            resume, auth::BusinessChannel::remote, state.pwd_epoch,
+            session->session_id, "race-socket", business_hash);
+        auth::BusinessResumeRequest request{
+            auth::BusinessChannel::remote,
+            session->session_id,
+            "race-socket",
+            business_hash,
+            auth::SecretBuffer{session->resume_ticket.bytes()},
+            std::move(mac)};
+        std::promise<void> start;
+        auto gate = start.get_future().share();
+        auto resume_future = std::async(std::launch::async,
+            [&owner, gate, request = std::move(request)]() mutable {
+                gate.wait();
+                return owner->resume_business(std::move(request));
+            });
+        auto rotate_future = std::async(std::launch::async,
+            [&owner, gate, id = session->session_id] {
+                gate.wait();
+                return owner->change_password(id, secret("raced-business-next"));
+            });
+        start.set_value();
+        auto raced_resume = resume_future.get();
+        const auto rotated = rotate_future.get();
+        check(rotated, "concurrent password rotation must complete");
+        if (raced_resume) {
+            auto events = owner->drain_revocations(
+                raced_resume->revocation_subscription, 4);
+            check(events && events->size() == 1,
+                  "resume winning the mutex race must receive the later revocation");
+        }
+        else {
+            check(raced_resume.error == auth::AuthError::unknown_session
+                      || raced_resume.error == auth::AuthError::stale_epoch,
+                  "rotation winning the mutex race must prevent business resume");
+        }
+    }
 }
 
 void test_open_initialization_and_restart()
@@ -815,6 +1307,9 @@ void test_real_argon_owner_integration()
 int main()
 {
     try {
+        test_existing_business_v1_vectors();
+        test_typed_business_handshake_resume_keys_and_revocation();
+        test_business_negative_capacity_expiry_and_concurrency();
         test_open_initialization_and_restart();
         test_atomic_initialize_control_and_handshake_bounds();
         test_initialize_control_epoch_race();
