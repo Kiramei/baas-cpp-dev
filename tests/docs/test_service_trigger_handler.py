@@ -10,6 +10,7 @@ class ServiceTriggerHandlerDocsTests(unittest.TestCase):
         header = (ROOT / "include/service/channels/TriggerHandler.h").read_text()
         source = (ROOT / "src/service/channels/TriggerHandler.cpp").read_text()
         cmake = (ROOT / "cmake/ServiceTriggerHandler.cmake").read_text()
+        root_cmake = (ROOT / "CMakeLists.txt").read_text()
         workflow = (ROOT / ".github/workflows/service-auth.yml").read_text()
         spec = (ROOT / "docs/script-runtime/SERVICE_TRIGGER_HANDLER.md").read_text()
         self.assertIn("BusinessChannelHandlerFactory", header)
@@ -17,8 +18,14 @@ class ServiceTriggerHandlerDocsTests(unittest.TestCase):
         self.assertIn("complete_send", source)
         self.assertIn("fail_send", source)
         self.assertIn("BAAS_service_trigger_handler_tests", cmake)
+        self.assertIn(
+            'EXCLUDE REGEX "/src/service/channels/TriggerHandler\\\\.cpp$"',
+            root_cmake,
+        )
         self.assertIn("BUILD_SERVICE_TRIGGER_HANDLER_TESTS=ON", workflow)
         self.assertIn("BAAS_service_trigger_handler_tests", workflow)
+        self.assertIn("include/service/protocol/Trigger*.h", workflow)
+        self.assertIn("include/service/trigger/**", workflow)
         self.assertIn("Completion-confirmed egress", spec)
         self.assertIn("one observed batch in flight", spec)
 

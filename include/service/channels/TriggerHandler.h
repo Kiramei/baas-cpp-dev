@@ -35,4 +35,13 @@ private:
     TriggerHandlerLimits limits_;
 };
 
+#if defined(BAAS_SERVICE_TRIGGER_HANDLER_TEST_HOOKS)
+namespace detail {
+using TriggerBeforeSubmitHook = void (*)(void*) noexcept;
+void set_trigger_before_submit_hook_for_test(
+    TriggerBeforeSubmitHook hook, void* context) noexcept;
+void fail_next_trigger_completion_allocation_for_test() noexcept;
+}
+#endif
+
 }  // namespace baas::service::channels

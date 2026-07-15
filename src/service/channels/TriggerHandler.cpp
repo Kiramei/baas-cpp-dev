@@ -22,6 +22,12 @@ namespace protocol = baas::service::protocol::trigger;
 namespace trigger_service = baas::service::trigger;
 namespace ws = baas::service::websocket;
 
+#if defined(BAAS_SERVICE_TRIGGER_HANDLER_TEST_HOOKS)
+std::atomic<detail::TriggerBeforeSubmitHook> before_submit_hook{};
+std::atomic<void*> before_submit_context{};
+std::atomic_bool fail_completion_allocation{};
+#endif
+
 [[nodiscard]] ws::BusinessHandlerResult status_result(
     const ws::BusinessHandlerStatus status) noexcept
 {
@@ -134,7 +140,25 @@ public:
         const auto command = item->envelope().command;
         const auto timestamp = item->envelope().timestamp;
         const auto response_mode = item->admission().response_mode;
-        const auto submitted = owner_.submit(std::move(*item));
+#if defined(BAAS_SERVICE_TRIGGER_HANDLER_TEST_HOOKS)
+        if (const auto hook = before_submit_hook.load(std::memory_order_acquire))
+            hook(before_submit_context.load(std::memory_order_acquire));
+#endif
+        trigger_service::TriggerSubmitResult submitted;
+        {
+            // This gate is the admission linearization point. Shutdown takes
+            // the same gate before publishing closed_, so no command can be
+            // submitted after closure becomes visible.
+            std::lock_guard admission_lock{admission_mutex_};
+            {
+                std::lock_guard state_lock{state_mutex_};
+                if (closed_)
+                    return status_result(ws::BusinessHandlerStatus::complete);
+                if (failed_)
+                    return status_result(ws::BusinessHandlerStatus::internal_error);
+            }
+            submitted = owner_.submit(std::move(*item));
+        }
         if (submitted) return {};
         if (submitted.error == trigger_service::TriggerSubmitError::connection_stopped
             || submitted.error == trigger_service::TriggerSubmitError::executor_stopped) {
@@ -196,12 +220,10 @@ public:
     void shutdown() noexcept
     {
         {
-            std::unique_lock lock{state_mutex_};
+            std::lock_guard admission_lock{admission_mutex_};
+            std::lock_guard state_lock{state_mutex_};
             if (closed_) return;
             closed_ = true;
-            if (current_trigger_sink_call != this) {
-                sink_idle_.wait(lock, [this] { return sink_calls_ == 0; });
-            }
         }
         subscription_.reset();
         {
@@ -209,6 +231,13 @@ public:
             ingress_.close();
         }
         try { static_cast<void>(owner_.close()); } catch (...) {}
+        {
+            std::unique_lock state_lock{state_mutex_};
+            if (current_trigger_sink_call != this) {
+                sink_idle_.wait(
+                    state_lock, [this] { return sink_calls_ == 0; });
+            }
+        }
     }
 
 private:
@@ -293,8 +322,24 @@ private:
                 pump_active_ = false;
                 return;
             }
-            auto completion = std::make_shared<SendCompletion>(
-                weak_from_this(), lease);
+            std::shared_ptr<SendCompletion> completion;
+            try {
+#if defined(BAAS_SERVICE_TRIGGER_HANDLER_TEST_HOOKS)
+                if (fail_completion_allocation.exchange(
+                        false, std::memory_order_acq_rel)) {
+                    throw std::bad_alloc{};
+                }
+#endif
+                completion = std::make_shared<SendCompletion>(
+                    weak_from_this(), lease);
+            }
+            catch (...) {
+                try { static_cast<void>(owner_.fail_send(lease)); } catch (...) {}
+                mark_failed();
+                std::lock_guard lock{state_mutex_};
+                pump_active_ = false;
+                return;
+            }
             {
                 std::lock_guard lock{state_mutex_};
                 if (closed_) {
@@ -333,6 +378,7 @@ private:
     std::shared_ptr<protocol::TriggerSession> session_;
     trigger_service::TriggerConnectionOwner owner_;
     std::shared_ptr<ws::BusinessPlaintextSink> output_;
+    std::mutex admission_mutex_;
     std::mutex ingress_mutex_;
     protocol::TriggerIngress ingress_;
     protocol::TriggerEnvelopeLimits response_limits_;
@@ -407,6 +453,20 @@ private:
 };
 
 }  // namespace
+
+#if defined(BAAS_SERVICE_TRIGGER_HANDLER_TEST_HOOKS)
+void detail::set_trigger_before_submit_hook_for_test(
+    const TriggerBeforeSubmitHook hook, void* const context) noexcept
+{
+    before_submit_context.store(context, std::memory_order_release);
+    before_submit_hook.store(hook, std::memory_order_release);
+}
+
+void detail::fail_next_trigger_completion_allocation_for_test() noexcept
+{
+    fail_completion_allocation.store(true, std::memory_order_release);
+}
+#endif
 
 TriggerHandlerFactory::TriggerHandlerFactory(
     std::shared_ptr<trigger::TriggerExecutor> executor,

@@ -45,7 +45,9 @@ on one idempotent shutdown path. It closes ingress, cancels the output observer,
 and calls `TriggerConnectionOwner::close`, which propagates stop to queued and
 running command owners. Shutdown is linearized with an external sink call: a
 non-reentrant closer waits for a call admitted before closure to return, and no
-call can be admitted after closure. A late completion owns only a weak adapter
+call can be admitted after closure. A separate admission gate linearizes the
+final closed check and executor submission against shutdown, so an input parsed
+before closure cannot create command-handler side effects afterward. A late completion owns only a weak adapter
 reference and cannot publish or acknowledge into a destroyed connection.
 
 The v1 wire protocol does not define a generic cancel envelope. Legacy
@@ -64,7 +66,9 @@ declared inbound binary and adjacent outbound binary, one-lease FIFO ordering,
 session backpressure retry after confirmed write, correlated stream rejection,
 synchronous observed failure, output-callback/close concurrency, peer final,
 stop-token shutdown, disconnect cancellation, and create-time capacity versus
-stopped-executor classification. The target is exercised in Debug and Release.
+stopped-executor classification. It also injects completion-observer allocation
+failure to prove the active lease fails closed rather than escaping a `noexcept`
+pump. The target is exercised in Debug and Release.
 
 Still outside this adapter are the concrete BAAS runtime command registrations,
 the production HTTP/WebSocket composition root, shared Python/Tauri golden

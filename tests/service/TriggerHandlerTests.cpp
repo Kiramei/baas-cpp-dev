@@ -193,6 +193,37 @@ public:
     std::size_t calls{};
 };
 
+struct AdmissionGate {
+    static void pause(void* context) noexcept
+    {
+        auto& gate = *static_cast<AdmissionGate*>(context);
+        std::unique_lock lock{gate.mutex};
+        gate.entered = true;
+        gate.changed.notify_all();
+        gate.changed.wait(lock, [&] { return gate.released; });
+    }
+
+    bool wait_entered()
+    {
+        std::unique_lock lock{mutex};
+        return changed.wait_for(lock, 3s, [&] { return entered; });
+    }
+
+    void release()
+    {
+        {
+            std::lock_guard lock{mutex};
+            released = true;
+        }
+        changed.notify_all();
+    }
+
+    std::mutex mutex;
+    std::condition_variable changed;
+    bool entered{};
+    bool released{};
+};
+
 [[nodiscard]] std::shared_ptr<const trigger::TriggerDispatcher> dispatcher()
 {
     auto built = trigger::TriggerDispatcher::create({
@@ -527,6 +558,81 @@ void test_factory_classifies_capacity_and_stopped_executor()
           "stopped executor must not be mislabeled as transient capacity");
 }
 
+void test_shutdown_linearizes_before_final_submit()
+{
+    std::atomic_size_t handler_effects{};
+    auto built = trigger::TriggerDispatcher::create({
+        {"status", [&](const trigger::AdmittedTriggerRequest&,
+                       trigger::TriggerResponseSink& output,
+                       std::stop_token) {
+            ++handler_effects;
+            static_cast<void>(output.success());
+        }},
+    });
+    check(static_cast<bool>(built), "admission-race dispatcher must build");
+    if (!built) return;
+    auto executor = std::make_shared<trigger::TriggerExecutor>(
+        std::make_shared<const trigger::TriggerDispatcher>(
+            std::move(*built.dispatcher)),
+        trigger::TriggerExecutorLimits{1, 4, 4, 4});
+    channels::TriggerHandlerFactory factory{executor};
+    auto sink = std::make_shared<RecordingSink>();
+    ws::BusinessSessionContext context;
+    context.channel = auth::BusinessChannel::trigger;
+    auto created = factory.create(context, sink, {});
+    check(static_cast<bool>(created), "admission-race fixture must create");
+    if (!created) return;
+
+    AdmissionGate gate;
+    channels::detail::set_trigger_before_submit_hook_for_test(
+        &AdmissionGate::pause, &gate);
+    ws::BusinessHandlerResult input_result;
+    std::thread input([&] {
+        input_result = created.handler->input(secret(
+            "{\"type\":\"command\",\"command\":\"status\","
+            "\"timestamp\":30,\"payload\":{}}"), false, {});
+    });
+    check(gate.wait_entered(), "input must pause after parsing and before admission");
+    created.handler->closed(ws::BusinessCloseReason::truncated);
+    gate.release();
+    input.join();
+    channels::detail::set_trigger_before_submit_hook_for_test(nullptr, nullptr);
+    std::this_thread::sleep_for(20ms);
+    check(input_result.status == ws::BusinessHandlerStatus::complete
+              && handler_effects.load() == 0 && sink->batch_count() == 0,
+          "shutdown linearization must prevent every later submit side effect");
+    executor->shutdown();
+}
+
+void test_completion_allocation_failure_fails_active_lease()
+{
+    auto executor = std::make_shared<trigger::TriggerExecutor>(
+        dispatcher(), trigger::TriggerExecutorLimits{1, 4, 4, 4});
+    channels::TriggerHandlerFactory factory{executor};
+    auto sink = std::make_shared<RecordingSink>();
+    ws::BusinessSessionContext context;
+    context.channel = auth::BusinessChannel::trigger;
+    auto created = factory.create(context, sink, {});
+    check(static_cast<bool>(created), "allocation-failure fixture must create");
+    if (!created) return;
+    channels::detail::fail_next_trigger_completion_allocation_for_test();
+    static_cast<void>(created.handler->input(secret(
+        "{\"type\":\"command\",\"command\":\"status\","
+        "\"timestamp\":31,\"payload\":{}}"), false, {}));
+    const auto deadline = std::chrono::steady_clock::now() + 3s;
+    auto heartbeat = created.handler->heartbeat({});
+    while (heartbeat.status == ws::BusinessHandlerStatus::ok
+           && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::yield();
+        heartbeat = created.handler->heartbeat({});
+    }
+    check(heartbeat.status == ws::BusinessHandlerStatus::internal_error
+              && sink->batch_count() == 0,
+          "completion allocation failure must fail the lease without terminate or emit");
+    created.handler->closed(ws::BusinessCloseReason::internal_error);
+    executor->shutdown();
+}
+
 }  // namespace
 
 int main()
@@ -540,6 +646,8 @@ int main()
     test_close_linearizes_with_output_callback();
     test_disconnect_cancels_running_command_without_output();
     test_factory_classifies_capacity_and_stopped_executor();
+    test_shutdown_linearizes_before_final_submit();
+    test_completion_allocation_failure_fails_active_lease();
     if (failures != 0) {
         std::cerr << failures << " trigger handler test(s) failed\n";
         return 1;

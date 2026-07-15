@@ -24,11 +24,19 @@ endif()
 
 if(BUILD_SERVICE_TRIGGER_HANDLER_TESTS)
     include(CTest)
+    target_compile_definitions(
+            BAAS_service_trigger_handler
+            PRIVATE BAAS_SERVICE_TRIGGER_HANDLER_TEST_HOOKS=1
+    )
     add_executable(
             BAAS_service_trigger_handler_tests
             "${BAAS_PROJECT_PATH}/tests/service/TriggerHandlerTests.cpp"
     )
     target_compile_features(BAAS_service_trigger_handler_tests PRIVATE cxx_std_20)
+    target_compile_definitions(
+            BAAS_service_trigger_handler_tests
+            PRIVATE BAAS_SERVICE_TRIGGER_HANDLER_TEST_HOOKS=1
+    )
     target_link_libraries(
             BAAS_service_trigger_handler_tests
             PRIVATE BAAS_service_trigger_handler
