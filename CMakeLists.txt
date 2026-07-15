@@ -132,6 +132,22 @@ option(BUILD_SERVICE_COMMAND_LINE "Build the bounded service command-line contra
 option(BUILD_SERVICE_COMMAND_LINE_TESTS "Build deterministic service command-line tests" OFF)
 option(BUILD_SERVICE_SHUTDOWN_COORDINATOR "Build the service main-thread shutdown coordinator" OFF)
 option(BUILD_SERVICE_SHUTDOWN_COORDINATOR_TESTS "Build deterministic service shutdown coordinator tests" OFF)
+option(BUILD_SERVICE_APP "Build the production BAAS_service executable" OFF)
+option(BUILD_SERVICE_APP_TESTS "Build real loopback BAAS_service application tests" OFF)
+
+if(BUILD_SERVICE_APP_TESTS AND NOT BUILD_SERVICE_APP)
+    set(BUILD_SERVICE_APP ON CACHE BOOL "Build the production BAAS_service executable" FORCE)
+endif()
+
+if(BUILD_SERVICE_APP)
+    set(BUILD_SERVICE_COMMAND_LINE ON CACHE BOOL "Build the bounded service command-line contract" FORCE)
+    set(BUILD_SERVICE_SHUTDOWN_COORDINATOR ON CACHE BOOL "Build the service main-thread shutdown coordinator" FORCE)
+    set(BUILD_SERVICE_PRODUCTION_HTTP_HOST ON CACHE BOOL "Build the production HTTP host composition root" FORCE)
+    set(BUILD_SERVICE_PROVIDER_BACKEND ON CACHE BOOL "Build the production provider state backend" FORCE)
+    set(BUILD_SERVICE_FILE_RESOURCE_STORE ON CACHE BOOL "Build the durable JSON file resource store" FORCE)
+    set(BUILD_SERVICE_TRIGGER_HANDLER ON CACHE BOOL "Build the production trigger business handler" FORCE)
+    set(BUILD_SERVICE_STATUS_TRIGGER ON CACHE BOOL "Build the production status trigger registration" FORCE)
+endif()
 
 # BAAS_APP owns the production script Host adapters. Standalone runtime builds
 # stay opt-in, while application builds always compile the runtime and its
@@ -597,6 +613,10 @@ endif()
 
 if(BUILD_SERVICE_SHUTDOWN_COORDINATOR)
     include("${CMAKE_CURRENT_LIST_DIR}/cmake/ServiceShutdownCoordinator.cmake")
+endif()
+
+if(BUILD_SERVICE_APP)
+    include("${CMAKE_CURRENT_LIST_DIR}/cmake/ServiceApplication.cmake")
 endif()
 
 if(NOT TARGET_OS_NAME STREQUAL "Android")

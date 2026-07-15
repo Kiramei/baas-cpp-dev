@@ -242,7 +242,19 @@ struct ParsedOption {
     }
 
     ServiceCommandLineResult result;
+#if defined(_WIN32)
+    // wmain adapts UTF-16 arguments to UTF-8 before this bounded parser. Use
+    // the explicit UTF-8 filesystem conversion instead of the process ANSI
+    // code page so non-ASCII Tauri project roots survive unchanged.
+    std::u8string utf8_project_root;
+    utf8_project_root.reserve(project_root->size());
+    for (const unsigned char byte : *project_root) {
+        utf8_project_root.push_back(static_cast<char8_t>(byte));
+    }
+    result.options.project_root = std::filesystem::path{utf8_project_root};
+#else
     result.options.project_root = std::filesystem::path{std::string{*project_root}};
+#endif
     std::error_code filesystem_error;
     const bool is_directory = std::filesystem::is_directory(
         result.options.project_root, filesystem_error);

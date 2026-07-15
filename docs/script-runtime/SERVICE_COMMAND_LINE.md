@@ -1,10 +1,10 @@
 # Bounded service command-line contract
 
-`BAAS_service_command_line` is the dependency-free C++20 parsing boundary for
-the future `BAAS_service` process. It matches the explicit Tauri C++ launch
-contract without creating or claiming a service executable. The future
-composition root owns help/version text, process exit codes, logging, signal
-handling, host construction, and shutdown.
+`BAAS_service_command_line` is the dependency-free C++20 parsing boundary used
+by the real `BAAS_service` executable. This service executable matches the
+explicit Tauri C++ launch contract. `ServiceApplication` owns help/version
+text, process exit codes, diagnostics, signal handling, host construction,
+readiness, and shutdown.
 
 ## Dispositions and grammar
 
@@ -72,6 +72,6 @@ filesystem gating, Windows/Unix/Android Pipe policy, input budgets, embedded
 NUL, invalid `argc`/`argv`, and stable error names. Foundation CI builds and
 runs the target on Windows, Linux, and macOS in Debug and Release.
 
-The module is excluded from the legacy `BAAS_CORE` glob. Still pending are the
-real `BAAS_service` executable, production composition, packaging beside
-Tauri, and end-to-end launch/readiness/shutdown tests.
+The module and `ServiceApplication` are excluded from the legacy `BAAS_CORE`
+glob. The executable, production composition, and loopback lifecycle tests are
+documented in `SERVICE_APPLICATION.md`. Packaging beside Tauri remains pending.
