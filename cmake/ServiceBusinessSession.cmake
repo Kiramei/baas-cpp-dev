@@ -23,11 +23,19 @@ endif()
 
 if(BUILD_SERVICE_BUSINESS_SESSION_TESTS)
     include(CTest)
+    target_compile_definitions(
+            BAAS_service_business_session
+            PRIVATE BAAS_BUSINESS_SESSION_TEST_HOOKS=1
+    )
     add_executable(
             BAAS_service_business_session_tests
             "${BAAS_PROJECT_PATH}/tests/service/ServiceBusinessSessionTests.cpp"
     )
     target_compile_features(BAAS_service_business_session_tests PRIVATE cxx_std_20)
+    target_compile_definitions(
+            BAAS_service_business_session_tests
+            PRIVATE BAAS_BUSINESS_SESSION_TEST_HOOKS=1
+    )
     target_link_libraries(
             BAAS_service_business_session_tests
             PRIVATE BAAS_service_business_session

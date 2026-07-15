@@ -130,6 +130,82 @@ private:
     }
 }
 
+[[nodiscard]] TerminalAction terminal_for_secretstream(
+    const auth::SecretStreamError error) noexcept
+{
+    switch (error) {
+        case auth::SecretStreamError::none: return TerminalAction::none;
+        case auth::SecretStreamError::authentication_failed:
+            return TerminalAction::authentication_failed;
+        case auth::SecretStreamError::initialization_failed:
+        case auth::SecretStreamError::invalid_key:
+        case auth::SecretStreamError::resource_exhausted:
+            return TerminalAction::internal_error;
+        case auth::SecretStreamError::invalid_header:
+        case auth::SecretStreamError::invalid_input:
+        case auth::SecretStreamError::message_too_large:
+        case auth::SecretStreamError::unexpected_tag:
+        case auth::SecretStreamError::sequence_exhausted:
+        case auth::SecretStreamError::stream_closed:
+        case auth::SecretStreamError::poisoned:
+            return TerminalAction::protocol_failed;
+    }
+    return TerminalAction::internal_error;
+}
+
+[[nodiscard]] BusinessCloseReason close_reason_for_terminal(
+    const TerminalAction terminal) noexcept
+{
+    switch (terminal) {
+        case TerminalAction::authentication_failed:
+            return BusinessCloseReason::authentication_failed;
+        case TerminalAction::protocol_failed:
+            return BusinessCloseReason::protocol_failed;
+        case TerminalAction::none:
+        case TerminalAction::capacity:
+        case TerminalAction::internal_error:
+        case TerminalAction::complete:
+            return BusinessCloseReason::internal_error;
+    }
+    return BusinessCloseReason::internal_error;
+}
+
+#if defined(BAAS_BUSINESS_SESSION_TEST_HOOKS)
+std::atomic<auth::SecretStreamError> injected_pull_create_error{
+    auth::SecretStreamError::none};
+std::atomic<auth::SecretStreamError> injected_pull_error{
+    auth::SecretStreamError::none};
+#endif
+
+[[nodiscard]] auth::SecretStreamCreateResult<auth::SecretStreamPull> create_pull(
+    const std::span<const std::byte> key,
+    const std::span<const std::byte> header,
+    const std::span<const std::byte> aad)
+{
+#if defined(BAAS_BUSINESS_SESSION_TEST_HOOKS)
+    const auto injected = injected_pull_create_error.exchange(
+        auth::SecretStreamError::none, std::memory_order_acq_rel);
+    if (injected != auth::SecretStreamError::none) return {std::nullopt, injected};
+#endif
+    return auth::SecretStreamPull::create(key, header, aad);
+}
+
+[[nodiscard]] auth::SecretStreamDecryptResult pull_ciphertext(
+    auth::SecretStreamPull& pull,
+    const std::span<const std::byte> ciphertext)
+{
+#if defined(BAAS_BUSINESS_SESSION_TEST_HOOKS)
+    const auto injected = injected_pull_error.exchange(
+        auth::SecretStreamError::none, std::memory_order_acq_rel);
+    if (injected != auth::SecretStreamError::none) {
+        auth::SecretStreamDecryptResult result;
+        result.error = injected;
+        return result;
+    }
+#endif
+    return pull.pull(ciphertext);
+}
+
 [[nodiscard]] TerminalAction terminal_for_handler(
     const BusinessHandlerStatus status) noexcept
 {
@@ -181,6 +257,67 @@ public:
     void closed() noexcept override {}
 };
 
+// No driver or sink mutex is held while calling AuthOwner. Revocation and
+// validity are linearized by AuthOwner itself; the atomic failure latch makes
+// the first observed terminal decision sticky across concurrent producers.
+class SessionAuthorizationGate final {
+public:
+    SessionAuthorizationGate(
+        std::weak_ptr<auth::AuthOwner> authentication,
+        const auth::SubscriptionId subscription,
+        std::string session_id)
+        : authentication_(std::move(authentication)),
+          subscription_(subscription),
+          session_id_(std::move(session_id))
+    {}
+
+    [[nodiscard]] TerminalAction authorize() noexcept
+    {
+        if (!active_.load(std::memory_order_acquire)) {
+            return TerminalAction::complete;
+        }
+        const auto prior = terminal_.load(std::memory_order_acquire);
+        if (prior != TerminalAction::none) return prior;
+        auto authentication = authentication_.lock();
+        if (!authentication) return publish(TerminalAction::internal_error);
+        auto events = authentication->drain_revocations(subscription_, 1);
+        if (!active_.load(std::memory_order_acquire)) {
+            return TerminalAction::complete;
+        }
+        if (!events) return publish(terminal_for_auth(events.error));
+        if (!events->empty()) {
+            return publish(TerminalAction::authentication_failed);
+        }
+        const auto valid = authentication->validate_session(session_id_);
+        if (!active_.load(std::memory_order_acquire)) {
+            return TerminalAction::complete;
+        }
+        if (!valid) return publish(terminal_for_auth(valid.error));
+        return terminal_.load(std::memory_order_acquire);
+    }
+
+    void deactivate() noexcept
+    {
+        active_.store(false, std::memory_order_release);
+    }
+
+private:
+    [[nodiscard]] TerminalAction publish(const TerminalAction terminal) noexcept
+    {
+        auto expected = TerminalAction::none;
+        terminal_.compare_exchange_strong(
+            expected, terminal, std::memory_order_acq_rel,
+            std::memory_order_acquire);
+        return terminal_.load(std::memory_order_acquire);
+    }
+
+    std::weak_ptr<auth::AuthOwner> authentication_;
+    auth::SubscriptionId subscription_{};
+    std::string session_id_;
+    std::atomic_bool active_{true};
+    std::atomic<TerminalAction> terminal_{TerminalAction::none};
+};
+
 class SecureBusinessSink final
     : public BusinessPlaintextSink,
       public std::enable_shared_from_this<SecureBusinessSink> {
@@ -188,9 +325,11 @@ public:
     SecureBusinessSink(
         auth::SecretStreamPush push,
         std::weak_ptr<OutboundSink> outbound,
+        std::shared_ptr<SessionAuthorizationGate> authorization,
         const std::size_t maximum_plaintext)
         : push_(std::move(push)),
           outbound_(outbound),
+          authorization_(std::move(authorization)),
           maximum_plaintext_(maximum_plaintext)
     {}
 
@@ -198,7 +337,10 @@ public:
 
     void close() noexcept
     {
-        closed_.store(true, std::memory_order_release);
+        auto expected = SinkTerminal::open;
+        terminal_.compare_exchange_strong(
+            expected, SinkTerminal::silently_closed,
+            std::memory_order_acq_rel, std::memory_order_acquire);
         active_.store(false, std::memory_order_release);
         try {
             std::lock_guard lock{writer_mutex_};
@@ -207,9 +349,22 @@ public:
         catch (...) {}
     }
 
-    [[nodiscard]] bool failed() const noexcept
+    [[nodiscard]] TerminalAction terminal_action() const noexcept
     {
-        return failed_.load(std::memory_order_acquire);
+        switch (terminal_.load(std::memory_order_acquire)) {
+            case SinkTerminal::authentication_failed:
+                return TerminalAction::authentication_failed;
+            case SinkTerminal::protocol_failed:
+                return TerminalAction::protocol_failed;
+            case SinkTerminal::capacity: return TerminalAction::capacity;
+            case SinkTerminal::internal_error:
+                return TerminalAction::internal_error;
+            case SinkTerminal::complete: return TerminalAction::complete;
+            case SinkTerminal::open:
+            case SinkTerminal::silently_closed:
+                return TerminalAction::none;
+        }
+        return TerminalAction::internal_error;
     }
 
     [[nodiscard]] bool server_final_sent() const noexcept
@@ -255,12 +410,18 @@ public:
     {
         OutboundMessageWiper messages_wiper{messages};
         if (!active_.load(std::memory_order_acquire)
-            || closed_.load(std::memory_order_acquire)) return BusinessEmitResult::closed;
+            || !is_open()) return BusinessEmitResult::closed;
         if (messages.empty() || messages.size() > 2) return BusinessEmitResult::queue_full;
+        const auto authorized = authorization_->authorize();
+        if (authorized == TerminalAction::complete) return BusinessEmitResult::closed;
+        if (authorized != TerminalAction::none) {
+            terminate_once(authorized);
+            return BusinessEmitResult::closed;
+        }
         try {
             std::lock_guard lock{writer_mutex_};
             if (!active_.load(std::memory_order_acquire)
-                || closed_.load(std::memory_order_acquire)) return BusinessEmitResult::closed;
+                || !is_open()) return BusinessEmitResult::closed;
             if (server_final_enqueued_.load(std::memory_order_acquire)) {
                 return BusinessEmitResult::closed;
             }
@@ -345,36 +506,73 @@ public:
     }
 
 private:
+    enum class SinkTerminal : std::uint8_t {
+        open,
+        silently_closed,
+        authentication_failed,
+        protocol_failed,
+        capacity,
+        internal_error,
+        complete,
+    };
+
+    [[nodiscard]] bool is_open() const noexcept
+    {
+        return terminal_.load(std::memory_order_acquire) == SinkTerminal::open;
+    }
+
+    [[nodiscard]] static SinkTerminal sink_terminal(
+        const TerminalAction terminal) noexcept
+    {
+        switch (terminal) {
+            case TerminalAction::authentication_failed:
+                return SinkTerminal::authentication_failed;
+            case TerminalAction::protocol_failed:
+                return SinkTerminal::protocol_failed;
+            case TerminalAction::capacity: return SinkTerminal::capacity;
+            case TerminalAction::internal_error:
+                return SinkTerminal::internal_error;
+            case TerminalAction::complete: return SinkTerminal::complete;
+            case TerminalAction::none: return SinkTerminal::open;
+        }
+        return SinkTerminal::internal_error;
+    }
+
+    void terminate_once(const TerminalAction action) noexcept
+    {
+        auto expected = SinkTerminal::open;
+        if (!terminal_.compare_exchange_strong(
+                expected, sink_terminal(action), std::memory_order_acq_rel,
+                std::memory_order_acquire)) return;
+        active_.store(false, std::memory_order_release);
+        if (auto outbound = outbound_.lock()) outbound->terminate(action);
+    }
+
     void fail() noexcept
     {
-        closed_.store(true, std::memory_order_release);
-        active_.store(false, std::memory_order_release);
-        if (!failed_.exchange(true, std::memory_order_acq_rel)) {
-            if (auto outbound = outbound_.lock()) {
-                outbound->terminate(TerminalAction::internal_error);
-            }
-        }
+        terminate_once(TerminalAction::internal_error);
     }
 
     void final_written() noexcept
     {
+        if (!is_open()) return;
         server_final_written_.store(true, std::memory_order_release);
         maybe_complete();
     }
 
     void maybe_complete() noexcept
     {
-        if (!clean_final() || failed_.load(std::memory_order_acquire)) return;
-        if (auto outbound = outbound_.lock()) outbound->terminate(TerminalAction::complete);
+        if (!clean_final()) return;
+        terminate_once(TerminalAction::complete);
     }
 
     std::mutex writer_mutex_;
     std::optional<auth::SecretStreamPush> push_;
     std::weak_ptr<OutboundSink> outbound_;
+    std::shared_ptr<SessionAuthorizationGate> authorization_;
     std::size_t maximum_plaintext_{};
     std::atomic_bool active_{false};
-    std::atomic_bool closed_{false};
-    std::atomic_bool failed_{false};
+    std::atomic<SinkTerminal> terminal_{SinkTerminal::open};
     std::atomic_bool peer_final_{false};
     std::atomic_bool server_final_enqueued_{false};
     std::atomic_bool server_final_written_{false};
@@ -439,10 +637,7 @@ public:
                 }
                 return current();
             }
-            if (secure_sink_ && secure_sink_->failed()) {
-                return finish(TerminalAction::internal_error,
-                              BusinessCloseReason::internal_error);
-            }
+            if (auto terminal = sink_terminal()) return *terminal;
             if (secure_sink_ && secure_sink_->server_final_sent() && !final_deadline_) {
                 const auto enqueued_at = secure_sink_->server_final_enqueued_at();
                 final_deadline_ = enqueued_at.value_or(Clock::now())
@@ -453,11 +648,7 @@ public:
                 return finish(TerminalAction::protocol_failed,
                               BusinessCloseReason::truncated);
             }
-            if (auto revoked = revocation()) return *revoked;
-            if (!authentication_->validate_session(session_id_)) {
-                return finish(TerminalAction::authentication_failed,
-                              BusinessCloseReason::authentication_failed);
-            }
+            if (auto unauthorized = authorization()) return *unauthorized;
             if (secure_sink_ && secure_sink_->server_final_sent()) return current();
             return handle(handler_->heartbeat(stop), false);
         }
@@ -508,6 +699,7 @@ private:
     void cleanup(const BusinessCloseReason reason) noexcept
     {
         if (step_ == Step::closed) return;
+        if (authorization_) authorization_->deactivate();
         if (secure_sink_) secure_sink_->close();
         if (handler_) handler_->closed(reason);
         handler_.reset();
@@ -521,6 +713,7 @@ private:
         pending_aad_.clear();
         if (subscription_) authentication_->unsubscribe_revocations(*subscription_);
         subscription_.reset();
+        authorization_.reset();
         session_id_.clear();
         socket_id_.clear();
         step_ = Step::closed;
@@ -642,6 +835,8 @@ private:
         socket_id_ = resumed->socket_id;
         expires_at_ = resumed->expires_at;
         pwd_epoch_ = resumed->pwd_epoch;
+        authorization_ = std::make_shared<SessionAuthorizationGate>(
+            authentication_, *subscription_, session_id_);
         pending_rx_key_ = std::move(resumed->stream_server_rx_key);
         pending_aad_ = std::move(resumed->stream_aad_prefix);
         auto push = auth::SecretStreamPush::create(
@@ -692,15 +887,18 @@ private:
         }
         auto header = auth::decode_base64url_canonical(
             *header_text, auth::secretstream_header_bytes);
-        if (!header) return finish(TerminalAction::authentication_failed,
-                                   BusinessCloseReason::authentication_failed);
-        auto pull = auth::SecretStreamPull::create(
+        if (!header) return finish(TerminalAction::protocol_failed,
+                                   BusinessCloseReason::protocol_failed);
+        if (auto unauthorized = authorization()) return *unauthorized;
+        auto pull = create_pull(
             pending_rx_key_.bytes(), *header.value, pending_aad_);
-        if (!pull) return finish(TerminalAction::authentication_failed,
-                                 BusinessCloseReason::authentication_failed);
+        if (!pull) {
+            const auto terminal = terminal_for_secretstream(pull.error);
+            return finish(terminal, close_reason_for_terminal(terminal));
+        }
         pull_.emplace(std::move(*pull.value));
         secure_sink_ = std::make_shared<SecureBusinessSink>(
-            std::move(*pending_push_), outbound_, std::min(
+            std::move(*pending_push_), outbound_, authorization_, std::min(
                 config_.max_handler_output_bytes,
                 config_.max_ciphertext_bytes - auth::secretstream_overhead_bytes));
         pending_push_.reset();
@@ -725,23 +923,18 @@ private:
 
     [[nodiscard]] DriverResult streaming(Frame frame, const std::stop_token stop)
     {
-        if (secure_sink_ && secure_sink_->failed()) {
-            return finish(TerminalAction::internal_error,
-                          BusinessCloseReason::internal_error);
-        }
-        if (auto revoked = revocation()) return *revoked;
-        if (!authentication_->validate_session(session_id_)) {
-            return finish(TerminalAction::authentication_failed,
-                          BusinessCloseReason::authentication_failed);
-        }
+        if (auto terminal = sink_terminal()) return *terminal;
+        if (auto unauthorized = authorization()) return *unauthorized;
         if (frame.kind != FrameKind::binary
             || frame.payload.size() > config_.max_ciphertext_bytes || !pull_) {
             return finish(TerminalAction::protocol_failed,
                           BusinessCloseReason::protocol_failed);
         }
-        auto decrypted = pull_->pull(bytes_of(frame.payload));
-        if (!decrypted) return finish(TerminalAction::authentication_failed,
-                                      BusinessCloseReason::authentication_failed);
+        auto decrypted = pull_ciphertext(*pull_, bytes_of(frame.payload));
+        if (!decrypted) {
+            const auto terminal = terminal_for_secretstream(decrypted.error);
+            return finish(terminal, close_reason_for_terminal(terminal));
+        }
         const bool final = decrypted.tag == auth::SecretStreamTag::final;
         if (!final && secure_sink_ && secure_sink_->server_final_sent()) {
             return finish(TerminalAction::protocol_failed,
@@ -797,8 +990,11 @@ private:
         if (!handled.messages.empty()
             && (!secure_sink_ || secure_sink_->emit_batch(std::move(handled.messages))
                     != BusinessEmitResult::accepted)) {
-            return finish(TerminalAction::internal_error,
-                          BusinessCloseReason::internal_error);
+            const auto sink_action = secure_sink_
+                ? secure_sink_->terminal_action() : TerminalAction::internal_error;
+            const auto selected = sink_action == TerminalAction::none
+                ? TerminalAction::internal_error : sink_action;
+            return finish(selected, close_reason_for_terminal(selected));
         }
         if (secure_sink_ && secure_sink_->server_final_sent() && !final_deadline_) {
             const auto enqueued_at = secure_sink_->server_final_enqueued_at();
@@ -808,16 +1004,31 @@ private:
         return current();
     }
 
-    [[nodiscard]] std::optional<DriverResult> revocation()
+    [[nodiscard]] std::optional<DriverResult> authorization()
     {
-        if (!subscription_) return finish(TerminalAction::authentication_failed,
-                                          BusinessCloseReason::authentication_failed);
-        auto events = authentication_->drain_revocations(*subscription_, 1);
-        if (!events) return finish(terminal_for_auth(events.error),
-                                   BusinessCloseReason::authentication_failed);
-        if (events->empty()) return std::nullopt;
-        return finish(TerminalAction::authentication_failed,
-                      BusinessCloseReason::authentication_failed);
+        if (!authorization_) {
+            return finish(TerminalAction::authentication_failed,
+                          BusinessCloseReason::authentication_failed);
+        }
+        const auto terminal = authorization_->authorize();
+        if (terminal == TerminalAction::none) return std::nullopt;
+        if (terminal == TerminalAction::complete) {
+            return finish(TerminalAction::internal_error,
+                          BusinessCloseReason::internal_error);
+        }
+        return finish(terminal, close_reason_for_terminal(terminal));
+    }
+
+    [[nodiscard]] std::optional<DriverResult> sink_terminal()
+    {
+        if (!secure_sink_) return std::nullopt;
+        const auto terminal = secure_sink_->terminal_action();
+        if (terminal == TerminalAction::none) return std::nullopt;
+        if (terminal == TerminalAction::complete && secure_sink_->clean_final()) {
+            return finish(TerminalAction::complete,
+                          BusinessCloseReason::clean_final);
+        }
+        return finish(terminal, close_reason_for_terminal(terminal));
     }
 
     std::shared_ptr<auth::AuthOwner> authentication_;
@@ -836,6 +1047,7 @@ private:
     std::shared_ptr<SecureBusinessSink> secure_sink_;
     std::unique_ptr<BusinessChannelHandler> handler_;
     std::optional<auth::SubscriptionId> subscription_;
+    std::shared_ptr<SessionAuthorizationGate> authorization_;
     std::string session_id_;
     std::string socket_id_;
     std::int64_t expires_at_{};
@@ -854,6 +1066,24 @@ private:
 }
 
 }  // namespace
+
+#if defined(BAAS_BUSINESS_SESSION_TEST_HOOKS)
+namespace detail {
+
+void fail_next_business_pull_create_for_test(
+    const auth::SecretStreamError error) noexcept
+{
+    injected_pull_create_error.store(error, std::memory_order_release);
+}
+
+void fail_next_business_pull_for_test(
+    const auth::SecretStreamError error) noexcept
+{
+    injected_pull_error.store(error, std::memory_order_release);
+}
+
+}  // namespace detail
+#endif
 
 BusinessSessionFactory::BusinessSessionFactory(
     std::shared_ptr<auth::AuthOwner> authentication,

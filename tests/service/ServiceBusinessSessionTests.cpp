@@ -8,6 +8,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <iostream>
 #include <memory>
 #include <mutex>
@@ -261,6 +262,8 @@ struct HandlerState {
     ws::BusinessEmitResult create_emit{ws::BusinessEmitResult::accepted};
     bool complete_on_ready{};
     std::size_t heartbeats{};
+    std::atomic_size_t creates{};
+    std::atomic_size_t ready_calls{};
 };
 
 class Handler final : public ws::BusinessChannelHandler {
@@ -268,6 +271,7 @@ public:
     explicit Handler(std::shared_ptr<HandlerState> state) : state_(std::move(state)) {}
     ws::BusinessHandlerResult ready(std::stop_token) override
     {
+        ++state_->ready_calls;
         return {{}, state_->complete_on_ready
             ? ws::BusinessHandlerStatus::complete : ws::BusinessHandlerStatus::ok};
     }
@@ -301,6 +305,7 @@ public:
         std::shared_ptr<ws::BusinessPlaintextSink> output,
         std::stop_token) override
     {
+        ++state_->creates;
         last_context = std::move(context);
         state_->sink = output;
         state_->create_emit = output->emit({"too-early", false});
@@ -330,6 +335,7 @@ struct OpenStream {
     std::shared_ptr<HandlerState> handler;
     auth::SecretStreamPush client_push;
     auth::SecretStreamPull client_pull;
+    ws::TerminalAction ready_terminal{ws::TerminalAction::none};
 };
 
 [[nodiscard]] OpenStream open_stream(
@@ -338,7 +344,9 @@ struct OpenStream {
     const ws::Channel wire_channel = ws::Channel::trigger,
     const std::shared_ptr<RecordingOutbound>& outbound = std::make_shared<RecordingOutbound>(),
     const ws::BusinessSessionConfig config = {},
-    std::string* const captured_proof = nullptr)
+    std::string* const captured_proof = nullptr,
+    std::function<void()> before_ready = {},
+    const ws::TerminalAction expected_ready_terminal = ws::TerminalAction::none)
 {
     auto state = std::make_shared<HandlerState>();
     auto handler_factory = std::make_shared<HandlerFactory>(state);
@@ -438,14 +446,22 @@ struct OpenStream {
         {"type", json_string("stream_ready")},
         {"client_header", json_string(b64(client_push.value->header()))},
     }});
+    if (before_ready) before_ready();
     auto ready_result = driver->input({ws::FrameKind::text, ready.envelope}, {});
-    require(ready_result.phase == ws::SessionPhase::streaming
-                && ready_result.terminal == ws::TerminalAction::none,
-            "stream_ready failed");
-    check(state->create_emit == ws::BusinessEmitResult::closed,
-          "handler factory cannot emit before secure sink activation");
+    if (expected_ready_terminal == ws::TerminalAction::none) {
+        require(ready_result.phase == ws::SessionPhase::streaming
+                    && ready_result.terminal == ws::TerminalAction::none,
+                "stream_ready failed");
+        check(state->create_emit == ws::BusinessEmitResult::closed,
+              "handler factory cannot emit before secure sink activation");
+    }
+    else {
+        require(ready_result.terminal == expected_ready_terminal,
+                "stream_ready terminal mismatch");
+    }
     return {std::move(driver), outbound, state,
-            std::move(*client_push.value), std::move(*client_pull.value)};
+            std::move(*client_push.value), std::move(*client_pull.value),
+            ready_result.terminal};
 }
 
 [[nodiscard]] std::string decrypt_last(
@@ -670,6 +686,184 @@ void test_multi_producer_and_server_final_first()
           "missing peer FINAL is bounded and reported as truncation");
 }
 
+void test_ready_and_async_authorization_gates()
+{
+    AuthFixture ready_fixture;
+    auto ready_session = ready_fixture.session();
+    auto rejected = open_stream(
+        ready_fixture, ready_session, ws::Channel::trigger,
+        std::make_shared<RecordingOutbound>(), {}, nullptr,
+        [&] {
+            require(static_cast<bool>(ready_fixture.owner->change_password(
+                ready_session.id, auth::SecretBuffer{bytes("revoked")})),
+                "pre-ready password change failed");
+        }, ws::TerminalAction::authentication_failed);
+    check(rejected.handler->creates == 0 && rejected.handler->ready_calls == 0
+              && !rejected.handler->sink,
+          "revocation between resume_ok and stream_ready has no handler side effects");
+    {
+        std::lock_guard lock{rejected.outbound->mutex};
+        check(rejected.outbound->batches.empty(),
+              "pre-ready revocation emits no secure business output");
+    }
+
+    AuthFixture expiry_fixture;
+    auto expiry_session = expiry_fixture.session();
+    auto expired = open_stream(
+        expiry_fixture, expiry_session, ws::Channel::trigger,
+        std::make_shared<RecordingOutbound>(), {}, nullptr,
+        [&] { expiry_fixture.clock->now = expiry_session.expires + 1; },
+        ws::TerminalAction::authentication_failed);
+    check(expired.handler->creates == 0 && expired.handler->ready_calls == 0,
+          "expiry between resume_ok and stream_ready has no handler side effects");
+
+    AuthFixture async_fixture;
+    auto async_session = async_fixture.session();
+    auto stream = open_stream(async_fixture, async_session);
+    require(static_cast<bool>(async_fixture.owner->change_password(
+        async_session.id, auth::SecretBuffer{bytes("revoked")})),
+        "async gate password change failed");
+    check(stream.handler->sink->emit({"must-not-escape", false})
+              == ws::BusinessEmitResult::closed
+              && stream.outbound->terminal
+                  == ws::TerminalAction::authentication_failed,
+          "async output checks authorization immediately and selects auth failure");
+    {
+        std::lock_guard lock{stream.outbound->mutex};
+        check(stream.outbound->batches.empty(),
+              "revoked async output is rejected before encryption and enqueue");
+    }
+    auto heartbeat = stream.driver->heartbeat({});
+    check(heartbeat.terminal == ws::TerminalAction::authentication_failed
+              && stream.handler->closed
+                  == ws::BusinessCloseReason::authentication_failed,
+          "driver observes the async authorization terminal latch");
+}
+
+void test_late_completions_cannot_override_terminal()
+{
+    AuthFixture auth_fixture;
+    auto auth_session = auth_fixture.session();
+    auto auth_outbound = std::make_shared<RecordingOutbound>();
+    auto auth_stream = open_stream(
+        auth_fixture, auth_session, ws::Channel::trigger, auth_outbound);
+    auth_outbound->defer_next = true;
+    require(auth_stream.handler->sink->emit({"pending", false})
+                == ws::BusinessEmitResult::accepted,
+            "pending auth batch setup failed");
+    auto corrupt = auth_stream.client_push.push(bytes("corrupt"));
+    corrupt.ciphertext.back() ^= std::byte{1};
+    auto auth_terminal = auth_stream.driver->input(
+        {ws::FrameKind::binary, text(corrupt.ciphertext)}, {});
+    require(auth_terminal.terminal == ws::TerminalAction::authentication_failed,
+            "auth cleanup setup failed");
+    auth_outbound->terminal.store(ws::TerminalAction::authentication_failed);
+    auth_outbound->complete_one(ws::BatchWriteResult::failed);
+    check(auth_outbound->terminal == ws::TerminalAction::authentication_failed,
+          "late failed completion cannot overwrite authentication failure");
+
+    AuthFixture protocol_fixture;
+    auto protocol_session = protocol_fixture.session();
+    auto protocol_outbound = std::make_shared<RecordingOutbound>();
+    auto protocol_stream = open_stream(
+        protocol_fixture, protocol_session, ws::Channel::trigger,
+        protocol_outbound);
+    protocol_outbound->defer_next = true;
+    require(protocol_stream.handler->sink->emit({"final", true})
+                == ws::BusinessEmitResult::accepted,
+            "pending protocol FINAL setup failed");
+    auto late = protocol_stream.client_push.push(bytes("late"));
+    auto protocol_terminal = protocol_stream.driver->input(
+        {ws::FrameKind::binary, text(late.ciphertext)}, {});
+    require(protocol_terminal.terminal == ws::TerminalAction::protocol_failed,
+            "protocol cleanup setup failed");
+    protocol_outbound->terminal.store(ws::TerminalAction::protocol_failed);
+    protocol_outbound->complete_one(ws::BatchWriteResult::written);
+    check(protocol_outbound->terminal == ws::TerminalAction::protocol_failed,
+          "late FINAL-written completion cannot overwrite protocol failure");
+
+    AuthFixture timeout_fixture;
+    auto timeout_session = timeout_fixture.session();
+    auto timeout_outbound = std::make_shared<RecordingOutbound>();
+    ws::BusinessSessionConfig config;
+    config.final_close_timeout = std::chrono::milliseconds{1};
+    auto timeout_stream = open_stream(
+        timeout_fixture, timeout_session, ws::Channel::trigger,
+        timeout_outbound, config);
+    timeout_outbound->defer_next = true;
+    require(timeout_stream.handler->sink->emit({"final", true})
+                == ws::BusinessEmitResult::accepted,
+            "pending timeout FINAL setup failed");
+    std::this_thread::sleep_for(std::chrono::milliseconds{5});
+    auto timeout_terminal = timeout_stream.driver->heartbeat({});
+    require(timeout_terminal.terminal == ws::TerminalAction::protocol_failed
+                && timeout_stream.handler->closed
+                    == ws::BusinessCloseReason::truncated,
+            "timeout cleanup setup failed");
+    timeout_outbound->terminal.store(ws::TerminalAction::protocol_failed);
+    timeout_outbound->complete_one(ws::BatchWriteResult::written);
+    check(timeout_outbound->terminal == ws::TerminalAction::protocol_failed,
+          "late FINAL-written completion cannot overwrite timeout terminal");
+}
+
+void test_secretstream_typed_error_mapping()
+{
+#if defined(BAAS_BUSINESS_SESSION_TEST_HOOKS)
+    const auto create_case = [](const auth::SecretStreamError error,
+                                const ws::TerminalAction expected) {
+        AuthFixture fixture;
+        auto session = fixture.session();
+        auto stream = open_stream(
+            fixture, session, ws::Channel::trigger,
+            std::make_shared<RecordingOutbound>(), {}, nullptr,
+            [=] { ws::detail::fail_next_business_pull_create_for_test(error); },
+            expected);
+        check(stream.handler->creates == 0 && stream.handler->ready_calls == 0,
+              "pull-create error occurs before handler construction");
+    };
+    create_case(auth::SecretStreamError::resource_exhausted,
+                ws::TerminalAction::internal_error);
+    create_case(auth::SecretStreamError::initialization_failed,
+                ws::TerminalAction::internal_error);
+    create_case(auth::SecretStreamError::invalid_header,
+                ws::TerminalAction::protocol_failed);
+
+    const std::vector<std::pair<auth::SecretStreamError, ws::TerminalAction>> cases{
+        {auth::SecretStreamError::resource_exhausted,
+         ws::TerminalAction::internal_error},
+        {auth::SecretStreamError::invalid_input,
+         ws::TerminalAction::protocol_failed},
+        {auth::SecretStreamError::unexpected_tag,
+         ws::TerminalAction::protocol_failed},
+        {auth::SecretStreamError::sequence_exhausted,
+         ws::TerminalAction::protocol_failed},
+        {auth::SecretStreamError::stream_closed,
+         ws::TerminalAction::protocol_failed},
+        {auth::SecretStreamError::authentication_failed,
+         ws::TerminalAction::authentication_failed},
+    };
+    for (const auto [error, expected] : cases) {
+        AuthFixture fixture;
+        auto session = fixture.session();
+        auto stream = open_stream(fixture, session);
+        auto ciphertext = stream.client_push.push(bytes("typed-error"));
+        ws::detail::fail_next_business_pull_for_test(error);
+        auto result = stream.driver->input(
+            {ws::FrameKind::binary, text(ciphertext.ciphertext)}, {});
+        check(result.terminal == expected,
+              std::string{"typed pull error mapping: "}
+                  + std::string{auth::secretstream_error_name(error)});
+    }
+    AuthFixture short_fixture;
+    auto short_session = short_fixture.session();
+    auto short_stream = open_stream(short_fixture, short_session);
+    check(short_stream.driver->input(
+              {ws::FrameKind::binary, std::string(1, 'x')}, {}).terminal
+              == ws::TerminalAction::protocol_failed,
+          "real short ciphertext maps typed invalid_input to protocol failure");
+#endif
+}
+
 void test_revocation_routing_and_platform_policy()
 {
     AuthFixture fixture;
@@ -736,6 +930,9 @@ int main()
         test_immediate_atomic_async_and_crypto_failures();
         test_sink_failures_final_and_weak_lifetime();
         test_multi_producer_and_server_final_first();
+        test_ready_and_async_authorization_gates();
+        test_late_completions_cannot_override_terminal();
+        test_secretstream_typed_error_mapping();
         test_revocation_routing_and_platform_policy();
     }
     catch (const std::exception& error) {

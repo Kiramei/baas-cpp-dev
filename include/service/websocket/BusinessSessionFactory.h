@@ -171,4 +171,12 @@ private:
     std::shared_ptr<BusinessSessionFactory> business_;
 };
 
+#if defined(BAAS_BUSINESS_SESSION_TEST_HOOKS)
+namespace detail {
+void fail_next_business_pull_create_for_test(
+    auth::SecretStreamError error) noexcept;
+void fail_next_business_pull_for_test(auth::SecretStreamError error) noexcept;
+}
+#endif
+
 }  // namespace baas::service::websocket

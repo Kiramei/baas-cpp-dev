@@ -20,8 +20,10 @@ duplicate public fields. The wire transition is:
 
 Resume installs revocation delivery before publication. Stream setup retains
 the subscription, RX key, AAD, and server push state until the client header,
-pull state, inactive output sink, handler factory, sink activation, and handler
-`ready` call all succeed. Any failure tears down and unsubscribes.
+authorization recheck, pull state, inactive output sink, handler factory, sink
+activation, and handler `ready` call all succeed. The authorization recheck
+drains revocation and validates expiry before any handler construction or
+`ready` side effect. Any failure tears down and unsubscribes.
 
 ## Handler and output boundary
 
@@ -40,10 +42,22 @@ output strings owned by the driver/sink are explicitly overwritten on success,
 rejection, validation failure, and exception paths; string destruction is not
 treated as secret erasure.
 
+Every asynchronous emission rechecks the same session/revocation gate before
+taking the secretstream writer mutex. AuthOwner is therefore never called while
+the writer mutex is held. Cleanup and terminal selection share one atomic sink
+latch, so a delayed batch callback cannot replace an already selected
+authentication, protocol, timeout, or shutdown outcome.
+
 Every streaming input and heartbeat validates the session and drains bounded
 revocation delivery. Heartbeats invoke the business handler but emit no wire
 heartbeat. Once server FINAL is admitted, handler heartbeats stop and MESSAGE
 input is a protocol failure.
+
+Secretstream failures retain their typed boundary: only ciphertext
+authentication failure maps to authentication failure; allocation/runtime/key
+initialization failures map to internal error; malformed input, invalid header,
+unexpected tag, closed/poisoned stream, and exhausted sequence map to protocol
+failure.
 
 ## FINAL and compatibility boundary
 
