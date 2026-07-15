@@ -10,6 +10,7 @@
 #include <limits>
 #include <map>
 #include <mutex>
+#include <new>
 #include <shared_mutex>
 #include <stdexcept>
 #include <thread>
@@ -23,6 +24,11 @@ namespace baas::service::websocket {
 namespace {
 
 using Clock = std::chrono::steady_clock;
+
+#if defined(BAAS_SERVICE_WEBSOCKET_TEST_HOOKS)
+std::atomic<bool> fail_next_enqueue_allocation_for_test{};
+thread_local std::size_t rejected_payload_bytes_for_test{};
+#endif
 
 struct SharedStats {
     std::atomic<std::size_t> peak_connections{0};
@@ -60,6 +66,8 @@ struct SharedStats {
         case TerminalAction::authentication_failed:
         case TerminalAction::protocol_failed:
             return {websocket_close_authentication_failed, "authentication failed"};
+        case TerminalAction::capacity:
+            return {websocket_close_capacity, "capacity exhausted"};
         case TerminalAction::internal_error:
             return {websocket_close_internal_error, "internal channel failure"};
         case TerminalAction::complete:
@@ -198,6 +206,7 @@ public:
         struct QueuedBatch {
             OutboundBatch batch;
             std::size_t bytes{};
+            std::shared_ptr<BatchCompletion> completion;
         };
 
         Slot(
@@ -214,50 +223,80 @@ public:
               next_heartbeat(connected_at + config.heartbeat_interval)
         {}
 
-        [[nodiscard]] EnqueueResult enqueue(OutboundBatch batch) override
+        [[nodiscard]] EnqueueResult enqueue(
+            OutboundBatch batch,
+            std::shared_ptr<BatchCompletion> completion
+        ) override
         {
-            if (batch.frames.empty()) return reject(EnqueueResult::empty_batch);
+            if (batch.frames.empty()) {
+                return reject_batch(
+                    EnqueueResult::empty_batch,
+                    std::move(batch), std::move(completion), 0);
+            }
             if (batch.frames.size() > config.max_frames_per_batch) {
-                return reject(EnqueueResult::too_many_frames);
+                return reject_batch(
+                    EnqueueResult::too_many_frames,
+                    std::move(batch), std::move(completion), 0);
             }
             std::size_t bytes = 0;
             for (const auto& frame : batch.frames) {
                 if (frame.payload.size() > config.max_frame_bytes) {
-                    return reject(EnqueueResult::frame_too_large);
+                    return reject_batch(
+                        EnqueueResult::frame_too_large,
+                        std::move(batch), std::move(completion), 0);
                 }
                 if (!checked_add(bytes, frame.payload.size(), bytes)) {
-                    return reject(EnqueueResult::queued_bytes_exceeded);
+                    return reject_batch(
+                        EnqueueResult::queued_bytes_exceeded,
+                        std::move(batch), std::move(completion), 0);
                 }
             }
             if (!reserve_global(bytes)) {
-                return reject(EnqueueResult::queued_bytes_exceeded);
+                return reject_batch(
+                    EnqueueResult::queued_bytes_exceeded,
+                    std::move(batch), std::move(completion), 0);
             }
+            EnqueueResult result = EnqueueResult::accepted;
             {
                 std::lock_guard<std::mutex> lock{queue_mutex};
                 if (!outbound_open) {
-                    release_global(bytes);
-                    return EnqueueResult::closed;
+                    result = EnqueueResult::closed;
+                } else if (outbound.size() >= config.max_queued_batches) {
+                    result = EnqueueResult::queue_full;
+                } else {
+                    std::size_t updated = 0;
+                    if (!checked_add(queued_bytes, bytes, updated)
+                        || updated > config.max_queued_bytes) {
+                        result = EnqueueResult::queued_bytes_exceeded;
+                    } else {
+                        try {
+                            // Allocate the deque node before moving observer
+                            // ownership so an allocation failure can still
+                            // complete this enqueue attempt synchronously.
+#if defined(BAAS_SERVICE_WEBSOCKET_TEST_HOOKS)
+                            if (fail_next_enqueue_allocation_for_test.exchange(
+                                    false, std::memory_order_acq_rel)) {
+                                throw std::bad_alloc{};
+                            }
+#endif
+                            outbound.emplace_back();
+                            auto& queued = outbound.back();
+                            queued.batch = std::move(batch);
+                            queued.bytes = bytes;
+                            queued.completion = std::move(completion);
+                            queued_bytes = updated;
+                        } catch (...) {
+                            result = EnqueueResult::resource_exhausted;
+                        }
+                    }
                 }
-                if (outbound.size() >= config.max_queued_batches) {
-                    release_global(bytes);
-                    return reject(EnqueueResult::queue_full);
-                }
-                std::size_t updated = 0;
-                if (!checked_add(queued_bytes, bytes, updated)
-                    || updated > config.max_queued_bytes) {
-                    release_global(bytes);
-                    return reject(EnqueueResult::queued_bytes_exceeded);
-                }
-                try {
-                    outbound.push_back({std::move(batch), bytes});
-                } catch (...) {
-                    release_global(bytes);
-                    return reject(EnqueueResult::resource_exhausted);
-                }
-                queued_bytes = updated;
+            }
+            if (result != EnqueueResult::accepted) {
+                return reject_batch(
+                    result, std::move(batch), std::move(completion), bytes);
             }
             queue_changed.notify_one();
-            return EnqueueResult::accepted;
+            return result;
         }
 
         void terminate(const TerminalAction action) noexcept override
@@ -289,17 +328,26 @@ public:
 
         void close_outbound() noexcept
         {
+            std::deque<QueuedBatch> discarded;
             std::size_t released = 0;
             {
                 std::lock_guard<std::mutex> lock{queue_mutex};
                 outbound_open = false;
                 for (const auto& queued : outbound) released += queued.bytes;
-                outbound.clear();
+                discarded.swap(outbound);
                 queued_bytes -= released;
                 terminal_pending = false;
             }
+            for (auto& queued : discarded) {
+                std::vector<Frame> released_frames;
+                released_frames.swap(queued.batch.frames);
+            }
             release_global(released);
             queue_changed.notify_all();
+            for (auto& queued : discarded) {
+                notify_completion(
+                    std::move(queued.completion), BatchWriteResult::failed);
+            }
         }
 
         void start_writer()
@@ -342,10 +390,42 @@ public:
             close_outbound();
         }
 
-        [[nodiscard]] EnqueueResult reject(const EnqueueResult result) noexcept
+        [[nodiscard]] EnqueueResult reject_batch(
+            const EnqueueResult result,
+            OutboundBatch batch,
+            std::shared_ptr<BatchCompletion> completion,
+            const std::size_t reserved_global_bytes
+        ) noexcept
         {
+#if defined(BAAS_SERVICE_WEBSOCKET_TEST_HOOKS)
+            std::size_t retained = 0;
+            for (const auto& frame : batch.frames) {
+                if (!checked_add(retained, frame.payload.size(), retained)) {
+                    retained = std::numeric_limits<std::size_t>::max();
+                    break;
+                }
+            }
+            rejected_payload_bytes_for_test = retained;
+#endif
+            {
+                std::vector<Frame> released_frames;
+                released_frames.swap(batch.frames);
+            }
+#if defined(BAAS_SERVICE_WEBSOCKET_TEST_HOOKS)
+            rejected_payload_bytes_for_test = 0;
+#endif
+            release_global(reserved_global_bytes);
             stats->outbound_rejections.fetch_add(1, std::memory_order_relaxed);
+            notify_completion(std::move(completion), BatchWriteResult::failed);
             return result;
+        }
+
+        static void notify_completion(
+            std::shared_ptr<BatchCompletion> completion,
+            const BatchWriteResult result
+        ) noexcept
+        {
+            if (completion) completion->complete(result);
         }
 
         void account_terminal(const TerminalAction action) noexcept
@@ -355,6 +435,8 @@ public:
                 counter = &stats->authentication_rejections;
             } else if (action == TerminalAction::protocol_failed) {
                 counter = &stats->protocol_rejections;
+            } else if (action == TerminalAction::capacity) {
+                counter = &stats->capacity_rejections;
             } else if (action == TerminalAction::complete) {
                 return;
             }
@@ -376,8 +458,7 @@ public:
             } done{*this};
             try {
                 for (;;) {
-                    OutboundBatch batch;
-                    std::size_t active_bytes = 0;
+                    QueuedBatch queued;
                     bool send_terminal = false;
                     TerminalAction terminal_action = TerminalAction::none;
                     {
@@ -388,10 +469,8 @@ public:
                         });
                         if (stop.stop_requested()) return;
                         if (!outbound.empty()) {
-                            auto queued = std::move(outbound.front());
+                            queued = std::move(outbound.front());
                             outbound.pop_front();
-                            active_bytes = queued.bytes;
-                            batch = std::move(queued.batch);
                         } else if (terminal_pending) {
                             terminal_pending = false;
                             send_terminal = true;
@@ -402,11 +481,54 @@ public:
                             continue;
                         }
                     }
+                    class PendingCompletion final {
+                    public:
+                        explicit PendingCompletion(
+                            Slot& slot,
+                            std::shared_ptr<BatchCompletion> completion,
+                            const bool active) noexcept
+                            : slot_(slot), completion_(std::move(completion)), active_(active)
+                        {}
+                        ~PendingCompletion()
+                        {
+                            if (!active_) return;
+                            // Seal and fail queued work before exposing this
+                            // active failure to a re-entrant observer.
+                            slot_.close_outbound();
+                            Slot::notify_completion(
+                                std::move(completion_), BatchWriteResult::failed);
+                        }
+                        void written() noexcept
+                        {
+                            active_ = false;
+                            Slot::notify_completion(
+                                std::move(completion_), BatchWriteResult::written);
+                        }
+
+                    private:
+                        Slot& slot_;
+                        std::shared_ptr<BatchCompletion> completion_;
+                        bool active_{};
+                    } completion{
+                        *this,
+                        std::move(queued.completion),
+                        !queued.batch.frames.empty()};
                     struct ActiveCharge final {
                         Slot& slot;
+                        OutboundBatch& batch;
                         std::size_t bytes;
-                        ~ActiveCharge() { slot.release_active(bytes); }
-                    } active_charge{*this, active_bytes};
+                        ~ActiveCharge() { release(); }
+                        void release() noexcept
+                        {
+                            if (!batch.frames.empty()) {
+                                std::vector<Frame> released_frames;
+                                released_frames.swap(batch.frames);
+                            }
+                            if (bytes == 0) return;
+                            const auto value = std::exchange(bytes, 0);
+                            slot.release_active(value);
+                        }
+                    } active_charge{*this, queued.batch, queued.bytes};
                     if (send_terminal) {
                         const auto [code, reason] = close_for(terminal_action);
                         bool requested = false;
@@ -430,21 +552,27 @@ public:
                     bool written = true;
                     {
                         std::shared_lock<std::shared_mutex> lock{transport_mutex};
-                        if (transport == nullptr) return;
-                        std::lock_guard<std::mutex> write_lock{writer_mutex};
-                        for (const auto& frame : batch.frames) {
-                            if (!transport->write(frame)) {
-                                written = false;
-                                break;
+                        if (transport == nullptr) {
+                            written = false;
+                        } else {
+                            std::lock_guard<std::mutex> write_lock{writer_mutex};
+                            for (const auto& frame : queued.batch.frames) {
+                                if (!transport->write(frame)) {
+                                    written = false;
+                                    break;
+                                }
                             }
                         }
                     }
                     if (!written) {
+                        active_charge.release();
                         stats->write_failures.fetch_add(1, std::memory_order_relaxed);
                         stop_source.request_stop();
                         interrupt();
                         return;
                     }
+                    active_charge.release();
+                    completion.written();
                 }
             } catch (...) {
                 stats->write_failures.fetch_add(1, std::memory_order_relaxed);
@@ -613,7 +741,7 @@ public:
             } else {
                 std::lock_guard<std::mutex> lock{slot->driver_mutex};
                 slot->driver = sessions_->create(
-                    request, slot, slot->stop_source.get_token()
+                    std::move(request), slot, slot->stop_source.get_token()
                 );
             }
             if (slot->terminal.load(std::memory_order_acquire) == TerminalAction::none
@@ -631,6 +759,11 @@ public:
                     break;
                 }
                 {
+                    // This loop already owns the connection's sole reader. A
+                    // frame has been removed from the transport queue, so it
+                    // must wait for an in-flight heartbeat instead of being
+                    // dropped. Only the shared scheduler may skip a busy
+                    // driver with try_lock.
                     std::lock_guard<std::mutex> lock{slot->driver_mutex};
                     auto result = slot->driver->input(
                         std::move(frame), slot->stop_source.get_token()
@@ -880,7 +1013,7 @@ private:
             slot.phase.store(SessionPhase::streaming, std::memory_order_release);
         }
         for (auto& batch : result.batches) {
-            if (slot.enqueue(std::move(batch)) != EnqueueResult::accepted) {
+            if (slot.enqueue(std::move(batch), {}) != EnqueueResult::accepted) {
                 slot.terminate(TerminalAction::internal_error);
                 return false;
             }
@@ -960,7 +1093,9 @@ private:
                     // and re-check after acquiring the driver lock. A frame
                     // that completed authentication at the deadline must win
                     // over the scheduler's stale handshaking observation.
-                    std::lock_guard<std::mutex> lock{slot->driver_mutex};
+                    std::unique_lock<std::mutex> lock{
+                        slot->driver_mutex, std::try_to_lock};
+                    if (!lock.owns_lock()) continue;
                     if (!slot->stop_source.stop_requested()
                         && slot->phase.load(std::memory_order_acquire)
                             == SessionPhase::handshaking) {
@@ -979,7 +1114,9 @@ private:
                 }
                 try {
                     {
-                        std::lock_guard<std::mutex> lock{slot->driver_mutex};
+                        std::unique_lock<std::mutex> lock{
+                            slot->driver_mutex, std::try_to_lock};
+                        if (!lock.owns_lock()) continue;
                         if (!slot->driver) continue;
                         auto result = slot->driver->heartbeat(
                             slot->stop_source.get_token()
@@ -1028,6 +1165,18 @@ private:
     std::jthread scheduler_;
     bool scheduler_abandoned_{};
 };
+
+#if defined(BAAS_SERVICE_WEBSOCKET_TEST_HOOKS)
+void WebSocketOwnerTestAccess::fail_next_enqueue_allocation() noexcept
+{
+    fail_next_enqueue_allocation_for_test.store(true, std::memory_order_release);
+}
+
+std::size_t WebSocketOwnerTestAccess::rejected_payload_bytes() noexcept
+{
+    return rejected_payload_bytes_for_test;
+}
+#endif
 
 WebSocketOwner::WebSocketOwner(
     WebSocketOwnerConfig config,

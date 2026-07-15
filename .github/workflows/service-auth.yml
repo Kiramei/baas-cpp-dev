@@ -1,0 +1,339 @@
+name: Service authentication
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/service-auth.yml'
+      - 'CMakeLists.txt'
+      - 'cmake/BAASDependency.cmake'
+      - 'cmake/ServiceAuth.cmake'
+      - 'cmake/ServiceControlSession.cmake'
+      - 'cmake/ServiceBusinessSession.cmake'
+      - 'cmake/ServiceTriggerHandler.cmake'
+      - 'cmake/ServiceProtocol.cmake'
+      - 'cmake/ServiceTriggerCatalog.cmake'
+      - 'cmake/ServiceTriggerDispatch.cmake'
+      - 'cmake/ServiceTriggerExecutor.cmake'
+      - 'cmake/ServiceWebSocket.cmake'
+      - 'deploy/conan/conanfile.py'
+      - 'deploy/conan/profiles/android-clang-*-release'
+      - 'deploy/conan/profiles/dependency-versions-default'
+      - 'deploy/conan/recipes/baas-libsodium/**'
+      - 'deploy/conan/recipes/baas-cpp-httplib/**'
+      - 'deploy/conan/scripts/manage_recipes.py'
+      - 'include/service/auth/**'
+      - 'src/service/auth/**'
+      - 'include/service/websocket/ControlSessionFactory.h'
+      - 'include/service/websocket/BusinessSessionFactory.h'
+      - 'include/service/websocket/WebSocketOwner.h'
+      - 'src/service/websocket/ControlSessionFactory.cpp'
+      - 'src/service/websocket/BusinessSessionFactory.cpp'
+      - 'src/service/websocket/WebSocketOwner.cpp'
+      - 'include/service/channels/TriggerHandler.h'
+      - 'src/service/channels/TriggerHandler.cpp'
+      - 'tests/service/TriggerHandlerTests.cpp'
+      - 'include/service/protocol/Trigger*.h'
+      - 'src/service/protocol/Trigger*.cpp'
+      - 'include/service/trigger/**'
+      - 'src/service/trigger/**'
+      - 'tests/service/ServiceAuth*Tests.cpp'
+      - 'tests/service/ServiceControlSessionTests.cpp'
+      - 'tests/service/ServiceBusinessSessionTests.cpp'
+      - 'tests/service/WebSocketOwnerTests.cpp'
+      - 'tests/service_contract/**'
+      - 'docs/script-runtime/SERVICE_AUTH_CRYPTO.md'
+      - 'docs/script-runtime/SERVICE_AUTH_OWNER.md'
+      - 'docs/script-runtime/SERVICE_CONTROL_SESSION.md'
+      - 'docs/script-runtime/SERVICE_BUSINESS_SESSION.md'
+      - 'docs/script-runtime/SERVICE_TRIGGER_HANDLER.md'
+      - 'docs/script-runtime/SERVICE_WEBSOCKET_OWNER.md'
+      - 'docs/script-runtime/SERVICE_PROTOCOL_V1.md'
+  pull_request:
+    branches:
+      - main
+    types:
+      - opened
+      - synchronize
+      - reopened
+    paths:
+      - '.github/workflows/service-auth.yml'
+      - 'CMakeLists.txt'
+      - 'cmake/BAASDependency.cmake'
+      - 'cmake/ServiceAuth.cmake'
+      - 'cmake/ServiceControlSession.cmake'
+      - 'cmake/ServiceBusinessSession.cmake'
+      - 'cmake/ServiceTriggerHandler.cmake'
+      - 'cmake/ServiceProtocol.cmake'
+      - 'cmake/ServiceTriggerCatalog.cmake'
+      - 'cmake/ServiceTriggerDispatch.cmake'
+      - 'cmake/ServiceTriggerExecutor.cmake'
+      - 'cmake/ServiceWebSocket.cmake'
+      - 'deploy/conan/conanfile.py'
+      - 'deploy/conan/profiles/android-clang-*-release'
+      - 'deploy/conan/profiles/dependency-versions-default'
+      - 'deploy/conan/recipes/baas-libsodium/**'
+      - 'deploy/conan/recipes/baas-cpp-httplib/**'
+      - 'deploy/conan/scripts/manage_recipes.py'
+      - 'include/service/auth/**'
+      - 'src/service/auth/**'
+      - 'include/service/websocket/ControlSessionFactory.h'
+      - 'include/service/websocket/BusinessSessionFactory.h'
+      - 'include/service/websocket/WebSocketOwner.h'
+      - 'src/service/websocket/ControlSessionFactory.cpp'
+      - 'src/service/websocket/BusinessSessionFactory.cpp'
+      - 'src/service/websocket/WebSocketOwner.cpp'
+      - 'include/service/channels/TriggerHandler.h'
+      - 'src/service/channels/TriggerHandler.cpp'
+      - 'tests/service/TriggerHandlerTests.cpp'
+      - 'include/service/protocol/Trigger*.h'
+      - 'src/service/protocol/Trigger*.cpp'
+      - 'include/service/trigger/**'
+      - 'src/service/trigger/**'
+      - 'tests/service/ServiceAuth*Tests.cpp'
+      - 'tests/service/ServiceControlSessionTests.cpp'
+      - 'tests/service/ServiceBusinessSessionTests.cpp'
+      - 'tests/service/WebSocketOwnerTests.cpp'
+      - 'tests/service_contract/**'
+      - 'docs/script-runtime/SERVICE_AUTH_CRYPTO.md'
+      - 'docs/script-runtime/SERVICE_AUTH_OWNER.md'
+      - 'docs/script-runtime/SERVICE_CONTROL_SESSION.md'
+      - 'docs/script-runtime/SERVICE_BUSINESS_SESSION.md'
+      - 'docs/script-runtime/SERVICE_TRIGGER_HANDLER.md'
+      - 'docs/script-runtime/SERVICE_WEBSOCKET_OWNER.md'
+      - 'docs/script-runtime/SERVICE_PROTOCOL_V1.md'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: service-auth-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  host-auth:
+    name: ${{ matrix.os }} / ${{ matrix.build_type }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        include:
+          - os: windows-latest
+            build_type: Debug
+            conan_settings: '-s:h compiler.runtime_type=Debug'
+          - os: windows-latest
+            build_type: Release
+            conan_settings: '-s:h compiler.runtime_type=Release'
+          - os: ubuntu-latest
+            build_type: Debug
+            conan_settings: ''
+          - os: ubuntu-latest
+            build_type: Release
+            conan_settings: ''
+          - os: macos-latest
+            build_type: Debug
+            conan_settings: ''
+          - os: macos-latest
+            build_type: Release
+            conan_settings: ''
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Conan
+        run: python -m pip install --disable-pip-version-check conan==2.30.0
+
+      - name: Detect build profile
+        run: conan profile detect --force
+
+      - name: Build and verify pinned libsodium recipe
+        run: >-
+          conan create deploy/conan/recipes/baas-libsodium
+          -s:h build_type=${{ matrix.build_type }}
+          -s:b build_type=Release
+          ${{ matrix.conan_settings }}
+          --build=missing
+          --no-remote
+
+      - name: Build and verify pinned cpp-httplib recipe
+        run: >-
+          conan create deploy/conan/recipes/baas-cpp-httplib
+          -s:h build_type=${{ matrix.build_type }}
+          -s:b build_type=Release
+          ${{ matrix.conan_settings }}
+          --build=missing
+          --no-remote
+
+      - name: Generate control-auth CMake dependencies
+        run: >-
+          conan install --requires=baas-libsodium/1.0.22
+          --requires=baas-cpp-httplib/0.50.1
+          -of build/conan/service-auth
+          -s:h build_type=${{ matrix.build_type }}
+          -s:b build_type=Release
+          ${{ matrix.conan_settings }}
+          -g CMakeDeps
+          -g CMakeToolchain
+          --build=missing
+          --no-remote
+
+      - name: Configure service authentication tests
+        run: >-
+          cmake -S . -B build/service-auth
+          "-DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}/build/conan/service-auth/conan_toolchain.cmake"
+          -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
+          -DBUILD_TESTING=ON
+          -DBUILD_SERVICE_AUTH_CRYPTO_TESTS=ON
+          -DBUILD_SERVICE_AUTH_OWNER_TESTS=ON
+          -DBUILD_SERVICE_WEBSOCKET_TESTS=ON
+          -DBUILD_SERVICE_CONTROL_SESSION_TESTS=ON
+          -DBUILD_SERVICE_BUSINESS_SESSION_TESTS=ON
+          -DBUILD_SERVICE_TRIGGER_HANDLER_TESTS=ON
+          -DBUILD_APP_BAAS=OFF
+          -DBUILD_APP_ISA=OFF
+          -DBUILD_BAAS_OCR=OFF
+          -DBUILD_BAAS_AW_CHECKER=OFF
+          -DBUILD_BAAS_NMS_BENCHMARK=OFF
+          -DBAAS_FETCH_RESOURCES=OFF
+
+      - name: Build service authentication tests
+        run: >-
+          cmake --build build/service-auth
+          --config ${{ matrix.build_type }}
+          --parallel 4
+          --target BAAS_service_auth_crypto_tests BAAS_service_auth_owner_tests
+          BAAS_service_websocket_handshake_tests BAAS_service_websocket_owner_tests
+          BAAS_service_control_session_tests
+          BAAS_service_business_session_tests
+          BAAS_service_trigger_handler_tests
+
+      - name: Run service authentication tests
+        run: >-
+          ctest --test-dir build/service-auth
+          --build-config ${{ matrix.build_type }}
+          --output-on-failure
+          --timeout 60
+          -R "^BAAS_service_(auth_(crypto|owner)|websocket_(handshake|owner)|control_session|business_session|trigger_handler)_tests$"
+
+  android-auth:
+    name: Android ${{ matrix.abi }} / Release
+    needs: host-auth
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        include:
+          - abi: arm64-v8a
+            profile: android-clang-arm64-v8a-release
+          - abi: x86_64
+            profile: android-clang-x86_64-release
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Android build tools
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes autoconf automake build-essential libtool ninja-build
+          android_sdk="${ANDROID_SDK_ROOT:-${ANDROID_HOME}}"
+          test -n "${android_sdk}"
+          sdkmanager 'ndk;29.0.13846066'
+          test -d "${android_sdk}/ndk/29.0.13846066"
+          echo "ANDROID_NDK_HOME=${android_sdk}/ndk/29.0.13846066" >> "$GITHUB_ENV"
+
+      - name: Install Conan
+        run: python -m pip install --disable-pip-version-check conan==2.30.0
+
+      - name: Detect build profile
+        run: conan profile detect --force
+
+      - name: Cross-build and verify pinned libsodium recipe
+        shell: bash
+        run: >-
+          conan create deploy/conan/recipes/baas-libsodium
+          -pr:h=deploy/conan/profiles/${{ matrix.profile }}
+          -pr:b=default
+          -c:h "tools.android:ndk_path=${ANDROID_NDK_HOME}"
+          --build=missing
+          --no-remote
+
+      - name: Cross-build and verify pinned cpp-httplib recipe
+        shell: bash
+        run: >-
+          conan create deploy/conan/recipes/baas-cpp-httplib
+          -pr:h=deploy/conan/profiles/${{ matrix.profile }}
+          -pr:b=default
+          -c:h "tools.android:ndk_path=${ANDROID_NDK_HOME}"
+          --build=missing
+          --no-remote
+
+      - name: Generate Android control-auth CMake dependencies
+        shell: bash
+        run: >-
+          conan install --requires=baas-libsodium/1.0.22
+          --requires=baas-cpp-httplib/0.50.1
+          -of build/conan/service-auth-android-${{ matrix.abi }}
+          -pr:h=deploy/conan/profiles/${{ matrix.profile }}
+          -pr:b=default
+          -c:h "tools.android:ndk_path=${ANDROID_NDK_HOME}"
+          -g CMakeDeps
+          -g CMakeToolchain
+          --build=missing
+          --no-remote
+
+      - name: Configure Android service authentication
+        shell: bash
+        run: >-
+          cmake -S . -B build/service-auth-android-${{ matrix.abi }}
+          "-DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}/build/conan/service-auth-android-${{ matrix.abi }}/conan_toolchain.cmake"
+          -DCMAKE_BUILD_TYPE=Release
+          -DBUILD_TESTING=OFF
+          -DBUILD_SERVICE_AUTH_CRYPTO=ON
+          -DBUILD_SERVICE_AUTH_CRYPTO_TESTS=OFF
+          -DBUILD_SERVICE_AUTH_OWNER=ON
+          -DBUILD_SERVICE_AUTH_OWNER_TESTS=OFF
+          -DBUILD_SERVICE_CONTROL_SESSION=ON
+          -DBUILD_SERVICE_CONTROL_SESSION_TESTS=OFF
+          -DBUILD_SERVICE_BUSINESS_SESSION=ON
+          -DBUILD_SERVICE_BUSINESS_SESSION_TESTS=OFF
+          -DBUILD_APP_BAAS=OFF
+          -DBUILD_APP_ISA=OFF
+          -DBUILD_BAAS_OCR=OFF
+          -DBUILD_BAAS_AW_CHECKER=OFF
+          -DBUILD_BAAS_NMS_BENCHMARK=OFF
+          -DBAAS_FETCH_RESOURCES=OFF
+
+      - name: Cross-build Android service authentication
+        shell: bash
+        run: >-
+          cmake --build build/service-auth-android-${{ matrix.abi }}
+          --config Release
+          --parallel 4
+          --target BAAS_service_auth_crypto BAAS_service_auth_owner
+          BAAS_service_websocket BAAS_service_control_session
+          BAAS_service_business_session

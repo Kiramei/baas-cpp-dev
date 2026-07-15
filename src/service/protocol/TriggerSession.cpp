@@ -117,6 +117,128 @@ void validate_limits(const TriggerSessionLimits& limits)
 
 }  // namespace
 
+class OutputReadyRegistry final {
+public:
+    [[nodiscard]] std::uint64_t subscribe(
+        std::weak_ptr<OutputReadyObserver> observer) noexcept
+    {
+        try {
+            std::lock_guard lock(mutex_);
+            if (!enabled_ || observer.expired()) return 0;
+            if (++generation_ == 0) ++generation_;
+            observer_ = std::move(observer);
+            return generation_;
+        } catch (...) {
+            return 0;
+        }
+    }
+
+    void unsubscribe(const std::uint64_t generation) noexcept
+    {
+        try {
+            std::lock_guard lock(mutex_);
+            if (generation != 0 && generation == generation_) observer_.reset();
+        } catch (...) {
+        }
+    }
+
+    void cancel() noexcept
+    {
+        try {
+            std::lock_guard lock(mutex_);
+            enabled_ = false;
+            observer_.reset();
+            if (++generation_ == 0) ++generation_;
+        } catch (...) {
+        }
+    }
+
+    [[nodiscard]] std::uint64_t generation() const noexcept
+    {
+        try {
+            std::lock_guard lock(mutex_);
+            return enabled_ ? generation_ : 0;
+        } catch (...) {
+            return 0;
+        }
+    }
+
+    void notify(const std::uint64_t generation) noexcept
+    {
+        std::shared_ptr<OutputReadyObserver> observer;
+        try {
+            {
+                std::lock_guard lock(mutex_);
+                if (!enabled_ || generation == 0 || generation != generation_)
+                    return;
+                observer = observer_.lock();
+                if (!observer) observer_.reset();
+            }
+            if (observer) observer->output_ready();
+        } catch (...) {
+        }
+    }
+
+    [[nodiscard]] bool active(const std::uint64_t generation) const noexcept
+    {
+        try {
+            std::lock_guard lock(mutex_);
+            return enabled_ && generation != 0 && generation == generation_
+                && !observer_.expired();
+        } catch (...) {
+            return false;
+        }
+    }
+
+private:
+    mutable std::mutex mutex_;
+    std::weak_ptr<OutputReadyObserver> observer_;
+    std::uint64_t generation_{};
+    bool enabled_{true};
+};
+
+OutputReadySubscription::OutputReadySubscription(
+    std::shared_ptr<OutputReadyRegistry> registry,
+    const std::uint64_t generation) noexcept
+    : registry_(std::move(registry)), generation_(generation)
+{}
+
+OutputReadySubscription::~OutputReadySubscription()
+{
+    reset();
+}
+
+OutputReadySubscription::OutputReadySubscription(
+    OutputReadySubscription&& other) noexcept
+    : registry_(std::move(other.registry_)), generation_(other.generation_)
+{
+    other.generation_ = 0;
+}
+
+OutputReadySubscription& OutputReadySubscription::operator=(
+    OutputReadySubscription&& other) noexcept
+{
+    if (this != &other) {
+        reset();
+        registry_ = std::move(other.registry_);
+        generation_ = other.generation_;
+        other.generation_ = 0;
+    }
+    return *this;
+}
+
+void OutputReadySubscription::reset() noexcept
+{
+    if (registry_) registry_->unsubscribe(generation_);
+    registry_.reset();
+    generation_ = 0;
+}
+
+OutputReadySubscription::operator bool() const noexcept
+{
+    return registry_ && registry_->active(generation_);
+}
+
 std::string_view admission_error_name(const AdmissionError error) noexcept
 {
     using enum AdmissionError;
@@ -195,10 +317,31 @@ std::string_view send_transition_error_name(const SendTransitionError error) noe
 }
 
 TriggerSession::TriggerSession(const TriggerSessionLimits limits)
-    : limits_(limits), instance_id_(allocate_session_instance_id())
+    : limits_(limits), instance_id_(allocate_session_instance_id()),
+      output_ready_(std::make_shared<OutputReadyRegistry>())
 {
     validate_limits(limits_);
     cancellation_handoff_.reserve(limits_.max_in_flight);
+}
+
+TriggerSession::~TriggerSession() noexcept
+{
+    output_ready_->cancel();
+}
+
+OutputReadySubscription TriggerSession::observe_output_ready(
+    std::weak_ptr<OutputReadyObserver> observer)
+{
+    std::uint64_t generation{};
+    bool ready{};
+    {
+        std::lock_guard lock(mutex_);
+        if (closed_) return {};
+        generation = output_ready_->subscribe(std::move(observer));
+        ready = generation != 0 && !outbound_.empty();
+    }
+    if (ready) output_ready_->notify(generation);
+    return {output_ready_, generation};
 }
 
 AdmissionResult TriggerSession::admit(CommandAdmission command)
@@ -316,7 +459,7 @@ PublishResult TriggerSession::publish(
     }
     const auto bytes = batch_bytes(batch);
 
-    std::lock_guard lock(mutex_);
+    std::unique_lock lock(mutex_);
     const auto reject = [this](const PublishError error) {
         ++publish_rejections_;
         if (error == PublishError::queue_full
@@ -351,11 +494,16 @@ PublishResult TriggerSession::publish(
         return reject(PublishError::queued_bytes_exceeded);
     }
 
+    const bool became_ready = outbound_.empty();
     outbound_.push_back(std::make_shared<const OutboundBatch>(std::move(batch)));
     queued_bytes_ += bytes;
     entry.response_queued = true;
     if (outbound_.back()->terminal()) entry.terminal_queued = true;
     ++published_batches_;
+    const auto ready_generation =
+        became_ready ? output_ready_->generation() : std::uint64_t{};
+    lock.unlock();
+    if (became_ready) output_ready_->notify(ready_generation);
     return {};
 }
 
@@ -399,15 +547,20 @@ CompleteSendResult TriggerSession::complete_send(const SendLease& lease)
 
 FailSendResult TriggerSession::fail_send(const SendLease& lease)
 {
-    std::lock_guard lock(mutex_);
-    if (closed_) return {SendTransitionError::closed, {}};
-    if (!active_lease_id_)
-        return {SendTransitionError::no_active_lease, {}};
-    if (*active_lease_id_ != lease.id())
-        return {SendTransitionError::lease_mismatch, {}};
+    FailSendResult result;
+    {
+        std::lock_guard lock(mutex_);
+        if (closed_) return {SendTransitionError::closed, {}};
+        if (!active_lease_id_)
+            return {SendTransitionError::no_active_lease, {}};
+        if (*active_lease_id_ != lease.id())
+            return {SendTransitionError::lease_mismatch, {}};
 
-    ++send_failures_;
-    return {SendTransitionError::none, close_locked()};
+        ++send_failures_;
+        result = {SendTransitionError::none, close_locked()};
+        output_ready_->cancel();
+    }
+    return result;
 }
 
 std::vector<ActiveCommand> TriggerSession::close_locked()
@@ -433,8 +586,13 @@ std::vector<ActiveCommand> TriggerSession::close_locked()
 
 std::vector<ActiveCommand> TriggerSession::close()
 {
-    std::lock_guard lock(mutex_);
-    return close_locked();
+    std::vector<ActiveCommand> active;
+    {
+        std::lock_guard lock(mutex_);
+        active = close_locked();
+        output_ready_->cancel();
+    }
+    return active;
 }
 
 bool TriggerSession::try_claim_execution_owner() noexcept

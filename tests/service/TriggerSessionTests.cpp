@@ -4,8 +4,13 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cstddef>
+#include <condition_variable>
+#include <future>
 #include <iostream>
+#include <memory>
+#include <mutex>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -77,6 +82,54 @@ void check(const bool condition, const std::string_view message)
     if (!begun || !session.complete_send(*begun.lease)) return std::nullopt;
     return std::move(begun.lease);
 }
+
+class InspectingOutputObserver final : public trigger::OutputReadyObserver {
+public:
+    explicit InspectingOutputObserver(trigger::TriggerSession& session)
+        : session_(session)
+    {}
+
+    void output_ready() noexcept override
+    {
+        // stats() taking the session mutex proves notification is external.
+        const auto snapshot = session_.stats();
+        last_queued.store(snapshot.queued_batches);
+        calls.fetch_add(1);
+    }
+
+    trigger::TriggerSession& session_;
+    std::atomic_size_t calls{};
+    std::atomic_size_t last_queued{};
+};
+
+class BlockingOutputObserver final : public trigger::OutputReadyObserver {
+public:
+    void output_ready() noexcept override
+    {
+        std::unique_lock lock(mutex);
+        entered = true;
+        changed.notify_all();
+        changed.wait(lock, [this] { return released; });
+    }
+
+    void wait_entered()
+    {
+        std::unique_lock lock(mutex);
+        changed.wait(lock, [this] { return entered; });
+    }
+
+    void release()
+    {
+        std::lock_guard lock(mutex);
+        released = true;
+        changed.notify_all();
+    }
+
+    std::mutex mutex;
+    std::condition_variable changed;
+    bool entered{};
+    bool released{};
+};
 
 void test_limits_and_stable_error_names()
 {
@@ -395,6 +448,85 @@ void test_bpip_json_binary_batch_encoding()
           "declared zero-byte binary must retain its required BYTES frame");
 }
 
+void test_output_ready_edges_subscription_and_close_race()
+{
+    trigger::TriggerSession session;
+    auto observer = std::make_shared<InspectingOutputObserver>(session);
+    auto subscription = session.observe_output_ready(observer);
+    check(static_cast<bool>(subscription), "live session must accept output observer");
+
+    const auto first = session.admit(command("status", 101));
+    const auto second = session.admit(command("solve", 102));
+    check(first && second, "output-ready fixture admissions must succeed");
+    check(session.publish(*first.receipt, response("status", 101))
+              && observer->calls.load() == 1 && observer->last_queued.load() == 1,
+          "first empty-to-nonempty publish must emit one unlocked signal");
+    check(session.publish(*second.receipt, response("solve", 102))
+              && observer->calls.load() == 1,
+          "additional queued output must not emit another edge signal");
+    check(begin_and_complete(session) && begin_and_complete(session),
+          "edge fixture must drain both queued responses");
+
+    const auto third = session.admit(command("status", 103));
+    check(third && session.publish(*third.receipt, response("status", 103))
+              && observer->calls.load() == 2,
+          "publishing after full drain must emit the next ready edge");
+    subscription.reset();
+    check(!subscription, "RAII subscription reset must cancel observation");
+    check(static_cast<bool>(begin_and_complete(session)),
+          "third response must drain");
+    const auto fourth = session.admit(command("status", 104));
+    check(fourth && session.publish(*fourth.receipt, response("status", 104))
+              && observer->calls.load() == 2,
+          "cancelled observer must receive no later edge");
+
+    auto recovery = std::make_shared<InspectingOutputObserver>(session);
+    auto recovery_subscription = session.observe_output_ready(recovery);
+    check(recovery->calls.load() == 1 && recovery->last_queued.load() == 1,
+          "subscription while output is queued must recover the missed level once");
+    static_cast<void>(session.close());
+    check(!recovery_subscription,
+          "session close must cancel the live observer generation");
+
+    auto tight_limits = trigger::TriggerSessionLimits{};
+    tight_limits.max_queued_batches = 1;
+    trigger::TriggerSession backpressured{tight_limits};
+    auto backpressure_observer =
+        std::make_shared<InspectingOutputObserver>(backpressured);
+    auto backpressure_subscription =
+        backpressured.observe_output_ready(backpressure_observer);
+    const auto accepted = backpressured.admit(command("status", 106));
+    const auto pending = backpressured.admit(command("solve", 107));
+    check(backpressured.publish(*accepted.receipt, response("status", 106))
+              && backpressure_observer->calls.load() == 1,
+          "backpressure fixture must emit its first ready edge");
+    check(backpressured.publish(*pending.receipt, response("solve", 107)).error
+              == trigger::PublishError::queue_full
+              && backpressure_observer->calls.load() == 1,
+          "rejected backpressured publication must not emit a false ready edge");
+    check(static_cast<bool>(begin_and_complete(backpressured))
+              && backpressured.publish(*pending.receipt, response("solve", 107))
+              && backpressure_observer->calls.load() == 2,
+          "retry after drain must emit exactly one new ready edge");
+
+    trigger::TriggerSession racing;
+    auto blocking = std::make_shared<BlockingOutputObserver>();
+    auto blocking_subscription = racing.observe_output_ready(blocking);
+    const auto admission = racing.admit(command("status", 105));
+    std::thread publisher([&] {
+        static_cast<void>(racing.publish(
+            *admission.receipt, response("status", 105)));
+    });
+    blocking->wait_entered();
+    auto close = std::async(std::launch::async, [&] { return racing.close(); });
+    check(close.wait_for(std::chrono::milliseconds{500}) == std::future_status::ready,
+          "close must not wait on an in-flight external output callback");
+    blocking_subscription.reset();
+    blocking->release();
+    publisher.join();
+    static_cast<void>(close.get());
+}
+
 }  // namespace
 
 int main()
@@ -406,6 +538,7 @@ int main()
     test_cancellation_and_disconnect_cleanup();
     test_concurrent_admission_and_publication();
     test_bpip_json_binary_batch_encoding();
+    test_output_ready_edges_subscription_and_close_race();
 
     if (failures != 0) {
         std::cerr << failures << " trigger session test(s) failed\n";

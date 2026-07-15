@@ -100,6 +100,26 @@ option(BUILD_SERVICE_HTTP       "Build the optional cpp-httplib service adapter"
 option(BUILD_SERVICE_HTTP_TESTS "Build native tests for the cpp-httplib service adapter" OFF)
 option(BUILD_SERVICE_WEBSOCKET "Build the bounded cpp-httplib WebSocket owner" OFF)
 option(BUILD_SERVICE_WEBSOCKET_TESTS "Build deterministic WebSocket owner tests" OFF)
+option(BUILD_SERVICE_AUTH_CRYPTO "Build the service v1 cryptographic foundation" OFF)
+option(BUILD_SERVICE_AUTH_CRYPTO_TESTS "Build service v1 cryptographic contract tests" OFF)
+option(BUILD_SERVICE_AUTH_OWNER "Build the persistent service authentication owner" OFF)
+option(BUILD_SERVICE_AUTH_OWNER_TESTS "Build deterministic AuthOwner tests" OFF)
+option(BUILD_SERVICE_AUTH_HTTP "Build transport-independent HTTP authentication routes" OFF)
+option(BUILD_SERVICE_AUTH_HTTP_TESTS "Build HTTP authentication route tests" OFF)
+option(BUILD_SERVICE_CONTROL_SESSION "Build the authenticated control WebSocket driver" OFF)
+option(BUILD_SERVICE_CONTROL_SESSION_TESTS "Build deterministic control-driver tests" OFF)
+option(BUILD_SERVICE_BUSINESS_SESSION "Build authenticated business WebSocket drivers" OFF)
+option(BUILD_SERVICE_BUSINESS_SESSION_TESTS "Build deterministic business-driver tests" OFF)
+option(BUILD_SERVICE_PROVIDER_HANDLER "Build the transport-independent provider handler" OFF)
+option(BUILD_SERVICE_PROVIDER_HANDLER_TESTS "Build deterministic provider-handler tests" OFF)
+option(BUILD_SERVICE_SYNC_HANDLER "Build the transport-independent sync handler" OFF)
+option(BUILD_SERVICE_SYNC_HANDLER_TESTS "Build deterministic sync-handler tests" OFF)
+option(BUILD_SERVICE_PRODUCTION_HTTP_HOST "Build the production HTTP host composition root" OFF)
+option(BUILD_SERVICE_PRODUCTION_HTTP_HOST_TESTS "Build production HTTP host composition tests" OFF)
+option(BUILD_SERVICE_REMOTE_HANDLER "Build the transport-independent remote handler" OFF)
+option(BUILD_SERVICE_REMOTE_HANDLER_TESTS "Build deterministic remote-handler tests" OFF)
+option(BUILD_SERVICE_TRIGGER_HANDLER "Build the production trigger business handler" OFF)
+option(BUILD_SERVICE_TRIGGER_HANDLER_TESTS "Build deterministic trigger-handler tests" OFF)
 
 # BAAS_APP owns the production script Host adapters. Standalone runtime builds
 # stay opt-in, while application builds always compile the runtime and its
@@ -118,6 +138,94 @@ endif()
 
 if(BUILD_SERVICE_PROTOCOL_TESTS AND NOT BUILD_SERVICE_PROTOCOL)
     set(BUILD_SERVICE_PROTOCOL ON CACHE BOOL "Build the standalone BAAS service protocol library" FORCE)
+endif()
+
+if(BUILD_SERVICE_AUTH_CRYPTO_TESTS AND NOT BUILD_SERVICE_AUTH_CRYPTO)
+    set(BUILD_SERVICE_AUTH_CRYPTO ON CACHE BOOL "Build the service v1 cryptographic foundation" FORCE)
+endif()
+
+if(BUILD_SERVICE_AUTH_OWNER_TESTS AND NOT BUILD_SERVICE_AUTH_OWNER)
+    set(BUILD_SERVICE_AUTH_OWNER ON CACHE BOOL "Build the persistent service authentication owner" FORCE)
+endif()
+
+if(BUILD_SERVICE_AUTH_OWNER AND NOT BUILD_SERVICE_AUTH_CRYPTO)
+    set(BUILD_SERVICE_AUTH_CRYPTO ON CACHE BOOL "Build the service v1 cryptographic foundation" FORCE)
+endif()
+
+if(BUILD_SERVICE_AUTH_HTTP_TESTS AND NOT BUILD_SERVICE_AUTH_HTTP)
+    set(BUILD_SERVICE_AUTH_HTTP ON CACHE BOOL "Build transport-independent HTTP authentication routes" FORCE)
+endif()
+
+if(BUILD_SERVICE_AUTH_HTTP)
+    set(BUILD_SERVICE_AUTH_OWNER ON CACHE BOOL "Build the persistent service authentication owner" FORCE)
+    set(BUILD_SERVICE_AUTH_CRYPTO ON CACHE BOOL "Build the service v1 cryptographic foundation" FORCE)
+    set(BUILD_SERVICE_ROUTER ON CACHE BOOL "Build the transport-independent BAAS service router" FORCE)
+endif()
+
+if(BUILD_SERVICE_CONTROL_SESSION_TESTS AND NOT BUILD_SERVICE_CONTROL_SESSION)
+    set(BUILD_SERVICE_CONTROL_SESSION ON CACHE BOOL "Build the authenticated control WebSocket driver" FORCE)
+endif()
+
+if(BUILD_SERVICE_CONTROL_SESSION)
+    set(BUILD_SERVICE_WEBSOCKET ON CACHE BOOL "Build the bounded cpp-httplib WebSocket owner" FORCE)
+    set(BUILD_SERVICE_AUTH_OWNER ON CACHE BOOL "Build the persistent service authentication owner" FORCE)
+    set(BUILD_SERVICE_AUTH_CRYPTO ON CACHE BOOL "Build the service v1 cryptographic foundation" FORCE)
+endif()
+
+if(BUILD_SERVICE_PROVIDER_HANDLER_TESTS AND NOT BUILD_SERVICE_PROVIDER_HANDLER)
+    set(BUILD_SERVICE_PROVIDER_HANDLER ON CACHE BOOL "Build the transport-independent provider handler" FORCE)
+endif()
+
+if(BUILD_SERVICE_PROVIDER_HANDLER AND NOT BUILD_SERVICE_BUSINESS_SESSION)
+    set(BUILD_SERVICE_BUSINESS_SESSION ON CACHE BOOL "Build authenticated business WebSocket drivers" FORCE)
+endif()
+
+if(BUILD_SERVICE_SYNC_HANDLER_TESTS AND NOT BUILD_SERVICE_SYNC_HANDLER)
+    set(BUILD_SERVICE_SYNC_HANDLER ON CACHE BOOL "Build the transport-independent sync handler" FORCE)
+endif()
+
+if(BUILD_SERVICE_SYNC_HANDLER AND NOT BUILD_SERVICE_BUSINESS_SESSION)
+    set(BUILD_SERVICE_BUSINESS_SESSION ON CACHE BOOL "Build authenticated business WebSocket drivers" FORCE)
+endif()
+
+if(BUILD_SERVICE_PRODUCTION_HTTP_HOST_TESTS AND NOT BUILD_SERVICE_PRODUCTION_HTTP_HOST)
+    set(BUILD_SERVICE_PRODUCTION_HTTP_HOST ON CACHE BOOL "Build the production HTTP host composition root" FORCE)
+endif()
+
+if(BUILD_SERVICE_PRODUCTION_HTTP_HOST)
+    set(BUILD_SERVICE_AUTH_HTTP ON CACHE BOOL "Build transport-independent HTTP authentication routes" FORCE)
+    set(BUILD_SERVICE_BUSINESS_SESSION ON CACHE BOOL "Build authenticated business WebSocket drivers" FORCE)
+    set(BUILD_SERVICE_PROVIDER_HANDLER ON CACHE BOOL "Build the transport-independent provider handler" FORCE)
+    set(BUILD_SERVICE_SYNC_HANDLER ON CACHE BOOL "Build the transport-independent sync handler" FORCE)
+    set(BUILD_SERVICE_HTTP ON CACHE BOOL "Build the optional cpp-httplib service adapter" FORCE)
+endif()
+
+if(BUILD_SERVICE_REMOTE_HANDLER_TESTS AND NOT BUILD_SERVICE_REMOTE_HANDLER)
+    set(BUILD_SERVICE_REMOTE_HANDLER ON CACHE BOOL "Build the transport-independent remote handler" FORCE)
+endif()
+
+if(BUILD_SERVICE_REMOTE_HANDLER AND NOT BUILD_SERVICE_BUSINESS_SESSION)
+    set(BUILD_SERVICE_BUSINESS_SESSION ON CACHE BOOL "Build authenticated business WebSocket drivers" FORCE)
+endif()
+
+if(BUILD_SERVICE_TRIGGER_HANDLER_TESTS AND NOT BUILD_SERVICE_TRIGGER_HANDLER)
+    set(BUILD_SERVICE_TRIGGER_HANDLER ON CACHE BOOL "Build the production trigger business handler" FORCE)
+endif()
+
+if(BUILD_SERVICE_TRIGGER_HANDLER)
+    set(BUILD_SERVICE_BUSINESS_SESSION ON CACHE BOOL "Build authenticated business WebSocket drivers" FORCE)
+    set(BUILD_SERVICE_TRIGGER_EXECUTOR ON CACHE BOOL "Build the bounded trigger execution owner" FORCE)
+endif()
+
+if(BUILD_SERVICE_BUSINESS_SESSION_TESTS AND NOT BUILD_SERVICE_BUSINESS_SESSION)
+    set(BUILD_SERVICE_BUSINESS_SESSION ON CACHE BOOL "Build authenticated business WebSocket drivers" FORCE)
+endif()
+
+if(BUILD_SERVICE_BUSINESS_SESSION)
+    set(BUILD_SERVICE_CONTROL_SESSION ON CACHE BOOL "Build the authenticated control WebSocket driver" FORCE)
+    set(BUILD_SERVICE_WEBSOCKET ON CACHE BOOL "Build the bounded cpp-httplib WebSocket owner" FORCE)
+    set(BUILD_SERVICE_AUTH_OWNER ON CACHE BOOL "Build the persistent service authentication owner" FORCE)
+    set(BUILD_SERVICE_AUTH_CRYPTO ON CACHE BOOL "Build the service v1 cryptographic foundation" FORCE)
 endif()
 
 # Trigger ingress consumes command policy from the catalog. Keep this a
@@ -257,6 +365,14 @@ if(BUILD_SERVICE_HTTP OR BUILD_SERVICE_WEBSOCKET)
     baas_request_dependencies(cpp_httplib)
 endif()
 
+if(BUILD_SERVICE_AUTH_CRYPTO OR BUILD_SERVICE_AUTH_OWNER)
+    baas_request_dependencies(sodium)
+endif()
+
+if(BUILD_SERVICE_SYNC_HANDLER OR BUILD_SERVICE_REMOTE_HANDLER)
+    baas_request_dependencies(nlohmann_json)
+endif()
+
 baas_load_requested_dependencies()
 
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
@@ -286,6 +402,10 @@ list(FILTER BAAS_CORE_SOURCES EXCLUDE REGEX "/src/service/trigger/.*\\.cpp$")
 list(FILTER BAAS_CORE_SOURCES EXCLUDE REGEX "/src/service/router/.*\\.cpp$")
 list(FILTER BAAS_CORE_SOURCES EXCLUDE REGEX "/src/service/http/.*\\.cpp$")
 list(FILTER BAAS_CORE_SOURCES EXCLUDE REGEX "/src/service/websocket/.*\\.cpp$")
+list(FILTER BAAS_CORE_SOURCES EXCLUDE REGEX "/src/service/auth/.*\\.cpp$")
+list(FILTER BAAS_CORE_SOURCES EXCLUDE REGEX "/src/service/channels/SyncHandler\\.cpp$")
+list(FILTER BAAS_CORE_SOURCES EXCLUDE REGEX "/src/service/channels/RemoteHandler\\.cpp$")
+list(FILTER BAAS_CORE_SOURCES EXCLUDE REGEX "/src/service/channels/TriggerHandler\\.cpp$")
 
 if(TARGET_OS_NAME STREQUAL "Windows")
     list(REMOVE_ITEM BAAS_CORE_SOURCES "${CMAKE_CURRENT_LIST_DIR}/src/simdutf.cpp")
@@ -354,8 +474,44 @@ if(BUILD_SERVICE_WEBSOCKET)
     include("${CMAKE_CURRENT_LIST_DIR}/cmake/ServiceWebSocket.cmake")
 endif()
 
+if(BUILD_SERVICE_AUTH_CRYPTO OR BUILD_SERVICE_AUTH_OWNER)
+    include("${CMAKE_CURRENT_LIST_DIR}/cmake/ServiceAuth.cmake")
+endif()
+
+if(BUILD_SERVICE_AUTH_HTTP)
+    include("${CMAKE_CURRENT_LIST_DIR}/cmake/ServiceAuthHttp.cmake")
+endif()
+
+if(BUILD_SERVICE_CONTROL_SESSION)
+    include("${CMAKE_CURRENT_LIST_DIR}/cmake/ServiceControlSession.cmake")
+endif()
+
+if(BUILD_SERVICE_BUSINESS_SESSION)
+    include("${CMAKE_CURRENT_LIST_DIR}/cmake/ServiceBusinessSession.cmake")
+endif()
+
+if(BUILD_SERVICE_PROVIDER_HANDLER)
+    include("${CMAKE_CURRENT_LIST_DIR}/cmake/ServiceProviderHandler.cmake")
+endif()
+
+if(BUILD_SERVICE_SYNC_HANDLER)
+    include("${CMAKE_CURRENT_LIST_DIR}/cmake/ServiceSyncHandler.cmake")
+endif()
+
+if(BUILD_SERVICE_REMOTE_HANDLER)
+    include("${CMAKE_CURRENT_LIST_DIR}/cmake/ServiceRemoteHandler.cmake")
+endif()
+
+if(BUILD_SERVICE_TRIGGER_HANDLER)
+    include("${CMAKE_CURRENT_LIST_DIR}/cmake/ServiceTriggerHandler.cmake")
+endif()
+
 if(BUILD_SERVICE_HTTP)
     include("${CMAKE_CURRENT_LIST_DIR}/cmake/ServiceHttp.cmake")
+endif()
+
+if(BUILD_SERVICE_PRODUCTION_HTTP_HOST)
+    include("${CMAKE_CURRENT_LIST_DIR}/cmake/ServiceProductionHttpHost.cmake")
 endif()
 
 if(NOT TARGET_OS_NAME STREQUAL "Android")

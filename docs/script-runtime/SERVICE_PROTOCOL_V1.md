@@ -251,6 +251,12 @@ write followed by EOF, concurrent connections, and error delivery are pending.
 returns `{ok:true, expires_at}` and sets `baas_remember` as HttpOnly,
 `SameSite=Lax`, path `/`, and Secure when HTTPS or policy forces it.
 
+The C++ `AuthHttpAdapter` implements these two authentication routes as a
+transport-independent Router extension. Its logout path passes the presented
+remember token to `AuthOwner` before expiring the cookie, so logout revokes the
+persisted server-side bearer token rather than only changing browser state.
+Malformed or ambiguous JSON/Cookie inputs fail closed with stable JSON errors.
+
 **[REQUIRED]** `/health` MUST remain callable before authentication. Readiness
 MUST be false or the endpoint unavailable until required persistent state is
 loaded; a listening socket alone is not readiness. The C++ foundation now
@@ -396,8 +402,10 @@ increments `pwd_epoch`, clears remembered logins, publishes encrypted
 `auth_revoked`, and closes control with code 4401. Tickets, sessions, and
 remember tokens from an older epoch MUST be rejected.
 
-**[MISSING]** Full initialization, remember, expiration, password change/reset,
-persistent signing-key migration, and restart vectors are pending.
+The C++ control-driver suite covers initialization, password authentication,
+remember-cookie resume/fallback, expiration checks, password change/revocation,
+persistent signing identity, and restart-owned AuthOwner behavior. **[MISSING]**
+A shared Python/C++/Tauri captured end-to-end fixture is still pending.
 
 ### 7.6 Business resume and secretstream
 
@@ -537,8 +545,11 @@ Remote is unavailable on Android.
 outbound remote bytes without secretstream encryption after the authenticated
 setup message. This is a compatibility mode, not a general channel option.
 
-**[MISSING]** Scrcpy structure vectors, raw/encrypted mode parity, disconnect,
-and device lifecycle tests are pending.
+**[PARTIAL]** The C++ `RemoteHandlerFactory` now validates the first config,
+injects a thread-safe `RemoteBackend`/`RemoteSession`, preserves byte-exact
+bidirectional proxying, bounds completion-observed output, and tests
+raw/encrypted directionality plus disconnect races. Captured scrcpy structure
+vectors, a concrete ADB backend, and live device lifecycle tests remain pending.
 
 ## 9. Errors and close codes
 
@@ -713,14 +724,14 @@ defined.
 | --- | --- | --- |
 | [REQUIRED] | Normative v1 document and machine-validated examples | This file and `test_protocol_spec.py` |
 | [REQUIRED] | BPIP exact bytes, fragmentation, coalescing, malformed/endian/oversize/unknown kind | Golden vectors and C++ CTest |
-| [REQUIRED] | Canonical JSON/base64url/control/HKDF/X25519/Ed25519/Argon2 vectors | Python-generated checked-in fixture; C++ crypto not implemented |
+| [REQUIRED] | Canonical JSON/base64url/control/HKDF/X25519/Ed25519/Argon2 vectors | Python-generated checked-in fixture plus `BAAS_service_auth_crypto_tests` byte-exact C++ verification |
 | [MISSING] | Deterministic secretstream header/ciphertext cross-language vector | RNG injection/captured fixture absent |
 | [MISSING] | Password, remember, epoch, persistent key, expiry, restart vectors | Not covered by current fixture |
 | [MISSING] | Complete HTTP route/status/body parity including reset-auth | C++ has an owned readiness provider and `/health` lifecycle, but no real runtime/auth owner wiring or shared route suite, and one route is absent in Python |
 | [MISSING] | Provider/sync/trigger/remote shared contract suite | Inventoried only; focused tests incomplete |
 | [MISSING] | Bounded queues, overload, timeout, cancellation, load gates | Trigger correlation/output constants, leased-send backpressure, cancellation precedence, send-failure/disconnect cleanup, close-race tests, and BPIP batching exist; transport-wide deadlines, global load policy, live executor propagation, and cross-language load remain absent |
 | [MISSING] | Live Windows pipe and Unix socket interoperability/fuzz | Framing unit tests only |
-| [MISSING] | C++ WebSocket/auth/secretstream implementation | Not implemented |
+| [IMPLEMENTED] | C++ business resume/secretstream session boundary | `BusinessSessionFactory` implements strict four-channel resume, preauth header exchange, ordered secretstream framing, revocation/validity checks, FINAL/truncation handling, and injected per-channel handlers; `ProductionSessionFactory` strictly composes it with control. `ProductionHttpHost` now provides the explicit AuthOwner/handler/session/Auth HTTP/Router/WebSocket/HttpHost composition and rollback boundary. Concrete trigger/remote factories, application startup wiring, and host/client/device E2E remain separate gates. |
 | [MISSING] | Windows desktop Tauri end-to-end | Not run |
 | [MISSING] | Android native/JNI foreground and emulator smoke | Not implemented/run |
 | [MISSING] | Lifecycle, multi-instance, crash/restart, rollback | Not run |

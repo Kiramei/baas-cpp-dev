@@ -93,7 +93,10 @@ class ServiceTriggerSessionTests(unittest.TestCase):
         self.assertIn("CompleteSendResult TriggerSession::complete_send", self.source)
         self.assertIn("if (batch.terminal()) entries_.erase(batch.timestamp());", self.source)
         self.assertIn("FailSendResult TriggerSession::fail_send", self.source)
-        self.assertIn("return {SendTransitionError::none, close_locked()};", self.source)
+        self.assertIn(
+            "result = {SendTransitionError::none, close_locked()};", self.source
+        )
+        self.assertIn("output_ready_->cancel();", self.source)
         self.assertIn("response_mode_mismatch", self.header + self.source)
         self.assertIn("if (!entry.terminal_queued)", self.source)
         self.assertIn("std::lock_guard lock(mutex_)", self.source)
@@ -237,7 +240,7 @@ class ServiceTriggerSessionTests(unittest.TestCase):
         self.assertIn("- [~] Implement task submission", self.roadmap)
         for pending in (
             "actual command handlers and runtime/executor ownership",
-            "WebSocket and live Pipe channel hosts",
+            "authenticated WebSocket trigger handler now uses",
             "shared Python/C++/Tauri fixtures",
         ):
             self.assertIn(pending, self.spec)

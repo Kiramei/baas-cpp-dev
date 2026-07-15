@@ -190,6 +190,8 @@ public:
     [[nodiscard]] TriggerCancelResult request_cancel(
         trigger_protocol::Timestamp timestamp);
     [[nodiscard]] TriggerRetryResult retry_pending();
+    [[nodiscard]] trigger_protocol::OutputReadySubscription observe_output_ready(
+        std::weak_ptr<trigger_protocol::OutputReadyObserver> observer);
     [[nodiscard]] TriggerCompleteSendResult complete_send(
         const trigger_protocol::SendLease& lease);
     [[nodiscard]] TriggerFailSendResult fail_send(

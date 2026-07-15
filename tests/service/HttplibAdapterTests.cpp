@@ -447,6 +447,58 @@ void test_real_loopback_ephemeral_port_lifecycle()
     check(!server.is_running(), "loopback server must stop and join cleanly");
 }
 
+class CookieRouteExtension final : public service_router::RouteExtension {
+public:
+    std::optional<service_router::Response> handle(
+        const service_router::Request& value) const override
+    {
+        if (value.path != "/cookie-test") return std::nullopt;
+        observed_cookie = value.cookie.has_value()
+            ? std::string{*value.cookie} : std::string{};
+        malformed = value.malformed_cookie_headers;
+        secure_transport = value.secure_transport;
+        return service_router::Response{
+            200,
+            {
+                {"Content-Type", "application/json; charset=utf-8"},
+                {"Set-Cookie", "baas_remember=test; Path=/; HttpOnly; SameSite=Lax"},
+            },
+            R"({"ok":true})",
+        };
+    }
+
+    mutable std::string observed_cookie;
+    mutable bool malformed = false;
+    mutable bool secure_transport = true;
+};
+
+void test_cookie_metadata_and_response_header_mapping()
+{
+    auto extension = std::make_shared<CookieRouteExtension>();
+    service_router::Router router{{"BAAS", "cookie"}, {}, nullptr, extension};
+    service_http::HttplibAdapter adapter{router};
+
+    auto single = request("POST", "/cookie-test");
+    single.headers.emplace("Cookie", "other=x; baas_remember=v1.token.secret");
+    httplib::Response response;
+    adapter.handle(single, response);
+    check(response.status == 200
+              && extension->observed_cookie == "other=x; baas_remember=v1.token.secret"
+              && !extension->malformed && !extension->secure_transport,
+          "plain httplib adapter must expose one Cookie field and non-TLS metadata");
+    check(response.get_header_value("Set-Cookie")
+              == "baas_remember=test; Path=/; HttpOnly; SameSite=Lax",
+          "router Set-Cookie must cross the httplib adapter as a real response header");
+
+    auto duplicate = request("POST", "/cookie-test");
+    duplicate.headers.emplace("Cookie", "a=1");
+    duplicate.headers.emplace("Cookie", "b=2");
+    response = {};
+    adapter.handle(duplicate, response);
+    check(response.status == 200 && extension->observed_cookie.empty() && extension->malformed,
+          "duplicate Cookie fields must be represented explicitly for fail-closed routes");
+}
+
 }  // namespace
 
 int main()
@@ -457,6 +509,7 @@ int main()
     test_origin_cors_actual_preflight_and_rejection_matrix();
     test_custom_policy_is_wired_into_adapter();
     test_attacker_headers_are_bounded_before_policy_copies();
+    test_cookie_metadata_and_response_header_mapping();
     test_real_loopback_ephemeral_port_lifecycle();
     if (failures != 0) {
         std::cerr << failures << " httplib adapter test(s) failed\n";

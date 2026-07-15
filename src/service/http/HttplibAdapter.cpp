@@ -266,8 +266,17 @@ void HttplibAdapter::handle(
         apply_preflight_cors_headers(response, cors);
         return;
     }
+    bool malformed_cookie_headers = false;
+    const auto cookie = single_header(request, "Cookie", malformed_cookie_headers);
     apply_router_response(
-        router_.handle(router::Request{request.method, request.path, request.body}),
+        router_.handle(router::Request{
+            request.method,
+            request.path,
+            request.body,
+            cookie,
+            malformed_cookie_headers,
+            false,
+        }),
         response
     );
     finish_actual_cors();

@@ -30,6 +30,10 @@ endif()
 
 if(BUILD_SERVICE_WEBSOCKET_TESTS)
     include(CTest)
+    target_compile_definitions(
+            BAAS_service_websocket
+            PRIVATE BAAS_SERVICE_WEBSOCKET_TEST_HOOKS=1
+    )
     add_executable(
             BAAS_service_websocket_handshake_tests
             "${BAAS_PROJECT_PATH}/tests/service/WebSocketHandshakeTests.cpp"
@@ -53,6 +57,10 @@ if(BUILD_SERVICE_WEBSOCKET_TESTS)
             "${BAAS_PROJECT_PATH}/tests/service/WebSocketOwnerTests.cpp"
     )
     target_compile_features(BAAS_service_websocket_owner_tests PRIVATE cxx_std_20)
+    target_compile_definitions(
+            BAAS_service_websocket_owner_tests
+            PRIVATE BAAS_SERVICE_WEBSOCKET_TEST_HOOKS=1
+    )
     target_link_libraries(
             BAAS_service_websocket_owner_tests
             PRIVATE BAAS_service_websocket

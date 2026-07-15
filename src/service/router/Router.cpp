@@ -332,19 +332,28 @@ HealthValueKind HealthValue::kind() const noexcept
     return static_cast<HealthValueKind>(storage.index());
 }
 
-Router::Router(ServiceInfo service, const SizeBudget budget, ShutdownIntent* shutdown_intent)
-    : Router(std::move(service), budget, shutdown_intent, std::nullopt, nullptr)
+Router::Router(
+    ServiceInfo service,
+    const SizeBudget budget,
+    ShutdownIntent* shutdown_intent,
+    std::shared_ptr<RouteExtension> extension
+)
+    : Router(
+          std::move(service), budget, shutdown_intent, std::nullopt, nullptr,
+          std::move(extension))
 {}
 
 Router Router::with_health_snapshot(
     ServiceInfo service,
     HealthSnapshot health,
     const SizeBudget budget,
-    ShutdownIntent* shutdown_intent
+    ShutdownIntent* shutdown_intent,
+    std::shared_ptr<RouteExtension> extension
 )
 {
     return Router{
-        std::move(service), budget, shutdown_intent, std::move(health), nullptr
+        std::move(service), budget, shutdown_intent, std::move(health), nullptr,
+        std::move(extension)
     };
 }
 
@@ -352,7 +361,8 @@ Router Router::with_health_provider(
     ServiceInfo service,
     std::shared_ptr<HealthSnapshotProvider> health_provider,
     const SizeBudget budget,
-    ShutdownIntent* shutdown_intent
+    ShutdownIntent* shutdown_intent,
+    std::shared_ptr<RouteExtension> extension
 )
 {
     if (!health_provider) {
@@ -360,7 +370,7 @@ Router Router::with_health_provider(
     }
     return Router{
         std::move(service), budget, shutdown_intent, std::nullopt,
-        std::move(health_provider)
+        std::move(health_provider), std::move(extension)
     };
 }
 
@@ -369,13 +379,15 @@ Router::Router(
     const SizeBudget budget,
     ShutdownIntent* shutdown_intent,
     std::optional<HealthSnapshot> health_snapshot,
-    std::shared_ptr<HealthSnapshotProvider> health_provider
+    std::shared_ptr<HealthSnapshotProvider> health_provider,
+    std::shared_ptr<RouteExtension> extension
 )
     : service_(std::move(service)),
       budget_(budget),
       shutdown_intent_(shutdown_intent),
       health_snapshot_(std::move(health_snapshot)),
-      health_provider_(std::move(health_provider))
+      health_provider_(std::move(health_provider)),
+      extension_(std::move(extension))
 {
     if (service_.name.empty() || service_.version.empty()) {
         throw std::invalid_argument("service name and version must not be empty");
@@ -423,6 +435,15 @@ Response Router::handle(const Request& request) const
 
 Response Router::route(const Request& request) const
 {
+    if (extension_) {
+        try {
+            if (auto response = extension_->handle(request); response.has_value()) {
+                return std::move(*response);
+            }
+        } catch (...) {
+            return error(500, "route_extension_failed", "route extension failed");
+        }
+    }
     if (!is_known_path(request.path)) {
         return error(404, "route_not_found", "no route matches the request path");
     }

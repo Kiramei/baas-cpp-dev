@@ -137,6 +137,9 @@ dependency package.
   `False`.
 - `use_benchmark`: include Google Benchmark. OCR sets this to `False`.
 - `use_opencv_dnn`: build OpenCV with DNN support for the NMS benchmark.
+- `use_libsodium`: include the private libsodium source package for service
+  authentication. It defaults to `False`, so OCR-only installs do not require
+  Autotools on a Windows host.
 
 CUDA Toolkit itself is not packaged by Conan. CUDA builds still require
 `find_package(CUDAToolkit 12.2 REQUIRED)` during CMake configure.
@@ -158,5 +161,34 @@ Checked in this workspace:
 - `python deploy/conan/scripts/manage_recipes.py inspect`
 - `cmake -P cmake/BAASDependency.cmake`
 - `cmake -P cmake/BAASConanRuntime.cmake`
+
+The private libsodium source package is additionally verified with:
+
+```powershell
+conan create deploy/conan/recipes/baas-libsodium `
+  -pr:h=deploy/conan/profiles/windows-msvc-release `
+  -pr:b=deploy/conan/profiles/windows-msvc-release `
+  -c:a tools.build:jobs=4 --build=missing --no-remote
+
+conan create deploy/conan/recipes/baas-libsodium `
+  -pr:h=deploy/conan/profiles/windows-msvc-debug `
+  -pr:b=deploy/conan/profiles/windows-msvc-release `
+  -c:a tools.build:jobs=4 --build=missing --no-remote
+```
+
+Its test package links `BAAS::sodium` and exercises SHA-256, Argon2id, X25519,
+Ed25519, IETF ChaCha20-Poly1305, and secretstream. Cross-built test packages are
+compiled and linked but are not executed unless Conan's `can_run()` permits it.
+Android uses the NDK compiler through Conan's Autotools toolchain. When Android
+is cross-built from Windows, a local POSIX `bash` and `make` must be available;
+set `-c:a tools.microsoft.bash:path=<path-to-bash.exe>`. No public Conan tool
+package is fetched, preserving the `--no-remote` policy. Also set
+`-c:a tools.microsoft.bash:subsystem=msys2` for Git Bash/MSYS2, or choose the
+corresponding Conan subsystem value for another shell.
+
+Service-auth installs must add `-o "&:use_libsodium=True"`. Android forces
+unversioned sonames as required by libsodium. In this workspace, arm64-v8a and
+x86_64 toolchain/Autotools host contracts were generated, but the actual
+Android packages were not built because the Windows host lacks POSIX `make`.
 
 Linux OCR must also be verified in WSL with the commands above.

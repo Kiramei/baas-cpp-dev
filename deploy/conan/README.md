@@ -35,6 +35,27 @@ come from `profiles/dependency-versions-default`, which records the recommended
 pinned versions. Only versions backed by `recipes/<dependency>/versions/*.yml`
 can be selected.
 
+The authentication and key-management layer uses the private
+`baas-libsodium/1.0.22` source recipe and links only its `BAAS::sodium` CMake
+target. The recipe verifies the official release tarball with SHA-256
+`adbdd8f16149e81ac6078a03aca6fc03b592b89ef7b5ed83841c086191be3349`, builds
+the official MSBuild solution on MSVC, and uses the release tarball's generated
+Autotools files on Linux, macOS, and Android. It does not substitute a Windows
+prebuilt archive. Static packages propagate `SODIUM_STATIC` through the target.
+The top-level dependency graph keeps libsodium opt-in so existing OCR-only
+installs do not acquire an Autotools dependency. Pass
+`-o "&:use_libsodium=True"` for service-auth builds.
+
+Windows-hosted Android cross builds require a POSIX `bash` and `make` on PATH;
+pass the local bash explicitly with
+`-c:a tools.microsoft.bash:path=<path-to-bash.exe>` and identify it with
+`-c:a tools.microsoft.bash:subsystem=msys2` (or the matching Conan subsystem).
+These are host tools, not Conan requirements, so the recipe remains usable
+under the mandatory `--no-remote` private-recipe policy.
+Android builds force unversioned sonames, as required by upstream. Toolchain
+contract generation has been checked for arm64-v8a and x86_64; actual Android
+packages still require the POSIX tools above and are not claimed as built here.
+
 The recommended cpp-httplib dependency is `0.50.1`, fetched from its immutable
 GitHub tag with SHA-256
 `6aabb9750df0a779c7470f3a22753cee3dfeec580c44201aff1bf057aa91fcbc`.
