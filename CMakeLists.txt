@@ -147,10 +147,6 @@ if(BUILD_SERVICE_PIPE_HOST AND NOT BUILD_SERVICE_PROTOCOL)
     set(BUILD_SERVICE_PROTOCOL ON CACHE BOOL "Build the standalone BAAS service protocol library" FORCE)
 endif()
 
-if(BUILD_SERVICE_PIPE_HOST AND NOT BUILD_SERVICE_TRIGGER_CATALOG)
-    set(BUILD_SERVICE_TRIGGER_CATALOG ON CACHE BOOL "Build the transport-independent trigger command catalog" FORCE)
-endif()
-
 if(BUILD_SERVICE_ROUTER_TESTS AND NOT BUILD_SERVICE_ROUTER)
     set(BUILD_SERVICE_ROUTER ON CACHE BOOL "Build the transport-independent BAAS service router" FORCE)
 endif()

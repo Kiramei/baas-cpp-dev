@@ -14,6 +14,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <stop_token>
 #include <thread>
 #include <vector>
 
@@ -36,6 +37,8 @@ struct PipeHostLimits {
     std::size_t max_name_bytes{128};
     std::size_t max_read_chunk_bytes{64U * 1'024U};
     std::size_t max_atomic_write_bytes{72U * 1'024U * 1'024U};
+    std::size_t max_total_ingress_retained_bytes{128U * 1'024U * 1'024U};
+    std::size_t max_total_egress_retained_bytes{128U * 1'024U * 1'024U};
     std::size_t max_open_json_depth{16};
     std::size_t max_open_json_nodes{256};
     std::chrono::milliseconds open_timeout{5'000};
@@ -63,6 +66,8 @@ enum class PipeHostError : std::uint8_t {
     channel_unavailable,
     handler_failed,
     atomic_write_too_large,
+    ingress_budget_exhausted,
+    egress_budget_exhausted,
     write_failed,
     open_timeout,
     read_timeout,
@@ -118,6 +123,8 @@ public:
     virtual void close() noexcept = 0;
 };
 
+class PipeHost;
+
 class PipeConnectionWriter final {
 public:
     PipeConnectionWriter(const PipeConnectionWriter&) = delete;
@@ -132,38 +139,53 @@ public:
     [[nodiscard]] PipeHostError write_batch(std::span<const bpip::Frame> frames);
 
 private:
+    [[nodiscard]] bool transport_poisoned() noexcept;
     PipeConnectionWriter(
+        PipeHost& host,
         PipeStream& stream,
         std::size_t max_atomic_write_bytes,
         std::chrono::milliseconds write_timeout)
-        : stream_(stream), max_atomic_write_bytes_(max_atomic_write_bytes),
+        : host_(host), stream_(stream), max_atomic_write_bytes_(max_atomic_write_bytes),
           write_timeout_(write_timeout)
     {}
 
     friend class PipeHost;
+    PipeHost& host_;
     PipeStream& stream_;
     std::size_t max_atomic_write_bytes_{};
     std::chrono::milliseconds write_timeout_{};
     std::mutex mutex_;
+    bool transport_poisoned_{};
+};
+
+enum class PipeHandlerAction : std::uint8_t { continue_connection, close_connection };
+
+struct PipeHandlerResult {
+    PipeHandlerAction action{PipeHandlerAction::continue_connection};
+    PipeHostError error{PipeHostError::none};
 };
 
 class PipeChannelHandler {
 public:
     virtual ~PipeChannelHandler() = default;
-    // false requests a normal connection close. Throwing is contained as a
-    // terminal ERROR+CLOSE response.
-    [[nodiscard]] virtual bool on_frame(
+    // Errors are propagated to the host. A transport-poisoned writer always
+    // forces a direct close with no second write, regardless of this result.
+    [[nodiscard]] virtual PipeHandlerResult on_frame(
         const bpip::Frame& frame,
-        PipeConnectionWriter& writer
+        PipeConnectionWriter& writer,
+        std::stop_token stop_token
     ) = 0;
-    virtual void on_close() noexcept = 0;
+    virtual void on_close(std::stop_token stop_token) noexcept = 0;
 };
 
 class PipeChannelFactory {
 public:
     virtual ~PipeChannelFactory() = default;
+    // Production factories and handlers must cooperatively observe this token
+    // around potentially blocking work so stop()+join() remains bounded.
     [[nodiscard]] virtual std::unique_ptr<PipeChannelHandler> create(
-        const PipeOpenRequest& request
+        const PipeOpenRequest& request,
+        std::stop_token stop_token
     ) = 0;
 };
 
@@ -175,6 +197,12 @@ struct PipeHostStats {
     std::size_t completed{};
     std::size_t active{};
     std::size_t peak_active{};
+    std::size_t ingress_retained_bytes{};
+    std::size_t peak_ingress_retained_bytes{};
+    std::size_t egress_retained_bytes{};
+    std::size_t peak_egress_retained_bytes{};
+    std::size_t ingress_budget_rejections{};
+    std::size_t egress_budget_rejections{};
     PipeHostState state{PipeHostState::stopped};
 };
 
@@ -195,6 +223,8 @@ public:
     PipeHost(PipeHost&&) = delete;
     PipeHost& operator=(PipeHost&&) = delete;
 
+    // One-shot. The first call consumes the listener even if thread creation
+    // partially fails; every later call returns false.
     [[nodiscard]] bool start();
     void stop() noexcept;
     // Precondition for an external caller: stop() has already been requested.
@@ -208,6 +238,11 @@ public:
     [[nodiscard]] const PipeHostLimits& limits() const noexcept { return limits_; }
 
 private:
+    friend class PipeConnectionWriter;
+    [[nodiscard]] bool try_reserve_ingress(std::size_t bytes) noexcept;
+    void release_ingress(std::size_t bytes) noexcept;
+    [[nodiscard]] bool try_reserve_egress(std::size_t bytes) noexcept;
+    void release_egress(std::size_t bytes) noexcept;
     void accept_loop() noexcept;
     void worker_loop() noexcept;
     void connection_loop(std::unique_ptr<PipeStream> stream) noexcept;
@@ -236,6 +271,14 @@ private:
     std::size_t completed_{};
     std::size_t active_{};
     std::size_t peak_active_{};
+    std::size_t ingress_retained_bytes_{};
+    std::size_t peak_ingress_retained_bytes_{};
+    std::size_t egress_retained_bytes_{};
+    std::size_t peak_egress_retained_bytes_{};
+    std::size_t ingress_budget_rejections_{};
+    std::size_t egress_budget_rejections_{};
+    std::stop_source stop_source_;
+    bool start_attempted_{};
 };
 
 // Creates a compile-time selected Windows named-pipe or Unix-domain listener.

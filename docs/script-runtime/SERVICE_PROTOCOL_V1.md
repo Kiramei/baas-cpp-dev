@@ -213,9 +213,12 @@ non-`open` type, or unsupported channel causes ERROR followed by connection
 close. Extra open fields MAY be ignored.
 
 The C++ `PipeHost` foundation now implements this bounded open state over the
-incremental BPIP decoder with an injected channel factory. Its deterministic
-tests use fake streams; real provider/sync/trigger/remote handler wiring and
-live cross-process endpoint tests remain pending.
+incremental BPIP decoder with an injected channel factory. A dedicated
+pre-open header gate rejects declared payloads above the open limit before
+generic decoder allocation; post-open declared payloads and outbound atomic
+batches reserve host-wide retained-byte budgets. Its deterministic tests use
+fake streams; real provider/sync/trigger/remote handler wiring and live
+cross-process endpoint tests remain pending.
 
 ### 5.5 Close and error
 
@@ -653,10 +656,12 @@ MUST default to loopback and MUST require explicit policy before LAN exposure.
 Secrets MUST use cryptographic randomness, constant-time MAC/signature checks,
 and protected persistence appropriate to the platform.
 
-The compiled Windows Pipe backend installs a protected current-user DACL and
-rejects remote clients. The compiled Unix backend requires a canonical private
-parent, mode `0600`, owned-inode cleanup, and same-user peer credentials where
-the platform exposes them. **[MISSING]** Windows named-pipe ACL audit, local hostile-process tests, key-file
+The compiled Windows Pipe backend installs a protected current-user DACL,
+checks first-instance ownership, rejects remote clients, and leaves instance
+capacity to the host-wide connection cap. The compiled Unix backend requires a
+canonical private parent, mode `0600`, close-on-exec/nonblocking descriptors,
+owned-inode cleanup at listener stop, and same-user peer credentials where the
+platform exposes them. **[MISSING]** Windows named-pipe ACL audit, local hostile-process tests, key-file
 permission tests, origin/CORS matrix, LAN threat model, rate limiting, and
 security review are pending.
 

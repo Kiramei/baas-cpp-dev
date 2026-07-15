@@ -10,6 +10,7 @@
 #include <iostream>
 #include <mutex>
 #include <span>
+#include <stop_token>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -49,6 +50,13 @@ void check(const bool condition, const std::string_view message)
     return frame(kind, bytes(payload));
 }
 
+struct ReadBarrier {
+    std::mutex mutex;
+    std::condition_variable changed;
+    std::size_t arrived{};
+    std::size_t target{};
+};
+
 struct StreamState {
     std::mutex mutex;
     std::condition_variable changed;
@@ -56,9 +64,13 @@ struct StreamState {
     std::deque<std::chrono::milliseconds> read_delays;
     std::vector<bpip::Bytes> writes;
     std::size_t read_offset{};
+    std::size_t read_calls{};
+    std::size_t barrier_read_call{};
+    std::shared_ptr<ReadBarrier> read_barrier;
     bool block_when_empty{};
     bool closed{};
     bool partial_write{};
+    std::size_t partial_write_on_call{};
 };
 
 class FakeStream final : public pipe::PipeStream {
@@ -77,6 +89,21 @@ public:
         if (!ready) return {0, false, false, true};
         if (state_->closed) return {0, true, false, false};
         if (state_->reads.empty()) return {0, true, false, false};
+        ++state_->read_calls;
+        if (state_->read_barrier
+            && state_->read_calls == state_->barrier_read_call) {
+            const auto barrier = state_->read_barrier;
+            lock.unlock();
+            std::unique_lock barrier_lock(barrier->mutex);
+            ++barrier->arrived;
+            barrier->changed.notify_all();
+            barrier->changed.wait_for(barrier_lock, 2s, [&] {
+                return barrier->arrived >= barrier->target;
+            });
+            barrier_lock.unlock();
+            lock.lock();
+            if (state_->closed) return {0, true, false, false};
+        }
         if (!state_->read_delays.empty()) {
             const auto delay = state_->read_delays.front();
             if (delay >= timeout) {
@@ -110,11 +137,14 @@ public:
     {
         std::lock_guard lock(state_->mutex);
         if (state_->closed) return {0, false, true, false};
-        const auto count = state_->partial_write && !input.empty()
+        const auto partial = state_->partial_write
+            || (state_->partial_write_on_call != 0
+                && state_->writes.size() + 1 == state_->partial_write_on_call);
+        const auto count = partial && !input.empty()
             ? input.size() - 1 : input.size();
         state_->writes.emplace_back(input.begin(), input.begin()
             + static_cast<std::ptrdiff_t>(count));
-        return {count, false, state_->partial_write, false};
+        return {count, false, partial, false};
     }
 
     void close() noexcept override
@@ -168,7 +198,12 @@ struct FactoryState {
     std::size_t closes{};
     bool throw_on_frame{};
     bool emit_batch{};
-    std::function<void()> action;
+    std::function<void(std::stop_token)> action;
+    std::function<void(std::stop_token)> factory_action;
+    pipe::PipeHostError last_write_error{pipe::PipeHostError::none};
+    std::size_t emit_payload_size{};
+    bool callback_entered{};
+    bool cancellation_observed{};
 };
 
 class RecordingHandler final : public pipe::PipeChannelHandler {
@@ -177,34 +212,46 @@ public:
         : state_(std::move(state))
     {}
 
-    bool on_frame(
-        const bpip::Frame&, pipe::PipeConnectionWriter& writer) override
+    pipe::PipeHandlerResult on_frame(
+        const bpip::Frame&, pipe::PipeConnectionWriter& writer,
+        const std::stop_token stop_token) override
     {
         bool throw_now{};
         bool emit{};
-        std::function<void()> action;
+        std::function<void(std::stop_token)> action;
+        std::size_t emit_payload_size{};
         {
             std::lock_guard lock(state_->mutex);
             ++state_->frames;
             throw_now = state_->throw_on_frame;
             emit = state_->emit_batch;
             action = state_->action;
+            emit_payload_size = state_->emit_payload_size;
         }
-        if (action) action();
+        if (action) action(stop_token);
         if (throw_now) throw std::runtime_error("handler failure");
         if (emit) {
-            const std::array output{
-                bpip::Frame{bpip::kind_value(bpip::FrameKind::json),
-                    bpip::Bytes{bytes(R"({"type":"reply"})").begin(),
-                                bytes(R"({"type":"reply"})").end()}},
+            std::array output{
+                bpip::Frame{bpip::kind_value(bpip::FrameKind::json), {}},
                 bpip::Frame{bpip::kind_value(bpip::FrameKind::bytes), {}},
             };
-            return writer.write_batch(output) == pipe::PipeHostError::none;
+            if (emit_payload_size != 0) {
+                output[0].payload.resize(emit_payload_size, std::byte{0x78});
+            } else {
+                output[0].payload.assign(bytes(R"({"type":"reply"})").begin(),
+                    bytes(R"({"type":"reply"})").end());
+            }
+            const auto error = writer.write_batch(output);
+            {
+                std::lock_guard lock(state_->mutex);
+                state_->last_write_error = error;
+            }
+            return {pipe::PipeHandlerAction::continue_connection, error};
         }
-        return true;
+        return {};
     }
 
-    void on_close() noexcept override
+    void on_close(std::stop_token) noexcept override
     {
         std::lock_guard lock(state_->mutex);
         ++state_->closes;
@@ -221,10 +268,16 @@ public:
     {}
 
     std::unique_ptr<pipe::PipeChannelHandler> create(
-        const pipe::PipeOpenRequest& request) override
+        const pipe::PipeOpenRequest& request,
+        const std::stop_token stop_token) override
     {
-        std::lock_guard lock(state_->mutex);
-        state_->requests.push_back(request);
+        std::function<void(std::stop_token)> action;
+        {
+            std::lock_guard lock(state_->mutex);
+            state_->requests.push_back(request);
+            action = state_->factory_action;
+        }
+        if (action) action(stop_token);
         return std::make_unique<RecordingHandler>(state_);
     }
 
@@ -376,6 +429,15 @@ void test_protocol_and_handler_failures_are_terminal()
 void test_partial_write_and_connection_limit_close_and_join()
 {
     {
+        auto never_started_listener = std::make_unique<FakeListener>();
+        pipe::PipeHost never_started{std::move(never_started_listener),
+            std::make_shared<RecordingFactory>(std::make_shared<FactoryState>())};
+        never_started.stop();
+        never_started.join();
+        check(!never_started.start(),
+              "stop before start must consume the one-shot listener");
+    }
+    {
         auto listener = std::make_unique<FakeListener>();
         auto* view = listener.get();
         const auto stream = std::make_shared<StreamState>();
@@ -391,8 +453,14 @@ void test_partial_write_and_connection_limit_close_and_join()
               "partial open_ok write must be connection-fatal");
         host.stop();
         host.join();
+        {
+            std::lock_guard lock(stream->mutex);
+            check(stream->writes.size() == 1,
+                  "partial open_ok must poison the writer and forbid ERROR+CLOSE retry");
+        }
         check(host.state() == pipe::PipeHostState::stopped,
               "stop and join must reach a terminal stopped state");
+        check(!host.start(), "a stopped PipeHost must reject restart as one-shot");
     }
     {
         auto listener = std::make_unique<FakeListener>();
@@ -417,6 +485,171 @@ void test_partial_write_and_connection_limit_close_and_join()
         check(stats.accepted == 1 && stats.rejected == 1
                   && stats.peak_active <= 1 && stats.active == 0,
               "connection cap and joined accounting must remain exact");
+    }
+}
+
+void test_partial_handler_write_is_never_followed_by_close()
+{
+    auto listener = std::make_unique<FakeListener>();
+    auto* view = listener.get();
+    const auto stream = std::make_shared<StreamState>();
+    stream->partial_write_on_call = 2;
+    stream->reads.push_back(open_and(
+        R"({"type":"open","channel":"sync","name":"partial-handler"})",
+        {frame(bpip::FrameKind::json, "{}") }));
+    view->push(std::make_unique<FakeStream>(stream));
+    const auto factory = std::make_shared<FactoryState>();
+    factory->emit_batch = true;
+    pipe::PipeHost host{std::move(listener),
+        std::make_shared<RecordingFactory>(factory)};
+    check(host.start(), "partial handler-write host must start");
+    check(wait_until([&] { return host.stats().completed == 1; }),
+          "partial handler output must close the connection");
+    host.stop();
+    host.join();
+    std::lock_guard lock(stream->mutex);
+    check(stream->writes.size() == 2,
+          "partial handler output must not be followed by CLOSE or ERROR+CLOSE");
+}
+
+void test_declared_oversized_open_is_rejected_from_header()
+{
+    auto listener = std::make_unique<FakeListener>();
+    auto* view = listener.get();
+    const auto stream = std::make_shared<StreamState>();
+    const auto oversized = bpip::encode_header(
+        bpip::FrameKind::json, 1U * 1'024U * 1'024U);
+    stream->reads.push_back({oversized.header.begin(), oversized.header.end()});
+    stream->block_when_empty = true;
+    view->push(std::make_unique<FakeStream>(stream));
+    const auto factory = std::make_shared<FactoryState>();
+    pipe::PipeHost host{std::move(listener),
+        std::make_shared<RecordingFactory>(factory)};
+    check(host.start(), "oversized-open host must start");
+    check(wait_until([&] { return host.stats().completed == 1; }),
+          "declared oversized open must fail after its ten-byte header");
+    host.stop();
+    host.join();
+    std::lock_guard factory_lock(factory->mutex);
+    check(factory->requests.empty(),
+          "oversized declared open must never allocate payload or reach factory");
+}
+
+void test_global_retained_byte_budgets()
+{
+    auto listener = std::make_unique<FakeListener>();
+    auto* view = listener.get();
+    std::array<std::shared_ptr<StreamState>, 2> streams{
+        std::make_shared<StreamState>(), std::make_shared<StreamState>()};
+    const auto barrier = std::make_shared<ReadBarrier>();
+    barrier->target = streams.size();
+    const auto declared = bpip::encode_header(bpip::FrameKind::json, 100);
+    for (std::size_t index = 0; index < streams.size(); ++index) {
+        streams[index]->reads.push_back(open_and(
+            std::string{"{\"type\":\"open\",\"channel\":\"remote\",\"name\":\""}
+                + std::to_string(index) + "\"}"));
+        bpip::Bytes partial{declared.header.begin(), declared.header.end()};
+        partial.push_back(std::byte{0x7b});
+        streams[index]->reads.push_back(std::move(partial));
+        streams[index]->read_barrier = barrier;
+        streams[index]->barrier_read_call = 2;
+        streams[index]->block_when_empty = true;
+        view->push(std::make_unique<FakeStream>(streams[index]));
+    }
+    pipe::PipeHostLimits limits;
+    limits.max_connections = 2;
+    limits.max_total_ingress_retained_bytes = 150;
+    limits.max_total_egress_retained_bytes = 128;
+    const auto factory = std::make_shared<FactoryState>();
+    pipe::PipeHost host{std::move(listener),
+        std::make_shared<RecordingFactory>(factory), limits};
+    check(host.start(), "aggregate-budget host must start");
+    const auto observed_ingress_rejection = wait_until(
+        [&] { return host.stats().ingress_budget_rejections == 1; });
+    if (!observed_ingress_rejection) {
+        const auto observed = host.stats();
+        std::cerr << "budget diagnostics: accepted=" << observed.accepted
+                  << " completed=" << observed.completed
+                  << " retained=" << observed.ingress_retained_bytes
+                  << " peak=" << observed.peak_ingress_retained_bytes
+                  << " rejects=" << observed.ingress_budget_rejections << '\n';
+    }
+    check(observed_ingress_rejection,
+          "two declared frames must contend for one global ingress budget");
+    host.stop();
+    host.join();
+    const auto stats = host.stats();
+    check(stats.peak_ingress_retained_bytes <= 150
+              && stats.ingress_retained_bytes == 0,
+          "aggregate ingress reservation must never exceed its host-wide cap");
+
+    auto egress_listener = std::make_unique<FakeListener>();
+    auto* egress_view = egress_listener.get();
+    const auto egress_stream = std::make_shared<StreamState>();
+    egress_stream->reads.push_back(open_and(
+        R"({"type":"open","channel":"provider","name":"egress"})",
+        {frame(bpip::FrameKind::json, "{}") }));
+    egress_view->push(std::make_unique<FakeStream>(egress_stream));
+    pipe::PipeHostLimits egress_limits;
+    egress_limits.max_connections = 1;
+    egress_limits.max_total_egress_retained_bytes = 64;
+    const auto egress_factory = std::make_shared<FactoryState>();
+    egress_factory->emit_batch = true;
+    egress_factory->emit_payload_size = 100;
+    pipe::PipeHost egress_host{std::move(egress_listener),
+        std::make_shared<RecordingFactory>(egress_factory), egress_limits};
+    check(egress_host.start(), "egress-budget host must start");
+    check(wait_until([&] { return egress_host.stats().completed == 1; }),
+          "oversized aggregate egress reservation must fail closed");
+    egress_host.stop();
+    egress_host.join();
+    {
+        std::lock_guard lock(egress_factory->mutex);
+        check(egress_factory->last_write_error
+                  == pipe::PipeHostError::egress_budget_exhausted,
+              "handler must propagate the host-wide egress budget error");
+    }
+    check(egress_host.stats().peak_egress_retained_bytes <= 64
+              && egress_host.stats().egress_retained_bytes == 0,
+          "aggregate egress reservation must be released on every path");
+}
+
+void test_stop_token_cancels_factory_and_handler_callbacks()
+{
+    for (const bool block_factory : {true, false}) {
+        auto listener = std::make_unique<FakeListener>();
+        auto* view = listener.get();
+        const auto stream = std::make_shared<StreamState>();
+        stream->reads.push_back(open_and(
+            R"({"type":"open","channel":"trigger","name":"cancel"})",
+            block_factory ? std::vector<bpip::Bytes>{}
+                          : std::vector<bpip::Bytes>{frame(
+                              bpip::FrameKind::json, "{}")}));
+        view->push(std::make_unique<FakeStream>(stream));
+        const auto factory = std::make_shared<FactoryState>();
+        const auto blocking = [factory](const std::stop_token token) {
+            {
+                std::lock_guard lock(factory->mutex);
+                factory->callback_entered = true;
+            }
+            while (!token.stop_requested()) std::this_thread::sleep_for(1ms);
+            std::lock_guard lock(factory->mutex);
+            factory->cancellation_observed = true;
+        };
+        if (block_factory) factory->factory_action = blocking;
+        else factory->action = blocking;
+        pipe::PipeHost host{std::move(listener),
+            std::make_shared<RecordingFactory>(factory)};
+        check(host.start(), "cancellable callback host must start");
+        check(wait_until([&] {
+            std::lock_guard lock(factory->mutex);
+            return factory->callback_entered;
+        }), "factory/handler callback must enter before cancellation");
+        host.stop();
+        host.join();
+        std::lock_guard lock(factory->mutex);
+        check(factory->cancellation_observed,
+              "factory and handler callbacks must cooperatively observe stop_token");
     }
 }
 
@@ -529,7 +762,7 @@ void test_handler_self_join_and_external_join_orders()
         bool self_join_returned{};
         {
             std::lock_guard lock(factory->mutex);
-            factory->action = [&] {
+            factory->action = [&](std::stop_token) {
                 {
                     std::unique_lock order_lock(order_mutex);
                     entered = true;
@@ -584,6 +817,10 @@ void test_error_names_are_stable()
                   == "duplicate_open_field"
               && pipe::pipe_host_error_name(atomic_write_too_large)
                   == "atomic_write_too_large"
+              && pipe::pipe_host_error_name(ingress_budget_exhausted)
+                  == "ingress_budget_exhausted"
+              && pipe::pipe_host_error_name(egress_budget_exhausted)
+                  == "egress_budget_exhausted"
               && pipe::pipe_host_error_name(write_failed) == "write_failed",
           "host errors must retain stable non-sensitive names");
 }
@@ -596,8 +833,12 @@ int main()
     test_fragmented_open_coalesced_business_and_atomic_batch();
     test_protocol_and_handler_failures_are_terminal();
     test_partial_write_and_connection_limit_close_and_join();
+    test_partial_handler_write_is_never_followed_by_close();
+    test_declared_oversized_open_is_rejected_from_header();
+    test_global_retained_byte_budgets();
     test_open_timeout_and_hard_write_limit();
     test_absolute_open_deadline_rejects_drip_feed();
+    test_stop_token_cancels_factory_and_handler_callbacks();
     test_handler_self_join_and_external_join_orders();
     test_error_names_are_stable();
     if (failures != 0) {

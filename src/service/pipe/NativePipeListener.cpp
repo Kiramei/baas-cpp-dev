@@ -16,6 +16,7 @@
 #include <Aclapi.h>
 #include <sddl.h>
 #elif defined(__unix__) || defined(__APPLE__)
+#include <fcntl.h>
 #include <poll.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
@@ -31,6 +32,20 @@ namespace baas::service::pipe {
 namespace {
 
 #if defined(_WIN32)
+
+class ScopedWindowsHandle final {
+public:
+    explicit ScopedWindowsHandle(const HANDLE handle) : handle_(handle) {}
+    ~ScopedWindowsHandle()
+    {
+        if (handle_ != INVALID_HANDLE_VALUE && handle_ != nullptr)
+            CloseHandle(handle_);
+    }
+    ScopedWindowsHandle(const ScopedWindowsHandle&) = delete;
+    ScopedWindowsHandle& operator=(const ScopedWindowsHandle&) = delete;
+private:
+    HANDLE handle_{};
+};
 
 class WindowsPipeStream final : public PipeStream {
 public:
@@ -142,19 +157,16 @@ private:
 
 class WindowsPipeListener final : public PipeListener {
 public:
-    WindowsPipeListener(std::wstring endpoint, const std::size_t max_connections)
-        : endpoint_(std::move(endpoint)), max_connections_(max_connections)
+    explicit WindowsPipeListener(std::wstring endpoint)
+        : endpoint_(std::move(endpoint))
     {
         HANDLE token{};
         if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token)) return;
+        const ScopedWindowsHandle token_guard{token};
         DWORD size{};
         GetTokenInformation(token, TokenUser, nullptr, 0, &size);
         token_info_.resize(size);
-        if (!GetTokenInformation(token, TokenUser, token_info_.data(), size, &size)) {
-            CloseHandle(token);
-            return;
-        }
-        CloseHandle(token);
+        if (!GetTokenInformation(token, TokenUser, token_info_.data(), size, &size)) return;
 
         auto* user = reinterpret_cast<TOKEN_USER*>(token_info_.data());
         EXPLICIT_ACCESSW access{};
@@ -185,13 +197,14 @@ public:
         if (stopped_.load()) return {};
         SECURITY_ATTRIBUTES attributes{
             sizeof(SECURITY_ATTRIBUTES), &descriptor_, FALSE};
-        const auto instances = static_cast<DWORD>(std::min<std::size_t>(
-            max_connections_, PIPE_UNLIMITED_INSTANCES));
+        auto open_mode = PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED;
+        if (first_instance_) open_mode |= FILE_FLAG_FIRST_PIPE_INSTANCE;
         const auto handle = CreateNamedPipeW(
-            endpoint_.c_str(), PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED,
+            endpoint_.c_str(), open_mode,
             PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
-            instances, 64U * 1'024U, 64U * 1'024U, 0, &attributes);
+            PIPE_UNLIMITED_INSTANCES, 64U * 1'024U, 64U * 1'024U, 0, &attributes);
         if (handle == INVALID_HANDLE_VALUE) return {};
+        first_instance_ = false;
         const auto event = CreateEventW(nullptr, TRUE, FALSE, nullptr);
         if (!event) {
             CloseHandle(handle);
@@ -238,7 +251,13 @@ public:
             CloseHandle(handle);
             return {};
         }
-        return std::make_unique<WindowsPipeStream>(handle);
+        try {
+            return std::make_unique<WindowsPipeStream>(handle);
+        } catch (...) {
+            DisconnectNamedPipe(handle);
+            CloseHandle(handle);
+            throw;
+        }
     }
 
     void close() noexcept override
@@ -253,7 +272,6 @@ public:
 
 private:
     std::wstring endpoint_;
-    std::size_t max_connections_{};
     std::vector<std::byte> token_info_;
     ACL* acl_{};
     SECURITY_DESCRIPTOR descriptor_{};
@@ -262,6 +280,7 @@ private:
     std::mutex mutex_;
     HANDLE pending_{INVALID_HANDLE_VALUE};
     OVERLAPPED* pending_overlapped_{};
+    bool first_instance_{true};
 };
 
 [[nodiscard]] std::optional<std::wstring> utf8_to_wide(const std::string_view input)
@@ -280,15 +299,28 @@ private:
 
 #elif defined(__unix__) || defined(__APPLE__)
 
+[[nodiscard]] bool set_fd_flags(const int fd, const bool nonblocking) noexcept
+{
+    const auto descriptor_flags = fcntl(fd, F_GETFD, 0);
+    if (descriptor_flags < 0
+        || fcntl(fd, F_SETFD, descriptor_flags | FD_CLOEXEC) < 0) return false;
+    if (!nonblocking) return true;
+    const auto status_flags = fcntl(fd, F_GETFL, 0);
+    return status_flags >= 0
+        && fcntl(fd, F_SETFL, status_flags | O_NONBLOCK) == 0;
+}
+
 class UnixPipeStream final : public PipeStream {
 public:
     explicit UnixPipeStream(const int fd) : fd_(fd)
     {
 #if defined(__APPLE__)
         const int enabled = 1;
-        setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &enabled, sizeof(enabled));
+        valid_ = setsockopt(
+            fd, SOL_SOCKET, SO_NOSIGPIPE, &enabled, sizeof(enabled)) == 0;
 #endif
     }
+    [[nodiscard]] bool valid() const noexcept { return valid_; }
     ~UnixPipeStream() override
     {
         close();
@@ -317,6 +349,7 @@ public:
             const auto result = ::recv(fd, output.data(), output.size(), 0);
             if (result == 0) return {0, true, false, false};
             if (result < 0 && errno == EINTR) continue;
+            if (result < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) continue;
             if (result < 0 && (errno == EBADF || errno == ECONNRESET))
                 return {0, true, false, false};
             if (result < 0) return {0, false, true, false};
@@ -350,6 +383,7 @@ public:
 #endif
             const auto result = ::send(fd, input.data() + total, input.size() - total, flags);
             if (result < 0 && errno == EINTR) continue;
+            if (result < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) continue;
             if (result <= 0) return {total, false, true, false};
             total += static_cast<std::size_t>(result);
         }
@@ -367,6 +401,7 @@ public:
 private:
     std::atomic_int fd_{-1};
     std::atomic_bool closing_{};
+    bool valid_{true};
 };
 
 [[nodiscard]] bool current_user_peer(const int fd) noexcept
@@ -407,8 +442,16 @@ public:
         sockaddr_un address{};
         if (endpoint_.size() >= sizeof(address.sun_path)) return;
 
-        const auto fd = ::socket(AF_UNIX, SOCK_STREAM, 0);
+        int socket_type = SOCK_STREAM;
+#ifdef SOCK_CLOEXEC
+        socket_type |= SOCK_CLOEXEC;
+#endif
+        const auto fd = ::socket(AF_UNIX, socket_type, 0);
         if (fd < 0) return;
+        if (!set_fd_flags(fd, true)) {
+            ::close(fd);
+            return;
+        }
         address.sun_family = AF_UNIX;
         std::memcpy(address.sun_path, endpoint_.c_str(), endpoint_.size() + 1);
         if (::bind(fd, reinterpret_cast<const sockaddr*>(&address), sizeof(address)) != 0) {
@@ -432,53 +475,120 @@ public:
             return;
         }
         fd_.store(fd);
+        std::array<int, 2> wake{-1, -1};
+#if defined(__linux__) && defined(O_CLOEXEC) && defined(O_NONBLOCK)
+        const auto pipe_result = ::pipe2(wake.data(), O_CLOEXEC | O_NONBLOCK);
+#else
+        const auto pipe_result = ::pipe(wake.data());
+#endif
+        if (pipe_result != 0
+            || !set_fd_flags(wake[0], true) || !set_fd_flags(wake[1], true)) {
+            if (wake[0] >= 0) ::close(wake[0]);
+            if (wake[1] >= 0) ::close(wake[1]);
+            const auto owned = fd_.exchange(-1);
+            if (owned >= 0) ::close(owned);
+            unlink_owned_socket();
+            return;
+        }
+        wake_read_.store(wake[0]);
+        wake_write_.store(wake[1]);
         created_ = true;
     }
 
     ~UnixPipeListener() override
     {
         close();
-        const auto fd = fd_.exchange(-1);
-        if (fd >= 0) ::close(fd);
-        unlink_owned_socket();
+        std::unique_lock lock(lifecycle_mutex_);
+        lifecycle_changed_.wait(lock, [this] { return !accept_active_; });
+        cleanup_locked();
     }
 
     [[nodiscard]] bool valid() const noexcept { return fd_.load() >= 0; }
 
     std::unique_ptr<PipeStream> accept() override
     {
-        while (true) {
-            if (stopped_.load()) return {};
-            const auto listener = fd_.load();
-            if (listener < 0) return {};
-            pollfd event{listener, POLLIN, 0};
-            const auto ready = ::poll(&event, 1, 100);
-            if (ready < 0 && errno == EINTR) continue;
-            if (ready == 0) continue;
-            if (ready < 0) return {};
-            if (stopped_.load()) return {};
-            const auto client = ::accept(listener, nullptr, nullptr);
-            if (client < 0) {
-                if (errno == EINTR) continue;
-                return {};
-            }
-            if (!current_user_peer(client)) {
-                ::close(client);
-                continue;
-            }
-            return std::make_unique<UnixPipeStream>(client);
+        {
+            std::lock_guard lock(lifecycle_mutex_);
+            if (stopped_.load() || accept_active_) return {};
+            accept_active_ = true;
         }
+        std::unique_ptr<PipeStream> result;
+        try {
+            while (!stopped_.load()) {
+                const auto listener = fd_.load();
+                const auto wake = wake_read_.load();
+                if (listener < 0 || wake < 0) break;
+                std::array<pollfd, 2> events{
+                    pollfd{listener, POLLIN, 0}, pollfd{wake, POLLIN, 0}};
+                const auto ready = ::poll(events.data(), events.size(), -1);
+                if (ready < 0 && errno == EINTR) continue;
+                if (ready <= 0 || (events[1].revents & POLLIN) != 0
+                    || stopped_.load()) break;
+#if defined(__linux__) && defined(SOCK_CLOEXEC) && defined(SOCK_NONBLOCK)
+                const auto client = ::accept4(
+                    listener, nullptr, nullptr, SOCK_CLOEXEC | SOCK_NONBLOCK);
+#else
+                const auto client = ::accept(listener, nullptr, nullptr);
+#endif
+                if (client < 0) {
+                    if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK)
+                        continue;
+                    break;
+                }
+                if (!set_fd_flags(client, true) || !current_user_peer(client)) {
+                    ::close(client);
+                    continue;
+                }
+                try {
+                    auto stream = std::make_unique<UnixPipeStream>(client);
+                    if (!stream->valid()) continue;
+                    result = std::move(stream);
+                    break;
+                } catch (...) {
+                    ::close(client);
+                    throw;
+                }
+            }
+        } catch (...) {
+            finish_accept();
+            throw;
+        }
+        finish_accept();
+        return result;
     }
 
     void close() noexcept override
     {
         if (stopped_.exchange(true)) return;
-        const auto fd = fd_.load();
-        if (fd < 0) return;
-        ::shutdown(fd, SHUT_RDWR);
+        const auto wake = wake_write_.load();
+        if (wake >= 0) {
+            const std::byte signal{1};
+            static_cast<void>(::write(wake, &signal, 1));
+        }
+        std::lock_guard lock(lifecycle_mutex_);
+        if (!accept_active_) cleanup_locked();
     }
 
 private:
+    void finish_accept() noexcept
+    {
+        std::lock_guard lock(lifecycle_mutex_);
+        accept_active_ = false;
+        if (stopped_.load()) cleanup_locked();
+        lifecycle_changed_.notify_all();
+    }
+
+    void cleanup_locked() noexcept
+    {
+        const auto fd = fd_.exchange(-1);
+        if (fd >= 0) ::close(fd);
+        const auto wake_read = wake_read_.exchange(-1);
+        if (wake_read >= 0) ::close(wake_read);
+        const auto wake_write = wake_write_.exchange(-1);
+        if (wake_write >= 0) ::close(wake_write);
+        unlink_owned_socket();
+    }
+
     [[nodiscard]] bool record_owned_socket() noexcept
     {
         struct stat path_status {};
@@ -505,7 +615,12 @@ private:
 
     std::string endpoint_;
     std::atomic_int fd_{-1};
+    std::atomic_int wake_read_{-1};
+    std::atomic_int wake_write_{-1};
     std::atomic_bool stopped_{};
+    std::mutex lifecycle_mutex_;
+    std::condition_variable lifecycle_changed_;
+    bool accept_active_{};
     bool created_{};
     dev_t owned_device_{};
     ino_t owned_inode_{};
@@ -539,7 +654,7 @@ std::unique_ptr<PipeListener> make_platform_pipe_listener(
         diagnostic = "invalid_named_pipe_endpoint";
         return {};
     }
-    auto listener = std::make_unique<WindowsPipeListener>(*wide, max_connections);
+    auto listener = std::make_unique<WindowsPipeListener>(*wide);
     if (!listener->valid()) {
         diagnostic = "current_user_acl_initialization_failed";
         return {};

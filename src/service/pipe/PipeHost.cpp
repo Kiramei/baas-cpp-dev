@@ -14,6 +14,20 @@ namespace {
 
 thread_local PipeHost* active_worker_host = nullptr;
 
+[[nodiscard]] constexpr std::uint8_t byte_value(const std::byte value) noexcept
+{
+    return std::to_integer<std::uint8_t>(value);
+}
+
+[[nodiscard]] std::uint32_t declared_payload_size(
+    const bpip::Header& header) noexcept
+{
+    return static_cast<std::uint32_t>(byte_value(header[6]))
+        | (static_cast<std::uint32_t>(byte_value(header[7])) << 8U)
+        | (static_cast<std::uint32_t>(byte_value(header[8])) << 16U)
+        | (static_cast<std::uint32_t>(byte_value(header[9])) << 24U);
+}
+
 [[nodiscard]] std::span<const std::byte> as_bytes(const std::string_view value) noexcept
 {
     return {reinterpret_cast<const std::byte*>(value.data()), value.size()};
@@ -30,6 +44,10 @@ thread_local PipeHost* active_worker_host = nullptr;
         && limits.max_read_chunk_bytes <= 1U * 1'024U * 1'024U
         && limits.max_atomic_write_bytes >= bpip::header_size
         && limits.max_atomic_write_bytes <= 128U * 1'024U * 1'024U
+        && limits.max_total_ingress_retained_bytes >= bpip::header_size
+        && limits.max_total_ingress_retained_bytes <= 256U * 1'024U * 1'024U
+        && limits.max_total_egress_retained_bytes >= 2U * bpip::header_size
+        && limits.max_total_egress_retained_bytes <= 256U * 1'024U * 1'024U
         && limits.max_open_json_depth > 0 && limits.max_open_json_depth <= 64
         && limits.max_open_json_nodes > 0 && limits.max_open_json_nodes <= 4'096
         && limits.open_timeout.count() > 0 && limits.open_timeout.count() <= 60'000
@@ -387,6 +405,8 @@ std::string_view pipe_host_error_name(const PipeHostError error) noexcept
         case PipeHostError::channel_unavailable: return "channel_unavailable";
         case PipeHostError::handler_failed: return "handler_failed";
         case PipeHostError::atomic_write_too_large: return "atomic_write_too_large";
+        case PipeHostError::ingress_budget_exhausted: return "ingress_budget_exhausted";
+        case PipeHostError::egress_budget_exhausted: return "egress_budget_exhausted";
         case PipeHostError::write_failed: return "write_failed";
         case PipeHostError::open_timeout: return "open_timeout";
         case PipeHostError::read_timeout: return "read_timeout";
@@ -422,9 +442,10 @@ PipeHostError PipeConnectionWriter::write_frame(
 
 PipeHostError PipeConnectionWriter::write_batch(const std::span<const bpip::Frame> frames)
 {
+    std::size_t wire_size{};
+    bool reserved{};
     try {
         std::lock_guard lock(mutex_);
-        bpip::Bytes output;
         for (const auto& frame : frames) {
             if (!bpip::is_known_kind(frame.kind))
                 return PipeHostError::unsupported_frame_kind;
@@ -435,23 +456,48 @@ PipeHostError PipeConnectionWriter::write_batch(const std::span<const bpip::Fram
                 && !valid_utf8(std::string_view{
                     reinterpret_cast<const char*>(frame.payload.data()),
                     frame.payload.size()})) return PipeHostError::write_failed;
-            const auto encoded = bpip::encode_frame(frame.kind, frame.payload);
-            if (!encoded) return PipeHostError::atomic_write_too_large;
-            if (output.size() > max_atomic_write_bytes_
-                || encoded.bytes.size() > max_atomic_write_bytes_ - output.size()) {
+            const auto frame_size = bpip::header_size + frame.payload.size();
+            if (wire_size > max_atomic_write_bytes_
+                || frame_size > max_atomic_write_bytes_ - wire_size) {
                 return PipeHostError::atomic_write_too_large;
             }
-            output.insert(output.end(), encoded.bytes.begin(), encoded.bytes.end());
+            wire_size += frame_size;
         }
-        if (output.empty()) return PipeHostError::none;
+        if (wire_size == 0) return PipeHostError::none;
+        if (!host_.try_reserve_egress(wire_size))
+            return PipeHostError::egress_budget_exhausted;
+        reserved = true;
+        bpip::Bytes output;
+        output.reserve(wire_size);
+        for (const auto& frame : frames) {
+            const auto header = bpip::encode_header(frame.kind, frame.payload.size());
+            if (!header) {
+                host_.release_egress(wire_size);
+                reserved = false;
+                return PipeHostError::atomic_write_too_large;
+            }
+            output.insert(output.end(), header.header.begin(), header.header.end());
+            output.insert(output.end(), frame.payload.begin(), frame.payload.end());
+        }
         const auto result = stream_.write_all(output, write_timeout_);
+        host_.release_egress(wire_size);
+        reserved = false;
         if (result.error || result.eof || result.timed_out
-            || result.bytes != output.size())
+            || result.bytes != output.size()) {
+            transport_poisoned_ = true;
             return PipeHostError::write_failed;
+        }
         return PipeHostError::none;
     } catch (...) {
+        if (reserved) host_.release_egress(wire_size);
         return PipeHostError::write_failed;
     }
+}
+
+bool PipeConnectionWriter::transport_poisoned() noexcept
+{
+    std::lock_guard lock(mutex_);
+    return transport_poisoned_;
 }
 
 PipeHost::PipeHost(
@@ -478,7 +524,9 @@ bool PipeHost::start()
 {
     {
         std::lock_guard lock(mutex_);
-        if (state_ != PipeHostState::stopped || accept_thread_.joinable()) return false;
+        if (start_attempted_ || state_ != PipeHostState::stopped
+            || accept_thread_.joinable()) return false;
+        start_attempted_ = true;
         state_ = PipeHostState::running;
     }
     try {
@@ -496,13 +544,18 @@ bool PipeHost::start()
 
 void PipeHost::stop() noexcept
 {
+    stop_source_.request_stop();
     {
         std::lock_guard lock(mutex_);
-        if (state_ == PipeHostState::stopped) return;
-        state_ = PipeHostState::stopping;
-        for (auto& stream : pending_streams_) stream->close();
-        pending_streams_.clear();
-        for (auto* stream : active_streams_) stream->close();
+        if (state_ == PipeHostState::stopped) {
+            if (start_attempted_) return;
+            start_attempted_ = true;
+        } else {
+            state_ = PipeHostState::stopping;
+            for (auto& stream : pending_streams_) stream->close();
+            pending_streams_.clear();
+            for (auto* stream : active_streams_) stream->close();
+        }
     }
     listener_->close();
     queue_cv_.notify_all();
@@ -535,7 +588,48 @@ PipeHostState PipeHost::state() const noexcept
 PipeHostStats PipeHost::stats() const noexcept
 {
     std::lock_guard lock(mutex_);
-    return {accepted_, rejected_, completed_, active_, peak_active_, state_};
+    return {accepted_, rejected_, completed_, active_, peak_active_,
+        ingress_retained_bytes_, peak_ingress_retained_bytes_,
+        egress_retained_bytes_, peak_egress_retained_bytes_,
+        ingress_budget_rejections_, egress_budget_rejections_, state_};
+}
+
+bool PipeHost::try_reserve_ingress(const std::size_t bytes) noexcept
+{
+    std::lock_guard lock(mutex_);
+    if (bytes > limits_.max_total_ingress_retained_bytes - ingress_retained_bytes_) {
+        ++ingress_budget_rejections_;
+        return false;
+    }
+    ingress_retained_bytes_ += bytes;
+    peak_ingress_retained_bytes_ = std::max(
+        peak_ingress_retained_bytes_, ingress_retained_bytes_);
+    return true;
+}
+
+void PipeHost::release_ingress(const std::size_t bytes) noexcept
+{
+    std::lock_guard lock(mutex_);
+    ingress_retained_bytes_ -= std::min(bytes, ingress_retained_bytes_);
+}
+
+bool PipeHost::try_reserve_egress(const std::size_t bytes) noexcept
+{
+    std::lock_guard lock(mutex_);
+    if (bytes > limits_.max_total_egress_retained_bytes - egress_retained_bytes_) {
+        ++egress_budget_rejections_;
+        return false;
+    }
+    egress_retained_bytes_ += bytes;
+    peak_egress_retained_bytes_ = std::max(
+        peak_egress_retained_bytes_, egress_retained_bytes_);
+    return true;
+}
+
+void PipeHost::release_egress(const std::size_t bytes) noexcept
+{
+    std::lock_guard lock(mutex_);
+    egress_retained_bytes_ -= std::min(bytes, egress_retained_bytes_);
 }
 
 void PipeHost::accept_loop() noexcept
@@ -548,13 +642,17 @@ void PipeHost::accept_loop() noexcept
         }
         auto stream = listener_->accept();
         if (!stream) {
-            std::lock_guard lock(mutex_);
-            if (state_ == PipeHostState::running) {
-                state_ = PipeHostState::stopping;
-                for (auto& pending : pending_streams_) pending->close();
-                pending_streams_.clear();
-                for (auto* active : active_streams_) active->close();
+            stop_source_.request_stop();
+            {
+                std::lock_guard lock(mutex_);
+                if (state_ == PipeHostState::running) {
+                    state_ = PipeHostState::stopping;
+                    for (auto& pending : pending_streams_) pending->close();
+                    pending_streams_.clear();
+                    for (auto* active : active_streams_) active->close();
+                }
             }
+            listener_->close();
             queue_cv_.notify_all();
             break;
         }
@@ -572,7 +670,7 @@ void PipeHost::accept_loop() noexcept
         }
         if (rejected) {
             PipeConnectionWriter writer{
-                *stream, limits_.max_atomic_write_bytes, limits_.write_timeout};
+                *this, *stream, limits_.max_atomic_write_bytes, limits_.write_timeout};
             static_cast<void>(terminal_error(writer, PipeHostError::connection_limit));
             stream->close();
         } else {
@@ -580,6 +678,7 @@ void PipeHost::accept_loop() noexcept
         }
     }
     } catch (...) {
+        stop_source_.request_stop();
         std::lock_guard lock(mutex_);
         state_ = PipeHostState::stopping;
         for (auto& pending : pending_streams_) pending->close();
@@ -601,12 +700,11 @@ void PipeHost::worker_loop() noexcept
             queue_cv_.wait(lock, [this] {
                 return state_ != PipeHostState::running || !pending_streams_.empty();
             });
-            if (pending_streams_.empty()) {
-                if (state_ != PipeHostState::running) {
-                    active_worker_host = nullptr;
-                    return;
-                }
-                continue;
+            if (state_ != PipeHostState::running) {
+                for (auto& pending : pending_streams_) pending->close();
+                pending_streams_.clear();
+                active_worker_host = nullptr;
+                return;
             }
             stream = std::move(pending_streams_.front());
             pending_streams_.pop_front();
@@ -617,8 +715,11 @@ void PipeHost::worker_loop() noexcept
         connection_loop(std::move(stream));
     }
     } catch (...) {
+        stop_source_.request_stop();
         std::lock_guard lock(mutex_);
         state_ = PipeHostState::stopping;
+        for (auto& pending : pending_streams_) pending->close();
+        pending_streams_.clear();
         for (auto* active : active_streams_) active->close();
         listener_->close();
         queue_cv_.notify_all();
@@ -630,14 +731,36 @@ void PipeHost::connection_loop(std::unique_ptr<PipeStream> stream) noexcept
 {
     bpip::Decoder decoder;
     PipeConnectionWriter writer{
-        *stream, limits_.max_atomic_write_bytes, limits_.write_timeout};
+        *this, *stream, limits_.max_atomic_write_bytes, limits_.write_timeout};
     std::unique_ptr<PipeChannelHandler> handler;
     bool opened = false;
+    bpip::Header open_header{};
+    std::size_t open_header_bytes{};
+    std::optional<std::uint32_t> open_expected;
+    bpip::Bytes open_payload;
+    std::size_t open_reservation{};
+    std::size_t decoder_reservation{};
     const auto open_deadline = std::chrono::steady_clock::now()
         + limits_.open_timeout;
     try {
         std::vector<std::byte> buffer(limits_.max_read_chunk_bytes);
         bool keep_running = true;
+        const auto fail_connection = [&](const PipeHostError error) {
+            if (!writer.transport_poisoned())
+                static_cast<void>(terminal_error(writer, error));
+            keep_running = false;
+        };
+        const auto process_decoded = [&](const bpip::DecodeResult& decoded) {
+            for (const auto& frame : decoded.frames) {
+                const auto error = process_frame(
+                    frame, opened, keep_running, handler, writer);
+                if (error != PipeHostError::none) {
+                    fail_connection(error);
+                    return;
+                }
+                if (!keep_running) return;
+            }
+        };
         while (keep_running) {
             auto read_timeout = limits_.idle_read_timeout;
             if (!opened) {
@@ -661,7 +784,8 @@ void PipeHost::connection_loop(std::unique_ptr<PipeStream> stream) noexcept
                 break;
             }
             if (read.eof) {
-                if (decoder.buffered_bytes() != 0)
+                if (decoder.buffered_bytes() != 0 || open_header_bytes != 0
+                    || open_expected.has_value())
                     static_cast<void>(terminal_error(
                         writer, PipeHostError::truncated_frame));
                 break;
@@ -676,26 +800,113 @@ void PipeHost::connection_loop(std::unique_ptr<PipeStream> stream) noexcept
                 static_cast<void>(terminal_error(writer, PipeHostError::open_timeout));
                 break;
             }
-            const auto decoded = decoder.feed({buffer.data(), read.bytes});
-            for (const auto& frame : decoded.frames) {
-                const auto error = process_frame(
-                    frame, opened, keep_running, handler, writer);
-                if (error != PipeHostError::none) {
-                    static_cast<void>(terminal_error(writer, error));
-                    keep_running = false;
-                    break;
+            std::size_t offset{};
+            while (offset < read.bytes && keep_running) {
+                if (!opened) {
+                    if (open_header_bytes < bpip::header_size) {
+                        const auto count = std::min(
+                            bpip::header_size - open_header_bytes, read.bytes - offset);
+                        std::copy_n(buffer.begin() + static_cast<std::ptrdiff_t>(offset),
+                            count, open_header.begin()
+                                + static_cast<std::ptrdiff_t>(open_header_bytes));
+                        open_header_bytes += count;
+                        offset += count;
+                        if (open_header_bytes < bpip::header_size) continue;
+                        if (!std::equal(
+                                bpip::magic.begin(), bpip::magic.end(), open_header.begin())
+                            || byte_value(open_header[4]) != bpip::version) {
+                            fail_connection(PipeHostError::framing_error);
+                            break;
+                        }
+                        if (byte_value(open_header[5])
+                            != bpip::kind_value(bpip::FrameKind::json)) {
+                            fail_connection(PipeHostError::first_frame_not_json);
+                            break;
+                        }
+                        const auto declared = declared_payload_size(open_header);
+                        if (declared > limits_.max_open_json_bytes) {
+                            fail_connection(PipeHostError::open_json_too_large);
+                            break;
+                        }
+                        open_expected = declared;
+                        if (declared != 0) {
+                            if (!try_reserve_ingress(declared)) {
+                                fail_connection(PipeHostError::ingress_budget_exhausted);
+                                break;
+                            }
+                            open_reservation = declared;
+                        }
+                    }
+                    const auto remaining = static_cast<std::size_t>(*open_expected)
+                        - open_payload.size();
+                    const auto count = std::min(remaining, read.bytes - offset);
+                    open_payload.insert(open_payload.end(),
+                        buffer.begin() + static_cast<std::ptrdiff_t>(offset),
+                        buffer.begin() + static_cast<std::ptrdiff_t>(offset + count));
+                    offset += count;
+                    if (open_payload.size() == *open_expected) {
+                        const bpip::Frame first{
+                            bpip::kind_value(bpip::FrameKind::json),
+                            std::move(open_payload)};
+                        const auto error = process_frame(
+                            first, opened, keep_running, handler, writer);
+                        if (open_reservation != 0) {
+                            release_ingress(open_reservation);
+                            open_reservation = 0;
+                        }
+                        open_expected.reset();
+                        open_header_bytes = 0;
+                        if (error != PipeHostError::none) fail_connection(error);
+                    }
+                    continue;
                 }
-                if (!keep_running) break;
-            }
-            if (decoded.error) {
-                static_cast<void>(terminal_error(writer, PipeHostError::framing_error));
-                break;
+
+                if (!decoder.expected_payload_size()) {
+                    const auto header_needed = bpip::header_size - decoder.buffered_bytes();
+                    const auto count = std::min(header_needed, read.bytes - offset);
+                    const auto decoded = decoder.feed(
+                        {buffer.data() + offset, count});
+                    offset += count;
+                    if (decoded.error) {
+                        fail_connection(PipeHostError::framing_error);
+                        break;
+                    }
+                    process_decoded(decoded);
+                    if (!keep_running) break;
+                    if (const auto expected = decoder.expected_payload_size();
+                        expected && *expected != 0) {
+                        if (!try_reserve_ingress(*expected)) {
+                            fail_connection(PipeHostError::ingress_budget_exhausted);
+                            break;
+                        }
+                        decoder_reservation = *expected;
+                    }
+                    continue;
+                }
+
+                const auto remaining = static_cast<std::size_t>(
+                    *decoder.expected_payload_size()) - decoder.buffered_payload_bytes();
+                const auto count = std::min(remaining, read.bytes - offset);
+                const auto decoded = decoder.feed({buffer.data() + offset, count});
+                offset += count;
+                if (decoded.error) {
+                    fail_connection(PipeHostError::framing_error);
+                } else {
+                    process_decoded(decoded);
+                }
+                if (!decoder.expected_payload_size() && decoder_reservation != 0) {
+                    release_ingress(decoder_reservation);
+                    decoder_reservation = 0;
+                }
             }
         }
     } catch (...) {
-        static_cast<void>(terminal_error(writer, PipeHostError::handler_failed));
+        if (!writer.transport_poisoned())
+            static_cast<void>(terminal_error(writer, PipeHostError::handler_failed));
     }
-    if (handler) handler->on_close();
+    if (open_reservation != 0) release_ingress(open_reservation);
+    if (decoder_reservation != 0) release_ingress(decoder_reservation);
+    if (handler) handler->on_close(stop_source_.get_token());
     stream->close();
     {
         std::lock_guard lock(mutex_);
@@ -721,7 +932,7 @@ PipeHostError PipeHost::process_frame(
         const auto open = decode_pipe_open(frame.payload, limits_);
         if (!open) return open.error;
         try {
-            handler = factory_->create(*open.request);
+            handler = factory_->create(*open.request, stop_source_.get_token());
         } catch (...) {
             return PipeHostError::channel_unavailable;
         }
@@ -750,7 +961,11 @@ PipeHostError PipeHost::process_frame(
         return PipeHostError::unsupported_frame_kind;
     }
     try {
-        if (!handler->on_frame(frame, writer)) {
+        const auto result = handler->on_frame(
+            frame, writer, stop_source_.get_token());
+        if (writer.transport_poisoned()) return PipeHostError::write_failed;
+        if (result.error != PipeHostError::none) return result.error;
+        if (result.action == PipeHandlerAction::close_connection) {
             const auto write = writer.write_frame(bpip::FrameKind::close, {});
             if (write != PipeHostError::none) return write;
             continue_connection = false;
