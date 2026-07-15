@@ -24,11 +24,19 @@ endif()
 
 if(BUILD_SERVICE_TRIGGER_PIPE_CHANNEL_TESTS)
     include(CTest)
+    target_compile_definitions(
+            BAAS_service_trigger_pipe_channel
+            PRIVATE BAAS_SERVICE_TRIGGER_PIPE_CHANNEL_TEST_HOOKS=1
+    )
     add_executable(
             BAAS_service_trigger_pipe_channel_tests
             "${BAAS_PROJECT_PATH}/tests/service/TriggerPipeChannelTests.cpp"
     )
     target_compile_features(BAAS_service_trigger_pipe_channel_tests PRIVATE cxx_std_20)
+    target_compile_definitions(
+            BAAS_service_trigger_pipe_channel_tests
+            PRIVATE BAAS_SERVICE_TRIGGER_PIPE_CHANNEL_TEST_HOOKS=1
+    )
     target_link_libraries(
             BAAS_service_trigger_pipe_channel_tests
             PRIVATE BAAS_service_trigger_pipe_channel

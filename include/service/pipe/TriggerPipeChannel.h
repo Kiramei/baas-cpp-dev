@@ -32,4 +32,12 @@ private:
     TriggerPipeChannelLimits limits_;
 };
 
+#if defined(BAAS_SERVICE_TRIGGER_PIPE_CHANNEL_TEST_HOOKS)
+namespace detail {
+using TriggerPipeBeforeIdleHook = void (*)(void*) noexcept;
+void set_trigger_pipe_before_idle_hook_for_test(
+    TriggerPipeBeforeIdleHook hook, void* context) noexcept;
+}
+#endif
+
 }  // namespace baas::service::pipe

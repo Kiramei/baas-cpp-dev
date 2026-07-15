@@ -65,6 +65,46 @@ struct StreamState {
     bool closed{};
 };
 
+void push_read(const std::shared_ptr<StreamState>& state, bpip::Bytes input)
+{
+    {
+        std::lock_guard lock{state->mutex};
+        state->reads.push_back(std::move(input));
+    }
+    state->changed.notify_all();
+}
+
+struct IdleGate {
+    static void pause(void* context) noexcept
+    {
+        auto& gate = *static_cast<IdleGate*>(context);
+        std::unique_lock lock{gate.mutex};
+        gate.entered = true;
+        gate.changed.notify_all();
+        gate.changed.wait(lock, [&] { return gate.released; });
+    }
+
+    [[nodiscard]] bool wait_entered()
+    {
+        std::unique_lock lock{mutex};
+        return changed.wait_for(lock, 3s, [&] { return entered; });
+    }
+
+    void release()
+    {
+        {
+            std::lock_guard lock{mutex};
+            released = true;
+        }
+        changed.notify_all();
+    }
+
+    std::mutex mutex;
+    std::condition_variable changed;
+    bool entered{};
+    bool released{};
+};
+
 class FakeStream final : public pipe::PipeStream {
 public:
     explicit FakeStream(std::shared_ptr<StreamState> state)
@@ -321,7 +361,6 @@ void test_peer_close_cancels_and_drains_running_task()
     auto wire = open_wire();
     append(wire, frame(bpip::FrameKind::json,
         R"({"type":"command","command":"status","timestamp":13,"payload":{}})"));
-    append(wire, frame(bpip::FrameKind::close, std::span<const std::byte>{}));
     state->reads.push_back(std::move(wire));
     auto executor = std::make_shared<trigger::TriggerExecutor>(
         dispatcher(&started, &stopped));
@@ -329,6 +368,10 @@ void test_peer_close_cancels_and_drains_running_task()
         std::make_unique<FakeStream>(state)),
         std::make_shared<pipe::TriggerPipeChannelFactory>(executor)};
     check(host.start(), "cancel Pipe host must start");
+    check(wait_until([&] { return started.load(); }),
+        "cancel fixture must start the handler before sending peer CLOSE");
+    push_read(state, frame(
+        bpip::FrameKind::close, std::span<const std::byte>{}));
     check(wait_until([&] { return host.stats().completed == 1; }),
         "peer CLOSE must wait for owner cancellation and complete");
     check(started.load() && stopped.load(),
@@ -367,8 +410,6 @@ void test_connection_task_limit_rejects_without_overcommit()
     auto wire = open_wire();
     append(wire, frame(bpip::FrameKind::json,
         R"({"type":"command","command":"status","timestamp":20,"payload":{}})"));
-    append(wire, frame(bpip::FrameKind::json,
-        R"({"type":"command","command":"status","timestamp":21,"payload":{}})"));
     state->reads.push_back(std::move(wire));
     pipe::TriggerPipeChannelLimits channel_limits;
     channel_limits.max_tasks_per_connection = 1;
@@ -378,6 +419,10 @@ void test_connection_task_limit_rejects_without_overcommit()
         std::make_unique<FakeStream>(state)),
         std::make_shared<pipe::TriggerPipeChannelFactory>(executor, channel_limits)};
     check(host.start(), "task-limited Pipe host must start");
+    check(wait_until([&] { return started.load(); }),
+        "task-limit fixture must start its first admitted handler");
+    push_read(state, frame(bpip::FrameKind::json,
+        R"({"type":"command","command":"status","timestamp":21,"payload":{}})"));
     check(wait_until([&] {
         std::lock_guard lock{state->mutex};
         return state->writes.size() >= 2;
@@ -445,6 +490,88 @@ void test_stop_interrupts_write_and_waits_for_pump_barrier()
         "stop must interrupt write, fail the lease, and join past the pump barrier");
 }
 
+void test_pump_idle_transition_has_no_lost_wakeup_under_stress()
+{
+    constexpr std::size_t burst_count = 128;
+    std::atomic_size_t handler_effects{};
+    std::atomic_bool second_output_attempted{};
+    std::mutex coordinated_mutex;
+    std::condition_variable coordinated_changed;
+    std::size_t coordinated_started{};
+    IdleGate gate;
+    auto built = trigger::TriggerDispatcher::create({
+        {"status", [&](const trigger::AdmittedTriggerRequest& request,
+                       trigger::TriggerResponseSink& output,
+                       std::stop_token) {
+            ++handler_effects;
+            if (request.timestamp() <= 101) {
+                std::unique_lock lock{coordinated_mutex};
+                ++coordinated_started;
+                coordinated_changed.notify_all();
+                if (request.timestamp() == 100) {
+                    coordinated_changed.wait(
+                        lock, [&] { return coordinated_started == 2; });
+                } else {
+                    lock.unlock();
+                    static_cast<void>(gate.wait_entered());
+                    second_output_attempted = true;
+                }
+            }
+            static_cast<void>(output.success(std::string{"{}"}));
+        }},
+    });
+    check(static_cast<bool>(built), "idle-race dispatcher must build");
+    if (!built) return;
+
+    auto state = std::make_shared<StreamState>();
+    auto first = open_wire();
+    append(first, frame(bpip::FrameKind::json,
+        R"({"type":"command","command":"status","timestamp":100,"payload":{}})"));
+    append(first, frame(bpip::FrameKind::json,
+        R"({"type":"command","command":"status","timestamp":101,"payload":{}})"));
+    state->reads.push_back(std::move(first));
+    trigger::TriggerExecutorLimits executor_limits;
+    executor_limits.worker_threads = 4;
+    executor_limits.max_tasks = burst_count + 8;
+    executor_limits.max_queued_tasks = burst_count + 8;
+    executor_limits.max_tasks_per_connection = burst_count + 8;
+    auto executor = std::make_shared<trigger::TriggerExecutor>(
+        std::make_shared<const trigger::TriggerDispatcher>(
+            std::move(*built.dispatcher)), executor_limits);
+    auto factory = std::make_shared<pipe::TriggerPipeChannelFactory>(executor);
+    pipe::PipeHost host{std::make_unique<FakeListener>(
+        std::make_unique<FakeStream>(state)), factory};
+
+    pipe::detail::set_trigger_pipe_before_idle_hook_for_test(
+        &IdleGate::pause, &gate);
+    check(host.start(), "idle-race Pipe host must start");
+    const bool entered = gate.wait_entered();
+    check(entered,
+        "pump must pause inside the locked empty-to-idle transition");
+
+    check(wait_until([&] { return second_output_attempted.load(); }),
+        "second admitted handler must publish while the prior pump holds idle lock");
+    gate.release();
+    pipe::detail::set_trigger_pipe_before_idle_hook_for_test(nullptr, nullptr);
+
+    bpip::Bytes burst;
+    for (std::size_t index = 0; index < burst_count; ++index) {
+        const auto command = std::string{
+            "{\"type\":\"command\",\"command\":\"status\",\"timestamp\":"}
+            + std::to_string(102 + index) + ",\"payload\":{}}";
+        append(burst, frame(bpip::FrameKind::json, command));
+    }
+    push_read(state, std::move(burst));
+
+    check(wait_until([&] {
+        std::lock_guard lock{state->mutex};
+        return state->writes.size() == burst_count + 3;
+    }), "every raced and stressed output must start or join a pump");
+    check(handler_effects.load() == burst_count + 2,
+        "stress fixture must execute every unique admitted command exactly once");
+    host.stop(); host.join(); executor->shutdown();
+}
+
 }  // namespace
 
 int main()
@@ -458,6 +585,7 @@ int main()
     test_connection_task_limit_rejects_without_overcommit();
     test_ingress_budget_is_strict();
     test_stop_interrupts_write_and_waits_for_pump_barrier();
+    test_pump_idle_transition_has_no_lost_wakeup_under_stress();
     if (failures != 0) {
         std::cerr << failures << " Trigger Pipe test(s) failed\n";
         return 1;

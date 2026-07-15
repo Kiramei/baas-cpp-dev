@@ -56,6 +56,7 @@ class ServiceTriggerPipeChannelTests(unittest.TestCase):
             "test_connection_task_limit_rejects_without_overcommit",
             "test_ingress_budget_is_strict",
             "test_stop_interrupts_write_and_waits_for_pump_barrier",
+            "test_pump_idle_transition_has_no_lost_wakeup_under_stress",
         ):
             self.assertIn(name, self.tests)
 

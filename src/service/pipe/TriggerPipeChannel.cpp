@@ -4,6 +4,7 @@
 #include "service/trigger/TriggerCommandCatalog.h"
 
 #include <array>
+#include <atomic>
 #include <condition_variable>
 #include <functional>
 #include <mutex>
@@ -17,6 +18,11 @@ namespace {
 
 namespace protocol = baas::service::protocol::trigger;
 namespace trigger_service = baas::service::trigger;
+
+#if defined(BAAS_SERVICE_TRIGGER_PIPE_CHANNEL_TEST_HOOKS)
+std::atomic<detail::TriggerPipeBeforeIdleHook> before_idle_hook{};
+std::atomic<void*> before_idle_context{};
+#endif
 
 [[nodiscard]] std::span<const std::byte> as_bytes(
     const std::string_view value) noexcept
@@ -238,12 +244,27 @@ private:
             try { begun = session_->begin_send(); }
             catch (...) { break_with_failure(); break; }
             if (!begun) {
-                std::lock_guard lock{state_mutex_};
+                std::unique_lock lock{state_mutex_};
                 if (pump_requested_ && !closed_ && !failed_) continue;
                 if (begun.error != protocol::BeginSendError::queue_empty
                     && begun.error != protocol::BeginSendError::closed)
                     failed_ = true;
-                break;
+#if defined(BAAS_SERVICE_TRIGGER_PIPE_CHANNEL_TEST_HOOKS)
+                if (const auto hook = before_idle_hook.exchange(
+                        nullptr, std::memory_order_acq_rel)) {
+                    hook(before_idle_context.load(std::memory_order_acquire));
+                }
+#endif
+                // Empty-queue recheck and idle publication are one state
+                // transition. An output callback either sets pump_requested_
+                // before this lock, or observes pump_active_ == false after it
+                // and becomes the next pump. There is no unwatched gap.
+                pump_active_ = false;
+                --pump_calls_;
+                lock.unlock();
+                active_pipe_pump = previous;
+                pump_idle_.notify_all();
+                return;
             }
             const auto lease = *begun.lease;
             const auto write = write_batch(*writer, lease.batch());
@@ -338,6 +359,15 @@ private:
 };
 
 }  // namespace
+
+#if defined(BAAS_SERVICE_TRIGGER_PIPE_CHANNEL_TEST_HOOKS)
+void detail::set_trigger_pipe_before_idle_hook_for_test(
+    const TriggerPipeBeforeIdleHook hook, void* const context) noexcept
+{
+    before_idle_context.store(context, std::memory_order_release);
+    before_idle_hook.store(hook, std::memory_order_release);
+}
+#endif
 
 TriggerPipeChannelFactory::TriggerPipeChannelFactory(
     std::shared_ptr<trigger::TriggerExecutor> executor,

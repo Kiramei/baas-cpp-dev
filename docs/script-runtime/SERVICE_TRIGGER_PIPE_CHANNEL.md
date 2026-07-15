@@ -47,3 +47,5 @@ suite. The suite covers trigger-only selection, binary pairing, atomic
 JSON+BYTES output, single and stream leases, queue backpressure, close
 cancellation, write failure, strict ingress limits, and per-connection task
 capacity in both Debug and Release CI builds.
+The deterministic idle-transition race hook and a 128-command burst verify
+that output arriving at the empty-to-idle boundary cannot lose its wakeup.
