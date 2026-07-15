@@ -118,6 +118,8 @@ option(BUILD_SERVICE_SYNC_HANDLER "Build the transport-independent sync handler"
 option(BUILD_SERVICE_SYNC_HANDLER_TESTS "Build deterministic sync-handler tests" OFF)
 option(BUILD_SERVICE_FILE_RESOURCE_STORE "Build the durable JSON file resource store" OFF)
 option(BUILD_SERVICE_FILE_RESOURCE_STORE_TESTS "Build file resource store tests" OFF)
+option(BUILD_SERVICE_ADB_TRANSPORT "Build the standalone ADB smart-socket transport" OFF)
+option(BUILD_SERVICE_ADB_TRANSPORT_TESTS "Build deterministic ADB transport tests" OFF)
 option(BUILD_SERVICE_PRODUCTION_HTTP_HOST "Build the production HTTP host composition root" OFF)
 option(BUILD_SERVICE_PRODUCTION_HTTP_HOST_TESTS "Build production HTTP host composition tests" OFF)
 option(BUILD_SERVICE_REMOTE_HANDLER "Build the transport-independent remote handler" OFF)
@@ -209,6 +211,10 @@ endif()
 
 if(BUILD_SERVICE_FILE_RESOURCE_STORE_TESTS AND NOT BUILD_SERVICE_FILE_RESOURCE_STORE)
     set(BUILD_SERVICE_FILE_RESOURCE_STORE ON CACHE BOOL "Build the durable JSON file resource store" FORCE)
+endif()
+
+if(BUILD_SERVICE_ADB_TRANSPORT_TESTS AND NOT BUILD_SERVICE_ADB_TRANSPORT)
+    set(BUILD_SERVICE_ADB_TRANSPORT ON CACHE BOOL "Build the standalone ADB smart-socket transport" FORCE)
 endif()
 
 if(BUILD_SERVICE_PRODUCTION_HTTP_HOST_TESTS AND NOT BUILD_SERVICE_PRODUCTION_HTTP_HOST)
@@ -452,6 +458,7 @@ list(FILTER BAAS_CORE_SOURCES EXCLUDE REGEX "/src/service/http/.*\\.cpp$")
 list(FILTER BAAS_CORE_SOURCES EXCLUDE REGEX "/src/service/websocket/.*\\.cpp$")
 list(FILTER BAAS_CORE_SOURCES EXCLUDE REGEX "/src/service/auth/.*\\.cpp$")
 list(FILTER BAAS_CORE_SOURCES EXCLUDE REGEX "/src/service/adapters/.*\\.cpp$")
+list(FILTER BAAS_CORE_SOURCES EXCLUDE REGEX "/src/service/adb/.*\\.cpp$")
 list(FILTER BAAS_CORE_SOURCES EXCLUDE REGEX "/src/service/app/.*\\.cpp$")
 list(FILTER BAAS_CORE_SOURCES EXCLUDE REGEX "/src/service/channels/SyncHandler\\.cpp$")
 list(FILTER BAAS_CORE_SOURCES EXCLUDE REGEX "/src/service/channels/RemoteHandler\\.cpp$")
@@ -558,6 +565,10 @@ endif()
 
 if(BUILD_SERVICE_FILE_RESOURCE_STORE)
     include("${CMAKE_CURRENT_LIST_DIR}/cmake/ServiceFileResourceStore.cmake")
+endif()
+
+if(BUILD_SERVICE_ADB_TRANSPORT)
+    include("${CMAKE_CURRENT_LIST_DIR}/cmake/ServiceAdbTransport.cmake")
 endif()
 
 if(BUILD_SERVICE_REMOTE_HANDLER)
