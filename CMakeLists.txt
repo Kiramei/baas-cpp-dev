@@ -112,6 +112,8 @@ option(BUILD_SERVICE_BUSINESS_SESSION "Build authenticated business WebSocket dr
 option(BUILD_SERVICE_BUSINESS_SESSION_TESTS "Build deterministic business-driver tests" OFF)
 option(BUILD_SERVICE_PROVIDER_HANDLER "Build the transport-independent provider handler" OFF)
 option(BUILD_SERVICE_PROVIDER_HANDLER_TESTS "Build deterministic provider-handler tests" OFF)
+option(BUILD_SERVICE_SYNC_HANDLER "Build the transport-independent sync handler" OFF)
+option(BUILD_SERVICE_SYNC_HANDLER_TESTS "Build deterministic sync-handler tests" OFF)
 
 # BAAS_APP owns the production script Host adapters. Standalone runtime builds
 # stay opt-in, while application builds always compile the runtime and its
@@ -169,6 +171,14 @@ if(BUILD_SERVICE_PROVIDER_HANDLER_TESTS AND NOT BUILD_SERVICE_PROVIDER_HANDLER)
 endif()
 
 if(BUILD_SERVICE_PROVIDER_HANDLER AND NOT BUILD_SERVICE_BUSINESS_SESSION)
+    set(BUILD_SERVICE_BUSINESS_SESSION ON CACHE BOOL "Build authenticated business WebSocket drivers" FORCE)
+endif()
+
+if(BUILD_SERVICE_SYNC_HANDLER_TESTS AND NOT BUILD_SERVICE_SYNC_HANDLER)
+    set(BUILD_SERVICE_SYNC_HANDLER ON CACHE BOOL "Build the transport-independent sync handler" FORCE)
+endif()
+
+if(BUILD_SERVICE_SYNC_HANDLER AND NOT BUILD_SERVICE_BUSINESS_SESSION)
     set(BUILD_SERVICE_BUSINESS_SESSION ON CACHE BOOL "Build authenticated business WebSocket drivers" FORCE)
 endif()
 
@@ -324,6 +334,10 @@ if(BUILD_SERVICE_AUTH_CRYPTO OR BUILD_SERVICE_AUTH_OWNER)
     baas_request_dependencies(sodium)
 endif()
 
+if(BUILD_SERVICE_SYNC_HANDLER)
+    baas_request_dependencies(nlohmann_json)
+endif()
+
 baas_load_requested_dependencies()
 
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
@@ -354,6 +368,7 @@ list(FILTER BAAS_CORE_SOURCES EXCLUDE REGEX "/src/service/router/.*\\.cpp$")
 list(FILTER BAAS_CORE_SOURCES EXCLUDE REGEX "/src/service/http/.*\\.cpp$")
 list(FILTER BAAS_CORE_SOURCES EXCLUDE REGEX "/src/service/websocket/.*\\.cpp$")
 list(FILTER BAAS_CORE_SOURCES EXCLUDE REGEX "/src/service/auth/.*\\.cpp$")
+list(FILTER BAAS_CORE_SOURCES EXCLUDE REGEX "/src/service/channels/SyncHandler\\.cpp$")
 
 if(TARGET_OS_NAME STREQUAL "Windows")
     list(REMOVE_ITEM BAAS_CORE_SOURCES "${CMAKE_CURRENT_LIST_DIR}/src/simdutf.cpp")
@@ -440,6 +455,10 @@ endif()
 
 if(BUILD_SERVICE_PROVIDER_HANDLER)
     include("${CMAKE_CURRENT_LIST_DIR}/cmake/ServiceProviderHandler.cmake")
+endif()
+
+if(BUILD_SERVICE_SYNC_HANDLER)
+    include("${CMAKE_CURRENT_LIST_DIR}/cmake/ServiceSyncHandler.cmake")
 endif()
 
 if(BUILD_SERVICE_HTTP)
