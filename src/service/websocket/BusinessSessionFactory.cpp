@@ -326,11 +326,13 @@ public:
         auth::SecretStreamPush push,
         std::weak_ptr<OutboundSink> outbound,
         std::shared_ptr<SessionAuthorizationGate> authorization,
-        const std::size_t maximum_plaintext)
+        const std::size_t maximum_plaintext,
+        const bool remote_raw_permitted)
         : push_(std::move(push)),
           outbound_(outbound),
           authorization_(std::move(authorization)),
-          maximum_plaintext_(maximum_plaintext)
+          maximum_plaintext_(maximum_plaintext),
+          remote_raw_permitted_(remote_raw_permitted)
     {}
 
     void activate() noexcept { active_.store(true, std::memory_order_release); }
@@ -389,6 +391,21 @@ public:
     {
         peer_final_.store(true, std::memory_order_release);
         maybe_complete();
+    }
+
+    [[nodiscard]] bool enable_remote_raw_output() noexcept override
+    {
+        try {
+            std::lock_guard lock{writer_mutex_};
+            if (!remote_raw_permitted_ || raw_output_enabled_ || output_started_
+                || !active_.load(std::memory_order_acquire) || !is_open()
+                || server_final_enqueued_.load(std::memory_order_acquire)) {
+                return false;
+            }
+            raw_output_enabled_ = true;
+            return true;
+        }
+        catch (...) { return false; }
     }
 
     [[nodiscard]] BusinessEmitResult emit(BusinessOutboundMessage message) noexcept override
@@ -450,6 +467,7 @@ public:
                 lock.unlock();
                 return reject(BusinessEmitResult::closed);
             }
+            output_started_ = true;
             OutboundBatch batch;
             batch.frames.reserve(messages.size());
             bool contains_final = false;
@@ -465,25 +483,45 @@ public:
                 contains_final = message.final;
             }
             for (auto& message : messages) {
-                if (!push_) {
-                    lock.unlock();
-                    return reject(BusinessEmitResult::closed);
+                if (raw_output_enabled_) {
+                    // A raw remote stream closes at the WebSocket layer. Do
+                    // not leak the internal empty FINAL marker as a spurious
+                    // zero-length scrcpy packet.
+                    if (!message.final || !message.payload.empty()) {
+                        batch.frames.push_back({FrameKind::binary, std::move(message.payload)});
+                    }
                 }
-                auto encrypted = push_->push(
-                    bytes_of(message.payload),
-                    message.final ? auth::SecretStreamTag::final
-                                  : auth::SecretStreamTag::message);
-                if (!encrypted) {
-                    const auto result =
-                        encrypted.error == auth::SecretStreamError::resource_exhausted
-                        ? BusinessEmitResult::resource_exhausted
-                        : BusinessEmitResult::closed;
-                    lock.unlock();
-                    fail();
-                    return reject(result);
+                else {
+                    if (!push_) {
+                        lock.unlock();
+                        return reject(BusinessEmitResult::closed);
+                    }
+                    auto encrypted = push_->push(
+                        bytes_of(message.payload),
+                        message.final ? auth::SecretStreamTag::final
+                                      : auth::SecretStreamTag::message);
+                    if (!encrypted) {
+                        const auto result =
+                            encrypted.error == auth::SecretStreamError::resource_exhausted
+                            ? BusinessEmitResult::resource_exhausted
+                            : BusinessEmitResult::closed;
+                        lock.unlock();
+                        fail();
+                        return reject(result);
+                    }
+                    batch.frames.push_back({
+                        FrameKind::binary, byte_string(encrypted.ciphertext)});
                 }
-                batch.frames.push_back({
-                    FrameKind::binary, byte_string(encrypted.ciphertext)});
+            }
+            if (raw_output_enabled_ && contains_final && batch.frames.empty()) {
+                server_final_tick_.store(
+                    Clock::now().time_since_epoch().count(), std::memory_order_release);
+                server_final_enqueued_.store(true, std::memory_order_release);
+                lock.unlock();
+                final_written();
+                if (completion)
+                    completion->complete(BusinessBatchWriteResult::written);
+                return BusinessEmitResult::accepted;
             }
             class Completion final : public BatchCompletion {
             public:
@@ -658,6 +696,9 @@ private:
     std::weak_ptr<OutboundSink> outbound_;
     std::shared_ptr<SessionAuthorizationGate> authorization_;
     std::size_t maximum_plaintext_{};
+    bool remote_raw_permitted_{};
+    bool raw_output_enabled_{};
+    bool output_started_{};
     std::atomic_bool active_{false};
     std::atomic<SinkTerminal> terminal_{SinkTerminal::open};
     std::atomic_bool peer_final_{false};
@@ -995,7 +1036,8 @@ private:
         secure_sink_ = std::make_shared<SecureBusinessSink>(
             std::move(*pending_push_), outbound_, authorization_, std::min(
                 config_.max_handler_output_bytes,
-                config_.max_ciphertext_bytes - auth::secretstream_overhead_bytes));
+                config_.max_ciphertext_bytes - auth::secretstream_overhead_bytes),
+            channel_ == auth::BusinessChannel::remote);
         pending_push_.reset();
         auto created = handlers_->create(BusinessSessionContext{
             channel_, session_id_, socket_id_, expires_at_, pwd_epoch_}, secure_sink_, stop);

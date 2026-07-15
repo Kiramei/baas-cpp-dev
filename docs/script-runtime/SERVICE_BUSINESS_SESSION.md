@@ -79,9 +79,11 @@ timeout before both latches is truncation.
 
 The current Python and Tauri clients do not send secretstream FINAL, so their
 ordinary transport EOF is intentionally reported as truncated rather than
-clean FINAL completion. The legacy remote client also has a raw
-`decrypt=false` server-to-client bypass; this driver does not reproduce it and
-encrypts every business frame after `stream_ready`.
+clean FINAL completion. The remote handler may enable the legacy
+`decrypt=false` server-to-client bypass exactly once after validating its first
+configuration and before its first output. The production sink permits this
+only for `remote`; inbound frames stay secretstream-authenticated, and every
+other business channel remains encrypted.
 
 ## Build and evidence
 
@@ -91,9 +93,9 @@ covers immediate/multi-producer and atomic two-frame output, replay/corruption,
 observed accepted/written, synchronous rejection and asynchronous write failure,
 callback re-entry, weak lifetimes, both FINAL
 orders and timeout, revocation, default bounds, strict routing, and remote
-policy. CI also cross-builds the library for Android, where `/ws/remote` is
+policy plus encrypted/raw directionality. CI also cross-builds the library for Android, where `/ws/remote` is
 unavailable.
 
 This is session-boundary evidence, not a production E2E claim. Concrete
-provider/sync/trigger/remote handlers, host installation, Tauri/Python updates,
+trigger execution, concrete device adapters, host installation, Tauri/Python updates,
 and device/service smoke tests remain outside this target.
