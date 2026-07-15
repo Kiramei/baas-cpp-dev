@@ -1,5 +1,6 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+*.jar binary
 
 # Deterministic migration evidence and versioned rule digests are byte-stable
 # across Windows and POSIX checkouts.

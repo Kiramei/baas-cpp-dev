@@ -162,12 +162,49 @@ def fix_permissions(output_root: Path, resource_name: str) -> None:
             adb.chmod(adb.stat().st_mode | 0o755)
 
 
-def fetch_resource(name: str, resource: dict[str, Any], output_root: Path, download_root: Path) -> None:
+def resolve_vendored_source(lock_root: Path, resource: dict[str, Any]) -> Path:
+    relative = Path(str(resource["source"]))
+    if relative.is_absolute() or ".." in relative.parts:
+        raise RuntimeError(f"Unsafe vendored resource path: {relative}")
+    root = lock_root.resolve()
+    candidate = root / relative
+    current = root
+    for component in relative.parts:
+        current /= component
+        if current.is_symlink():
+            raise RuntimeError(f"Vendored resource traverses a symlink: {relative}")
+    source = candidate.resolve()
+    if source.parent != root and root not in source.parents:
+        raise RuntimeError(f"Vendored resource escapes lock root: {relative}")
+    if not source.is_file():
+        raise RuntimeError(f"Vendored resource is not a regular file: {relative}")
+    return source
+
+
+def fetch_resource(
+    name: str,
+    resource: dict[str, Any],
+    output_root: Path,
+    download_root: Path,
+    lock_root: Path,
+) -> None:
     expected_sha256 = str(resource["sha256"])
-    url = str(resource["url"])
-    version = str(resource.get("version", "unknown"))
-    archive = download_root / name / version / asset_name(url)
-    download(url, archive, expected_sha256)
+    provider = str(resource.get("provider", "github_release"))
+    if provider == "vendored":
+        archive = resolve_vendored_source(lock_root, resource)
+        expected_size = int(resource.get("size", -1))
+        if expected_size < 0 or archive.stat().st_size != expected_size:
+            raise RuntimeError(f"Vendored resource size mismatch: {archive}")
+        if not verify_sha256(archive, expected_sha256):
+            actual = sha256_file(archive)
+            raise RuntimeError(
+                f"Vendored resource SHA256 mismatch: expected {expected_sha256}, got {actual}"
+            )
+    else:
+        url = str(resource["url"])
+        version = str(resource.get("version", "unknown"))
+        archive = download_root / name / version / asset_name(url)
+        download(url, archive, expected_sha256)
 
     target_dir = output_root / str(resource["target_dir"])
     resource_type = resource.get("type", "archive")
@@ -200,7 +237,13 @@ def main() -> int:
     args.output_root.mkdir(parents=True, exist_ok=True)
     args.download_root.mkdir(parents=True, exist_ok=True)
     for name in selected:
-        fetch_resource(name, resources[name], args.output_root, args.download_root)
+        fetch_resource(
+            name,
+            resources[name],
+            args.output_root,
+            args.download_root,
+            args.lock.resolve().parent,
+        )
     return 0
 
 

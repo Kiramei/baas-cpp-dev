@@ -20,6 +20,25 @@
         ]
       }
     },
+    "ws_scrcpy_server": {
+      "version": "1.19-ws7",
+      "provider": "vendored",
+      "type": "file",
+      "source": "resource/ws-scrcpy/scrcpy-server.jar",
+      "sha256": "baae6ce9db8379ccd820277739f5005876564f4744f97756107445439813a920",
+      "size": 114470,
+      "target_dir": "bin/ws-scrcpy",
+      "outputs": {
+        "runtime": [
+          "bin/ws-scrcpy/scrcpy-server.jar"
+        ]
+      },
+      "validation": {
+        "required_outputs": [
+          "runtime"
+        ]
+      }
+    },
     "platform_tools_windows": {
       "version": "36.0.0-13206524",
       "provider": "github_release",
