@@ -497,8 +497,12 @@ MUST be serialized together under the channel send lock. `import_config` with
 `payload.binary=true` similarly consumes the immediately following binary
 frame. Declared size MUST equal actual size.
 
-**[MISSING]** Exhaustive table-driven commands, cancellation, interleaved
-stream/binary FIFO, duplicate timestamp, and load tests are pending.
+**[MISSING]** Exhaustive table-driven command execution and cross-language load
+tests remain pending. The C++ `TriggerSession` foundation now bounds live
+correlations and output, rejects duplicate timestamps, enforces stream terminal
+state, and keeps JSON/binary output in one indivisible batch; its BPIP adapter
+emits the two frames in one owning write buffer. It does not yet parse envelopes,
+dispatch commands, or run behind a live WebSocket/Pipe channel.
 
 ### 8.6 Remote
 
@@ -568,7 +572,10 @@ after its owning request/session is canceled unless the response is an explicit
 terminal cancellation result.
 
 **[MISSING]** v1 has stop commands but no general request cancellation envelope
-and no verified stale-task cleanup contract.
+and no verified stale-task cleanup contract. The C++ trigger core provides an
+idempotent embedding cancellation request, cancellation-wins publication, and
+disconnect enumeration for its future executor owner; this is not a new wire
+message and is not yet connected to live tasks.
 
 ## 11. Lifecycle and persistence
 
@@ -683,7 +690,7 @@ defined.
 | [MISSING] | Password, remember, epoch, persistent key, expiry, restart vectors | Not covered by current fixture |
 | [MISSING] | Complete HTTP route/status/body parity including reset-auth | C++ has an owned readiness provider and `/health` lifecycle, but no real runtime/auth owner wiring or shared route suite, and one route is absent in Python |
 | [MISSING] | Provider/sync/trigger/remote shared contract suite | Inventoried only; focused tests incomplete |
-| [MISSING] | Bounded queues, overload, timeout, cancellation, load gates | Policy constants and tests absent |
+| [MISSING] | Bounded queues, overload, timeout, cancellation, load gates | Trigger correlation/output constants, backpressure, cancellation precedence, disconnect cleanup, concurrency tests, and BPIP batching exist; transport-wide deadlines, global load policy, live executor propagation, and cross-language load remain absent |
 | [MISSING] | Live Windows pipe and Unix socket interoperability/fuzz | Framing unit tests only |
 | [MISSING] | C++ WebSocket/auth/secretstream implementation | Not implemented |
 | [MISSING] | Windows desktop Tauri end-to-end | Not run |

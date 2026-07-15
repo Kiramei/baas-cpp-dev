@@ -260,7 +260,14 @@ Python fallback is needed for migrated representative workflows.
   remain pending.
 - [~] Implement `cpp-httplib` routing, validation, JSON errors, health/version,
   graceful shutdown, and bounded concurrency.
-- [ ] Implement task submission, progress/events, cancellation, and result APIs.
+- [~] Implement task submission, progress/events, cancellation, and result APIs.
+  The transport-independent `TriggerSession` foundation now bounds live
+  timestamp correlations and output, enforces single/stream terminal state and
+  cancellation precedence, returns disconnect cleanup work, and coalesces each
+  BPIP JSON/binary response pair into one owning send batch. JSON envelope
+  schemas, the real command dispatcher/executor, live WebSocket/Pipe hosts,
+  deadlines, stale-task cleanup, and cross-language load/E2E remain pending; see
+  `SERVICE_TRIGGER_SESSION.md`.
 - [ ] Implement configuration and resource update APIs with atomic persistence.
 - [ ] Implement authentication/origin/listen-address policy appropriate to local
   desktop and Android deployment.

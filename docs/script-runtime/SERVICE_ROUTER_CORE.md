@@ -142,7 +142,9 @@ JSON escaping, every size budget, and shutdown intents.
 - HTTP parsing, listen-address/origin/authentication policy, TLS, or CORS;
 - bounded connection/worker concurrency, backpressure, or overload behavior;
 - real process shutdown, task draining, restart, or port-conflict behavior;
-- task/config/resource APIs, BPIP integration, or Tauri contract/E2E tests.
+- HTTP task/config/resource APIs or Tauri contract/E2E tests. The separate
+  `SERVICE_TRIGGER_SESSION.md` foundation follows the observed trigger channel
+  rather than adding a REST task route; it is not wired into this Router.
 - real runtime/auth subsystem owners publishing into the readiness foundation,
   the remaining required unversioned HTTP routes, and shared Python/Tauri
   parity evidence.
