@@ -72,6 +72,31 @@ HMAC of the token id and secret is persisted. `/auth/logout` must call
 `logout_remember_token`, so logout revokes server-side state instead of merely
 clearing a browser cookie.
 
+`begin_business_handshake` accepts only the typed `provider`, `sync`, `trigger`,
+and `remote` channels. It builds the signed v1 `kind=resume` transcript inside
+the owner. The transcript includes every bearer-bound client field: timestamp,
+nonces and KX key, session id, socket id, and resume ticket. The signing seed is
+therefore never exposed as a general signing oracle. The result is a move-only,
+non-default-constructible capability: only `AuthOwner` can set its private
+channel/session/socket/transcript/ticket binding. Callers can inspect the
+preauth `HandshakeMaterial` through a const accessor and move out the server
+hello JSON, but cannot mutate or reconstruct the resume context.
+
+`resume_business` is one mutex-linearized operation. It authenticates the
+ticket, checks the live session epoch and expiry, verifies the resume MAC over
+the canonical channel/session/socket/transcript context, derives the canonical
+`scope=ws` business base, then derives only the final
+`secretstream:server-tx` and `secretstream:server-rx` keys and the canonical AAD
+prefix. It does not instantiate or depend on a secretstream transport class.
+The same operation installs a bounded revocation subscription before returning.
+If password rotation wins the mutex, resume cannot succeed; if resume wins,
+the installed subscription receives the later revocation. Callers own the
+returned subscription id and must unsubscribe it when setup fails or the
+business connection closes. Business resume never creates a new control
+session or extends its TTL. Its API consumes the capability plus only the
+client's move-only resume MAC; it accepts no duplicate channel, identifier,
+ticket, or transcript fields that could be substituted after the signed hello.
+
 Password change/reset increments the epoch, removes all sessions and remembered
 logins, and places a bounded `auth_revoked` event on every control subscription.
 `ControlSessionFactory` drains these events before each authenticated input and
@@ -85,5 +110,9 @@ restart persistence, the Tauri-pinned signing identity, real Argon2 integration,
 proof and ticket tampering, remember/resume/logout, password revocation,
 capacity and expiry, injected storage/entropy failures, concurrent derivation
 admission, Python timestamp migration, and production file-size enforcement.
+It also loads the existing v1 vectors for the exact business resume MAC, scope,
+final directional keys, and AAD prefix; covers all four typed handshakes; and
+checks bad MAC/ticket/channel, subscription capacity, expiry, revocation, and
+the resume-versus-password-rotation mutex boundary.
 The service-auth workflow builds and tests Debug and Release on Windows, Linux,
 and macOS, and cross-builds the owner for Android arm64-v8a and x86_64.

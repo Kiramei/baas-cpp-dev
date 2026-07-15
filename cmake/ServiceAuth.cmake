@@ -91,6 +91,11 @@ if(BUILD_SERVICE_AUTH_OWNER_TESTS)
             "${BAAS_PROJECT_PATH}/tests/service/ServiceAuthOwnerTests.cpp"
     )
     target_compile_features(BAAS_service_auth_owner_tests PRIVATE cxx_std_20)
+    target_compile_definitions(
+            BAAS_service_auth_owner_tests
+            PRIVATE
+            BAAS_SERVICE_CONTRACT_VECTOR_PATH="${BAAS_PROJECT_PATH}/tests/service_contract/v1_vectors.json"
+    )
     target_link_libraries(BAAS_service_auth_owner_tests PRIVATE BAAS_service_auth_owner)
     add_test(NAME BAAS_service_auth_owner_tests COMMAND BAAS_service_auth_owner_tests)
     set_tests_properties(BAAS_service_auth_owner_tests PROPERTIES TIMEOUT 60)
