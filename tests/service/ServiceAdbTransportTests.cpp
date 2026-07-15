@@ -602,6 +602,27 @@ void forwarding_and_parsing()
     CHECK(result && *result.value);
     CHECK(forwarded->written == frame(
         "host-serial:emulator-5556:forward:tcp:27183;tcp:8886"));
+
+    auto allocated = fake(length_response("31415"), 1);
+    auto removed = fake("OKAY", 1);
+    factory.push(allocated);
+    factory.push(removed);
+    const auto port = transport.forward_tcp_zero("emulator-5556", 8886);
+    CHECK(port && *port.value == 31415);
+    CHECK(allocated->written == frame(
+        "host-serial:emulator-5556:forward:norebind:tcp:0;tcp:8886"));
+    const auto cleanup = transport.remove_tcp_forward("emulator-5556", 31415);
+    CHECK(cleanup && *cleanup.value);
+    CHECK(removed->written == frame(
+        "host-serial:emulator-5556:killforward:tcp:31415"));
+
+    for (const auto invalid : {"", "0", "65536", "12x", " 12"}) {
+        FakeFactory invalid_factory;
+        invalid_factory.push(fake(length_response(invalid)));
+        ServiceAdbTransport invalid_transport({}, invalid_factory.callback());
+        CHECK(invalid_transport.forward_tcp_zero("emulator-5556", 8886).error
+              == AdbTransportError::protocol_error);
+    }
 }
 
 void raw_stream_raii_stop_and_destructor()
@@ -754,7 +775,11 @@ void input_validation()
     CHECK(transport.shell_legacy("serial", "bad\ncommand").error
         == AdbTransportError::invalid_argument);
     CHECK(transport.forward("serial", "tcp:1;evil", "tcp:2").error
-        == AdbTransportError::invalid_argument);
+          == AdbTransportError::invalid_argument);
+    CHECK(transport.forward_tcp_zero("serial", 0).error
+          == AdbTransportError::invalid_argument);
+    CHECK(transport.remove_tcp_forward("serial", 0).error
+          == AdbTransportError::invalid_argument);
     CHECK(transport.open_tcp("serial", 0).error
         == AdbTransportError::invalid_argument);
     CHECK(transport.shell_legacy("serial", std::string(65'536, 'x')).error

@@ -666,6 +666,21 @@ public:
         return {std::move(response), AdbTransportError::none, {}};
     }
 
+    AdbTransportResult<bool> host_command(
+        const std::string_view request, const std::stop_token stop)
+    {
+        AdbTransportError error{};
+        std::string message;
+        auto state = connect(stop, error, message);
+        if (!state) return failure<bool>(error, std::move(message));
+        const auto deadline = std::chrono::steady_clock::now() + limits.io_timeout;
+        std::size_t total{};
+        std::lock_guard io_lock(state->io_mutex);
+        error = send_request(*state, request, deadline, stop, total);
+        if (error != AdbTransportError::none) return failure<bool>(error);
+        return expect_okay(*state, deadline, stop, total);
+    }
+
     AdbTransportResult<AdbServiceStream> open_service(
         const std::string_view serial, const std::string_view service,
         const std::stop_token stop)
@@ -929,18 +944,52 @@ AdbTransportResult<bool> ServiceAdbTransport::forward(
         || remote.find(';') != std::string_view::npos) {
         return failure<bool>(AdbTransportError::invalid_argument);
     }
-    AdbTransportError error{};
-    std::string message;
-    auto state = impl_->connect(stop, error, message);
-    if (!state) return failure<bool>(error, std::move(message));
     const std::string request = "host-serial:" + std::string(exact_serial)
         + ":forward:" + std::string(local) + ";" + std::string(remote);
-    const auto deadline = std::chrono::steady_clock::now() + impl_->limits.io_timeout;
-    std::size_t total{};
-    std::lock_guard lock(state->io_mutex);
-    error = impl_->send_request(*state, request, deadline, stop, total);
-    if (error != AdbTransportError::none) return failure<bool>(error);
-    return impl_->expect_okay(*state, deadline, stop, total);
+    return impl_->host_command(request, stop);
+} catch (...) {
+    return failure<bool>(AdbTransportError::internal_error);
+}
+
+AdbTransportResult<std::uint16_t> ServiceAdbTransport::forward_tcp_zero(
+    const std::string_view exact_serial, const std::uint16_t device_port,
+    const std::stop_token stop) try
+{
+    if (!safe_text(exact_serial, impl_->limits.max_serial_bytes, false)
+        || device_port == 0) {
+        return failure<std::uint16_t>(AdbTransportError::invalid_argument);
+    }
+    const std::string request = "host-serial:" + std::string(exact_serial)
+        + ":forward:norebind:tcp:0;tcp:" + std::to_string(device_port);
+    auto response = impl_->host_query(request, stop);
+    if (!response) {
+        return failure<std::uint16_t>(response.error, std::move(response.message));
+    }
+    std::uint32_t parsed{};
+    const auto* begin = response->data();
+    const auto* end = begin + response->size();
+    const auto converted = std::from_chars(begin, end, parsed);
+    if (begin == end || converted.ec != std::errc{} || converted.ptr != end
+        || parsed == 0 || parsed > std::numeric_limits<std::uint16_t>::max()) {
+        return failure<std::uint16_t>(AdbTransportError::protocol_error,
+                                      "invalid resolved ADB forward port");
+    }
+    return {static_cast<std::uint16_t>(parsed), AdbTransportError::none, {}};
+} catch (...) {
+    return failure<std::uint16_t>(AdbTransportError::internal_error);
+}
+
+AdbTransportResult<bool> ServiceAdbTransport::remove_tcp_forward(
+    const std::string_view exact_serial, const std::uint16_t local_port,
+    const std::stop_token stop) try
+{
+    if (!safe_text(exact_serial, impl_->limits.max_serial_bytes, false)
+        || local_port == 0) {
+        return failure<bool>(AdbTransportError::invalid_argument);
+    }
+    const std::string request = "host-serial:" + std::string(exact_serial)
+        + ":killforward:tcp:" + std::to_string(local_port);
+    return impl_->host_command(request, stop);
 } catch (...) {
     return failure<bool>(AdbTransportError::internal_error);
 }
