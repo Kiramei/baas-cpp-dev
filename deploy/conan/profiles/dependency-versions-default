@@ -1,7 +1,7 @@
 [conf]
 user.baas.dependencies:lz4_version=1.10.0
 user.baas.dependencies:nlohmann_json_version=3.11.3
-user.baas.dependencies:cpp_httplib_version=0.18.0
+user.baas.dependencies:cpp_httplib_version=0.50.1
 user.baas.dependencies:spdlog_version=1.15.3
 user.baas.dependencies:simdutf_version=6.2.0
 user.baas.dependencies:benchmark_version=1.9.1

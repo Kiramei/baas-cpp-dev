@@ -6,7 +6,7 @@ from conan.tools.files import copy, download
 
 class BAASCppHttplibConan(ConanFile):
     name = "baas-cpp-httplib"
-    version = "0.18.0"
+    version = "0.50.1"
     license = "MIT"
     package_type = "header-library"
 
@@ -23,5 +23,10 @@ class BAASCppHttplibConan(ConanFile):
     def package_info(self):
         self.cpp_info.set_property("cmake_file_name", "baas-cpp-httplib")
         self.cpp_info.set_property("cmake_target_name", "BAAS::httplib")
+        # cpp-httplib is header-only. Every translation unit in a process must
+        # therefore observe the same configuration macros; publish the BAAS
+        # protocol limit from the package target instead of redefining it on
+        # individual consumers.
+        self.cpp_info.defines = ["CPPHTTPLIB_WEBSOCKET_MAX_PAYLOAD_LENGTH=67108864"]
         self.cpp_info.bindirs = []
         self.cpp_info.libdirs = []
