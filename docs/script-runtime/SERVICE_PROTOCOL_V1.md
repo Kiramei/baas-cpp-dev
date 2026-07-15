@@ -33,7 +33,7 @@ The protocol has three layers:
 `tests/service_contract/v1_vectors.json`. The fixture anchors:
 
 - `baas-dev` commit `75bbacb545bc87e9510d85cbe8034f9180397004`;
-- `baas-tauri` commit `711a09d493b1d7e2fae9fc45b778a149977aa817`;
+- `baas-tauri` commit `a1c8c837829060b85a814ddb75bd8d45320c0591`;
 - canonical JSON, base64url, X25519, Ed25519, Argon2id, HMAC/HKDF, control
   envelopes, stream contexts, and BPIP frames;
 - C++ BPIP implementation and tests introduced by commit `8b1ff52`.
