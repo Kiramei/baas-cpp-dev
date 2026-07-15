@@ -122,6 +122,8 @@ option(BUILD_SERVICE_REMOTE_HANDLER "Build the transport-independent remote hand
 option(BUILD_SERVICE_REMOTE_HANDLER_TESTS "Build deterministic remote-handler tests" OFF)
 option(BUILD_SERVICE_TRIGGER_HANDLER "Build the production trigger business handler" OFF)
 option(BUILD_SERVICE_TRIGGER_HANDLER_TESTS "Build deterministic trigger-handler tests" OFF)
+option(BUILD_SERVICE_COMMAND_LINE "Build the bounded service command-line contract" OFF)
+option(BUILD_SERVICE_COMMAND_LINE_TESTS "Build deterministic service command-line tests" OFF)
 
 # BAAS_APP owns the production script Host adapters. Standalone runtime builds
 # stay opt-in, while application builds always compile the runtime and its
@@ -226,6 +228,10 @@ endif()
 if(BUILD_SERVICE_TRIGGER_HANDLER)
     set(BUILD_SERVICE_BUSINESS_SESSION ON CACHE BOOL "Build authenticated business WebSocket drivers" FORCE)
     set(BUILD_SERVICE_TRIGGER_EXECUTOR ON CACHE BOOL "Build the bounded trigger execution owner" FORCE)
+endif()
+
+if(BUILD_SERVICE_COMMAND_LINE_TESTS AND NOT BUILD_SERVICE_COMMAND_LINE)
+    set(BUILD_SERVICE_COMMAND_LINE ON CACHE BOOL "Build the bounded service command-line contract" FORCE)
 endif()
 
 if(BUILD_SERVICE_BUSINESS_SESSION_TESTS AND NOT BUILD_SERVICE_BUSINESS_SESSION)
@@ -528,6 +534,10 @@ endif()
 
 if(BUILD_SERVICE_PRODUCTION_HTTP_HOST)
     include("${CMAKE_CURRENT_LIST_DIR}/cmake/ServiceProductionHttpHost.cmake")
+endif()
+
+if(BUILD_SERVICE_COMMAND_LINE)
+    include("${CMAKE_CURRENT_LIST_DIR}/cmake/ServiceCommandLine.cmake")
 endif()
 
 if(NOT TARGET_OS_NAME STREQUAL "Android")
