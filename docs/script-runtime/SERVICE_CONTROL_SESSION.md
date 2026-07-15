@@ -1,11 +1,9 @@
 # Service control session
 
 `ControlSessionFactory` implements only the authenticated `/ws/control` v1
-state machine. It is deliberately not named or wired as the production session
-factory: provider, sync, trigger, and remote still require atomic business
-resume plus XChaCha20 secretstream. Installing a control-only factory into the
-owner that registers all five routes would turn those required routes into
-authentication failures.
+state machine. `ProductionSessionFactory` composes it with the business driver;
+installing this control-only factory into an owner that registers all five
+routes would still turn the four business routes into authentication failures.
 
 ## State and ownership
 
@@ -46,7 +44,8 @@ connections' heartbeat and deadline checks.
 - Capacity and derivation-busy outcomes use WebSocket 1013; authentication and
   protocol failures use 4401; internal storage/entropy/crypto failures use 1011.
 - Business channels are explicitly rejected by this control-only factory and
-  must not be exposed through it in a production host.
+  are routed by `ProductionSessionFactory`; see
+  [`SERVICE_BUSINESS_SESSION.md`](SERVICE_BUSINESS_SESSION.md).
 
 ## Verification
 

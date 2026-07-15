@@ -2,10 +2,10 @@
 
 `BAAS_service_websocket` is the bounded cpp-httplib WebSocket transport
 foundation used by `HttpHost`. It owns transport admission and lifecycle, but
-delegates the channel protocol to an injected stateful `SessionFactory`. The
-factory/driver boundary is where client hello, authentication, resume,
-secretstream, and channel-specific messages belong; those production drivers
-are not implemented by this transport layer yet.
+delegates the channel protocol to an injected stateful `SessionFactory`.
+`ProductionSessionFactory` now composes the control driver with encrypted
+business-session drivers; concrete provider/sync/trigger/remote business logic
+remains injected behind transport-independent handler factories.
 
 The owner and ordinary HTTP adapter are installed on the same
 `httplib::Server`, so they share one IPv4 loopback listener and one bounded
@@ -186,8 +186,8 @@ or Tauri process.
 
 ## Still incomplete
 
-- production control/provider/sync/trigger/remote session drivers and their
-  authentication, resume, secretstream, and business-message semantics;
+- production host wiring and concrete provider/sync/trigger/remote handler
+  implementations above the authenticated session-driver boundary;
 - higher-volume real-wire load, malformed-frame fuzzing, and teardown-race
   evidence beyond the deterministic transport and lifecycle gates;
 - TLS, authenticated LAN exposure, per-principal rate limits, and policy above
@@ -196,6 +196,6 @@ or Tauri process.
   measured production load evidence;
 - Tauri protocol sharing and end-to-end host/client/device smoke tests.
 
-This foundation is therefore an implemented bounded transport owner, not a
-claim that the production BAAS WebSocket protocol or authentication migration
-is complete.
+This foundation and its session drivers are not a claim that production host
+wiring, concrete business handlers, or the authentication migration is
+end-to-end complete.
