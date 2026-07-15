@@ -661,8 +661,16 @@ public:
     void closed() noexcept override
     {
         if (step_ == Step::closed) return;
-        const auto reason = secure_sink_ && secure_sink_->clean_final()
-            ? BusinessCloseReason::clean_final : BusinessCloseReason::truncated;
+        auto reason = BusinessCloseReason::truncated;
+        if (secure_sink_ && secure_sink_->clean_final()) {
+            reason = BusinessCloseReason::clean_final;
+        }
+        else if (secure_sink_) {
+            const auto terminal = secure_sink_->terminal_action();
+            if (terminal != TerminalAction::none) {
+                reason = close_reason_for_terminal(terminal);
+            }
+        }
         cleanup(reason);
     }
 

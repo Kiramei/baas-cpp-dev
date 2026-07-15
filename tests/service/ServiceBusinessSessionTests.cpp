@@ -231,6 +231,7 @@ public:
 
     void terminate(const ws::TerminalAction action) noexcept override
     {
+        ++terminate_calls;
         terminal.store(action);
     }
 
@@ -250,6 +251,7 @@ public:
     std::vector<ws::OutboundBatch> batches;
     std::vector<std::shared_ptr<ws::BatchCompletion>> pending;
     std::atomic<ws::TerminalAction> terminal{ws::TerminalAction::none};
+    std::atomic_size_t terminate_calls{};
     bool reject_next{};
     bool defer_next{};
 };
@@ -569,6 +571,11 @@ void test_sink_failures_final_and_weak_lifetime()
     outbound2->complete_one(ws::BatchWriteResult::failed);
     check(outbound2->terminal == ws::TerminalAction::internal_error,
           "asynchronous write failure terminates channel");
+    stream2.driver->closed();
+    check(stream2.handler->closed == ws::BusinessCloseReason::internal_error
+              && outbound2->terminal == ws::TerminalAction::internal_error
+              && outbound2->terminate_calls == 1,
+          "direct teardown preserves async write failure close reason and terminal");
 
     auto outbound3 = std::make_shared<RecordingOutbound>();
     auto weak_outbound = std::weak_ptr<RecordingOutbound>{outbound3};
@@ -733,11 +740,12 @@ void test_ready_and_async_authorization_gates()
         check(stream.outbound->batches.empty(),
               "revoked async output is rejected before encryption and enqueue");
     }
-    auto heartbeat = stream.driver->heartbeat({});
-    check(heartbeat.terminal == ws::TerminalAction::authentication_failed
-              && stream.handler->closed
-                  == ws::BusinessCloseReason::authentication_failed,
-          "driver observes the async authorization terminal latch");
+    stream.driver->closed();
+    check(stream.handler->closed == ws::BusinessCloseReason::authentication_failed
+              && stream.outbound->terminal
+                  == ws::TerminalAction::authentication_failed
+              && stream.outbound->terminate_calls == 1,
+          "direct teardown preserves async authorization close reason and terminal");
 }
 
 void test_late_completions_cannot_override_terminal()
