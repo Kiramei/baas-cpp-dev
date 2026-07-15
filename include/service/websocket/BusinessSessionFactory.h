@@ -10,6 +10,7 @@
 #include <chrono>
 #include <memory>
 #include <stop_token>
+#include <span>
 #include <string>
 #include <utility>
 #include <vector>
@@ -90,6 +91,9 @@ public:
         std::shared_ptr<BusinessBatchCompletion> completion) noexcept
     {
         if (!completion) return emit(std::move(message));
+        auth::secure_zero(std::as_writable_bytes(
+            std::span{message.payload.data(), message.payload.size()}));
+        message.payload.clear();
         completion->complete(BusinessBatchWriteResult::failed);
         return BusinessEmitResult::completion_unsupported;
     }
@@ -98,6 +102,11 @@ public:
         std::shared_ptr<BusinessBatchCompletion> completion) noexcept
     {
         if (!completion) return emit_batch(std::move(messages));
+        for (auto& message : messages) {
+            auth::secure_zero(std::as_writable_bytes(
+                std::span{message.payload.data(), message.payload.size()}));
+            message.payload.clear();
+        }
         completion->complete(BusinessBatchWriteResult::failed);
         return BusinessEmitResult::completion_unsupported;
     }

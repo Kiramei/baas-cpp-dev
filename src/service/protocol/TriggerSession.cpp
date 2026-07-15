@@ -153,13 +153,24 @@ public:
         }
     }
 
-    void notify() noexcept
+    [[nodiscard]] std::uint64_t generation() const noexcept
+    {
+        try {
+            std::lock_guard lock(mutex_);
+            return enabled_ ? generation_ : 0;
+        } catch (...) {
+            return 0;
+        }
+    }
+
+    void notify(const std::uint64_t generation) noexcept
     {
         std::shared_ptr<OutputReadyObserver> observer;
         try {
             {
                 std::lock_guard lock(mutex_);
-                if (!enabled_) return;
+                if (!enabled_ || generation == 0 || generation != generation_)
+                    return;
                 observer = observer_.lock();
                 if (!observer) observer_.reset();
             }
@@ -329,7 +340,7 @@ OutputReadySubscription TriggerSession::observe_output_ready(
         generation = output_ready_->subscribe(std::move(observer));
         ready = generation != 0 && !outbound_.empty();
     }
-    if (ready) output_ready_->notify();
+    if (ready) output_ready_->notify(generation);
     return {output_ready_, generation};
 }
 
@@ -489,8 +500,10 @@ PublishResult TriggerSession::publish(
     entry.response_queued = true;
     if (outbound_.back()->terminal()) entry.terminal_queued = true;
     ++published_batches_;
+    const auto ready_generation =
+        became_ready ? output_ready_->generation() : std::uint64_t{};
     lock.unlock();
-    if (became_ready) output_ready_->notify();
+    if (became_ready) output_ready_->notify(ready_generation);
     return {};
 }
 
@@ -545,8 +558,8 @@ FailSendResult TriggerSession::fail_send(const SendLease& lease)
 
         ++send_failures_;
         result = {SendTransitionError::none, close_locked()};
+        output_ready_->cancel();
     }
-    output_ready_->cancel();
     return result;
 }
 
@@ -577,8 +590,8 @@ std::vector<ActiveCommand> TriggerSession::close()
     {
         std::lock_guard lock(mutex_);
         active = close_locked();
+        output_ready_->cancel();
     }
-    output_ready_->cancel();
     return active;
 }
 
