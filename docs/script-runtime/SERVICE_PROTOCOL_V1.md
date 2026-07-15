@@ -713,14 +713,14 @@ defined.
 | --- | --- | --- |
 | [REQUIRED] | Normative v1 document and machine-validated examples | This file and `test_protocol_spec.py` |
 | [REQUIRED] | BPIP exact bytes, fragmentation, coalescing, malformed/endian/oversize/unknown kind | Golden vectors and C++ CTest |
-| [REQUIRED] | Canonical JSON/base64url/control/HKDF/X25519/Ed25519/Argon2 vectors | Python-generated checked-in fixture; C++ crypto not implemented |
+| [REQUIRED] | Canonical JSON/base64url/control/HKDF/X25519/Ed25519/Argon2 vectors | Python-generated checked-in fixture plus `BAAS_service_auth_crypto_tests` byte-exact C++ verification |
 | [MISSING] | Deterministic secretstream header/ciphertext cross-language vector | RNG injection/captured fixture absent |
 | [MISSING] | Password, remember, epoch, persistent key, expiry, restart vectors | Not covered by current fixture |
 | [MISSING] | Complete HTTP route/status/body parity including reset-auth | C++ has an owned readiness provider and `/health` lifecycle, but no real runtime/auth owner wiring or shared route suite, and one route is absent in Python |
 | [MISSING] | Provider/sync/trigger/remote shared contract suite | Inventoried only; focused tests incomplete |
 | [MISSING] | Bounded queues, overload, timeout, cancellation, load gates | Trigger correlation/output constants, leased-send backpressure, cancellation precedence, send-failure/disconnect cleanup, close-race tests, and BPIP batching exist; transport-wide deadlines, global load policy, live executor propagation, and cross-language load remain absent |
 | [MISSING] | Live Windows pipe and Unix socket interoperability/fuzz | Framing unit tests only |
-| [MISSING] | C++ WebSocket/auth/secretstream implementation | Not implemented |
+| [MISSING] | C++ auth/session/secretstream implementation | Bounded WebSocket transport and reusable C++ crypto foundation exist; persistent AuthOwner, production SessionDriver, business resume, and secretstream remain missing |
 | [MISSING] | Windows desktop Tauri end-to-end | Not run |
 | [MISSING] | Android native/JNI foreground and emulator smoke | Not implemented/run |
 | [MISSING] | Lifecycle, multi-instance, crash/restart, rollback | Not run |

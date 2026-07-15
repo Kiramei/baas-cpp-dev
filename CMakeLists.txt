@@ -100,6 +100,8 @@ option(BUILD_SERVICE_HTTP       "Build the optional cpp-httplib service adapter"
 option(BUILD_SERVICE_HTTP_TESTS "Build native tests for the cpp-httplib service adapter" OFF)
 option(BUILD_SERVICE_WEBSOCKET "Build the bounded cpp-httplib WebSocket owner" OFF)
 option(BUILD_SERVICE_WEBSOCKET_TESTS "Build deterministic WebSocket owner tests" OFF)
+option(BUILD_SERVICE_AUTH_CRYPTO "Build the service v1 cryptographic foundation" OFF)
+option(BUILD_SERVICE_AUTH_CRYPTO_TESTS "Build service v1 cryptographic contract tests" OFF)
 
 # BAAS_APP owns the production script Host adapters. Standalone runtime builds
 # stay opt-in, while application builds always compile the runtime and its
@@ -118,6 +120,10 @@ endif()
 
 if(BUILD_SERVICE_PROTOCOL_TESTS AND NOT BUILD_SERVICE_PROTOCOL)
     set(BUILD_SERVICE_PROTOCOL ON CACHE BOOL "Build the standalone BAAS service protocol library" FORCE)
+endif()
+
+if(BUILD_SERVICE_AUTH_CRYPTO_TESTS AND NOT BUILD_SERVICE_AUTH_CRYPTO)
+    set(BUILD_SERVICE_AUTH_CRYPTO ON CACHE BOOL "Build the service v1 cryptographic foundation" FORCE)
 endif()
 
 # Trigger ingress consumes command policy from the catalog. Keep this a
@@ -257,6 +263,10 @@ if(BUILD_SERVICE_HTTP OR BUILD_SERVICE_WEBSOCKET)
     baas_request_dependencies(cpp_httplib)
 endif()
 
+if(BUILD_SERVICE_AUTH_CRYPTO)
+    baas_request_dependencies(sodium)
+endif()
+
 baas_load_requested_dependencies()
 
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
@@ -286,6 +296,7 @@ list(FILTER BAAS_CORE_SOURCES EXCLUDE REGEX "/src/service/trigger/.*\\.cpp$")
 list(FILTER BAAS_CORE_SOURCES EXCLUDE REGEX "/src/service/router/.*\\.cpp$")
 list(FILTER BAAS_CORE_SOURCES EXCLUDE REGEX "/src/service/http/.*\\.cpp$")
 list(FILTER BAAS_CORE_SOURCES EXCLUDE REGEX "/src/service/websocket/.*\\.cpp$")
+list(FILTER BAAS_CORE_SOURCES EXCLUDE REGEX "/src/service/auth/.*\\.cpp$")
 
 if(TARGET_OS_NAME STREQUAL "Windows")
     list(REMOVE_ITEM BAAS_CORE_SOURCES "${CMAKE_CURRENT_LIST_DIR}/src/simdutf.cpp")
@@ -352,6 +363,10 @@ endif()
 
 if(BUILD_SERVICE_WEBSOCKET)
     include("${CMAKE_CURRENT_LIST_DIR}/cmake/ServiceWebSocket.cmake")
+endif()
+
+if(BUILD_SERVICE_AUTH_CRYPTO)
+    include("${CMAKE_CURRENT_LIST_DIR}/cmake/ServiceAuth.cmake")
 endif()
 
 if(BUILD_SERVICE_HTTP)
