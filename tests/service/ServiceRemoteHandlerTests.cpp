@@ -357,6 +357,14 @@ void test_strict_first_message_and_raw_switch_order()
         check(fixture.backend_state->opens == 0 && !fixture.sink->raw_enabled,
               "invalid configuration must not switch mode or acquire a device");
     }
+    {
+        Fixture fixture;
+        check(fixture.handler->input(secret("{}"), true, {}).status
+                  == ws::BusinessHandlerStatus::protocol_failed,
+              "peer FINAL cannot bypass the required initial configuration");
+        check(fixture.backend_state->opens == 0,
+              "unconfigured FINAL must not acquire a device session");
+    }
 
     Fixture fixture;
     fixture.backend_state->events = &fixture.sink->events;
@@ -366,6 +374,18 @@ void test_strict_first_message_and_raw_switch_order()
     check(fixture.sink->raw_enabled
               && fixture.sink->events == std::vector<std::string>({"raw", "open"}),
           "raw switch must occur exactly once before backend callbacks can start");
+
+    Fixture final_fixture;
+    require(final_fixture.config(R"({"config_id":"tail"})").status
+                == ws::BusinessHandlerStatus::ok,
+            "configured FINAL setup failed");
+    check(final_fixture.handler->input(secret("last-adb-bytes"), true, {}).status
+              == ws::BusinessHandlerStatus::complete,
+          "configured peer FINAL must close after processing its payload");
+    check(final_fixture.backend_state->device_input
+              == std::vector<std::string>{"last-adb-bytes"}
+              && final_fixture.backend_state->closes == 1,
+          "non-empty FINAL payload must reach ADB before session close");
 }
 
 void test_start_failures_and_synchronous_callback()
@@ -564,6 +584,60 @@ void test_backend_end_and_factory_guards()
     check(threw, "invalid remote limits must fail construction");
 }
 
+void test_clean_end_waits_for_in_flight_receipts()
+{
+    {
+        Fixture fixture;
+        fixture.sink->complete_synchronously = false;
+        require(fixture.config(R"({"config_id":null})").status
+                    == ws::BusinessHandlerStatus::ok,
+                "deferred clean-end setup failed");
+        require(fixture.backend_state->emit("pending")
+                    == channels::RemoteIoStatus::accepted,
+                "deferred clean-end frame admission failed");
+        fixture.backend_state->end(channels::RemoteSessionEnd::clean);
+        check(fixture.handler->heartbeat({}).status == ws::BusinessHandlerStatus::ok,
+              "clean end must wait while an admitted write is in flight");
+        fixture.sink->complete(0, ws::BusinessBatchWriteResult::written);
+        check(fixture.handler->heartbeat({}).status
+                  == ws::BusinessHandlerStatus::complete,
+              "clean end must complete after every in-flight write is written");
+    }
+    {
+        Fixture fixture;
+        fixture.sink->complete_synchronously = false;
+        require(fixture.config(R"({"config_id":null})").status
+                    == ws::BusinessHandlerStatus::ok,
+                "late failure setup failed");
+        require(fixture.backend_state->emit("pending-failure")
+                    == channels::RemoteIoStatus::accepted,
+                "late failure frame admission failed");
+        fixture.backend_state->end(channels::RemoteSessionEnd::device_closed);
+        fixture.sink->complete(0, ws::BusinessBatchWriteResult::failed);
+        check(fixture.handler->heartbeat({}).status
+                  == ws::BusinessHandlerStatus::internal_error,
+              "late failed receipt must override a pending clean end");
+    }
+    {
+        Fixture fixture;
+        fixture.sink->complete_synchronously = false;
+        require(fixture.config(R"({"config_id":null})").status
+                    == ws::BusinessHandlerStatus::ok,
+                "pending close setup failed");
+        require(fixture.backend_state->emit("pending-close")
+                    == channels::RemoteIoStatus::accepted,
+                "pending close frame admission failed");
+        fixture.backend_state->end(channels::RemoteSessionEnd::clean);
+        fixture.handler->closed(ws::BusinessCloseReason::stopped);
+        check(fixture.backend_state->closes == 1,
+              "explicit close must not wait for transport write receipts");
+        fixture.sink->complete(0, ws::BusinessBatchWriteResult::written);
+        check(fixture.handler->heartbeat({}).status
+                  == ws::BusinessHandlerStatus::complete,
+              "late receipt after close must not revive the handler");
+    }
+}
+
 }  // namespace
 
 int main()
@@ -576,6 +650,7 @@ int main()
         test_concurrent_callback_and_close();
         test_blocked_send_is_interrupted_by_close();
         test_backend_end_and_factory_guards();
+        test_clean_end_waits_for_in_flight_receipts();
     }
     catch (const std::exception& error) {
         std::cerr << "FAILED with exception: " << error.what() << '\n';

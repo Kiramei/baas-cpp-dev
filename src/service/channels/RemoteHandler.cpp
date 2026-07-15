@@ -146,7 +146,7 @@ public:
         const auto output = output_.lock();
         if (!output) {
             completion->reject();
-            fail(ws::BusinessHandlerStatus::complete);
+            request_clean_end();
             return RemoteIoStatus::closed;
         }
         const auto admitted = output->emit(
@@ -159,11 +159,10 @@ public:
         }
         completion->reject();
         const auto mapped = emit_status(admitted);
-        fail(mapped == RemoteIoStatus::capacity
-                 ? ws::BusinessHandlerStatus::capacity
-                 : mapped == RemoteIoStatus::closed
-                     ? ws::BusinessHandlerStatus::complete
-                     : ws::BusinessHandlerStatus::internal_error);
+        if (mapped == RemoteIoStatus::closed) request_clean_end();
+        else fail(mapped == RemoteIoStatus::capacity
+                      ? ws::BusinessHandlerStatus::capacity
+                      : ws::BusinessHandlerStatus::internal_error);
         return mapped;
     }
 
@@ -172,14 +171,14 @@ public:
         switch (reason) {
             case RemoteSessionEnd::clean:
             case RemoteSessionEnd::device_closed:
-                fail(ws::BusinessHandlerStatus::complete);
-                break;
+                request_clean_end();
+                return;
             case RemoteSessionEnd::capacity:
                 fail(ws::BusinessHandlerStatus::capacity);
-                break;
+                return;
             case RemoteSessionEnd::internal_error:
                 fail(ws::BusinessHandlerStatus::internal_error);
-                break;
+                return;
         }
     }
 
@@ -188,7 +187,7 @@ public:
         switch (status) {
             case RemoteIoStatus::accepted: return;
             case RemoteIoStatus::closed:
-                fail(ws::BusinessHandlerStatus::complete);
+                request_clean_end();
                 return;
             case RemoteIoStatus::capacity:
                 fail(ws::BusinessHandlerStatus::capacity);
@@ -320,14 +319,36 @@ private:
         if (active_ && admitted && !written
             && terminal_ == ws::BusinessHandlerStatus::ok) {
             terminal_ = ws::BusinessHandlerStatus::internal_error;
+            clean_end_pending_ = false;
+        }
+        else if (active_ && admitted && written && clean_end_pending_
+                 && in_flight_frames_ == 0
+                 && terminal_ == ws::BusinessHandlerStatus::ok) {
+            clean_end_pending_ = false;
+            terminal_ = ws::BusinessHandlerStatus::complete;
         }
     }
 
     void fail(const ws::BusinessHandlerStatus status) noexcept
     {
         std::lock_guard lock{mutex_};
-        if (active_ && terminal_ == ws::BusinessHandlerStatus::ok)
+        if (active_ && terminal_ == ws::BusinessHandlerStatus::ok) {
             terminal_ = status;
+            clean_end_pending_ = false;
+        }
+    }
+
+    void request_clean_end() noexcept
+    {
+        std::lock_guard lock{mutex_};
+        if (!active_ || terminal_ != ws::BusinessHandlerStatus::ok) return;
+        if (in_flight_frames_ == 0) {
+            terminal_ = ws::BusinessHandlerStatus::complete;
+            clean_end_pending_ = false;
+        }
+        else {
+            clean_end_pending_ = true;
+        }
     }
 
     mutable std::mutex mutex_;
@@ -336,6 +357,7 @@ private:
     ws::BusinessHandlerStatus terminal_{ws::BusinessHandlerStatus::ok};
     std::size_t in_flight_frames_{};
     std::size_t in_flight_bytes_{};
+    bool clean_end_pending_{};
     bool active_{true};
 };
 
@@ -363,15 +385,22 @@ public:
     {
         if (closed_.load(std::memory_order_acquire) || stop.stop_requested())
             return status_result(ws::BusinessHandlerStatus::complete);
-        if (peer_final) {
-            shutdown_session();
-            return status_result(ws::BusinessHandlerStatus::complete);
-        }
-        if (!configured_.exchange(true, std::memory_order_acq_rel))
+        if (!configured_.exchange(true, std::memory_order_acq_rel)) {
+            if (peer_final)
+                return status_result(ws::BusinessHandlerStatus::protocol_failed);
             return configure(std::move(plaintext), stop);
+        }
 
         const auto current = core_->status();
         if (current != ws::BusinessHandlerStatus::ok) return status_result(current);
+        if (peer_final && plaintext.empty()) {
+            shutdown_session();
+            const auto status = core_->status();
+            return status == ws::BusinessHandlerStatus::ok
+                    || status == ws::BusinessHandlerStatus::complete
+                ? status_result(ws::BusinessHandlerStatus::complete)
+                : status_result(status);
+        }
         RemoteIoStatus sent{RemoteIoStatus::closed};
         std::shared_ptr<RemoteSession> session;
         {
@@ -383,10 +412,12 @@ public:
             catch (...) { sent = RemoteIoStatus::internal_error; }
         }
         core_->report_io(sent);
-        if (sent != RemoteIoStatus::accepted) shutdown_session();
+        if (sent != RemoteIoStatus::accepted || peer_final) shutdown_session();
         if (closed_.load(std::memory_order_acquire))
             return status_result(ws::BusinessHandlerStatus::complete);
         const auto status = core_->status();
+        if (peer_final && status == ws::BusinessHandlerStatus::ok)
+            return status_result(ws::BusinessHandlerStatus::complete);
         return status == ws::BusinessHandlerStatus::ok
             ? ws::BusinessHandlerResult{} : status_result(status);
     }

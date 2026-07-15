@@ -11,8 +11,11 @@ The handler never opens sockets, starts ADB, or owns a device implementation.
 The first authenticated business plaintext must be one bounded JSON object.
 `config_id` is required and is either a UTF-8 string or null; `decrypt` is an
 optional Boolean and defaults to true. Duplicate keys, malformed UTF-8,
-over-depth/over-node JSON, oversized identifiers, and a second configuration
-are rejected. Unknown fields remain accepted to match the Python endpoint.
+over-depth/over-node JSON, and oversized identifiers are rejected. A peer FINAL
+cannot substitute for this configuration. After a valid configuration every
+payload is binary scrcpy data, including JSON-looking bytes; a non-empty peer
+FINAL payload is forwarded to ADB before the device session closes. Unknown
+initial fields remain accepted to match the Python endpoint.
 
 When `decrypt=false`, the handler enables the session sink's remote-only raw
 outbound capability after configuration validation and before backend startup.
@@ -23,8 +26,9 @@ by the business secretstream driver. Pipe transports already carry raw BYTES
 and do not need this WebSocket compatibility switch.
 
 An internal empty server FINAL is not emitted as a zero-length scrcpy packet in
-raw mode. Completion closes the WebSocket after every preceding raw frame is
-reported written.
+raw mode. The enclosing business session still owns its paired FINAL and
+bounded final-close timeout semantics; raw compatibility does not invent a
+second scrcpy packet or relax inbound authentication.
 
 ## Ownership and backpressure
 
@@ -33,7 +37,10 @@ frame reserves configurable in-flight frame and byte budgets before output
 admission. The reservation is released by the sink's exact-once write receipt,
 including synchronous completion. Queue rejection, an oversized frame, budget
 exhaustion, or a later failed write terminates the proxy; frames are never
-silently dropped.
+silently dropped. A clean/device-ended callback becomes complete immediately
+only when no write receipt is outstanding. Otherwise it remains pending until
+all admitted frames report written; any later failed receipt wins and converts
+the session to internal error.
 
 `RemoteSession::close` is idempotent, may interrupt a concurrent blocking
 `send_to_device`, and has a strong send/callback barrier: after it returns no
@@ -48,8 +55,9 @@ callbacks free of handler/session mutexes to avoid close inversion.
 Configure `BUILD_SERVICE_REMOTE_HANDLER_TESTS=ON`. The native Debug and Release
 tests cover strict configuration, encrypted/raw parity, byte-exact transfer in
 both directions, synchronous startup callbacks, synchronous/asynchronous write
-completion, queue and retained-byte backpressure, backend failures/end, channel
-confusion, callback-versus-close, and blocked-send-versus-close races. The business-session suite also
+completion, pending-clean-end ordering, queue and retained-byte backpressure,
+backend failures/end, channel confusion, callback-versus-close, and
+blocked-send-versus-close races. The business-session suite also
 proves raw mode cannot be enabled outside `remote`, cannot be repeated or
 enabled after output, does not relax inbound secretstream authentication, and
 does not expose the internal empty FINAL marker.
