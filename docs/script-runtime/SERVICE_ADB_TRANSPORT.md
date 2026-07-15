@@ -24,8 +24,9 @@ that chain safely:
 - exact transport selection followed by `tcp:<port>`, returned as a move-only
   raw service stream for a future lease owner.
 
-The jar push is intentionally excluded because ADB SYNC is a separate binary
-subprotocol. There are no dedicated start/kill helpers and no embedded command
+The jar push is intentionally excluded from this transport because ADB SYNC is
+a separate binary subprotocol. The bounded composition layer is documented in
+[`SERVICE_ADB_SYNC.md`](SERVICE_ADB_SYNC.md). There are no dedicated start/kill helpers and no embedded command
 strings: a future orchestrator must supply policy-approved shell commands.
 Shell-v2 parsing is also outside this minimal compatibility slice; the audited
 Python chain uses legacy shell output. No method in this library deploys a jar,
