@@ -12,6 +12,7 @@
 #include <fstream>
 #include <future>
 #include <iostream>
+#include <iterator>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -1283,7 +1284,22 @@ void test_file_storage_atomic_and_bounded()
     const auto unique = std::to_string(
         std::chrono::steady_clock::now().time_since_epoch().count());
     const auto root = std::filesystem::temp_directory_path() / ("baas-auth-owner-" + unique);
+    const auto existing = root / "config" / "existing";
+    std::filesystem::create_directories(existing);
+    {
+        std::ofstream output(existing / "config.json", std::ios::binary);
+        output << R"({"name":"existing"})";
+    }
     auto storage = auth::make_file_auth_storage(root);
+    {
+        std::ifstream input(existing / "config.json", std::ios::binary);
+        const std::string text{std::istreambuf_iterator<char>{input}, {}};
+        std::ofstream output(existing / "event.json", std::ios::binary);
+        output << "[]";
+        output.close();
+        check(text == R"({"name":"existing"})" && output,
+              "production auth ACL must preserve access to existing config trees");
+    }
     const auth::PublicBytes value{std::byte{1}, std::byte{2}, std::byte{3}};
     check(storage->write_atomic(auth::AuthFile::ticket_key, value),
           "production storage must atomically create config files");

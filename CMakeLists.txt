@@ -132,6 +132,8 @@ option(BUILD_SERVICE_TRIGGER_HANDLER "Build the production trigger business hand
 option(BUILD_SERVICE_TRIGGER_HANDLER_TESTS "Build deterministic trigger-handler tests" OFF)
 option(BUILD_SERVICE_STATUS_TRIGGER "Build the production status trigger registration" OFF)
 option(BUILD_SERVICE_STATUS_TRIGGER_TESTS "Build deterministic status trigger registration tests" OFF)
+option(BUILD_SERVICE_CONFIGURATION_TRIGGERS "Build production configuration trigger registrations" OFF)
+option(BUILD_SERVICE_CONFIGURATION_TRIGGER_TESTS "Build configuration trigger production tests" OFF)
 option(BUILD_SERVICE_COMMAND_LINE "Build the bounded service command-line contract" OFF)
 option(BUILD_SERVICE_COMMAND_LINE_TESTS "Build deterministic service command-line tests" OFF)
 option(BUILD_SERVICE_SHUTDOWN_COORDINATOR "Build the service main-thread shutdown coordinator" OFF)
@@ -151,6 +153,7 @@ if(BUILD_SERVICE_APP)
     set(BUILD_SERVICE_FILE_RESOURCE_STORE ON CACHE BOOL "Build the durable JSON file resource store" FORCE)
     set(BUILD_SERVICE_TRIGGER_HANDLER ON CACHE BOOL "Build the production trigger business handler" FORCE)
     set(BUILD_SERVICE_STATUS_TRIGGER ON CACHE BOOL "Build the production status trigger registration" FORCE)
+    set(BUILD_SERVICE_CONFIGURATION_TRIGGERS ON CACHE BOOL "Build production configuration trigger registrations" FORCE)
 endif()
 
 # BAAS_APP owns the production script Host adapters. Standalone runtime builds
@@ -283,6 +286,19 @@ if(BUILD_SERVICE_STATUS_TRIGGER AND NOT BUILD_SERVICE_TRIGGER_DISPATCH)
 endif()
 
 if(BUILD_SERVICE_STATUS_TRIGGER_TESTS AND NOT BUILD_SERVICE_TRIGGER_EXECUTOR)
+    set(BUILD_SERVICE_TRIGGER_EXECUTOR ON CACHE BOOL "Build the bounded trigger execution owner" FORCE)
+endif()
+
+if(BUILD_SERVICE_CONFIGURATION_TRIGGER_TESTS AND NOT BUILD_SERVICE_CONFIGURATION_TRIGGERS)
+    set(BUILD_SERVICE_CONFIGURATION_TRIGGERS ON CACHE BOOL "Build production configuration trigger registrations" FORCE)
+endif()
+
+if(BUILD_SERVICE_CONFIGURATION_TRIGGERS)
+    set(BUILD_SERVICE_FILE_RESOURCE_STORE ON CACHE BOOL "Build the durable JSON file resource store" FORCE)
+    set(BUILD_SERVICE_TRIGGER_DISPATCH ON CACHE BOOL "Build the transport-independent trigger dispatcher" FORCE)
+endif()
+
+if(BUILD_SERVICE_CONFIGURATION_TRIGGER_TESTS AND NOT BUILD_SERVICE_TRIGGER_EXECUTOR)
     set(BUILD_SERVICE_TRIGGER_EXECUTOR ON CACHE BOOL "Build the bounded trigger execution owner" FORCE)
 endif()
 
@@ -562,6 +578,10 @@ endif()
 
 if(BUILD_SERVICE_STATUS_TRIGGER)
     include("${CMAKE_CURRENT_LIST_DIR}/cmake/ServiceStatusTrigger.cmake")
+endif()
+
+if(BUILD_SERVICE_CONFIGURATION_TRIGGERS)
+    include("${CMAKE_CURRENT_LIST_DIR}/cmake/ServiceConfigurationTriggers.cmake")
 endif()
 
 if(BUILD_SERVICE_ROUTER)

@@ -5,6 +5,7 @@
 #include <filesystem>
 #include <functional>
 #include <memory>
+#include <string>
 #include <string_view>
 
 namespace baas::service::adapters {
@@ -14,6 +15,41 @@ enum class AtomicWriteResult {
     committed,
     committed_durability_uncertain,
 };
+
+enum class ConfigCommandError {
+    none,
+    cancelled,
+    invalid_id,
+    not_found,
+    invalid_data,
+    capacity,
+    conflict,
+    internal_error,
+};
+
+struct ConfigCopyResult {
+    std::string serial;
+    std::string name;
+    ConfigCommandError error{ConfigCommandError::none};
+
+    [[nodiscard]] explicit operator bool() const noexcept
+    {
+        return error == ConfigCommandError::none;
+    }
+};
+
+struct ConfigRemoveResult {
+    ConfigCommandError error{ConfigCommandError::none};
+
+    [[nodiscard]] explicit operator bool() const noexcept
+    {
+        return error == ConfigCommandError::none;
+    }
+};
+
+using ConfigCopyCommitClaim =
+    std::function<bool(std::string_view serial, std::string_view name)>;
+using ConfigRemoveCommitClaim = std::function<bool()>;
 
 struct FileResourceStoreDependencies {
     using Clock = std::function<double()>;
@@ -68,6 +104,18 @@ public:
         std::string origin = "filesystem");
 
     [[nodiscard]] const std::filesystem::path& project_root() const noexcept;
+
+    // Exact production backends for Python trigger commands copy_config and
+    // remove_config*. Structural changes share the patch mutation gate and
+    // invalidate cached snapshots before becoming observable.
+    [[nodiscard]] ConfigCopyResult copy_config(
+        std::string_view source_id,
+        std::stop_token stop,
+        ConfigCopyCommitClaim claim = {});
+    [[nodiscard]] ConfigRemoveResult remove_config(
+        std::string_view config_id,
+        std::stop_token stop,
+        ConfigRemoveCommitClaim claim = {});
 
 private:
     class Impl;

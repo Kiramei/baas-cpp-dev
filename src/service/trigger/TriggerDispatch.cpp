@@ -178,11 +178,13 @@ PendingTriggerResponse::PendingTriggerResponse(
     trigger_protocol::TriggerSession& session,
     trigger_protocol::AdmissionReceipt receipt,
     trigger_protocol::OutboundBatch batch,
-    std::optional<trigger_protocol::OutboundBatch> cancelled_fallback) noexcept
+    std::optional<trigger_protocol::OutboundBatch> cancelled_fallback,
+    const bool irrevocable) noexcept
     : session_(&session),
       receipt_(std::move(receipt)),
       batch_(std::move(batch)),
-      cancelled_fallback_(std::move(cancelled_fallback))
+      cancelled_fallback_(std::move(cancelled_fallback)),
+      irrevocable_(irrevocable)
 {}
 
 std::size_t PendingTriggerResponse::bytes() const noexcept
@@ -204,6 +206,7 @@ std::size_t PendingTriggerResponse::bytes() const noexcept
 
 bool PendingTriggerResponse::replace_with_cancelled() noexcept
 {
+    if (irrevocable_) return false;
     if (!batch_) return false;
     if (batch_->status() == trigger_protocol::ResponseStatus::cancelled)
         return true;
@@ -272,6 +275,41 @@ TriggerResponseResult TriggerResponseSink::success(
     return publish(
         trigger_protocol::ResponseStatus::ok, true, std::move(data_json), {},
         std::move(binary));
+}
+
+TriggerResponseResult TriggerResponseSink::irrevocable_success(
+    std::optional<std::string> data_json,
+    std::optional<std::vector<std::byte>> binary)
+{
+    auto prepared = publish(
+        trigger_protocol::ResponseStatus::ok, true, std::move(data_json), {},
+        std::move(binary));
+    if (!prepared || !staged_terminal_) return prepared;
+    const auto claim =
+        request_.session_->claim_irrevocable_terminal(request_.receipt_);
+    if (claim) {
+        irrevocable_terminal_claimed_ = true;
+        return prepared;
+    }
+    discard_staged_terminal();
+    if (claim.error
+        == trigger_protocol::IrrevocableTerminalClaimError::cancellation_requested) {
+        return cancelled("cancelled");
+    }
+    return error("irrevocable_terminal_claim_failed");
+}
+
+TriggerResponseResult TriggerResponseSink::irrevocable_error(std::string message)
+{
+    if (!irrevocable_terminal_claimed_) {
+        last_result_ = {
+            TriggerResponseError::no_pending_response,
+            TriggerResponseDisposition::close_session,
+        };
+        return last_result_;
+    }
+    discard_staged_terminal();
+    return error(std::move(message));
 }
 
 TriggerResponseResult TriggerResponseSink::error(std::string message)
@@ -439,7 +477,8 @@ TriggerResponseResult TriggerResponseSink::commit_staged_terminal()
                 cancelled_fallback.emplace(std::move(encoded_cancelled.batch));
             pending_.emplace(PendingTriggerResponse{
                 *request_.session_, request_.receipt_,
-                std::move(*staged_terminal_), std::move(cancelled_fallback)});
+                std::move(*staged_terminal_), std::move(cancelled_fallback),
+                irrevocable_terminal_claimed_});
         }
         staged_terminal_.reset();
         last_result_ = {
@@ -539,7 +578,7 @@ TriggerDispatchResult TriggerDispatcher::execute_admitted(
             }
         }
 
-        if (stop_token.stop_requested()
+        if (stop_token.stop_requested() && !sink.irrevocable_terminal_claimed_
             && (!sink.staged_terminal_
                 || sink.staged_terminal_->status()
                     != trigger_protocol::ResponseStatus::cancelled)) {

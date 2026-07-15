@@ -78,7 +78,7 @@ class ServiceApplicationContractTests(unittest.TestCase):
         for anchor in (
             "health_starting",
             "invalid_remember_request",
-            "unregistered_command",
+            "copy_config",
             "command_response",
             "storage_failure",
             "bind_failed",

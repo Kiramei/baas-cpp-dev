@@ -1402,6 +1402,78 @@ void test_running_to_completed_cancel_window_uses_cancelled_fallback()
           "cancel requests must replace every late success without rerunning handlers");
 }
 
+void test_irrevocable_terminal_resists_cancel_and_shutdown_rewrite()
+{
+    protocol::TriggerSessionLimits limits;
+    limits.max_queued_batches = 1;
+    auto session = std::make_shared<protocol::TriggerSession>(limits);
+    auto blocker = admit(*session, "status", 350);
+    auto blocker_batch = terminal("status", 350);
+    check(blocker && session->publish(*blocker.receipt, std::move(blocker_batch)),
+          "irrevocable fixture must fill outbound capacity");
+    std::atomic<bool> claimed{};
+    std::atomic<bool> release{};
+    auto dispatcher = dispatcher_with({
+        {"status", [&](const trigger::AdmittedTriggerRequest&,
+                       trigger::TriggerResponseSink& sink, std::stop_token) {
+            const auto prepared = sink.irrevocable_success();
+            claimed = sink.irrevocable_terminal_claimed();
+            check(prepared && claimed,
+                  "handler must prepare and claim an irrevocable terminal");
+            while (!release.load(std::memory_order_acquire))
+                std::this_thread::yield();
+        }},
+    });
+    trigger::TriggerExecutor executor(dispatcher, {1, 1, 1, 1});
+    auto owner = executor.connect(session);
+    auto item = ingress_item("status", 351);
+    check(owner.submit(std::move(*item)),
+          "irrevocable cancellation fixture must submit");
+    check(wait_until([&] { return claimed.load(); }),
+          "handler must close cancellation before its side-effect commit");
+    const auto cancelled = owner.request_cancel(351);
+    check(cancelled.session_decision
+              == protocol::CancelDecision::terminal_already_queued
+              && !cancelled.stop_requested,
+          "cancel after irrevocable claim must not request stop or rewrite success");
+    release = true;
+    check(wait_until([&] { return owner.stats().completed == 1; }),
+          "irrevocable success must retain backpressure ownership");
+    auto lease = session->begin_send();
+    if (lease) static_cast<void>(owner.complete_send(*lease.lease));
+    auto success = session->begin_send();
+    check(success && success.lease->batch().status() == protocol::ResponseStatus::ok,
+          "retried irrevocable terminal must remain successful");
+    if (success) static_cast<void>(owner.complete_send(*success.lease));
+
+    auto shutdown_session = std::make_shared<protocol::TriggerSession>();
+    std::atomic<bool> shutdown_claimed{};
+    std::atomic<bool> shutdown_release{};
+    auto shutdown_dispatcher = dispatcher_with({
+        {"status", [&](const trigger::AdmittedTriggerRequest&,
+                       trigger::TriggerResponseSink& sink, std::stop_token) {
+            static_cast<void>(sink.irrevocable_success());
+            shutdown_claimed = sink.irrevocable_terminal_claimed();
+            while (!shutdown_release.load(std::memory_order_acquire))
+                std::this_thread::yield();
+        }},
+    });
+    trigger::TriggerExecutor shutdown_executor(
+        shutdown_dispatcher, {1, 1, 1, 1});
+    auto shutdown_owner = shutdown_executor.connect(shutdown_session);
+    auto shutdown_item = ingress_item("status", 352);
+    check(shutdown_owner.submit(std::move(*shutdown_item)),
+          "irrevocable shutdown fixture must submit");
+    check(wait_until([&] { return shutdown_claimed.load(); }),
+          "shutdown fixture must claim before shutdown starts");
+    std::thread stopping([&] { shutdown_executor.shutdown(); });
+    shutdown_release = true;
+    stopping.join();
+    check(shutdown_executor.stats().active_tasks == 0
+              && shutdown_session->stats().closed,
+          "shutdown after claim must drain without fabricating cancelled output");
+}
+
 void test_stop_callback_reenters_stats_cancel_and_owner_shutdown()
 {
     std::atomic<trigger::TriggerExecutor*> executor_pointer{};
@@ -1970,6 +2042,7 @@ int main()
     test_concurrent_external_shutdown_waits_for_registry_close();
     test_shutdown_race_cannot_publish_completed_after_registry_scan();
     test_running_to_completed_cancel_window_uses_cancelled_fallback();
+    test_irrevocable_terminal_resists_cancel_and_shutdown_rewrite();
     test_stop_callback_reenters_stats_cancel_and_owner_shutdown();
     test_shutdown_stop_callback_reenters_executor_shutdown();
     test_owner_shutdown_callback_scan_has_bounded_reentry_depth();

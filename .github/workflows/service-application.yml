@@ -12,6 +12,7 @@ on:
       - 'include/service/**'
       - 'src/service/**'
       - 'tests/service/ServiceApplicationTests.cpp'
+      - 'tests/service/ConfigurationTriggerRegistrationTests.cpp'
       - 'deploy/conan/conanfile.py'
       - 'deploy/conan/profiles/**'
       - 'deploy/conan/scripts/**'
@@ -20,6 +21,7 @@ on:
       - 'deploy/conan/recipes/baas-nlohmann-json/**'
       - 'docs/script-runtime/SERVICE_APPLICATION.md'
       - 'docs/script-runtime/SERVICE_COMMAND_LINE.md'
+      - 'docs/script-runtime/SERVICE_CONFIGURATION_TRIGGERS.md'
   pull_request:
     branches: [main]
     types: [opened, synchronize, reopened]
@@ -31,6 +33,7 @@ on:
       - 'include/service/**'
       - 'src/service/**'
       - 'tests/service/ServiceApplicationTests.cpp'
+      - 'tests/service/ConfigurationTriggerRegistrationTests.cpp'
       - 'deploy/conan/conanfile.py'
       - 'deploy/conan/profiles/**'
       - 'deploy/conan/scripts/**'
@@ -39,6 +42,7 @@ on:
       - 'deploy/conan/recipes/baas-nlohmann-json/**'
       - 'docs/script-runtime/SERVICE_APPLICATION.md'
       - 'docs/script-runtime/SERVICE_COMMAND_LINE.md'
+      - 'docs/script-runtime/SERVICE_CONFIGURATION_TRIGGERS.md'
 
 permissions:
   contents: read
@@ -128,6 +132,8 @@ jobs:
           "-DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}/build/conan/service-application/conan_toolchain.cmake"
           -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
           -DBUILD_TESTING=ON -DBUILD_SERVICE_APP_TESTS=ON
+          -DBUILD_SERVICE_CONFIGURATION_TRIGGER_TESTS=ON
+          -DBUILD_SERVICE_AUTH_OWNER_TESTS=ON
           -DBUILD_APP_BAAS=OFF -DBUILD_APP_ISA=OFF -DBUILD_BAAS_OCR=OFF
           -DBUILD_BAAS_AW_CHECKER=OFF -DBUILD_BAAS_NMS_BENCHMARK=OFF
           -DBAAS_FETCH_RESOURCES=OFF
@@ -137,9 +143,10 @@ jobs:
           cmake --build build/service-application
           --config ${{ matrix.build_type }} --parallel 4
           --target BAAS_service BAAS_service_application_tests
+          BAAS_service_configuration_trigger_tests BAAS_service_auth_owner_tests
 
       - name: Run real loopback and CLI tests
         run: >-
           ctest --test-dir build/service-application
           --build-config ${{ matrix.build_type }} --output-on-failure --timeout 90
-          -R "^BAAS_service_(application_tests|version_cli|help_cli)$"
+          -R "^BAAS_service_(application_tests|configuration_trigger_tests|auth_owner_tests|version_cli|help_cli)$"

@@ -250,6 +250,23 @@ enum class CancelDecision : std::uint8_t {
     closed,
 };
 
+enum class IrrevocableTerminalClaimError : std::uint8_t {
+    none,
+    closed,
+    invalid_admission_receipt,
+    cancellation_requested,
+    terminal_already_queued,
+};
+
+struct IrrevocableTerminalClaimResult {
+    IrrevocableTerminalClaimError error{IrrevocableTerminalClaimError::none};
+
+    [[nodiscard]] explicit operator bool() const noexcept
+    {
+        return error == IrrevocableTerminalClaimError::none;
+    }
+};
+
 struct ActiveCommand {
     std::string command;
     Timestamp timestamp{};
@@ -366,6 +383,11 @@ public:
     [[nodiscard]] AdmissionResult admit(CommandAdmission command);
     [[nodiscard]] RollbackResult rollback(const AdmissionReceipt& receipt);
     [[nodiscard]] CancelDecision request_cancel(Timestamp timestamp);
+    // Atomically closes the cancellation window before an irreversible side
+    // effect is committed. It does not publish or otherwise select a terminal
+    // status; the owner must still publish success or a stable error.
+    [[nodiscard]] IrrevocableTerminalClaimResult claim_irrevocable_terminal(
+        const AdmissionReceipt& receipt);
     [[nodiscard]] PublishResult publish(
         const AdmissionReceipt& receipt, OutboundBatch&& batch);
     // Only the queue empty->nonempty edge is signalled. Registration while
@@ -401,6 +423,7 @@ private:
         std::string command;
         ResponseMode response_mode{ResponseMode::single};
         bool cancel_requested{};
+        bool irrevocable_terminal_claimed{};
         bool terminal_queued{};
         bool response_queued{};
         std::uint64_t generation{};

@@ -36,6 +36,13 @@ bytes, subscribers, and patch operations. Malformed, over-depth, over-node, or
 over-size documents never enter the visible cache. Cancellation is checked
 before filesystem or mutation work.
 
+Configuration-tree copy additionally limits the actual traversal to 4,096
+entries across regular files and directories, 64 MiB of file data, and 32
+directory levels. Each entry is charged before its destination is created, so
+wide trees of empty directories cannot consume unbounded enumeration, inode,
+or disk capacity. Capacity and cancellation failures remove private staging
+without publishing a partial configuration.
+
 ## Patch and commit boundary
 
 Patch behavior matches `InMemoryResourceStore`: `add`, `remove`, and `replace`
@@ -76,6 +83,27 @@ the same path and JSON validation, updates the cache only for a changed valid
 document, and publishes one root `replace` operation with the supplied bounded
 origin. No filesystem watcher is embedded in this adapter; a host watcher calls
 this method after observing an external change.
+
+## Configuration command operations
+
+The production `copy_config` and `remove_config*` trigger registrations use
+explicit structural operations on this store. They share the patch mutation
+gate, use bounded auth-protected siblings under `config/` plus same-volume rename,
+and invalidate affected config/event cache entries on every successful outcome;
+copy also invalidates `static_data` on every success, including when the disk
+file already matches the current default and requires no replacement.
+This includes idempotent removal of an already-absent directory and reuse of a
+clock-derived identifier whose old files disappeared externally. Recursive copy
+reads only regular files through the persistent root anchor and commits
+destination files through anchored create-exclusive and replacement writers.
+
+Structural command methods invalidate caches but do not synthesize subscriber
+updates. Their trigger response owns command acknowledgement; a host filesystem
+watcher that needs a subscription update calls `refresh_and_publish` after
+observing the committed change, using that method's validation and publication
+barrier. See
+`SERVICE_CONFIGURATION_TRIGGERS.md` for
+the Python parity boundary and deferred commands.
 
 ## Build and verification
 

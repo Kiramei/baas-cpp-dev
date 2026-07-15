@@ -375,8 +375,14 @@ private:
             if (!load_current_user_sid() || !ensure_owned_by_current_user(config_handle_)) return;
             LPWSTR sid_text{};
             if (!ConvertSidToStringSidW(current_user_sid_.data(), &sid_text)) return;
+            // The config directory owns both auth files and user configuration
+            // trees. Keep the protected allow-list, but make each ACE inherit
+            // to child directories and files; otherwise applying this DACL to
+            // a project with existing config/<id> files can remove their only
+            // inherited access and make the service's ResourceStore unusable.
             const std::wstring sddl = std::wstring{L"O:"} + sid_text
-                + L"D:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;FA;;;" + sid_text + L")";
+                + L"D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FA;;;"
+                + sid_text + L")";
             LocalFree(sid_text);
             if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(
                     sddl.c_str(), SDDL_REVISION_1,

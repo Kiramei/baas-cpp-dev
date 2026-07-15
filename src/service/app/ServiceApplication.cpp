@@ -1,6 +1,7 @@
 #include "service/app/ServiceApplication.h"
 
 #include "service/adapters/FileResourceStore.h"
+#include "service/app/ConfigurationTriggerRegistration.h"
 #include "service/app/ProductionProviderBackend.h"
 #include "service/app/StatusTriggerRegistration.h"
 #include "service/auth/Crypto.h"
@@ -188,6 +189,14 @@ ServiceApplicationOpenResult ServiceApplication::open(
         }
         std::vector<trigger::TriggerHandlerRegistration> registrations;
         registrations.push_back(std::move(*registration.registration));
+        auto configuration = make_configuration_trigger_registrations(
+            impl->resources);
+        if (!configuration) {
+            return {nullptr, ServiceApplicationError::trigger_registration_failed, {}};
+        }
+        for (auto& item : configuration.registrations) {
+            registrations.push_back(std::move(item));
+        }
         auto dispatch = trigger::TriggerDispatcher::create(std::move(registrations));
         if (!dispatch) {
             return {nullptr, ServiceApplicationError::trigger_dispatch_failed, {}};

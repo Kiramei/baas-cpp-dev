@@ -444,7 +444,7 @@
       ]
     },
     "baas-tauri": {
-      "commit": "a1c8c837829060b85a814ddb75bd8d45320c0591",
+      "commit": "c037120e687d3bd3def0a6f99935ad4b261a8e59",
       "files": [
         {
           "path": "src/shared/SecureWebSocket.ts",
