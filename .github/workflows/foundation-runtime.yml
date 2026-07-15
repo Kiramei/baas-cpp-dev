@@ -62,6 +62,7 @@ on:
       - 'docs/script-runtime/SERVICE_HTTPLIB_ADAPTER.md'
       - 'docs/script-runtime/SERVICE_ORIGIN_POLICY.md'
       - 'docs/script-runtime/SERVICE_COMMAND_LINE.md'
+      - 'docs/script-runtime/SERVICE_SHUTDOWN_COORDINATOR.md'
   pull_request:
     branches:
       - main
@@ -124,6 +125,7 @@ on:
       - 'docs/script-runtime/SERVICE_HTTPLIB_ADAPTER.md'
       - 'docs/script-runtime/SERVICE_ORIGIN_POLICY.md'
       - 'docs/script-runtime/SERVICE_COMMAND_LINE.md'
+      - 'docs/script-runtime/SERVICE_SHUTDOWN_COORDINATOR.md'
 
 permissions:
   contents: read
@@ -174,10 +176,10 @@ jobs:
       # No -G is intentional: official Windows images select their installed
       # Visual Studio generator; Ubuntu/macOS select bundled Unix Makefiles.
       - name: Configure foundation targets
-        run: cmake -S . -B build/foundation -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} -DBUILD_TESTING=ON -DBUILD_SCRIPT_TESTS=ON -DBUILD_SCRIPT_TOOLS=ON -DBUILD_SERVICE_PROTOCOL_TESTS=ON -DBUILD_SERVICE_TRIGGER_CATALOG_TESTS=ON -DBUILD_SERVICE_TRIGGER_DISPATCH_TESTS=ON -DBUILD_SERVICE_TRIGGER_EXECUTOR_TESTS=ON -DBUILD_SERVICE_PIPE_HOST_TESTS=ON -DBUILD_SERVICE_ROUTER_TESTS=ON -DBUILD_SERVICE_ORIGIN_POLICY_TESTS=ON -DBUILD_SERVICE_COMMAND_LINE_TESTS=ON -DBUILD_APP_BAAS=OFF -DBUILD_APP_ISA=OFF -DBUILD_BAAS_OCR=OFF -DBUILD_BAAS_AW_CHECKER=OFF -DBUILD_BAAS_NMS_BENCHMARK=OFF -DBAAS_FETCH_RESOURCES=OFF
+        run: cmake -S . -B build/foundation -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} -DBUILD_TESTING=ON -DBUILD_SCRIPT_TESTS=ON -DBUILD_SCRIPT_TOOLS=ON -DBUILD_SERVICE_PROTOCOL_TESTS=ON -DBUILD_SERVICE_TRIGGER_CATALOG_TESTS=ON -DBUILD_SERVICE_TRIGGER_DISPATCH_TESTS=ON -DBUILD_SERVICE_TRIGGER_EXECUTOR_TESTS=ON -DBUILD_SERVICE_PIPE_HOST_TESTS=ON -DBUILD_SERVICE_ROUTER_TESTS=ON -DBUILD_SERVICE_ORIGIN_POLICY_TESTS=ON -DBUILD_SERVICE_COMMAND_LINE_TESTS=ON -DBUILD_SERVICE_SHUTDOWN_COORDINATOR_TESTS=ON -DBUILD_APP_BAAS=OFF -DBUILD_APP_ISA=OFF -DBUILD_BAAS_OCR=OFF -DBUILD_BAAS_AW_CHECKER=OFF -DBUILD_BAAS_NMS_BENCHMARK=OFF -DBAAS_FETCH_RESOURCES=OFF
 
       - name: Build foundation tests
-        run: cmake --build build/foundation --config ${{ matrix.build_type }} --parallel 4 --target BAAS_script_check BAAS_script_lexer_tests BAAS_script_parser_tests BAAS_script_semantic_tests BAAS_script_executor_tests BAAS_script_value_heap_tests BAAS_script_structured_error_heap_tests BAAS_script_error_envelope_tests BAAS_script_environment_tests BAAS_script_error_translation_tests BAAS_script_syntax_check_tests BAAS_script_json_bridge_tests BAAS_script_module_specifier_tests BAAS_script_module_graph_tests BAAS_script_host_registry_tests BAAS_script_sync_evaluator_tests BAAS_script_sync_host_tests BAAS_script_sync_host_evaluator_tests BAAS_script_log_host_tests BAAS_service_pipe_framing_tests BAAS_service_pipe_host_tests BAAS_service_trigger_session_tests BAAS_service_trigger_egress_tests BAAS_service_trigger_envelope_tests BAAS_service_trigger_ingress_tests BAAS_service_trigger_catalog_tests BAAS_service_trigger_dispatch_tests BAAS_service_trigger_executor_tests BAAS_service_router_tests BAAS_service_health_foundation_tests BAAS_service_origin_policy_tests BAAS_service_command_line_tests
+        run: cmake --build build/foundation --config ${{ matrix.build_type }} --parallel 4 --target BAAS_script_check BAAS_script_lexer_tests BAAS_script_parser_tests BAAS_script_semantic_tests BAAS_script_executor_tests BAAS_script_value_heap_tests BAAS_script_structured_error_heap_tests BAAS_script_error_envelope_tests BAAS_script_environment_tests BAAS_script_error_translation_tests BAAS_script_syntax_check_tests BAAS_script_json_bridge_tests BAAS_script_module_specifier_tests BAAS_script_module_graph_tests BAAS_script_host_registry_tests BAAS_script_sync_evaluator_tests BAAS_script_sync_host_tests BAAS_script_sync_host_evaluator_tests BAAS_script_log_host_tests BAAS_service_pipe_framing_tests BAAS_service_pipe_host_tests BAAS_service_trigger_session_tests BAAS_service_trigger_egress_tests BAAS_service_trigger_envelope_tests BAAS_service_trigger_ingress_tests BAAS_service_trigger_catalog_tests BAAS_service_trigger_dispatch_tests BAAS_service_trigger_executor_tests BAAS_service_router_tests BAAS_service_health_foundation_tests BAAS_service_origin_policy_tests BAAS_service_command_line_tests BAAS_service_shutdown_coordinator_tests
 
       - name: Run foundation tests
         run: ctest --test-dir build/foundation --build-config ${{ matrix.build_type }} --output-on-failure --timeout 120

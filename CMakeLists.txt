@@ -124,6 +124,8 @@ option(BUILD_SERVICE_TRIGGER_HANDLER "Build the production trigger business hand
 option(BUILD_SERVICE_TRIGGER_HANDLER_TESTS "Build deterministic trigger-handler tests" OFF)
 option(BUILD_SERVICE_COMMAND_LINE "Build the bounded service command-line contract" OFF)
 option(BUILD_SERVICE_COMMAND_LINE_TESTS "Build deterministic service command-line tests" OFF)
+option(BUILD_SERVICE_SHUTDOWN_COORDINATOR "Build the service main-thread shutdown coordinator" OFF)
+option(BUILD_SERVICE_SHUTDOWN_COORDINATOR_TESTS "Build deterministic service shutdown coordinator tests" OFF)
 
 # BAAS_APP owns the production script Host adapters. Standalone runtime builds
 # stay opt-in, while application builds always compile the runtime and its
@@ -232,6 +234,14 @@ endif()
 
 if(BUILD_SERVICE_COMMAND_LINE_TESTS AND NOT BUILD_SERVICE_COMMAND_LINE)
     set(BUILD_SERVICE_COMMAND_LINE ON CACHE BOOL "Build the bounded service command-line contract" FORCE)
+endif()
+
+if(BUILD_SERVICE_SHUTDOWN_COORDINATOR_TESTS AND NOT BUILD_SERVICE_SHUTDOWN_COORDINATOR)
+    set(BUILD_SERVICE_SHUTDOWN_COORDINATOR ON CACHE BOOL "Build the service main-thread shutdown coordinator" FORCE)
+endif()
+
+if(BUILD_SERVICE_SHUTDOWN_COORDINATOR AND NOT BUILD_SERVICE_ROUTER)
+    set(BUILD_SERVICE_ROUTER ON CACHE BOOL "Build the transport-independent BAAS service router" FORCE)
 endif()
 
 if(BUILD_SERVICE_BUSINESS_SESSION_TESTS AND NOT BUILD_SERVICE_BUSINESS_SESSION)
@@ -538,6 +548,10 @@ endif()
 
 if(BUILD_SERVICE_COMMAND_LINE)
     include("${CMAKE_CURRENT_LIST_DIR}/cmake/ServiceCommandLine.cmake")
+endif()
+
+if(BUILD_SERVICE_SHUTDOWN_COORDINATOR)
+    include("${CMAKE_CURRENT_LIST_DIR}/cmake/ServiceShutdownCoordinator.cmake")
 endif()
 
 if(NOT TARGET_OS_NAME STREQUAL "Android")
