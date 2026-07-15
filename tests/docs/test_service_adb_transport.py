@@ -13,6 +13,8 @@ class ServiceAdbTransportDocumentationTests(unittest.TestCase):
             "ADB SYNC",
             "Shell-v2",
             "127.0.0.1:5037",
+            "AI_NUMERICHOST | AI_NUMERICSERV",
+            "native I/O lease",
             "stop()",
             "never pushes",
         ):

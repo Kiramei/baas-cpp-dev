@@ -5,6 +5,7 @@
 #include <atomic>
 #include <charconv>
 #include <cctype>
+#include <condition_variable>
 #include <cstring>
 #include <limits>
 #include <mutex>
@@ -135,25 +136,32 @@ public:
         const std::stop_token stop) override
     {
         if (output.empty()) return {0, AdbStreamStatus::ok};
+        const auto socket = acquire_io();
+        if (socket == invalid_socket) return {0, AdbStreamStatus::cancelled};
+        IoLease lease{this};
         for (;;) {
-            const auto ready = wait(false, deadline, stop);
+            const auto ready = wait(socket, false, deadline, stop);
             if (ready != AdbStreamStatus::ok) return {0, ready};
 #if defined(_WIN32)
             const auto size = static_cast<int>(std::min<std::size_t>(
                 output.size(), static_cast<std::size_t>(std::numeric_limits<int>::max())));
             const int received = ::recv(
-                socket_.load(), reinterpret_cast<char*>(output.data()), size, 0);
+                socket, reinterpret_cast<char*>(output.data()), size, 0);
 #else
             const auto received = ::recv(
-                socket_.load(), output.data(), output.size(), 0);
+                socket, output.data(), output.size(), 0);
 #endif
             if (received > 0) {
                 return {static_cast<std::size_t>(received), AdbStreamStatus::ok};
             }
-            if (received == 0) return {0, AdbStreamStatus::eof};
+            if (received == 0) {
+                return {0, closing_.load() ? AdbStreamStatus::cancelled
+                                           : AdbStreamStatus::eof};
+            }
             const auto error = socket_error();
             if (would_block(error) || interrupted(error)) continue;
-            return {0, AdbStreamStatus::error};
+            return {0, closing_.load() ? AdbStreamStatus::cancelled
+                                       : AdbStreamStatus::error};
         }
     }
 
@@ -162,14 +170,17 @@ public:
         const std::stop_token stop) override
     {
         if (input.empty()) return {0, AdbStreamStatus::ok};
+        const auto socket = acquire_io();
+        if (socket == invalid_socket) return {0, AdbStreamStatus::cancelled};
+        IoLease lease{this};
         for (;;) {
-            const auto ready = wait(true, deadline, stop);
+            const auto ready = wait(socket, true, deadline, stop);
             if (ready != AdbStreamStatus::ok) return {0, ready};
 #if defined(_WIN32)
             const auto size = static_cast<int>(std::min<std::size_t>(
                 input.size(), static_cast<std::size_t>(std::numeric_limits<int>::max())));
             const int sent = ::send(
-                socket_.load(), reinterpret_cast<const char*>(input.data()), size, 0);
+                socket, reinterpret_cast<const char*>(input.data()), size, 0);
 #else
 #if defined(MSG_NOSIGNAL)
             constexpr int send_flags = MSG_NOSIGNAL;
@@ -177,37 +188,85 @@ public:
             constexpr int send_flags = 0;
 #endif
             const auto sent = ::send(
-                socket_.load(), input.data(), input.size(), send_flags);
+                socket, input.data(), input.size(), send_flags);
 #endif
             if (sent > 0) {
                 return {static_cast<std::size_t>(sent), AdbStreamStatus::ok};
             }
             const auto error = socket_error();
             if (would_block(error) || interrupted(error)) continue;
-            return {0, AdbStreamStatus::error};
+            return {0, closing_.load() ? AdbStreamStatus::cancelled
+                                       : AdbStreamStatus::error};
         }
     }
 
     void close() noexcept override
     {
-        const auto socket = socket_.exchange(invalid_socket);
-        if (socket == invalid_socket) return;
+        NativeSocket socket{invalid_socket};
+        {
+            std::unique_lock lock(lifecycle_mutex_);
+            if (closing_.exchange(true)) {
+                lifecycle_changed_.wait(lock, [this] { return closed_; });
+                return;
+            }
+            socket = socket_;
+        }
+        if (socket == invalid_socket) {
+            std::lock_guard lock(lifecycle_mutex_);
+            closed_ = true;
+            lifecycle_changed_.notify_all();
+            return;
+        }
 #if defined(_WIN32)
         static_cast<void>(::shutdown(socket, SD_BOTH));
 #else
         static_cast<void>(::shutdown(socket, SHUT_RDWR));
 #endif
+        {
+            std::unique_lock lock(lifecycle_mutex_);
+            lifecycle_changed_.wait(lock, [this] { return active_io_ == 0; });
+            socket_ = invalid_socket;
+        }
         close_socket(socket);
+        {
+            std::lock_guard lock(lifecycle_mutex_);
+            closed_ = true;
+        }
+        lifecycle_changed_.notify_all();
     }
 
 private:
+    class IoLease final {
+    public:
+        explicit IoLease(NativeAdbStream* owner) noexcept : owner_(owner) {}
+        ~IoLease() { owner_->release_io(); }
+        IoLease(const IoLease&) = delete;
+        IoLease& operator=(const IoLease&) = delete;
+    private:
+        NativeAdbStream* owner_;
+    };
+
+    NativeSocket acquire_io() noexcept
+    {
+        std::lock_guard lock(lifecycle_mutex_);
+        if (closing_.load() || socket_ == invalid_socket) return invalid_socket;
+        ++active_io_;
+        return socket_;
+    }
+
+    void release_io() noexcept
+    {
+        std::lock_guard lock(lifecycle_mutex_);
+        if (active_io_ != 0) --active_io_;
+        if (active_io_ == 0) lifecycle_changed_.notify_all();
+    }
+
     AdbStreamStatus wait(
-        const bool writing, const Deadline deadline,
+        const NativeSocket socket, const bool writing, const Deadline deadline,
         const std::stop_token stop) noexcept
     {
         while (!stop.stop_requested()) {
-            const auto socket = socket_.load();
-            if (socket == invalid_socket) return AdbStreamStatus::error;
+            if (closing_.load()) return AdbStreamStatus::cancelled;
             const auto now = std::chrono::steady_clock::now();
             if (now >= deadline) return AdbStreamStatus::timeout;
             const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -227,7 +286,10 @@ private:
             pollfd descriptor{socket, static_cast<short>(writing ? POLLOUT : POLLIN), 0};
             const int ready = ::poll(&descriptor, 1, static_cast<int>(slice.count()));
 #endif
-            if (ready > 0) return AdbStreamStatus::ok;
+            if (ready > 0) {
+                return closing_.load() ? AdbStreamStatus::cancelled
+                                       : AdbStreamStatus::ok;
+            }
             if (ready < 0) {
 #if !defined(_WIN32)
                 if (errno == EINTR) continue;
@@ -238,7 +300,12 @@ private:
         return AdbStreamStatus::cancelled;
     }
 
-    std::atomic<NativeSocket> socket_{invalid_socket};
+    std::mutex lifecycle_mutex_;
+    std::condition_variable lifecycle_changed_;
+    NativeSocket socket_{invalid_socket};
+    std::size_t active_io_{};
+    std::atomic<bool> closing_{};
+    bool closed_{};
 };
 
 #if defined(_WIN32)
@@ -251,6 +318,21 @@ bool ensure_winsock() noexcept
     return ready;
 }
 #endif
+
+bool numeric_endpoint_host(const std::string& host) noexcept
+{
+#if defined(_WIN32)
+    if (!ensure_winsock()) return false;
+#endif
+    addrinfo hints{};
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+    hints.ai_flags = AI_NUMERICHOST;
+    addrinfo* addresses{};
+    const auto result = getaddrinfo(host.c_str(), nullptr, &hints, &addresses);
+    if (addresses) freeaddrinfo(addresses);
+    return result == 0;
+}
 
 AdbStreamOpenResult open_native_stream(
     const AdbEndpoint& endpoint, const Deadline deadline,
@@ -265,6 +347,7 @@ AdbStreamOpenResult open_native_stream(
     hints.ai_family = AF_UNSPEC;
     hints.ai_socktype = SOCK_STREAM;
     hints.ai_protocol = IPPROTO_TCP;
+    hints.ai_flags = AI_NUMERICHOST | AI_NUMERICSERV;
     addrinfo* addresses{};
     const auto port = std::to_string(endpoint.port);
     if (getaddrinfo(endpoint.host.c_str(), port.c_str(), &hints, &addresses) != 0) {
@@ -696,6 +779,7 @@ ServiceAdbTransport::ServiceAdbTransport(
 {
     if (!valid_limits(limits)
         || !safe_text(endpoint.host, limits.max_host_bytes, false)
+        || !numeric_endpoint_host(endpoint.host)
         || endpoint.port == 0) {
         throw std::invalid_argument("invalid ADB transport configuration");
     }

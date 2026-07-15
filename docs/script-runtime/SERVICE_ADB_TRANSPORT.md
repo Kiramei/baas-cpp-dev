@@ -39,10 +39,18 @@ responses and `FAIL` messages require exactly four hexadecimal bytes. Invalid,
 truncated, oversized, timed-out, or cancelled input fails closed.
 
 The default endpoint is `127.0.0.1:5037`; callers may inject an endpoint and
-stream factory. Each public operation opens an independent ADB connection.
+stream factory. Endpoint hosts must already be resolved numeric IPv4 or IPv6
+literals. DNS names are rejected at construction, and the native connector
+uses `AI_NUMERICHOST | AI_NUMERICSERV`, so name resolution cannot escape the
+connect deadline or cancellation boundary. Each public operation opens an
+independent ADB connection.
 Access to each connection is serialized, while unrelated connections can make
 progress concurrently. `AdbServiceStream` is move-only. `stop()` and transport
-destruction strongly close all active streams and interrupt native polling.
+destruction strongly close all active streams. Native close first rejects new
+I/O, calls `shutdown` to wake active poll/recv/send operations, waits for every
+native I/O lease to drain, and only then releases the OS socket handle. This
+prevents a concurrent operation from observing a recycled descriptor or
+`SOCKET` value.
 
 Default caps are 255 endpoint-host bytes, 256 serial bytes, 65,535 request
 bytes, 4 MiB per response, 8 MiB total protocol I/O, 64 KiB for `FAIL` and
@@ -55,9 +63,10 @@ construction.
 
 Configure with `-DBUILD_SERVICE_ADB_TRANSPORT_TESTS=ON` to build
 `BAAS_service_adb_transport_tests`. The deterministic suite injects fake ADB
-streams and covers fragmented frames, malformed and oversized lengths, `FAIL`,
-timeouts, cancellation, wrong serial selection, connection independence, and
-stop/destructor close.
+streams and runs a numeric-loopback fake ADB server. It covers fragmented
+frames, malformed and oversized lengths, `FAIL`, timeouts, cancellation, wrong
+serial selection, DNS-name rejection, connection independence, stop/destructor
+close, and repeated close races against blocked native reads and writes.
 
 An optional read-only local smoke may be run as:
 
@@ -67,3 +76,7 @@ BAAS_service_adb_transport_tests --smoke emulator-5556
 
 It sends only `host:devices-l` and exact-serial `get-state`. It never pushes,
 shells, forwards, starts, or kills anything.
+
+The smoke is an operator-run local verification, not a CTest or CI gate. Its
+stdout may be recorded in the change handoff for auditability; no synthetic or
+checked-in CI evidence should be created from a developer workstation result.

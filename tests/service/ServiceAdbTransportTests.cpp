@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <climits>
 #include <condition_variable>
 #include <cstring>
 #include <deque>
@@ -15,6 +16,19 @@
 #include <string>
 #include <thread>
 #include <vector>
+
+#if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <WinSock2.h>
+#include <WS2tcpip.h>
+#else
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <unistd.h>
+#endif
 
 using namespace std::chrono_literals;
 using baas::service::adb::AdbByteStream;
@@ -161,6 +175,259 @@ std::shared_ptr<FakeControl> fake(std::string input, const std::size_t fragment 
     control->max_write = fragment;
     return control;
 }
+
+#if defined(_WIN32)
+using TestSocket = SOCKET;
+constexpr TestSocket invalid_test_socket = INVALID_SOCKET;
+void close_test_socket(const TestSocket socket) noexcept
+{
+    if (socket != invalid_test_socket) closesocket(socket);
+}
+bool prepare_test_sockets() noexcept
+{
+    static const bool ready = [] {
+        WSADATA data{};
+        return WSAStartup(MAKEWORD(2, 2), &data) == 0;
+    }();
+    return ready;
+}
+#else
+using TestSocket = int;
+constexpr TestSocket invalid_test_socket = -1;
+void close_test_socket(const TestSocket socket) noexcept
+{
+    if (socket != invalid_test_socket) static_cast<void>(::close(socket));
+}
+bool prepare_test_sockets() noexcept { return true; }
+#endif
+
+class LoopbackAdbServer final {
+public:
+    explicit LoopbackAdbServer(const std::size_t sessions)
+        : sessions_(sessions)
+    {
+        if (!prepare_test_sockets()) throw CheckFailure("test socket startup");
+        listener_ = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+        if (listener_ == invalid_test_socket) throw CheckFailure("test socket");
+        const int receive_buffer = 1'024;
+        static_cast<void>(setsockopt(
+            listener_, SOL_SOCKET, SO_RCVBUF,
+#if defined(_WIN32)
+            reinterpret_cast<const char*>(&receive_buffer),
+#else
+            &receive_buffer,
+#endif
+            sizeof(receive_buffer)));
+        sockaddr_in address{};
+        address.sin_family = AF_INET;
+        address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        address.sin_port = 0;
+        if (::bind(listener_, reinterpret_cast<const sockaddr*>(&address),
+                   sizeof(address)) != 0
+            || ::listen(listener_, 4) != 0) {
+            close_test_socket(listener_);
+            listener_ = invalid_test_socket;
+            throw CheckFailure("test bind/listen");
+        }
+#if defined(_WIN32)
+        int length = sizeof(address);
+#else
+        socklen_t length = sizeof(address);
+#endif
+        if (getsockname(listener_, reinterpret_cast<sockaddr*>(&address), &length) != 0) {
+            close_test_socket(listener_);
+            listener_ = invalid_test_socket;
+            throw CheckFailure("test getsockname");
+        }
+        port_ = ntohs(address.sin_port);
+        worker_ = std::thread([this] { run(); });
+    }
+
+    ~LoopbackAdbServer()
+    {
+        {
+            std::lock_guard lock(mutex_);
+            stopping_ = true;
+            released_ = sessions_;
+        }
+        changed_.notify_all();
+#if defined(_WIN32)
+        if (listener_ != invalid_test_socket) {
+            static_cast<void>(::shutdown(listener_, SD_BOTH));
+        }
+#else
+        if (listener_ != invalid_test_socket) {
+            static_cast<void>(::shutdown(listener_, SHUT_RDWR));
+        }
+#endif
+        close_test_socket(listener_);
+        listener_ = invalid_test_socket;
+        if (worker_.joinable()) worker_.join();
+    }
+
+    [[nodiscard]] std::uint16_t port() const noexcept { return port_; }
+
+    void wait_ready(const std::size_t count)
+    {
+        std::unique_lock lock(mutex_);
+        CHECK(changed_.wait_for(lock, 2s, [&] {
+            return ready_ >= count || failure_ != nullptr;
+        }));
+        if (failure_) std::rethrow_exception(failure_);
+    }
+
+    void release(const std::size_t count)
+    {
+        std::lock_guard lock(mutex_);
+        released_ = std::max(released_, count);
+        changed_.notify_all();
+    }
+
+    void finish()
+    {
+        std::unique_lock lock(mutex_);
+        CHECK(changed_.wait_for(lock, 2s, [&] {
+            return completed_ == sessions_ || failure_ != nullptr;
+        }));
+        if (failure_) std::rethrow_exception(failure_);
+    }
+
+private:
+    static bool receive_exact(
+        const TestSocket socket, char* output, std::size_t remaining)
+    {
+        while (remaining != 0) {
+#if defined(_WIN32)
+            const int received = ::recv(
+                socket, output,
+                static_cast<int>(std::min<std::size_t>(remaining, INT_MAX)), 0);
+#else
+            const auto received = ::recv(socket, output, remaining, 0);
+#endif
+            if (received <= 0) return false;
+            output += received;
+            remaining -= static_cast<std::size_t>(received);
+        }
+        return true;
+    }
+
+    static std::string receive_frame(const TestSocket socket)
+    {
+        std::array<char, 4> header{};
+        if (!receive_exact(socket, header.data(), header.size())) {
+            throw CheckFailure("fake ADB request header");
+        }
+        std::size_t size{};
+        for (const auto c : header) {
+            size <<= 4U;
+            if (c >= '0' && c <= '9') size += static_cast<std::size_t>(c - '0');
+            else if (c >= 'a' && c <= 'f') size += static_cast<std::size_t>(c - 'a' + 10);
+            else if (c >= 'A' && c <= 'F') size += static_cast<std::size_t>(c - 'A' + 10);
+            else throw CheckFailure("fake ADB request length");
+        }
+        std::string request(size, '\0');
+        if (!receive_exact(socket, request.data(), request.size())) {
+            throw CheckFailure("fake ADB request body");
+        }
+        return request;
+    }
+
+    static void send_okay(const TestSocket socket)
+    {
+        std::string_view remaining = "OKAY";
+        while (!remaining.empty()) {
+#if defined(_WIN32)
+            const int sent = ::send(
+                socket, remaining.data(), static_cast<int>(remaining.size()), 0);
+#else
+#if defined(MSG_NOSIGNAL)
+            constexpr int flags = MSG_NOSIGNAL;
+#else
+            constexpr int flags = 0;
+#endif
+            const auto sent = ::send(
+                socket, remaining.data(), remaining.size(), flags);
+#endif
+            if (sent <= 0) throw CheckFailure("fake ADB response");
+            remaining.remove_prefix(static_cast<std::size_t>(sent));
+        }
+    }
+
+    void run() noexcept
+    {
+        try {
+            for (std::size_t index{}; index < sessions_; ++index) {
+                {
+                    std::lock_guard lock(mutex_);
+                    if (stopping_) break;
+                }
+                const auto client = ::accept(listener_, nullptr, nullptr);
+                if (client == invalid_test_socket) {
+                    std::lock_guard lock(mutex_);
+                    if (stopping_) break;
+                    throw CheckFailure("fake ADB accept");
+                }
+                const int receive_buffer = 1'024;
+                static_cast<void>(setsockopt(
+                    client, SOL_SOCKET, SO_RCVBUF,
+#if defined(_WIN32)
+                    reinterpret_cast<const char*>(&receive_buffer),
+#else
+                    &receive_buffer,
+#endif
+                    sizeof(receive_buffer)));
+                try {
+                    if (receive_frame(client) != "host:transport:race-serial") {
+                        throw CheckFailure("exact race serial");
+                    }
+                    send_okay(client);
+                    if (receive_frame(client) != "tcp:8886") {
+                        throw CheckFailure("race tcp service");
+                    }
+                    send_okay(client);
+                    {
+                        std::unique_lock lock(mutex_);
+                        ready_ = index + 1;
+                        changed_.notify_all();
+                        changed_.wait(lock, [&] {
+                            return released_ > index || stopping_;
+                        });
+                    }
+                } catch (...) {
+                    close_test_socket(client);
+                    throw;
+                }
+#if defined(_WIN32)
+                static_cast<void>(::shutdown(client, SD_BOTH));
+#else
+                static_cast<void>(::shutdown(client, SHUT_RDWR));
+#endif
+                close_test_socket(client);
+                {
+                    std::lock_guard lock(mutex_);
+                    completed_ = index + 1;
+                    changed_.notify_all();
+                }
+            }
+        } catch (...) {
+            std::lock_guard lock(mutex_);
+            failure_ = std::current_exception();
+            changed_.notify_all();
+        }
+    }
+
+    std::size_t sessions_{};
+    TestSocket listener_{invalid_test_socket};
+    std::uint16_t port_{};
+    std::thread worker_;
+    std::mutex mutex_;
+    std::condition_variable changed_;
+    std::size_t ready_{};
+    std::size_t released_{};
+    std::size_t completed_{};
+    bool stopping_{};
+    std::exception_ptr failure_;
+};
 
 void fragmented_host_query_and_endpoint()
 {
@@ -358,6 +625,62 @@ void independent_connections()
     CHECK(factory.state->endpoints.size() == 2);
 }
 
+void native_close_io_lease_stress()
+{
+    constexpr std::size_t read_sessions = 48;
+    LoopbackAdbServer server(read_sessions + 1);
+    for (std::size_t index{}; index < read_sessions; ++index) {
+        ServiceAdbTransport transport({"127.0.0.1", server.port()});
+        auto opened = transport.open_tcp("race-serial", 8886);
+        CHECK(opened);
+        server.wait_ready(index + 1);
+        auto operation = std::async(std::launch::async, [&] {
+            return opened->read_some(1'024);
+        });
+        std::this_thread::sleep_for(2ms);
+        const auto started = std::chrono::steady_clock::now();
+        transport.stop();
+        CHECK(std::chrono::steady_clock::now() - started < 1s);
+        const auto result = operation.get();
+        CHECK(result.error == AdbTransportError::cancelled
+            || result.error == AdbTransportError::closed);
+        CHECK(!opened->is_open());
+        server.release(index + 1);
+    }
+
+    ServiceAdbTransport transport({"127.0.0.1", server.port()});
+    auto opened = transport.open_tcp("race-serial", 8886);
+    CHECK(opened);
+    server.wait_ready(read_sessions + 1);
+    const std::vector<std::byte> payload(
+        4U * 1'024U, std::byte{0x5a});
+    std::atomic<std::size_t> completed_writes{};
+    auto operation = std::async(std::launch::async, [&] {
+        for (std::size_t index{}; index < 1'000'000; ++index) {
+            const auto result = opened->write_all(payload);
+            if (!result) return result.error;
+            completed_writes.fetch_add(1);
+        }
+        return AdbTransportError::none;
+    });
+    const auto progress_deadline = std::chrono::steady_clock::now() + 2s;
+    while (completed_writes.load() == 0
+           && operation.wait_for(0ms) == std::future_status::timeout
+           && std::chrono::steady_clock::now() < progress_deadline) {
+        std::this_thread::yield();
+    }
+    CHECK(completed_writes.load() != 0);
+    CHECK(operation.wait_for(20ms) == std::future_status::timeout);
+    const auto started = std::chrono::steady_clock::now();
+    transport.stop();
+    CHECK(std::chrono::steady_clock::now() - started < 1s);
+    const auto error = operation.get();
+    CHECK(error == AdbTransportError::cancelled
+        || error == AdbTransportError::closed);
+    server.release(read_sessions + 1);
+    server.finish();
+}
+
 void input_validation()
 {
     FakeFactory factory;
@@ -372,6 +695,28 @@ void input_validation()
         == AdbTransportError::invalid_argument);
     CHECK(transport.shell_legacy("serial", std::string(65'536, 'x')).error
         == AdbTransportError::invalid_argument);
+
+    bool factory_called{};
+    bool rejected_dns{};
+    try {
+        ServiceAdbTransport invalid({"localhost", 5037},
+            [&](const AdbEndpoint&, AdbByteStream::Deadline, std::stop_token) {
+                factory_called = true;
+                return AdbStreamOpenResult{
+                    nullptr, AdbTransportError::connection_failed, {}};
+            });
+    } catch (const std::invalid_argument&) {
+        rejected_dns = true;
+    }
+    CHECK(rejected_dns);
+    CHECK(!factory_called);
+
+    ServiceAdbTransport numeric_ipv6({"::1", 5037},
+        [](const AdbEndpoint&, AdbByteStream::Deadline, std::stop_token) {
+            return AdbStreamOpenResult{
+                nullptr, AdbTransportError::connection_failed, {}};
+        });
+    CHECK(numeric_ipv6.endpoint().host == "::1");
 }
 
 int smoke(const std::string& serial)
@@ -406,6 +751,7 @@ int main(const int argc, char** argv)
         forwarding_and_parsing,
         raw_stream_raii_stop_and_destructor,
         independent_connections,
+        native_close_io_lease_stress,
         input_validation,
     };
     try {

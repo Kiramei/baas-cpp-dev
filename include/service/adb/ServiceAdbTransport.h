@@ -44,6 +44,7 @@ struct AdbTransportResult {
 };
 
 struct AdbEndpoint {
+    // Numeric IPv4 or IPv6 literal. DNS names are deliberately rejected.
     std::string host{"127.0.0.1"};
     std::uint16_t port{5037};
 };
