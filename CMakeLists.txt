@@ -112,6 +112,8 @@ option(BUILD_SERVICE_BUSINESS_SESSION "Build authenticated business WebSocket dr
 option(BUILD_SERVICE_BUSINESS_SESSION_TESTS "Build deterministic business-driver tests" OFF)
 option(BUILD_SERVICE_PROVIDER_HANDLER "Build the transport-independent provider handler" OFF)
 option(BUILD_SERVICE_PROVIDER_HANDLER_TESTS "Build deterministic provider-handler tests" OFF)
+option(BUILD_SERVICE_PROVIDER_BACKEND "Build the production provider state backend" OFF)
+option(BUILD_SERVICE_PROVIDER_BACKEND_TESTS "Build production provider state backend tests" OFF)
 option(BUILD_SERVICE_SYNC_HANDLER "Build the transport-independent sync handler" OFF)
 option(BUILD_SERVICE_SYNC_HANDLER_TESTS "Build deterministic sync-handler tests" OFF)
 option(BUILD_SERVICE_FILE_RESOURCE_STORE "Build the durable JSON file resource store" OFF)
@@ -122,6 +124,10 @@ option(BUILD_SERVICE_REMOTE_HANDLER "Build the transport-independent remote hand
 option(BUILD_SERVICE_REMOTE_HANDLER_TESTS "Build deterministic remote-handler tests" OFF)
 option(BUILD_SERVICE_TRIGGER_HANDLER "Build the production trigger business handler" OFF)
 option(BUILD_SERVICE_TRIGGER_HANDLER_TESTS "Build deterministic trigger-handler tests" OFF)
+option(BUILD_SERVICE_COMMAND_LINE "Build the bounded service command-line contract" OFF)
+option(BUILD_SERVICE_COMMAND_LINE_TESTS "Build deterministic service command-line tests" OFF)
+option(BUILD_SERVICE_SHUTDOWN_COORDINATOR "Build the service main-thread shutdown coordinator" OFF)
+option(BUILD_SERVICE_SHUTDOWN_COORDINATOR_TESTS "Build deterministic service shutdown coordinator tests" OFF)
 
 # BAAS_APP owns the production script Host adapters. Standalone runtime builds
 # stay opt-in, while application builds always compile the runtime and its
@@ -174,6 +180,15 @@ if(BUILD_SERVICE_CONTROL_SESSION)
     set(BUILD_SERVICE_AUTH_CRYPTO ON CACHE BOOL "Build the service v1 cryptographic foundation" FORCE)
 endif()
 
+if(BUILD_SERVICE_PROVIDER_BACKEND_TESTS AND NOT BUILD_SERVICE_PROVIDER_BACKEND)
+    set(BUILD_SERVICE_PROVIDER_BACKEND ON CACHE BOOL "Build the production provider state backend" FORCE)
+endif()
+
+if(BUILD_SERVICE_PROVIDER_BACKEND)
+    set(BUILD_SERVICE_PROVIDER_HANDLER ON CACHE BOOL "Build the transport-independent provider handler" FORCE)
+    set(BUILD_SERVICE_AUTH_CRYPTO ON CACHE BOOL "Build the service v1 cryptographic foundation" FORCE)
+endif()
+
 if(BUILD_SERVICE_PROVIDER_HANDLER_TESTS AND NOT BUILD_SERVICE_PROVIDER_HANDLER)
     set(BUILD_SERVICE_PROVIDER_HANDLER ON CACHE BOOL "Build the transport-independent provider handler" FORCE)
 endif()
@@ -221,6 +236,18 @@ endif()
 if(BUILD_SERVICE_TRIGGER_HANDLER)
     set(BUILD_SERVICE_BUSINESS_SESSION ON CACHE BOOL "Build authenticated business WebSocket drivers" FORCE)
     set(BUILD_SERVICE_TRIGGER_EXECUTOR ON CACHE BOOL "Build the bounded trigger execution owner" FORCE)
+endif()
+
+if(BUILD_SERVICE_COMMAND_LINE_TESTS AND NOT BUILD_SERVICE_COMMAND_LINE)
+    set(BUILD_SERVICE_COMMAND_LINE ON CACHE BOOL "Build the bounded service command-line contract" FORCE)
+endif()
+
+if(BUILD_SERVICE_SHUTDOWN_COORDINATOR_TESTS AND NOT BUILD_SERVICE_SHUTDOWN_COORDINATOR)
+    set(BUILD_SERVICE_SHUTDOWN_COORDINATOR ON CACHE BOOL "Build the service main-thread shutdown coordinator" FORCE)
+endif()
+
+if(BUILD_SERVICE_SHUTDOWN_COORDINATOR AND NOT BUILD_SERVICE_ROUTER)
+    set(BUILD_SERVICE_ROUTER ON CACHE BOOL "Build the transport-independent BAAS service router" FORCE)
 endif()
 
 if(BUILD_SERVICE_BUSINESS_SESSION_TESTS AND NOT BUILD_SERVICE_BUSINESS_SESSION)
@@ -411,6 +438,7 @@ list(FILTER BAAS_CORE_SOURCES EXCLUDE REGEX "/src/service/http/.*\\.cpp$")
 list(FILTER BAAS_CORE_SOURCES EXCLUDE REGEX "/src/service/websocket/.*\\.cpp$")
 list(FILTER BAAS_CORE_SOURCES EXCLUDE REGEX "/src/service/auth/.*\\.cpp$")
 list(FILTER BAAS_CORE_SOURCES EXCLUDE REGEX "/src/service/adapters/.*\\.cpp$")
+list(FILTER BAAS_CORE_SOURCES EXCLUDE REGEX "/src/service/app/.*\\.cpp$")
 list(FILTER BAAS_CORE_SOURCES EXCLUDE REGEX "/src/service/channels/SyncHandler\\.cpp$")
 list(FILTER BAAS_CORE_SOURCES EXCLUDE REGEX "/src/service/channels/RemoteHandler\\.cpp$")
 list(FILTER BAAS_CORE_SOURCES EXCLUDE REGEX "/src/service/channels/TriggerHandler\\.cpp$")
@@ -502,6 +530,10 @@ if(BUILD_SERVICE_PROVIDER_HANDLER)
     include("${CMAKE_CURRENT_LIST_DIR}/cmake/ServiceProviderHandler.cmake")
 endif()
 
+if(BUILD_SERVICE_PROVIDER_BACKEND)
+    include("${CMAKE_CURRENT_LIST_DIR}/cmake/ServiceProviderBackend.cmake")
+endif()
+
 if(BUILD_SERVICE_SYNC_HANDLER)
     include("${CMAKE_CURRENT_LIST_DIR}/cmake/ServiceSyncHandler.cmake")
 endif()
@@ -524,6 +556,14 @@ endif()
 
 if(BUILD_SERVICE_PRODUCTION_HTTP_HOST)
     include("${CMAKE_CURRENT_LIST_DIR}/cmake/ServiceProductionHttpHost.cmake")
+endif()
+
+if(BUILD_SERVICE_COMMAND_LINE)
+    include("${CMAKE_CURRENT_LIST_DIR}/cmake/ServiceCommandLine.cmake")
+endif()
+
+if(BUILD_SERVICE_SHUTDOWN_COORDINATOR)
+    include("${CMAKE_CURRENT_LIST_DIR}/cmake/ServiceShutdownCoordinator.cmake")
 endif()
 
 if(NOT TARGET_OS_NAME STREQUAL "Android")
