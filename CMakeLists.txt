@@ -114,6 +114,8 @@ option(BUILD_SERVICE_PROVIDER_HANDLER "Build the transport-independent provider 
 option(BUILD_SERVICE_PROVIDER_HANDLER_TESTS "Build deterministic provider-handler tests" OFF)
 option(BUILD_SERVICE_SYNC_HANDLER "Build the transport-independent sync handler" OFF)
 option(BUILD_SERVICE_SYNC_HANDLER_TESTS "Build deterministic sync-handler tests" OFF)
+option(BUILD_SERVICE_FILE_RESOURCE_STORE "Build the durable JSON file resource store" OFF)
+option(BUILD_SERVICE_FILE_RESOURCE_STORE_TESTS "Build file resource store tests" OFF)
 option(BUILD_SERVICE_PRODUCTION_HTTP_HOST "Build the production HTTP host composition root" OFF)
 option(BUILD_SERVICE_PRODUCTION_HTTP_HOST_TESTS "Build production HTTP host composition tests" OFF)
 option(BUILD_SERVICE_REMOTE_HANDLER "Build the transport-independent remote handler" OFF)
@@ -186,6 +188,10 @@ endif()
 
 if(BUILD_SERVICE_SYNC_HANDLER AND NOT BUILD_SERVICE_BUSINESS_SESSION)
     set(BUILD_SERVICE_BUSINESS_SESSION ON CACHE BOOL "Build authenticated business WebSocket drivers" FORCE)
+endif()
+
+if(BUILD_SERVICE_FILE_RESOURCE_STORE_TESTS AND NOT BUILD_SERVICE_FILE_RESOURCE_STORE)
+    set(BUILD_SERVICE_FILE_RESOURCE_STORE ON CACHE BOOL "Build the durable JSON file resource store" FORCE)
 endif()
 
 if(BUILD_SERVICE_PRODUCTION_HTTP_HOST_TESTS AND NOT BUILD_SERVICE_PRODUCTION_HTTP_HOST)
@@ -369,7 +375,8 @@ if(BUILD_SERVICE_AUTH_CRYPTO OR BUILD_SERVICE_AUTH_OWNER)
     baas_request_dependencies(sodium)
 endif()
 
-if(BUILD_SERVICE_SYNC_HANDLER OR BUILD_SERVICE_REMOTE_HANDLER)
+if(BUILD_SERVICE_SYNC_HANDLER OR BUILD_SERVICE_REMOTE_HANDLER
+   OR BUILD_SERVICE_FILE_RESOURCE_STORE)
     baas_request_dependencies(nlohmann_json)
 endif()
 
@@ -403,6 +410,7 @@ list(FILTER BAAS_CORE_SOURCES EXCLUDE REGEX "/src/service/router/.*\\.cpp$")
 list(FILTER BAAS_CORE_SOURCES EXCLUDE REGEX "/src/service/http/.*\\.cpp$")
 list(FILTER BAAS_CORE_SOURCES EXCLUDE REGEX "/src/service/websocket/.*\\.cpp$")
 list(FILTER BAAS_CORE_SOURCES EXCLUDE REGEX "/src/service/auth/.*\\.cpp$")
+list(FILTER BAAS_CORE_SOURCES EXCLUDE REGEX "/src/service/adapters/.*\\.cpp$")
 list(FILTER BAAS_CORE_SOURCES EXCLUDE REGEX "/src/service/channels/SyncHandler\\.cpp$")
 list(FILTER BAAS_CORE_SOURCES EXCLUDE REGEX "/src/service/channels/RemoteHandler\\.cpp$")
 list(FILTER BAAS_CORE_SOURCES EXCLUDE REGEX "/src/service/channels/TriggerHandler\\.cpp$")
@@ -496,6 +504,10 @@ endif()
 
 if(BUILD_SERVICE_SYNC_HANDLER)
     include("${CMAKE_CURRENT_LIST_DIR}/cmake/ServiceSyncHandler.cmake")
+endif()
+
+if(BUILD_SERVICE_FILE_RESOURCE_STORE)
+    include("${CMAKE_CURRENT_LIST_DIR}/cmake/ServiceFileResourceStore.cmake")
 endif()
 
 if(BUILD_SERVICE_REMOTE_HANDLER)
