@@ -267,10 +267,13 @@ Python fallback is needed for migrated representative workflows.
   BPIP JSON/binary response pair into one owning send batch. The bounded
   dependency-free `TriggerEnvelope` codec now validates request schemas and
   hostile JSON budgets, builds deterministic response envelopes, and owns exact
-  binary-size declarations including zero-byte frames. The real command
+  binary-size declarations including zero-byte frames. `TriggerIngress` now
+  owns the strict one-outstanding JSON/optional-adjacent-binary state machine,
+  aggregate limits, and complete input admission item. The real command
   dispatcher/executor, live WebSocket/Pipe hosts, deadlines, stale-task cleanup,
   and cross-language load/E2E remain pending; see
-  `SERVICE_TRIGGER_SESSION.md` and `SERVICE_TRIGGER_ENVELOPE.md`.
+  `SERVICE_TRIGGER_SESSION.md`, `SERVICE_TRIGGER_ENVELOPE.md`, and
+  `SERVICE_TRIGGER_INGRESS.md`.
 - [ ] Implement configuration and resource update APIs with atomic persistence.
 - [ ] Implement authentication/origin/listen-address policy appropriate to local
   desktop and Android deployment.

@@ -504,7 +504,9 @@ state, and keeps JSON/binary output in one indivisible batch; its BPIP adapter
 emits the two frames in one owning write buffer. `TriggerEnvelope` now parses
 bounded duplicate-free command JSON, creates session admissions, builds the
 exact response envelope, and exclusively injects verified binary sizes,
-including zero-byte frames. The C++ service does not yet dispatch commands or
+including zero-byte frames. `TriggerIngress` now enforces one-outstanding input,
+strict adjacent JSON/binary ordering, owned zero-byte-aware input, and
+independent frame/aggregate bounds before admission. The C++ service does not yet dispatch commands or
 run behind a live WebSocket/Pipe trigger channel.
 
 ### 8.6 Remote

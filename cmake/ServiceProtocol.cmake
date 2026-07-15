@@ -7,6 +7,7 @@ add_library(
         STATIC
         "${BAAS_PROJECT_PATH}/src/service/protocol/PipeFraming.cpp"
         "${BAAS_PROJECT_PATH}/src/service/protocol/TriggerEnvelope.cpp"
+        "${BAAS_PROJECT_PATH}/src/service/protocol/TriggerIngress.cpp"
         "${BAAS_PROJECT_PATH}/src/service/protocol/TriggerPipeAdapter.cpp"
         "${BAAS_PROJECT_PATH}/src/service/protocol/TriggerSession.cpp"
 )
@@ -62,6 +63,21 @@ if(BUILD_SERVICE_PROTOCOL_TESTS)
     )
     set_tests_properties(
             BAAS_service_trigger_envelope_tests
+            PROPERTIES TIMEOUT 30
+    )
+
+    add_executable(
+            BAAS_service_trigger_ingress_tests
+            "${BAAS_PROJECT_PATH}/tests/service/TriggerIngressTests.cpp"
+    )
+    target_compile_features(BAAS_service_trigger_ingress_tests PRIVATE cxx_std_20)
+    target_link_libraries(BAAS_service_trigger_ingress_tests PRIVATE BAAS_service_protocol)
+    add_test(
+            NAME BAAS_service_trigger_ingress_tests
+            COMMAND BAAS_service_trigger_ingress_tests
+    )
+    set_tests_properties(
+            BAAS_service_trigger_ingress_tests
             PROPERTIES TIMEOUT 30
     )
 endif()

@@ -23,7 +23,7 @@ struct JsonValue {
     std::vector<std::pair<std::string, JsonValue>> object;
 };
 
-[[nodiscard]] bool valid_limits(const TriggerEnvelopeLimits& limits) noexcept
+[[nodiscard]] bool valid_limits_impl(const TriggerEnvelopeLimits& limits) noexcept
 {
     return limits.max_input_json_bytes != 0 && limits.max_output_json_bytes != 0
         && limits.max_binary_bytes != 0 && limits.max_command_bytes != 0
@@ -678,6 +678,11 @@ private:
 
 }  // namespace
 
+bool valid_trigger_envelope_limits(const TriggerEnvelopeLimits& limits) noexcept
+{
+    return valid_limits_impl(limits);
+}
+
 std::string_view envelope_error_name(const EnvelopeError error) noexcept
 {
     using enum EnvelopeError;
@@ -716,7 +721,7 @@ DecodeCommandResult decode_command_envelope(
     const std::string_view json, const TriggerEnvelopeLimits limits)
 {
     DecodeCommandResult result;
-    if (!valid_limits(limits)) {
+    if (!valid_trigger_envelope_limits(limits)) {
         result.error = EnvelopeError::invalid_limits;
         return result;
     }
@@ -821,7 +826,9 @@ BuildAdmissionResult make_admission(
 EncodeResponseResult encode_command_response(
     CommandResponse response, const TriggerEnvelopeLimits limits)
 {
-    if (!valid_limits(limits)) return encode_failure(EnvelopeError::invalid_limits);
+    if (!valid_trigger_envelope_limits(limits)) {
+        return encode_failure(EnvelopeError::invalid_limits);
+    }
     if (response.command.size() > limits.max_command_bytes
         || !is_command_name(response.command)) {
         return encode_failure(EnvelopeError::invalid_command);

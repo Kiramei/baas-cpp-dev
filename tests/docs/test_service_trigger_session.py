@@ -26,11 +26,20 @@ class ServiceTriggerSessionTests(unittest.TestCase):
         cls.envelope_source = (
             ROOT / "src/service/protocol/TriggerEnvelope.cpp"
         ).read_text(encoding="utf-8")
+        cls.ingress_header = (
+            ROOT / "include/service/protocol/TriggerIngress.h"
+        ).read_text(encoding="utf-8")
+        cls.ingress_source = (
+            ROOT / "src/service/protocol/TriggerIngress.cpp"
+        ).read_text(encoding="utf-8")
         cls.native_tests = (
             ROOT / "tests/service/TriggerSessionTests.cpp"
         ).read_text(encoding="utf-8")
         cls.envelope_tests = (
             ROOT / "tests/service/TriggerEnvelopeTests.cpp"
+        ).read_text(encoding="utf-8")
+        cls.ingress_tests = (
+            ROOT / "tests/service/TriggerIngressTests.cpp"
         ).read_text(encoding="utf-8")
         cls.cmake = (ROOT / "cmake/ServiceProtocol.cmake").read_text(encoding="utf-8")
         cls.workflow = (
@@ -44,6 +53,9 @@ class ServiceTriggerSessionTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
         cls.envelope_spec = (
             ROOT / "docs/script-runtime/SERVICE_TRIGGER_ENVELOPE.md"
+        ).read_text(encoding="utf-8")
+        cls.ingress_spec = (
+            ROOT / "docs/script-runtime/SERVICE_TRIGGER_INGRESS.md"
         ).read_text(encoding="utf-8")
         cls.protocol = (
             ROOT / "docs/script-runtime/SERVICE_PROTOCOL_V1.md"
@@ -128,6 +140,34 @@ class ServiceTriggerSessionTests(unittest.TestCase):
         self.assertIn("BAAS_service_trigger_session_tests", self.cmake)
         self.assertIn("PROPERTIES TIMEOUT 30", self.cmake)
 
+    def test_ingress_owns_strict_bounded_input_state(self) -> None:
+        for anchor in (
+            "accepting_json",
+            "awaiting_binary",
+            "json_while_awaiting_binary",
+            "binary_without_declaration",
+            "max_aggregate_bytes",
+            "std::optional<std::vector<std::byte>>",
+            "BuildAdmissionResult",
+            "take_ready",
+        ):
+            self.assertIn(anchor, self.ingress_header)
+        self.assertIn("decode_command_envelope", self.ingress_source)
+        self.assertIn("make_admission", self.ingress_source)
+        self.assertIn("pending_binary_.reset();", self.ingress_source)
+        self.assertIn("checked_add", self.ingress_source)
+        for test_name in (
+            "test_json_only_ready_item_is_owned_and_single_outstanding",
+            "test_declared_binary_is_adjacent_owned_and_zero_length_distinct",
+            "test_binary_marker_gate_and_strict_frame_order",
+            "test_frame_and_aggregate_limits_clear_partial_state",
+            "test_envelope_failures_modes_and_limit_validation_recover",
+            "test_reset_and_close_are_explicit_and_terminal",
+        ):
+            self.assertIn(test_name, self.ingress_tests)
+        self.assertIn("BAAS_service_trigger_ingress_tests", self.cmake)
+        self.assertIn("BAAS_service_trigger_ingress_tests", self.workflow)
+
     def test_docs_and_ci_preserve_the_remaining_service_boundary(self) -> None:
         self.assertEqual(
             self.workflow.count("docs/script-runtime/SERVICE_TRIGGER_SESSION.md"),
@@ -141,6 +181,10 @@ class ServiceTriggerSessionTests(unittest.TestCase):
             self.workflow.count(
                 "docs/script-runtime/SERVICE_TRIGGER_COMMAND_CATALOG.md"
             ),
+            2,
+        )
+        self.assertEqual(
+            self.workflow.count("docs/script-runtime/SERVICE_TRIGGER_INGRESS.md"),
             2,
         )
         self.assertIn("BUILD_SERVICE_PROTOCOL_TESTS=ON", self.workflow)
@@ -160,6 +204,14 @@ class ServiceTriggerSessionTests(unittest.TestCase):
         self.assertIn("zero-length BYTES frame", self.envelope_spec)
         self.assertIn("does not execute commands", self.catalog_spec)
         self.assertIn("Only `import_config`", self.catalog_spec)
+        for boundary in (
+            "dependency-free, transport-independent",
+            "one-outstanding",
+            "immediately adjacent binary frame",
+            "present zero-length frame",
+            "performs no network I/O",
+        ):
+            self.assertIn(boundary, self.ingress_spec)
 
 
 if __name__ == "__main__":

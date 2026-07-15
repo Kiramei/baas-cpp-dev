@@ -7,9 +7,10 @@ for the v1 `trigger` business channel. It preserves the observed Python/Tauri
 This is a real bounded correlation and outbound-ordering layer, not a complete
 command service. The adjacent bounded codec in `SERVICE_TRIGGER_ENVELOPE.md`
 owns v1 JSON decoding/encoding, and `SERVICE_TRIGGER_COMMAND_CATALOG.md` freezes
-the legacy command-selection metadata. Catalog integration, executor ownership,
-WebSocket authentication/secretstream, and live BAAS task adapters remain
-separate required layers.
+the legacy command-selection metadata, while `SERVICE_TRIGGER_INGRESS.md` owns
+strict inbound JSON/binary pairing and complete input lifetime. Catalog-to-
+ingress integration, executor ownership, WebSocket authentication/secretstream,
+and live BAAS task adapters remain separate required layers.
 
 ## Admission and correlation
 

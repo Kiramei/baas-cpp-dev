@@ -25,6 +25,10 @@ struct TriggerEnvelopeLimits {
     std::size_t max_work{4U * 1'024U * 1'024U};
 };
 
+[[nodiscard]] bool valid_trigger_envelope_limits(
+    const TriggerEnvelopeLimits& limits
+) noexcept;
+
 enum class EnvelopeError : std::uint8_t {
     none,
     invalid_limits,

@@ -38,6 +38,10 @@ and unexpected undeclared input both fail before admission. A transport must
 not dispatch before both JSON and any declared binary input pass their
 independent bounds.
 
+The adjacent [`SERVICE_TRIGGER_INGRESS.md`](SERVICE_TRIGGER_INGRESS.md) now
+implements that strict frame-order and ownership boundary without duplicating
+this codec or claiming a live transport.
+
 ## Response encoding
 
 `encode_command_response()` owns the outer response fields rather than
