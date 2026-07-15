@@ -9,6 +9,13 @@
 namespace baas::service::auth {
 namespace {
 
+void wipe_string_storage(std::string& value) noexcept
+{
+    volatile char* output = value.empty() ? nullptr : value.data();
+    for (std::size_t index = 0; index < value.size(); ++index) output[index] = '\0';
+    value.clear();
+}
+
 [[nodiscard]] bool continuation(const unsigned char value) noexcept
 {
     return (value & 0xC0U) == 0x80U;
@@ -551,6 +558,24 @@ const CanonicalJsonValue* CanonicalJsonValue::find(const std::string_view key) c
         if (candidate == key) return &value;
     }
     return nullptr;
+}
+
+void CanonicalJsonValue::wipe_strings() noexcept
+{
+    if (auto* value = std::get_if<std::string>(&storage_)) {
+        wipe_string_storage(*value);
+        return;
+    }
+    if (auto* values = std::get_if<Array>(&storage_)) {
+        for (auto& value : *values) value.wipe_strings();
+        return;
+    }
+    if (auto* values = std::get_if<Object>(&storage_)) {
+        for (auto& [key, value] : *values) {
+            value.wipe_strings();
+            wipe_string_storage(key);
+        }
+    }
 }
 
 std::string_view canonical_json_error_name(const CanonicalJsonError error) noexcept

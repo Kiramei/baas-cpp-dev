@@ -390,12 +390,25 @@ CryptoError ed25519_verify(
 SecretBytesResult argon2id_v1(
     const std::string_view password, const std::span<const std::byte> salt)
 {
+    return argon2id_v1(
+        std::as_bytes(std::span{password.data(), password.size()}), salt);
+}
+
+SecretBytesResult argon2id_v1(
+    const std::span<const std::byte> password,
+    const std::span<const std::byte> salt)
+{
     if (!initialize_sodium()) return secret_error(CryptoError::initialization_failed);
     if (salt.size() != argon2id_salt_bytes) return secret_error(CryptoError::invalid_length);
     try {
         SecretBuffer output{argon2id_output_bytes};
+        static constexpr char empty_password = '\0';
+        const auto* password_data = password.empty()
+            ? &empty_password
+            : reinterpret_cast<const char*>(password.data());
         if (crypto_pwhash(
-                raw_mutable(output.mutable_bytes()), output.size(), password.data(),
+                raw_mutable(output.mutable_bytes()), output.size(),
+                password_data,
                 password.size(), raw_const(salt), argon2id_v1_opslimit,
                 argon2id_v1_memlimit,
                 crypto_pwhash_ALG_ARGON2ID13) != 0) {

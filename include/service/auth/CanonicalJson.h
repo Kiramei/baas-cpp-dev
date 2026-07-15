@@ -60,6 +60,9 @@ public:
     [[nodiscard]] const Object* as_object() const noexcept;
     [[nodiscard]] const CanonicalJsonValue* find(std::string_view key) const noexcept;
     [[nodiscard]] const Storage& storage() const noexcept { return storage_; }
+    // Explicitly overwrites every owned string recursively. This is used by
+    // schemas that temporarily parse encoded password verifiers.
+    void wipe_strings() noexcept;
 
 private:
     Storage storage_;

@@ -117,6 +117,9 @@ using StringResult = CryptoResult<std::string>;
 [[nodiscard]] SecretBytesResult argon2id_v1(
     std::string_view password,
     std::span<const std::byte> salt);
+[[nodiscard]] SecretBytesResult argon2id_v1(
+    std::span<const std::byte> password,
+    std::span<const std::byte> salt);
 
 [[nodiscard]] PublicBytesResult chacha20poly1305_ietf_encrypt(
     std::span<const std::byte> key,
