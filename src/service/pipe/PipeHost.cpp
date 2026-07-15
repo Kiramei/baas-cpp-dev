@@ -437,7 +437,6 @@ PipeHostError PipeConnectionWriter::write_frame(
 {
     const auto wire_size = bpip::header_size + payload.size();
     bool reserved{};
-    bool io_started{};
     try {
         std::lock_guard lock(mutex_);
         if (transport_poisoned_) return PipeHostError::write_failed;
@@ -459,22 +458,20 @@ PipeHostError PipeConnectionWriter::write_frame(
         output.reserve(wire_size);
         output.insert(output.end(), header.header.begin(), header.header.end());
         output.insert(output.end(), payload.begin(), payload.end());
-        io_started = true;
+        // Pre-poison while holding mutex_: if virtual I/O throws, another
+        // caller can never enter during stack unwinding with a writable state.
+        transport_poisoned_ = true;
         const auto result = stream_.write_all(output, write_timeout_);
         host_.release_egress(wire_size);
         reserved = false;
         if (result.error || result.eof || result.timed_out
             || result.bytes != output.size()) {
-            transport_poisoned_ = true;
             return PipeHostError::write_failed;
         }
+        transport_poisoned_ = false;
         return PipeHostError::none;
     } catch (...) {
         if (reserved) host_.release_egress(wire_size);
-        if (io_started) {
-            std::lock_guard lock(mutex_);
-            transport_poisoned_ = true;
-        }
         return PipeHostError::write_failed;
     }
 }
@@ -483,7 +480,6 @@ PipeHostError PipeConnectionWriter::write_batch(const std::span<const bpip::Fram
 {
     std::size_t wire_size{};
     bool reserved{};
-    bool io_started{};
     try {
         std::lock_guard lock(mutex_);
         if (transport_poisoned_) return PipeHostError::write_failed;
@@ -520,22 +516,20 @@ PipeHostError PipeConnectionWriter::write_batch(const std::span<const bpip::Fram
             output.insert(output.end(), header.header.begin(), header.header.end());
             output.insert(output.end(), frame.payload.begin(), frame.payload.end());
         }
-        io_started = true;
+        // See write_frame(): poison before invoking virtual I/O so throwing
+        // implementations cannot expose a writable gap during unwinding.
+        transport_poisoned_ = true;
         const auto result = stream_.write_all(output, write_timeout_);
         host_.release_egress(wire_size);
         reserved = false;
         if (result.error || result.eof || result.timed_out
             || result.bytes != output.size()) {
-            transport_poisoned_ = true;
             return PipeHostError::write_failed;
         }
+        transport_poisoned_ = false;
         return PipeHostError::none;
     } catch (...) {
         if (reserved) host_.release_egress(wire_size);
-        if (io_started) {
-            std::lock_guard lock(mutex_);
-            transport_poisoned_ = true;
-        }
         return PipeHostError::write_failed;
     }
 }

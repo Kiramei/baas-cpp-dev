@@ -80,6 +80,10 @@ class ServicePipeHostTests(unittest.TestCase):
             self.source.index("output.insert(output.end(), payload.begin()"),
         )
         self.assertNotIn("bpip::Bytes{payload.begin(), payload.end()}", self.source)
+        self.assertLess(
+            self.source.index("transport_poisoned_ = true;"),
+            self.source.index("stream_.write_all(output, write_timeout_)"),
+        )
 
     def test_fake_tests_cover_lifecycle_and_atomicity(self) -> None:
         for test_name in (
@@ -100,6 +104,8 @@ class ServicePipeHostTests(unittest.TestCase):
         self.assertIn("class FakeStream", self.tests)
         self.assertIn("throw_after_partial_on_call", self.tests)
         self.assertIn("retry_after_write_failure", self.tests)
+        self.assertIn("struct WriteRaceGate", self.tests)
+        self.assertIn("concurrent_retry_during_throw", self.tests)
 
     def test_independent_target_ci_and_docs_do_not_overclaim(self) -> None:
         self.assertIn("BAAS_service_pipe_host", self.cmake)

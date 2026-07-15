@@ -57,6 +57,13 @@ struct ReadBarrier {
     std::size_t target{};
 };
 
+struct WriteRaceGate {
+    std::mutex mutex;
+    std::condition_variable changed;
+    bool io_entered{};
+    bool retry_attempted{};
+};
+
 struct StreamState {
     std::mutex mutex;
     std::condition_variable changed;
@@ -67,6 +74,7 @@ struct StreamState {
     std::size_t read_calls{};
     std::size_t barrier_read_call{};
     std::shared_ptr<ReadBarrier> read_barrier;
+    std::shared_ptr<WriteRaceGate> write_race_gate;
     bool block_when_empty{};
     bool closed{};
     bool partial_write{};
@@ -148,8 +156,18 @@ public:
         state_->writes.emplace_back(input.begin(), input.begin()
             + static_cast<std::ptrdiff_t>(count));
         if (state_->throw_after_partial_on_call != 0
-            && state_->writes.size() == state_->throw_after_partial_on_call)
+            && state_->writes.size() == state_->throw_after_partial_on_call) {
+            if (state_->write_race_gate) {
+                const auto gate = state_->write_race_gate;
+                std::unique_lock gate_lock(gate->mutex);
+                gate->io_entered = true;
+                gate->changed.notify_all();
+                gate->changed.wait_for(gate_lock, 2s, [&] {
+                    return gate->retry_attempted;
+                });
+            }
             throw std::runtime_error("write threw after partial visibility");
+        }
         return {count, false, partial, false};
     }
 
@@ -210,6 +228,8 @@ struct FactoryState {
     std::size_t emit_payload_size{};
     bool retry_after_write_failure{};
     bool use_write_frame{};
+    bool concurrent_retry_during_throw{};
+    std::shared_ptr<WriteRaceGate> write_race_gate;
     pipe::PipeHostError second_write_error{pipe::PipeHostError::none};
     bool callback_entered{};
     bool cancellation_observed{};
@@ -231,6 +251,8 @@ public:
         std::size_t emit_payload_size{};
         bool retry_after_write_failure{};
         bool use_write_frame{};
+        bool concurrent_retry{};
+        std::shared_ptr<WriteRaceGate> write_race_gate;
         {
             std::lock_guard lock(state_->mutex);
             ++state_->frames;
@@ -240,6 +262,8 @@ public:
             emit_payload_size = state_->emit_payload_size;
             retry_after_write_failure = state_->retry_after_write_failure;
             use_write_frame = state_->use_write_frame;
+            concurrent_retry = state_->concurrent_retry_during_throw;
+            write_race_gate = state_->write_race_gate;
         }
         if (action) action(stop_token);
         if (throw_now) throw std::runtime_error("handler failure");
@@ -254,10 +278,27 @@ public:
                 output[0].payload.assign(bytes(R"({"type":"reply"})").begin(),
                     bytes(R"({"type":"reply"})").end());
             }
+            pipe::PipeHostError concurrent_error{pipe::PipeHostError::none};
+            std::thread concurrent_retry_thread;
+            if (concurrent_retry) {
+                concurrent_retry_thread = std::thread([&] {
+                    std::unique_lock gate_lock(write_race_gate->mutex);
+                    write_race_gate->changed.wait_for(gate_lock, 2s, [&] {
+                        return write_race_gate->io_entered;
+                    });
+                    write_race_gate->retry_attempted = true;
+                    write_race_gate->changed.notify_all();
+                    gate_lock.unlock();
+                    concurrent_error = writer.write_frame(
+                        bpip::FrameKind::json, bytes("{}"));
+                });
+            }
             const auto error = use_write_frame
                 ? writer.write_frame(bpip::FrameKind::json, output[0].payload)
                 : writer.write_batch(output);
-            const auto second_error = error != pipe::PipeHostError::none
+            if (concurrent_retry_thread.joinable()) concurrent_retry_thread.join();
+            const auto second_error = concurrent_retry ? concurrent_error
+                : error != pipe::PipeHostError::none
                     && retry_after_write_failure
                 ? writer.write_frame(bpip::FrameKind::json, bytes("{}"))
                 : pipe::PipeHostError::none;
@@ -523,6 +564,12 @@ void test_partial_handler_write_is_never_followed_by_close()
         const auto factory = std::make_shared<FactoryState>();
         factory->emit_batch = true;
         factory->retry_after_write_failure = true;
+        if (throw_after_partial) {
+            const auto gate = std::make_shared<WriteRaceGate>();
+            stream->write_race_gate = gate;
+            factory->write_race_gate = gate;
+            factory->concurrent_retry_during_throw = true;
+        }
         pipe::PipeHost host{std::move(listener),
             std::make_shared<RecordingFactory>(factory)};
         check(host.start(), "partial handler-write host must start");

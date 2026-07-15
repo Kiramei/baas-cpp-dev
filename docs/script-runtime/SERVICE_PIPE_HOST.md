@@ -78,7 +78,9 @@ the batch is never retried after bytes may have become visible. Single-frame
 writes reserve their wire size before allocating the owning output buffer and
 do not first copy payload into a temporary `Frame`. Once poisoned, every later
 writer call fails before reaching the platform stream, including when the
-original `write_all` threw after I/O began.
+original `write_all` threw after I/O began. The writer marks itself poisoned
+under its mutex before entering virtual I/O and clears that mark only after an
+exact successful return, closing the exception-unwind concurrency window.
 
 `stop()` closes the listener, cancels blocked reads, drops pending streams, and
 wakes workers. Calling `stop()` (directly or from a handler) is a precondition
