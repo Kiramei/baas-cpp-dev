@@ -23,6 +23,7 @@ enum class AdbTransportError : std::uint8_t {
     cancelled,
     protocol_error,
     adb_fail,
+    local_io_error,
     closed,
     internal_error,
 };
@@ -112,6 +113,7 @@ using AdbStreamFactory = std::function<AdbStreamOpenResult(
 
 class AdbServiceStream {
 public:
+    using Deadline = AdbByteStream::Deadline;
     AdbServiceStream() = default;
     ~AdbServiceStream();
     AdbServiceStream(AdbServiceStream&&) noexcept;
@@ -122,8 +124,16 @@ public:
     [[nodiscard]] AdbTransportResult<std::vector<std::byte>> read_some(
         std::size_t maximum_bytes,
         std::stop_token stop = {});
+    [[nodiscard]] AdbTransportResult<std::vector<std::byte>> read_some_until(
+        std::size_t maximum_bytes,
+        Deadline deadline,
+        std::stop_token stop = {});
     [[nodiscard]] AdbTransportResult<std::size_t> write_all(
         std::span<const std::byte> bytes,
+        std::stop_token stop = {});
+    [[nodiscard]] AdbTransportResult<std::size_t> write_all_until(
+        std::span<const std::byte> bytes,
+        Deadline deadline,
         std::stop_token stop = {});
     void close() noexcept;
     [[nodiscard]] bool is_open() const noexcept;
@@ -170,6 +180,11 @@ public:
     [[nodiscard]] AdbTransportResult<AdbServiceStream> open_tcp(
         std::string_view exact_serial,
         std::uint16_t device_port,
+        std::stop_token stop = {});
+    // Opens only the side-effect-free ADB SYNC binary service after selecting
+    // the exact device serial. Protocol commands remain the caller's policy.
+    [[nodiscard]] AdbTransportResult<AdbServiceStream> open_sync(
+        std::string_view exact_serial,
         std::stop_token stop = {});
 
     void stop() noexcept;

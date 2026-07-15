@@ -737,16 +737,41 @@ AdbTransportResult<std::vector<std::byte>> AdbServiceStream::read_some(
     const std::size_t maximum_bytes, const std::stop_token stop) try
 {
     const auto state = state_;
+    if (!state) {
+        return failure<std::vector<std::byte>>(AdbTransportError::closed);
+    }
+    return read_some_until(maximum_bytes,
+        std::chrono::steady_clock::now() + state->limits.io_timeout, stop);
+} catch (...) {
+    return failure<std::vector<std::byte>>(AdbTransportError::internal_error);
+}
+
+AdbTransportResult<std::vector<std::byte>> AdbServiceStream::read_some_until(
+    const std::size_t maximum_bytes, const Deadline deadline,
+    const std::stop_token stop) try
+{
+    const auto state = state_;
     if (!state || state->closed.load()) {
         return failure<std::vector<std::byte>>(AdbTransportError::closed);
     }
     if (maximum_bytes == 0 || maximum_bytes > state->limits.max_response_bytes) {
         return failure<std::vector<std::byte>>(AdbTransportError::capacity);
     }
+    if (stop.stop_requested()) {
+        return failure<std::vector<std::byte>>(AdbTransportError::cancelled);
+    }
+    if (deadline <= std::chrono::steady_clock::now()) {
+        return failure<std::vector<std::byte>>(AdbTransportError::timeout);
+    }
     std::vector<std::byte> bytes(maximum_bytes);
     std::lock_guard lock(state->io_mutex);
-    const auto result = state->stream->read_some(
-        bytes, std::chrono::steady_clock::now() + state->limits.io_timeout, stop);
+    if (stop.stop_requested()) {
+        return failure<std::vector<std::byte>>(AdbTransportError::cancelled);
+    }
+    if (deadline <= std::chrono::steady_clock::now()) {
+        return failure<std::vector<std::byte>>(AdbTransportError::timeout);
+    }
+    const auto result = state->stream->read_some(bytes, deadline, stop);
     if (result.status == AdbStreamStatus::eof) {
         bytes.clear();
         return {std::move(bytes), AdbTransportError::none, {}};
@@ -767,6 +792,18 @@ AdbTransportResult<std::size_t> AdbServiceStream::write_all(
     const std::span<const std::byte> bytes, const std::stop_token stop) try
 {
     const auto state = state_;
+    if (!state) return failure<std::size_t>(AdbTransportError::closed);
+    return write_all_until(bytes,
+        std::chrono::steady_clock::now() + state->limits.io_timeout, stop);
+} catch (...) {
+    return failure<std::size_t>(AdbTransportError::internal_error);
+}
+
+AdbTransportResult<std::size_t> AdbServiceStream::write_all_until(
+    const std::span<const std::byte> bytes, const Deadline deadline,
+    const std::stop_token stop) try
+{
+    const auto state = state_;
     if (!state || state->closed.load()) {
         return failure<std::size_t>(AdbTransportError::closed);
     }
@@ -775,8 +812,13 @@ AdbTransportResult<std::size_t> AdbServiceStream::write_all(
     }
     std::lock_guard lock(state->io_mutex);
     std::size_t offset{};
-    const auto deadline = std::chrono::steady_clock::now() + state->limits.io_timeout;
     while (offset < bytes.size()) {
+        if (stop.stop_requested()) {
+            return failure<std::size_t>(AdbTransportError::cancelled);
+        }
+        if (deadline <= std::chrono::steady_clock::now()) {
+            return failure<std::size_t>(AdbTransportError::timeout);
+        }
         const auto result = state->stream->write_some(bytes.subspan(offset), deadline, stop);
         if (result.status != AdbStreamStatus::ok || result.transferred == 0) {
             return failure<std::size_t>(map_stream_status(result.status));
@@ -950,6 +992,14 @@ AdbTransportResult<AdbServiceStream> ServiceAdbTransport::open_tcp(
     }
     return impl_->open_service(
         exact_serial, "tcp:" + std::to_string(device_port), stop);
+} catch (...) {
+    return failure<AdbServiceStream>(AdbTransportError::internal_error);
+}
+
+AdbTransportResult<AdbServiceStream> ServiceAdbTransport::open_sync(
+    const std::string_view exact_serial, const std::stop_token stop) try
+{
+    return impl_->open_service(exact_serial, "sync:", stop);
 } catch (...) {
     return failure<AdbServiceStream>(AdbTransportError::internal_error);
 }
