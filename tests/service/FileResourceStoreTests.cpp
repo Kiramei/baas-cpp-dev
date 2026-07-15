@@ -299,8 +299,10 @@ void test_windows_aliases_and_anchored_directory_handles()
 
     TempProject unicode_project;
     unicode_project.add_pair("alpha", "{}");
-    const auto unicode_root = unicode_project.root.parent_path()
-        / utf8_path("baas-file-resource-store-unicode-\xe6\xb5\x8b\xe8\xaf\x95");
+    auto unicode_name =
+        utf8_path("baas-file-resource-store-unicode-\xe6\xb5\x8b\xe8\xaf\x95-");
+    unicode_name += unicode_project.root.filename().native();
+    const auto unicode_root = unicode_project.root.parent_path() / unicode_name;
     std::filesystem::remove_all(unicode_root);
     std::filesystem::rename(unicode_project.root, unicode_root);
     unicode_project.root = unicode_root;

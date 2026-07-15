@@ -868,16 +868,18 @@ AtomicWriteResult durable_atomic_write(const std::filesystem::path& target,
     if (target_name.empty()) return AtomicWriteResult::not_committed;
     auto directory = open_windows_resource_parent(*anchor, target, true);
     if (!directory) return AtomicWriteResult::not_committed;
-    const auto rename_size = offsetof(FILE_RENAME_INFO, FileName)
-        + target_name.size() * sizeof(wchar_t);
+    const auto target_name_bytes = target_name.size() * sizeof(wchar_t);
+    // Follow the WDK sizing guidance conservatively. FILE_RENAME_INFO embeds
+    // one WCHAR and may have tail padding, so sizeof + FileNameLength is
+    // deliberately larger than offsetof(FileName) + FileNameLength.
+    const auto rename_size = sizeof(FILE_RENAME_INFO) + target_name_bytes;
     const auto rename_units =
         (rename_size + sizeof(std::max_align_t) - 1) / sizeof(std::max_align_t);
     std::vector<std::max_align_t> rename_storage(rename_units);
     auto* const rename = reinterpret_cast<FILE_RENAME_INFO*>(rename_storage.data());
     rename->ReplaceIfExists = TRUE;
     rename->RootDirectory = directory.get();
-    rename->FileNameLength =
-        static_cast<DWORD>(target_name.size() * sizeof(wchar_t));
+    rename->FileNameLength = static_cast<DWORD>(target_name_bytes);
     std::memcpy(rename->FileName, target_name.data(), rename->FileNameLength);
     for (std::size_t attempt = 0; attempt < 64; ++attempt) {
         const auto temporary_name = temporary_path(
