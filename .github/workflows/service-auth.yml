@@ -10,17 +10,27 @@ on:
       - 'CMakeLists.txt'
       - 'cmake/BAASDependency.cmake'
       - 'cmake/ServiceAuth.cmake'
+      - 'cmake/ServiceControlSession.cmake'
+      - 'cmake/ServiceWebSocket.cmake'
       - 'deploy/conan/conanfile.py'
       - 'deploy/conan/profiles/android-clang-*-release'
       - 'deploy/conan/profiles/dependency-versions-default'
       - 'deploy/conan/recipes/baas-libsodium/**'
+      - 'deploy/conan/recipes/baas-cpp-httplib/**'
       - 'deploy/conan/scripts/manage_recipes.py'
       - 'include/service/auth/**'
       - 'src/service/auth/**'
+      - 'include/service/websocket/ControlSessionFactory.h'
+      - 'include/service/websocket/WebSocketOwner.h'
+      - 'src/service/websocket/ControlSessionFactory.cpp'
+      - 'src/service/websocket/WebSocketOwner.cpp'
       - 'tests/service/ServiceAuth*Tests.cpp'
+      - 'tests/service/ServiceControlSessionTests.cpp'
+      - 'tests/service/WebSocketOwnerTests.cpp'
       - 'tests/service_contract/**'
       - 'docs/script-runtime/SERVICE_AUTH_CRYPTO.md'
       - 'docs/script-runtime/SERVICE_AUTH_OWNER.md'
+      - 'docs/script-runtime/SERVICE_CONTROL_SESSION.md'
       - 'docs/script-runtime/SERVICE_PROTOCOL_V1.md'
   pull_request:
     branches:
@@ -34,17 +44,27 @@ on:
       - 'CMakeLists.txt'
       - 'cmake/BAASDependency.cmake'
       - 'cmake/ServiceAuth.cmake'
+      - 'cmake/ServiceControlSession.cmake'
+      - 'cmake/ServiceWebSocket.cmake'
       - 'deploy/conan/conanfile.py'
       - 'deploy/conan/profiles/android-clang-*-release'
       - 'deploy/conan/profiles/dependency-versions-default'
       - 'deploy/conan/recipes/baas-libsodium/**'
+      - 'deploy/conan/recipes/baas-cpp-httplib/**'
       - 'deploy/conan/scripts/manage_recipes.py'
       - 'include/service/auth/**'
       - 'src/service/auth/**'
+      - 'include/service/websocket/ControlSessionFactory.h'
+      - 'include/service/websocket/WebSocketOwner.h'
+      - 'src/service/websocket/ControlSessionFactory.cpp'
+      - 'src/service/websocket/WebSocketOwner.cpp'
       - 'tests/service/ServiceAuth*Tests.cpp'
+      - 'tests/service/ServiceControlSessionTests.cpp'
+      - 'tests/service/WebSocketOwnerTests.cpp'
       - 'tests/service_contract/**'
       - 'docs/script-runtime/SERVICE_AUTH_CRYPTO.md'
       - 'docs/script-runtime/SERVICE_AUTH_OWNER.md'
+      - 'docs/script-runtime/SERVICE_CONTROL_SESSION.md'
       - 'docs/script-runtime/SERVICE_PROTOCOL_V1.md'
 
 permissions:
@@ -110,9 +130,19 @@ jobs:
           --build=missing
           --no-remote
 
-      - name: Generate auth-only CMake dependencies
+      - name: Build and verify pinned cpp-httplib recipe
+        run: >-
+          conan create deploy/conan/recipes/baas-cpp-httplib
+          -s:h build_type=${{ matrix.build_type }}
+          -s:b build_type=Release
+          ${{ matrix.conan_settings }}
+          --build=missing
+          --no-remote
+
+      - name: Generate control-auth CMake dependencies
         run: >-
           conan install --requires=baas-libsodium/1.0.22
+          --requires=baas-cpp-httplib/0.50.1
           -of build/conan/service-auth
           -s:h build_type=${{ matrix.build_type }}
           -s:b build_type=Release
@@ -130,6 +160,8 @@ jobs:
           -DBUILD_TESTING=ON
           -DBUILD_SERVICE_AUTH_CRYPTO_TESTS=ON
           -DBUILD_SERVICE_AUTH_OWNER_TESTS=ON
+          -DBUILD_SERVICE_WEBSOCKET_TESTS=ON
+          -DBUILD_SERVICE_CONTROL_SESSION_TESTS=ON
           -DBUILD_APP_BAAS=OFF
           -DBUILD_APP_ISA=OFF
           -DBUILD_BAAS_OCR=OFF
@@ -143,6 +175,8 @@ jobs:
           --config ${{ matrix.build_type }}
           --parallel 4
           --target BAAS_service_auth_crypto_tests BAAS_service_auth_owner_tests
+          BAAS_service_websocket_handshake_tests BAAS_service_websocket_owner_tests
+          BAAS_service_control_session_tests
 
       - name: Run service authentication tests
         run: >-
@@ -150,7 +184,7 @@ jobs:
           --build-config ${{ matrix.build_type }}
           --output-on-failure
           --timeout 60
-          -R "^BAAS_service_auth_(crypto|owner)_tests$"
+          -R "^BAAS_service_(auth_(crypto|owner)|websocket_(handshake|owner)|control_session)_tests$"
 
   android-auth:
     name: Android ${{ matrix.abi }} / Release
@@ -206,10 +240,21 @@ jobs:
           --build=missing
           --no-remote
 
-      - name: Generate Android auth-only CMake dependencies
+      - name: Cross-build and verify pinned cpp-httplib recipe
+        shell: bash
+        run: >-
+          conan create deploy/conan/recipes/baas-cpp-httplib
+          -pr:h=deploy/conan/profiles/${{ matrix.profile }}
+          -pr:b=default
+          -c:h "tools.android:ndk_path=${ANDROID_NDK_HOME}"
+          --build=missing
+          --no-remote
+
+      - name: Generate Android control-auth CMake dependencies
         shell: bash
         run: >-
           conan install --requires=baas-libsodium/1.0.22
+          --requires=baas-cpp-httplib/0.50.1
           -of build/conan/service-auth-android-${{ matrix.abi }}
           -pr:h=deploy/conan/profiles/${{ matrix.profile }}
           -pr:b=default
@@ -230,6 +275,8 @@ jobs:
           -DBUILD_SERVICE_AUTH_CRYPTO_TESTS=OFF
           -DBUILD_SERVICE_AUTH_OWNER=ON
           -DBUILD_SERVICE_AUTH_OWNER_TESTS=OFF
+          -DBUILD_SERVICE_CONTROL_SESSION=ON
+          -DBUILD_SERVICE_CONTROL_SESSION_TESTS=OFF
           -DBUILD_APP_BAAS=OFF
           -DBUILD_APP_ISA=OFF
           -DBUILD_BAAS_OCR=OFF
@@ -244,3 +291,4 @@ jobs:
           --config Release
           --parallel 4
           --target BAAS_service_auth_crypto BAAS_service_auth_owner
+          BAAS_service_websocket BAAS_service_control_session
