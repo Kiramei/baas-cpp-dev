@@ -545,8 +545,11 @@ Remote is unavailable on Android.
 outbound remote bytes without secretstream encryption after the authenticated
 setup message. This is a compatibility mode, not a general channel option.
 
-**[MISSING]** Scrcpy structure vectors, raw/encrypted mode parity, disconnect,
-and device lifecycle tests are pending.
+**[PARTIAL]** The C++ `RemoteHandlerFactory` now validates the first config,
+injects a thread-safe `RemoteBackend`/`RemoteSession`, preserves byte-exact
+bidirectional proxying, bounds completion-observed output, and tests
+raw/encrypted directionality plus disconnect races. Captured scrcpy structure
+vectors, a concrete ADB backend, and live device lifecycle tests remain pending.
 
 ## 9. Errors and close codes
 

@@ -84,6 +84,15 @@ public:
     [[nodiscard]] virtual BusinessEmitResult emit_batch(
         std::vector<BusinessOutboundMessage> messages) noexcept = 0;
 
+    // One-way compatibility switch for /ws/remote. Production sinks reject
+    // this capability for every other channel, after the first admitted
+    // business output, and after it has already been enabled. Incoming frames
+    // remain authenticated secretstream ciphertext in every mode.
+    [[nodiscard]] virtual bool enable_remote_raw_output() noexcept
+    {
+        return false;
+    }
+
     // Backward-compatible observed overloads. Legacy sinks fail an observed
     // admission synchronously instead of claiming an unobservable acceptance.
     [[nodiscard]] virtual BusinessEmitResult emit(

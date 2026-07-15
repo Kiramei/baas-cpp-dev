@@ -1044,6 +1044,83 @@ void test_revocation_routing_and_platform_policy()
           "explicit remote-disabled policy rejects desktop route");
 }
 
+void test_remote_raw_output_is_one_way_and_outbound_only()
+{
+    {
+        AuthFixture fixture;
+        auto session = fixture.session();
+        auto stream = open_stream(fixture, session, ws::Channel::trigger);
+        check(!stream.handler->sink->enable_remote_raw_output(),
+              "non-remote channels must reject raw output");
+    }
+    {
+        AuthFixture fixture;
+        auto session = fixture.session();
+        auto stream = open_stream(fixture, session, ws::Channel::remote);
+        check(stream.handler->sink->emit({"encrypted-remote", false})
+                  == ws::BusinessEmitResult::accepted,
+              "remote output remains encrypted by default");
+        check(decrypt_last(stream, 0) == "encrypted-remote",
+              "default remote output must preserve secretstream parity");
+        check(!stream.handler->sink->enable_remote_raw_output(),
+              "raw output cannot be enabled after business output starts");
+    }
+    {
+        AuthFixture fixture;
+        auto session = fixture.session();
+        auto stream = open_stream(fixture, session, ws::Channel::remote);
+        check(stream.handler->sink->enable_remote_raw_output(),
+              "remote channel may enable compatibility raw output once");
+        check(!stream.handler->sink->enable_remote_raw_output(),
+              "remote raw output switch is one-way and non-repeatable");
+        const std::string raw{"\0scrcpy\xFF", 8};
+        check(stream.handler->sink->emit({raw, false})
+                  == ws::BusinessEmitResult::accepted,
+              "raw remote output must be admitted");
+        {
+            std::lock_guard lock{stream.outbound->mutex};
+            check(stream.outbound->batches.size() == 1
+                      && stream.outbound->batches.front().frames.size() == 1
+                      && stream.outbound->batches.front().frames.front().kind
+                          == ws::FrameKind::binary
+                      && stream.outbound->batches.front().frames.front().payload == raw,
+                  "raw mode must preserve ADB bytes exactly");
+        }
+
+        auto encrypted_input = stream.client_push.push(bytes("authenticated-adb"));
+        const auto accepted = stream.driver->input(
+            {ws::FrameKind::binary, text(encrypted_input.ciphertext)}, {});
+        check(accepted.terminal == ws::TerminalAction::none
+                  && stream.handler->inputs.back() == "authenticated-adb",
+              "raw outbound mode must keep inbound secretstream authentication");
+
+        auto peer_final = stream.client_push.push(
+            {}, auth::SecretStreamTag::final);
+        const auto finished = stream.driver->input(
+            {ws::FrameKind::binary, text(peer_final.ciphertext)}, {});
+        const auto settled = finished.terminal == ws::TerminalAction::complete
+            ? finished : stream.driver->heartbeat({});
+        check(settled.terminal == ws::TerminalAction::complete,
+              "raw remote peer FINAL must close cleanly");
+        {
+            std::lock_guard lock{stream.outbound->mutex};
+            check(stream.outbound->batches.size() == 1,
+                  "raw close must not expose an internal empty FINAL packet");
+        }
+    }
+    {
+        AuthFixture fixture;
+        auto session = fixture.session();
+        auto stream = open_stream(fixture, session, ws::Channel::remote);
+        require(stream.handler->sink->enable_remote_raw_output(),
+                "remote raw setup failed");
+        check(stream.driver->input(
+                  {ws::FrameKind::binary, "unauthenticated-adb"}, {}).terminal
+                  != ws::TerminalAction::none,
+              "raw client bytes must never bypass inbound secretstream");
+    }
+}
+
 }  // namespace
 
 int main()
@@ -1057,6 +1134,7 @@ int main()
         test_late_completions_cannot_override_terminal();
         test_secretstream_typed_error_mapping();
         test_revocation_routing_and_platform_policy();
+        test_remote_raw_output_is_one_way_and_outbound_only();
     }
     catch (const std::exception& error) {
         std::cerr << "FAILED with exception: " << error.what() << '\n';
