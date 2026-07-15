@@ -1,0 +1,228 @@
+--- httplib.h
++++ httplib.h
+@@ -113,5 +113,10 @@
+ #ifndef CPPHTTPLIB_HEADER_MAX_LENGTH
+ #define CPPHTTPLIB_HEADER_MAX_LENGTH 8192
+ #endif
++
++#ifndef CPPHTTPLIB_HEADER_MAX_TOTAL_LENGTH
++#define CPPHTTPLIB_HEADER_MAX_TOTAL_LENGTH \
++  (CPPHTTPLIB_HEADER_MAX_LENGTH * CPPHTTPLIB_HEADER_MAX_COUNT)
++#endif
+ 
+ #ifndef CPPHTTPLIB_HEADER_MAX_COUNT
+@@ -195,7 +200,11 @@
+ 
+ #ifndef CPPHTTPLIB_WEBSOCKET_READ_TIMEOUT_SECOND
+ #define CPPHTTPLIB_WEBSOCKET_READ_TIMEOUT_SECOND 300
+ #endif
++
++#ifndef CPPHTTPLIB_WEBSOCKET_INTERRUPT_POLL_INTERVAL_MICROSECONDS
++#define CPPHTTPLIB_WEBSOCKET_INTERRUPT_POLL_INTERVAL_MICROSECONDS 100000
++#endif
+ 
+ #ifndef CPPHTTPLIB_WEBSOCKET_CLOSE_TIMEOUT_SECOND
+ #define CPPHTTPLIB_WEBSOCKET_CLOSE_TIMEOUT_SECOND 5
+@@ -329,7 +338,8 @@
+ #include <regex>
+ #include <set>
+ #include <sstream>
+ #include <string>
++#include <string_view>
+ #include <sys/stat.h>
+ #include <system_error>
+ #include <thread>
+@@ -3878,7 +3888,10 @@ public:
+   bool send(const std::string &data);
+   bool send(const char *data, size_t len);
+   void close(CloseStatus status = CloseStatus::Normal,
+              const std::string &reason = "");
++  bool request_close(CloseStatus status = CloseStatus::Normal,
++                     std::string_view reason = {}) noexcept;
++  void interrupt() noexcept;
+   const Request &request() const;
+   bool is_open() const;
+ 
+@@ -3893,6 +3906,8 @@ private:
+       : strm_(strm), req_(req), is_server_(is_server),
+         ping_interval_sec_(ping_interval_sec),
+         max_missed_pongs_(max_missed_pongs) {
++    if (is_server_) strm_.set_read_timeout(
++        0, CPPHTTPLIB_WEBSOCKET_INTERRUPT_POLL_INTERVAL_MICROSECONDS);
+     start_heartbeat();
+   }
+ 
+@@ -3903,6 +3918,8 @@ private:
+       : strm_(*owned_strm), owned_strm_(std::move(owned_strm)), req_(req),
+         is_server_(is_server), ping_interval_sec_(ping_interval_sec),
+         max_missed_pongs_(max_missed_pongs) {
++    if (is_server_) strm_.set_read_timeout(
++        0, CPPHTTPLIB_WEBSOCKET_INTERRUPT_POLL_INTERVAL_MICROSECONDS);
+     start_heartbeat();
+   }
+ 
+@@ -4009,7 +4026,8 @@ namespace impl {
+ bool is_valid_utf8(const std::string &s);
+ 
+ bool read_websocket_frame(Stream &strm, Opcode &opcode, std::string &payload,
+-                          bool &fin, bool expect_masked, size_t max_len);
++                          bool &fin, bool expect_masked, size_t max_len,
++                          const std::atomic<bool> *interrupted = nullptr);
+ 
+ } // namespace impl
+ 
+@@ -4933,10 +4951,29 @@ namespace impl {
+ 
+ inline bool read_websocket_frame(Stream &strm, Opcode &opcode,
+                                  std::string &payload, bool &fin,
+-                                 bool expect_masked, size_t max_len) {
++                                 bool expect_masked, size_t max_len,
++                                 const std::atomic<bool> *interrupted) {
++  const auto read_exact = [&](void *data, size_t size) {
++    auto *bytes = static_cast<char *>(data);
++    size_t offset = 0;
++    while (offset < size) {
++      if (interrupted && interrupted->load(std::memory_order_acquire)) {
++        return false;
++      }
++      const auto count = strm.read(bytes + offset, size - offset);
++      if (count > 0) {
++        offset += static_cast<size_t>(count);
++        continue;
++      }
++      if (interrupted && strm.get_error() == Error::Timeout) { continue; }
++      return false;
++    }
++    return true;
++  };
++
+   // Read first 2 bytes
+   uint8_t header[2];
+-  if (strm.read(reinterpret_cast<char *>(header), 2) != 2) { return false; }
++  if (!read_exact(header, sizeof(header))) { return false; }
+ 
+   fin = (header[0] & 0x80) != 0;
+ 
+@@ -4960,11 +4997,11 @@ inline bool read_websocket_frame(Stream &strm, Opcode &opcode,
+   // Extended payload length
+   if (payload_len == 126) {
+     uint8_t ext[2];
+-    if (strm.read(reinterpret_cast<char *>(ext), 2) != 2) { return false; }
++    if (!read_exact(ext, sizeof(ext))) { return false; }
+     payload_len = (static_cast<uint64_t>(ext[0]) << 8) | ext[1];
+   } else if (payload_len == 127) {
+     uint8_t ext[8];
+-    if (strm.read(reinterpret_cast<char *>(ext), 8) != 8) { return false; }
++    if (!read_exact(ext, sizeof(ext))) { return false; }
+     // RFC 6455 Section 5.2: the most significant bit MUST be 0
+     if (ext[0] & 0x80) { return false; }
+     payload_len = 0;
+@@ -4978,6 +5015,6 @@ inline bool read_websocket_frame(Stream &strm, Opcode &opcode,
+   // Read mask key if present
+   uint8_t mask_key[4] = {0};
+   if (masked) {
+-    if (strm.read(reinterpret_cast<char *>(mask_key), 4) != 4) { return false; }
++    if (!read_exact(mask_key, sizeof(mask_key))) { return false; }
+   }
+ 
+@@ -4984,13 +5021,7 @@ inline bool read_websocket_frame(Stream &strm, Opcode &opcode,
+   // Read payload
+   payload.resize(static_cast<size_t>(payload_len));
+   if (payload_len > 0) {
+-    size_t total_read = 0;
+-    while (total_read < payload_len) {
+-      auto n = strm.read(&payload[total_read],
+-                         static_cast<size_t>(payload_len - total_read));
+-      if (n <= 0) { return false; }
+-      total_read += static_cast<size_t>(n);
+-    }
++    if (!read_exact(payload.data(), payload.size())) { return false; }
+   }
+ 
+   // Unmask if needed
+@@ -7190,5 +7221,12 @@ inline bool read_headers(Stream &strm, Headers &headers) {
+   size_t header_count = 0;
++  size_t header_total_length = 0;
+ 
+   for (;;) {
+     if (!line_reader.getline()) { return false; }
++    if (header_total_length > CPPHTTPLIB_HEADER_MAX_TOTAL_LENGTH ||
++        line_reader.size() >
++        CPPHTTPLIB_HEADER_MAX_TOTAL_LENGTH - header_total_length) {
++      return false;
++    }
++    header_total_length += line_reader.size();
+ 
+@@ -11513,12 +11551,7 @@ inline bool Server::parse_request_line(const char *s, Request &req) const {
+   }
+ 
+   {
+-    // Skip URL fragment
+-    for (size_t i = 0; i < req.target.size(); i++) {
+-      if (req.target[i] == '#') {
+-        req.target.erase(i);
+-        break;
+-      }
+-    }
++    // URI fragments are not valid in an HTTP request-target.
++    if (req.target.find('#') != std::string::npos) { return false; }
+ 
+     detail::divide(req.target, '?',
+@@ -12517,7 +12550,8 @@ Server::process_request(Stream &strm, const std::string &remote_addr,
+     if (pre_routing_handler_ &&
+         pre_routing_handler_(req, res) == HandlerResponse::Handled) {
+       if (res.status == -1) { res.status = StatusCode::OK_200; }
+-      return write_response(strm, close_connection, req, res);
++      connection_closed = true;
++      return write_response(strm, true, req, res);
+     }
+     // Find matching WebSocket handler
+     for (const auto &entry : websocket_handlers_) {
+@@ -20313,7 +20347,8 @@ inline ReadResult WebSocket::read(std::string &msg) {
+     bool fin;
+ 
+     if (!impl::read_websocket_frame(strm_, opcode, payload, fin, is_server_,
+-                                    CPPHTTPLIB_WEBSOCKET_MAX_PAYLOAD_LENGTH)) {
++                                    CPPHTTPLIB_WEBSOCKET_MAX_PAYLOAD_LENGTH,
++                                    is_server_ ? &closed_ : nullptr)) {
+       closed_ = true;
+       return Fail;
+     }
+@@ -20352,7 +20387,8 @@ inline ReadResult WebSocket::read(std::string &msg) {
+           bool cont_fin;
+           if (!impl::read_websocket_frame(
+                   strm_, cont_opcode, cont_payload, cont_fin, is_server_,
+-                  CPPHTTPLIB_WEBSOCKET_MAX_PAYLOAD_LENGTH)) {
++                  CPPHTTPLIB_WEBSOCKET_MAX_PAYLOAD_LENGTH,
++                  is_server_ ? &closed_ : nullptr)) {
+             closed_ = true;
+             return Fail;
+           }
+@@ -20442,2 +20478,27 @@ inline void WebSocket::close(CloseStatus status, const std::string &reason) {
++inline bool WebSocket::request_close(CloseStatus status,
++                                    std::string_view reason) noexcept {
++  if (closed_.exchange(true, std::memory_order_acq_rel)) { return true; }
++  ping_cv_.notify_all();
++  try {
++    std::lock_guard<std::mutex> lock(write_mutex_);
++    std::array<char, 125> payload{};
++    auto code = static_cast<uint16_t>(status);
++    payload[0] = static_cast<char>((code >> 8) & 0xFF);
++    payload[1] = static_cast<char>(code & 0xFF);
++    const auto reason_size = (std::min)(reason.size(), size_t{123});
++    std::copy_n(reason.data(), reason_size, payload.data() + 2);
++    return detail::write_websocket_frame(strm_, Opcode::Close, payload.data(),
++                                         reason_size + 2, true, !is_server_);
++  } catch (...) {
++    return false;
++  }
++}
++
++inline void WebSocket::interrupt() noexcept {
++  closed_.store(true, std::memory_order_release);
++  ping_cv_.notify_all();
++  detail::shutdown_socket(strm_.socket());
++}
++
+ inline WebSocket::~WebSocket() {
+   {

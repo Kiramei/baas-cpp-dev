@@ -3,6 +3,10 @@ project(baas_cpp_httplib_test_package LANGUAGES CXX)
 
 find_package(baas-cpp-httplib CONFIG REQUIRED)
 
-add_executable(baas_cpp_httplib_test test.cpp)
+add_executable(
+        baas_cpp_httplib_test
+        test.cpp
+        websocket_symbol_consumer.cpp
+)
 target_compile_features(baas_cpp_httplib_test PRIVATE cxx_std_20)
 target_link_libraries(baas_cpp_httplib_test PRIVATE BAAS::httplib)
