@@ -12,6 +12,7 @@
 #include <deque>
 #include <functional>
 #include <iostream>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -474,16 +475,29 @@ void test_async_sink_bounds_and_phase_regression()
     check(wait_until([&] { return static_cast<bool>(factory->sink()); }),
           "factory must receive the asynchronous sink");
     const auto sink = factory->sink();
-    check(sink->enqueue({}) == service_ws::EnqueueResult::empty_batch,
+    auto empty_completion = std::make_shared<CompletionProbe>();
+    check(sink->enqueue({}, empty_completion) == service_ws::EnqueueResult::empty_batch
+              && empty_completion->results()
+                  == std::vector<service_ws::BatchWriteResult>{
+                      service_ws::BatchWriteResult::failed},
           "empty batch must fail explicitly");
+    auto frame_count_completion = std::make_shared<CompletionProbe>();
     check(sink->enqueue(batch({
               frame(service_ws::FrameKind::text, "a"),
               frame(service_ws::FrameKind::binary, "b"),
               frame(service_ws::FrameKind::binary, "c"),
-          })) == service_ws::EnqueueResult::too_many_frames,
+          }), frame_count_completion) == service_ws::EnqueueResult::too_many_frames
+              && frame_count_completion->results()
+                  == std::vector<service_ws::BatchWriteResult>{
+                      service_ws::BatchWriteResult::failed},
           "three-frame batch must exceed the atomic batch bound");
-    check(sink->enqueue(batch({frame(service_ws::FrameKind::binary, "12345")}))
-              == service_ws::EnqueueResult::frame_too_large,
+    auto frame_size_completion = std::make_shared<CompletionProbe>();
+    check(sink->enqueue(
+              batch({frame(service_ws::FrameKind::binary, "12345")}),
+              frame_size_completion) == service_ws::EnqueueResult::frame_too_large
+              && frame_size_completion->results()
+                  == std::vector<service_ws::BatchWriteResult>{
+                      service_ws::BatchWriteResult::failed},
           "64 MiB-equivalent maximum plus one must fail before enqueue");
     sink->terminate(service_ws::TerminalAction::complete);
     check(wait_until([&] { return transport.interrupts() > 0; }),
@@ -493,7 +507,9 @@ void test_async_sink_bounds_and_phase_regression()
 void test_batch_completion_success_rejection_and_reentrancy()
 {
     auto config = test_config();
-    config.max_frame_bytes = 8;
+    config.max_frame_bytes = 64U * 1'024U;
+    config.max_queued_bytes = 64U * 1'024U;
+    config.max_global_queued_bytes = 128U * 1'024U;
     auto factory = std::make_shared<FunctionFactory>([] {
         return std::make_unique<FunctionDriver>([](service_ws::Frame) {
             return service_ws::DriverResult{
@@ -519,11 +535,54 @@ void test_batch_completion_success_rejection_and_reentrancy()
                       service_ws::BatchWriteResult::failed},
           "synchronous rejection must complete failed exactly once before return");
 
-    auto exhausted = std::make_shared<CompletionProbe>();
+    auto lifetime_reentrant = std::make_shared<CompletionProbe>();
+    auto lifetime_batch = std::make_shared<service_ws::OutboundBatch>(
+        batch({frame(service_ws::FrameKind::text, "life")}));
+    std::atomic<std::size_t> retained_at_callback{
+        std::numeric_limits<std::size_t>::max()};
+    std::atomic<service_ws::EnqueueResult> lifetime_reentrant_result{
+        service_ws::EnqueueResult::closed};
+    auto lifetime = std::make_shared<CompletionProbe>(
+        [sink, lifetime_reentrant, lifetime_batch,
+         &retained_at_callback, &lifetime_reentrant_result](
+            const service_ws::BatchWriteResult result) noexcept {
+            retained_at_callback.store(
+                service_ws::WebSocketOwnerTestAccess::rejected_payload_bytes());
+            if (result == service_ws::BatchWriteResult::failed) {
+                lifetime_reentrant_result.store(sink->enqueue(
+                    std::move(*lifetime_batch), lifetime_reentrant));
+            }
+        });
+    check(sink->enqueue(batch({
+              frame(service_ws::FrameKind::text, std::string(40U * 1'024U, 'x')),
+              frame(service_ws::FrameKind::binary, std::string(40U * 1'024U, 'y')),
+          }), lifetime)
+              == service_ws::EnqueueResult::queued_bytes_exceeded,
+          "per-slot byte rejection must be synchronous after global reservation");
+    check(retained_at_callback.load() == 0
+              && lifetime->results()
+                  == std::vector<service_ws::BatchWriteResult>{
+                      service_ws::BatchWriteResult::failed}
+              && lifetime_reentrant_result.load()
+                  == service_ws::EnqueueResult::accepted
+              && wait_until([&] { return lifetime_reentrant->results().size() == 1; })
+              && lifetime_reentrant->results()
+                  == std::vector<service_ws::BatchWriteResult>{
+                      service_ws::BatchWriteResult::written},
+          "rejected payload and reservation must be released before callback re-entry");
+
+    std::atomic<std::size_t> exhausted_retained{
+        std::numeric_limits<std::size_t>::max()};
+    auto exhausted = std::make_shared<CompletionProbe>(
+        [&exhausted_retained](service_ws::BatchWriteResult) noexcept {
+            exhausted_retained.store(
+                service_ws::WebSocketOwnerTestAccess::rejected_payload_bytes());
+        });
     service_ws::WebSocketOwnerTestAccess::fail_next_enqueue_allocation();
     const auto exhausted_result = sink->enqueue(
         batch({frame(service_ws::FrameKind::text, "alloc")}), exhausted);
     check(exhausted_result == service_ws::EnqueueResult::resource_exhausted
+              && exhausted_retained.load() == 0
               && exhausted->results()
                   == std::vector<service_ws::BatchWriteResult>{
                       service_ws::BatchWriteResult::failed},
@@ -562,17 +621,25 @@ void test_batch_completion_success_rejection_and_reentrancy()
                       service_ws::BatchWriteResult::written},
           "successful batches must each complete written exactly once");
     const auto written = transport.written();
-    check(written.size() == 3 && written[0].payload == "json"
-              && written[1].payload == "bytes" && written[2].payload == "next",
+    check(written.size() == 4 && written[0].payload == "life"
+              && written[1].payload == "json" && written[2].payload == "bytes"
+              && written[3].payload == "next",
           "completion must follow an atomic two-frame write and preserve reentrant order");
 
     sink->terminate(service_ws::TerminalAction::complete);
     check(wait_until([&] { return transport.interrupts() > 0; }),
           "completion test must close its session");
-    auto after_close = std::make_shared<CompletionProbe>();
+    std::atomic<std::size_t> closed_retained{
+        std::numeric_limits<std::size_t>::max()};
+    auto after_close = std::make_shared<CompletionProbe>(
+        [&closed_retained](service_ws::BatchWriteResult) noexcept {
+            closed_retained.store(
+                service_ws::WebSocketOwnerTestAccess::rejected_payload_bytes());
+        });
     const auto closed_result = sink->enqueue(
         batch({frame(service_ws::FrameKind::text, "late")}), after_close);
     check(closed_result == service_ws::EnqueueResult::closed
+              && closed_retained.load() == 0
               && after_close->results()
                   == std::vector<service_ws::BatchWriteResult>{
                       service_ws::BatchWriteResult::failed},
@@ -583,6 +650,7 @@ void test_queued_and_active_completions_fail_on_shutdown_without_locks()
 {
     auto config = test_config();
     config.max_frame_bytes = 8;
+    config.max_queued_batches = 1;
     auto factory = std::make_shared<FunctionFactory>([] {
         return std::make_unique<FunctionDriver>([](service_ws::Frame) {
             return service_ws::DriverResult{
@@ -627,6 +695,22 @@ void test_queued_and_active_completions_fail_on_shutdown_without_locks()
               == service_ws::EnqueueResult::accepted,
           "second observed batch must remain queued behind the active write");
 
+    std::atomic<std::size_t> queue_full_retained{
+        std::numeric_limits<std::size_t>::max()};
+    auto queue_full = std::make_shared<CompletionProbe>(
+        [&queue_full_retained](service_ws::BatchWriteResult) noexcept {
+            queue_full_retained.store(
+                service_ws::WebSocketOwnerTestAccess::rejected_payload_bytes());
+        });
+    check(sink->enqueue(
+              batch({frame(service_ws::FrameKind::binary, "full")}), queue_full)
+              == service_ws::EnqueueResult::queue_full
+              && queue_full_retained.load() == 0
+              && queue_full->results()
+                  == std::vector<service_ws::BatchWriteResult>{
+                      service_ws::BatchWriteResult::failed},
+          "queue-full rejection must release payload before failing its observer");
+
     owner.begin_shutdown();
     check(owner.finish_shutdown(),
           "shutdown must interrupt the active writer and discard its queue");
@@ -646,6 +730,75 @@ void test_queued_and_active_completions_fail_on_shutdown_without_locks()
           "teardown callback must re-enter a closed sink outside the queue lock");
     check(owner.stats().global_queued_bytes == 0,
           "shutdown completion paths must release every active and queued byte");
+}
+
+void test_global_budget_rejection_releases_payload_before_callback()
+{
+    auto config = test_config();
+    config.max_frame_bytes = 8;
+    config.max_queued_bytes = 8;
+    config.max_global_queued_bytes = 8;
+    auto factory = std::make_shared<FunctionFactory>([] {
+        return std::make_unique<FunctionDriver>([](service_ws::Frame) {
+            return service_ws::DriverResult{
+                service_ws::SessionPhase::streaming,
+                service_ws::TerminalAction::none,
+                {},
+            };
+        });
+    });
+    service_ws::WebSocketOwner owner{config, {}, factory};
+    FakeTransport transport;
+    transport.block_writes(true);
+    transport.push(frame(service_ws::FrameKind::text, "go"));
+    std::jthread session([&] { owner.serve(std::nullopt, false, metadata(), transport); });
+    check(wait_until([&] { return static_cast<bool>(factory->sink()); }),
+          "global rejection test must receive its sink");
+    const auto sink = factory->sink();
+    check(sink->enqueue(batch({
+              frame(service_ws::FrameKind::binary, "active")}), {})
+              == service_ws::EnqueueResult::accepted,
+          "global rejection test must retain an active byte charge");
+    check(wait_until([&] { return transport.write_attempts() == 1; }),
+          "global rejection test must block its active write");
+
+    auto reentrant_completion = std::make_shared<CompletionProbe>();
+    auto reentrant_batch = std::make_shared<service_ws::OutboundBatch>(
+        batch({frame(service_ws::FrameKind::binary, "x")}));
+    std::atomic<std::size_t> retained_at_callback{
+        std::numeric_limits<std::size_t>::max()};
+    std::atomic<service_ws::EnqueueResult> reentrant_result{
+        service_ws::EnqueueResult::closed};
+    auto rejected = std::make_shared<CompletionProbe>(
+        [sink, reentrant_completion, reentrant_batch,
+         &retained_at_callback, &reentrant_result](
+            service_ws::BatchWriteResult result) noexcept {
+            retained_at_callback.store(
+                service_ws::WebSocketOwnerTestAccess::rejected_payload_bytes());
+            if (result == service_ws::BatchWriteResult::failed) {
+                reentrant_result.store(sink->enqueue(
+                    std::move(*reentrant_batch), reentrant_completion));
+            }
+        });
+    check(sink->enqueue(
+              batch({frame(service_ws::FrameKind::binary, "more")}), rejected)
+              == service_ws::EnqueueResult::queued_bytes_exceeded,
+          "aggregate global reservation must reject before queue admission");
+    check(retained_at_callback.load() == 0
+              && rejected->results()
+                  == std::vector<service_ws::BatchWriteResult>{
+                      service_ws::BatchWriteResult::failed}
+              && reentrant_result.load() == service_ws::EnqueueResult::accepted,
+          "global rejection must destroy payload before callback re-entry");
+
+    owner.begin_shutdown();
+    check(owner.finish_shutdown(), "global rejection session must shut down");
+    session.join();
+    check(reentrant_completion->results()
+                  == std::vector<service_ws::BatchWriteResult>{
+                      service_ws::BatchWriteResult::failed}
+              && owner.stats().global_queued_bytes == 0,
+          "reentrant queued work must fail once and release global budget on shutdown");
 }
 
 void test_second_frame_write_failure_completes_batch_failed()
@@ -1024,6 +1177,7 @@ int main()
     test_async_sink_bounds_and_phase_regression();
     test_batch_completion_success_rejection_and_reentrancy();
     test_queued_and_active_completions_fail_on_shutdown_without_locks();
+    test_global_budget_rejection_releases_payload_before_callback();
     test_second_frame_write_failure_completes_batch_failed();
     test_capacity_and_bounded_shutdown();
     test_active_write_retains_global_budget_until_completion();

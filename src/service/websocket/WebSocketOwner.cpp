@@ -27,6 +27,7 @@ using Clock = std::chrono::steady_clock;
 
 #if defined(BAAS_SERVICE_WEBSOCKET_TEST_HOOKS)
 std::atomic<bool> fail_next_enqueue_allocation_for_test{};
+thread_local std::size_t rejected_payload_bytes_for_test{};
 #endif
 
 struct SharedStats {
@@ -228,26 +229,32 @@ public:
         ) override
         {
             if (batch.frames.empty()) {
-                return reject(EnqueueResult::empty_batch, std::move(completion));
+                return reject_batch(
+                    EnqueueResult::empty_batch,
+                    std::move(batch), std::move(completion), 0);
             }
             if (batch.frames.size() > config.max_frames_per_batch) {
-                return reject(EnqueueResult::too_many_frames, std::move(completion));
+                return reject_batch(
+                    EnqueueResult::too_many_frames,
+                    std::move(batch), std::move(completion), 0);
             }
             std::size_t bytes = 0;
             for (const auto& frame : batch.frames) {
                 if (frame.payload.size() > config.max_frame_bytes) {
-                    return reject(EnqueueResult::frame_too_large, std::move(completion));
+                    return reject_batch(
+                        EnqueueResult::frame_too_large,
+                        std::move(batch), std::move(completion), 0);
                 }
                 if (!checked_add(bytes, frame.payload.size(), bytes)) {
-                    return reject(
+                    return reject_batch(
                         EnqueueResult::queued_bytes_exceeded,
-                        std::move(completion));
+                        std::move(batch), std::move(completion), 0);
                 }
             }
             if (!reserve_global(bytes)) {
-                return reject(
+                return reject_batch(
                     EnqueueResult::queued_bytes_exceeded,
-                    std::move(completion));
+                    std::move(batch), std::move(completion), 0);
             }
             EnqueueResult result = EnqueueResult::accepted;
             {
@@ -285,8 +292,8 @@ public:
                 }
             }
             if (result != EnqueueResult::accepted) {
-                release_global(bytes);
-                return reject(result, std::move(completion));
+                return reject_batch(
+                    result, std::move(batch), std::move(completion), bytes);
             }
             queue_changed.notify_one();
             return result;
@@ -383,11 +390,31 @@ public:
             close_outbound();
         }
 
-        [[nodiscard]] EnqueueResult reject(
+        [[nodiscard]] EnqueueResult reject_batch(
             const EnqueueResult result,
-            std::shared_ptr<BatchCompletion> completion = {}
+            OutboundBatch batch,
+            std::shared_ptr<BatchCompletion> completion,
+            const std::size_t reserved_global_bytes
         ) noexcept
         {
+#if defined(BAAS_SERVICE_WEBSOCKET_TEST_HOOKS)
+            std::size_t retained = 0;
+            for (const auto& frame : batch.frames) {
+                if (!checked_add(retained, frame.payload.size(), retained)) {
+                    retained = std::numeric_limits<std::size_t>::max();
+                    break;
+                }
+            }
+            rejected_payload_bytes_for_test = retained;
+#endif
+            {
+                std::vector<Frame> released_frames;
+                released_frames.swap(batch.frames);
+            }
+#if defined(BAAS_SERVICE_WEBSOCKET_TEST_HOOKS)
+            rejected_payload_bytes_for_test = 0;
+#endif
+            release_global(reserved_global_bytes);
             stats->outbound_rejections.fetch_add(1, std::memory_order_relaxed);
             notify_completion(std::move(completion), BatchWriteResult::failed);
             return result;
@@ -1143,6 +1170,11 @@ private:
 void WebSocketOwnerTestAccess::fail_next_enqueue_allocation() noexcept
 {
     fail_next_enqueue_allocation_for_test.store(true, std::memory_order_release);
+}
+
+std::size_t WebSocketOwnerTestAccess::rejected_payload_bytes() noexcept
+{
+    return rejected_payload_bytes_for_test;
 }
 #endif
 

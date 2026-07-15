@@ -21,6 +21,7 @@ namespace baas::service::websocket {
 #if defined(BAAS_SERVICE_WEBSOCKET_TEST_HOOKS)
 struct WebSocketOwnerTestAccess final {
     static void fail_next_enqueue_allocation() noexcept;
+    [[nodiscard]] static std::size_t rejected_payload_bytes() noexcept;
 };
 #endif
 
