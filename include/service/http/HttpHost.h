@@ -1,6 +1,7 @@
 #pragma once
 
 #include "service/http/HttplibAdapter.h"
+#include "service/websocket/WebSocketOwner.h"
 
 #include <chrono>
 #include <cstddef>
@@ -24,7 +25,9 @@ using HttpHostListenerThreadFactory =
 struct HttpHostConfig {
     // Zero requests an operating-system-selected ephemeral port.
     std::uint16_t port = 0;
-    std::size_t worker_count = 4;
+    // The default covers the 16-connection WebSocket cap plus two workers
+    // reserved for health and ordinary HTTP requests.
+    std::size_t worker_count = 18;
     // cpp-httplib counts waiting requests here; active workers are additional.
     std::size_t max_queued_requests = 32;
     std::chrono::milliseconds ready_timeout{2'000};
@@ -32,6 +35,7 @@ struct HttpHostConfig {
     std::chrono::milliseconds write_timeout{2'000};
     std::chrono::milliseconds idle_interval{100};
     CorsPolicyConfig cors_policy{};
+    websocket::WebSocketOwnerConfig websocket{};
     // Empty uses std::thread directly. Injection exists for embedding and
     // deterministic resource-failure tests; the returned thread must own task.
     HttpHostListenerThreadFactory listener_thread_factory;
@@ -43,6 +47,7 @@ struct HttpHostRouterConfig {
     std::optional<router::HealthSnapshot> health_snapshot;
     std::shared_ptr<router::HealthSnapshotProvider> health_provider;
     std::shared_ptr<router::ShutdownIntent> shutdown_intent;
+    std::shared_ptr<websocket::SessionFactory> websocket_sessions;
 };
 
 enum class HttpHostState { stopped, starting, running, stopping, failed };
@@ -54,6 +59,7 @@ enum class HttpHostStartError {
     ready_timeout,
     listen_failed,
     listener_start_failed,
+    websocket_not_stopped,
 };
 
 struct HttpHostStartResult {
@@ -94,6 +100,7 @@ public:
     [[nodiscard]] HttpHostStartError last_start_error() const noexcept;
     [[nodiscard]] std::string last_error_message() const;
     [[nodiscard]] std::size_t queue_rejections() const noexcept;
+    [[nodiscard]] websocket::WebSocketOwnerStats websocket_stats() const noexcept;
     [[nodiscard]] const HttpHostConfig& config() const noexcept;
 
 private:

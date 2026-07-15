@@ -19,6 +19,7 @@ target_link_libraries(
         PUBLIC
         BAAS_service_origin_policy
         BAAS_service_router
+        BAAS_service_websocket
         BAAS::httplib
         Threads::Threads
 )
@@ -27,6 +28,30 @@ if(MSVC)
     target_compile_options(BAAS_service_http PRIVATE /W4 /permissive-)
 else()
     target_compile_options(BAAS_service_http PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+
+if(BUILD_SERVICE_WEBSOCKET_TESTS)
+    include(CTest)
+    add_executable(
+            BAAS_service_websocket_wire_tests
+            "${BAAS_PROJECT_PATH}/tests/service/WebSocketWireTests.cpp"
+    )
+    target_compile_features(BAAS_service_websocket_wire_tests PRIVATE cxx_std_20)
+    target_link_libraries(
+            BAAS_service_websocket_wire_tests
+            PRIVATE BAAS_service_http
+    )
+    if(WIN32)
+        target_link_libraries(BAAS_service_websocket_wire_tests PRIVATE ws2_32)
+    endif()
+    add_test(
+            NAME BAAS_service_websocket_wire_tests
+            COMMAND BAAS_service_websocket_wire_tests
+    )
+    set_tests_properties(
+            BAAS_service_websocket_wire_tests
+            PROPERTIES TIMEOUT 45
+    )
 endif()
 
 if(BUILD_SERVICE_HTTP_TESTS)

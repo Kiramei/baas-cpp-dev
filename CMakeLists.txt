@@ -98,6 +98,8 @@ option(BUILD_SERVICE_ORIGIN_POLICY "Build the standalone HTTP Origin/CORS policy
 option(BUILD_SERVICE_ORIGIN_POLICY_TESTS "Build native tests for HTTP Origin/CORS policy" OFF)
 option(BUILD_SERVICE_HTTP       "Build the optional cpp-httplib service adapter" OFF)
 option(BUILD_SERVICE_HTTP_TESTS "Build native tests for the cpp-httplib service adapter" OFF)
+option(BUILD_SERVICE_WEBSOCKET "Build the bounded cpp-httplib WebSocket owner" OFF)
+option(BUILD_SERVICE_WEBSOCKET_TESTS "Build deterministic WebSocket owner tests" OFF)
 
 # BAAS_APP owns the production script Host adapters. Standalone runtime builds
 # stay opt-in, while application builds always compile the runtime and its
@@ -177,6 +179,22 @@ if(BUILD_SERVICE_HTTP_TESTS AND NOT BUILD_SERVICE_HTTP)
     set(BUILD_SERVICE_HTTP ON CACHE BOOL "Build the optional cpp-httplib service adapter" FORCE)
 endif()
 
+if(BUILD_SERVICE_WEBSOCKET_TESTS AND NOT BUILD_SERVICE_WEBSOCKET)
+    set(BUILD_SERVICE_WEBSOCKET ON CACHE BOOL "Build the bounded cpp-httplib WebSocket owner" FORCE)
+endif()
+
+if(BUILD_SERVICE_WEBSOCKET_TESTS AND NOT BUILD_SERVICE_HTTP)
+    set(BUILD_SERVICE_HTTP ON CACHE BOOL "Build the cpp-httplib host for WebSocket wire tests" FORCE)
+endif()
+
+if(BUILD_SERVICE_HTTP AND NOT BUILD_SERVICE_WEBSOCKET)
+    set(BUILD_SERVICE_WEBSOCKET ON CACHE BOOL "Build the bounded cpp-httplib WebSocket owner" FORCE)
+endif()
+
+if(BUILD_SERVICE_WEBSOCKET AND NOT BUILD_SERVICE_ORIGIN_POLICY)
+    set(BUILD_SERVICE_ORIGIN_POLICY ON CACHE BOOL "Build the standalone HTTP Origin/CORS policy" FORCE)
+endif()
+
 if(BUILD_SERVICE_HTTP_TESTS AND NOT BUILD_SERVICE_ORIGIN_POLICY_TESTS)
     set(BUILD_SERVICE_ORIGIN_POLICY_TESTS ON CACHE BOOL "Build native tests for HTTP Origin/CORS policy" FORCE)
 endif()
@@ -235,7 +253,7 @@ if(BUILD_BAAS_AW_CHECKER)
     baas_request_dependencies(opencv nlohmann_json spdlog simdutf)
 endif()
 
-if(BUILD_SERVICE_HTTP)
+if(BUILD_SERVICE_HTTP OR BUILD_SERVICE_WEBSOCKET)
     baas_request_dependencies(cpp_httplib)
 endif()
 
@@ -267,6 +285,7 @@ list(FILTER BAAS_CORE_SOURCES EXCLUDE REGEX "/src/service/protocol/.*\\.cpp$")
 list(FILTER BAAS_CORE_SOURCES EXCLUDE REGEX "/src/service/trigger/.*\\.cpp$")
 list(FILTER BAAS_CORE_SOURCES EXCLUDE REGEX "/src/service/router/.*\\.cpp$")
 list(FILTER BAAS_CORE_SOURCES EXCLUDE REGEX "/src/service/http/.*\\.cpp$")
+list(FILTER BAAS_CORE_SOURCES EXCLUDE REGEX "/src/service/websocket/.*\\.cpp$")
 
 if(TARGET_OS_NAME STREQUAL "Windows")
     list(REMOVE_ITEM BAAS_CORE_SOURCES "${CMAKE_CURRENT_LIST_DIR}/src/simdutf.cpp")
@@ -329,6 +348,10 @@ endif()
 
 if(BUILD_SERVICE_ORIGIN_POLICY)
     include("${CMAKE_CURRENT_LIST_DIR}/cmake/ServiceOriginPolicy.cmake")
+endif()
+
+if(BUILD_SERVICE_WEBSOCKET)
+    include("${CMAKE_CURRENT_LIST_DIR}/cmake/ServiceWebSocket.cmake")
 endif()
 
 if(BUILD_SERVICE_HTTP)
