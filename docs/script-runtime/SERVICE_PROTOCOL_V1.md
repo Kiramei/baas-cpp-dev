@@ -722,7 +722,7 @@ defined.
 | [MISSING] | Provider/sync/trigger/remote shared contract suite | Inventoried only; focused tests incomplete |
 | [MISSING] | Bounded queues, overload, timeout, cancellation, load gates | Trigger correlation/output constants, leased-send backpressure, cancellation precedence, send-failure/disconnect cleanup, close-race tests, and BPIP batching exist; transport-wide deadlines, global load policy, live executor propagation, and cross-language load remain absent |
 | [MISSING] | Live Windows pipe and Unix socket interoperability/fuzz | Framing unit tests only |
-| [MISSING] | C++ business resume/secretstream implementation | Persistent AuthOwner now owns typed four-channel handshakes and mutex-atomic ticket/MAC/key/AAD/subscription resume with deterministic v1-vector and race tests; channel drivers, secretstream framing, and the production session multiplexer remain missing |
+| [IMPLEMENTED] | C++ business resume/secretstream session boundary | `BusinessSessionFactory` implements strict four-channel resume, preauth header exchange, ordered secretstream framing, revocation/validity checks, FINAL/truncation handling, and injected per-channel handlers; `ProductionSessionFactory` strictly composes it with control. Concrete business handlers, production host wiring, and host/client/device E2E remain separate missing gates. |
 | [MISSING] | Windows desktop Tauri end-to-end | Not run |
 | [MISSING] | Android native/JNI foreground and emulator smoke | Not implemented/run |
 | [MISSING] | Lifecycle, multi-instance, crash/restart, rollback | Not run |

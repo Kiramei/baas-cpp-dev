@@ -106,6 +106,8 @@ option(BUILD_SERVICE_AUTH_OWNER "Build the persistent service authentication own
 option(BUILD_SERVICE_AUTH_OWNER_TESTS "Build deterministic AuthOwner tests" OFF)
 option(BUILD_SERVICE_CONTROL_SESSION "Build the authenticated control WebSocket driver" OFF)
 option(BUILD_SERVICE_CONTROL_SESSION_TESTS "Build deterministic control-driver tests" OFF)
+option(BUILD_SERVICE_BUSINESS_SESSION "Build authenticated business WebSocket drivers" OFF)
+option(BUILD_SERVICE_BUSINESS_SESSION_TESTS "Build deterministic business-driver tests" OFF)
 
 # BAAS_APP owns the production script Host adapters. Standalone runtime builds
 # stay opt-in, while application builds always compile the runtime and its
@@ -143,6 +145,17 @@ if(BUILD_SERVICE_CONTROL_SESSION_TESTS AND NOT BUILD_SERVICE_CONTROL_SESSION)
 endif()
 
 if(BUILD_SERVICE_CONTROL_SESSION)
+    set(BUILD_SERVICE_WEBSOCKET ON CACHE BOOL "Build the bounded cpp-httplib WebSocket owner" FORCE)
+    set(BUILD_SERVICE_AUTH_OWNER ON CACHE BOOL "Build the persistent service authentication owner" FORCE)
+    set(BUILD_SERVICE_AUTH_CRYPTO ON CACHE BOOL "Build the service v1 cryptographic foundation" FORCE)
+endif()
+
+if(BUILD_SERVICE_BUSINESS_SESSION_TESTS AND NOT BUILD_SERVICE_BUSINESS_SESSION)
+    set(BUILD_SERVICE_BUSINESS_SESSION ON CACHE BOOL "Build authenticated business WebSocket drivers" FORCE)
+endif()
+
+if(BUILD_SERVICE_BUSINESS_SESSION)
+    set(BUILD_SERVICE_CONTROL_SESSION ON CACHE BOOL "Build the authenticated control WebSocket driver" FORCE)
     set(BUILD_SERVICE_WEBSOCKET ON CACHE BOOL "Build the bounded cpp-httplib WebSocket owner" FORCE)
     set(BUILD_SERVICE_AUTH_OWNER ON CACHE BOOL "Build the persistent service authentication owner" FORCE)
     set(BUILD_SERVICE_AUTH_CRYPTO ON CACHE BOOL "Build the service v1 cryptographic foundation" FORCE)
@@ -393,6 +406,10 @@ endif()
 
 if(BUILD_SERVICE_CONTROL_SESSION)
     include("${CMAKE_CURRENT_LIST_DIR}/cmake/ServiceControlSession.cmake")
+endif()
+
+if(BUILD_SERVICE_BUSINESS_SESSION)
+    include("${CMAKE_CURRENT_LIST_DIR}/cmake/ServiceBusinessSession.cmake")
 endif()
 
 if(BUILD_SERVICE_HTTP)
