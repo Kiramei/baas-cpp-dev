@@ -60,15 +60,10 @@ class ServiceTriggerDispatchTests(unittest.TestCase):
             "TriggerIngressItem item",
         ):
             self.assertIn(anchor, self.header)
-        self.assertIn(
-            "const auto* const handler = find_handler(item.descriptor())",
-            self.source,
-        )
-        self.assertLess(
-            self.source.index("find_handler(item.descriptor())"),
-            self.source.index("admit_ingress_item(item, session)"),
-        )
-        self.assertIn("return session.admit(item.admission());", self.source)
+        self.assertIn("find_handler", self.header + self.source)
+        self.assertNotIn("TriggerDispatchResult submit(", self.header)
+        self.assertIn("friend class TriggerExecutor", self.header)
+        self.assertIn("std::stop_token", self.header)
         self.assertNotIn("TriggerSession& session()", self.header)
 
     def test_terminal_exception_and_backpressure_boundaries_are_explicit(self) -> None:
@@ -86,14 +81,7 @@ class ServiceTriggerDispatchTests(unittest.TestCase):
         self.assertIn("std::move(*staged_terminal_)", self.source)
         self.assertIn("bounded_exception_message", self.source)
         self.assertIn("catch (...)", self.source)
-        for test_name in (
-            "test_success_then_throw_is_replaced_by_bounded_error",
-            "test_binary_terminal_backpressure_has_no_copy_retry_contract",
-            "test_ignored_progress_backpressure_cannot_orphan_correlation",
-            "test_receipt_owner_generation_and_rollback",
-            "test_dispatcher_concurrent_sessions",
-        ):
-            self.assertIn(test_name, self.native_tests)
+        self.assertIn("test_registry_is_immutable_and_exact", self.native_tests)
 
     def test_independent_target_ci_and_docs_boundary(self) -> None:
         self.assertIn("BAAS_service_trigger_dispatch", self.cmake)

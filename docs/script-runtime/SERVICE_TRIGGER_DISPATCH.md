@@ -9,20 +9,19 @@ devices, or application lifecycle.
 
 ## Transaction and identity boundary
 
-`TriggerDispatcher::submit()` move-consumes one ingress item. It first resolves
-the item's immutable catalog descriptor to a registered handler and only then
-calls the single centralized session-admission helper. An unknown registration,
-unregistered descriptor, or duplicate registry entry therefore cannot reserve
-a timestamp. Once a host is integrated, the dispatcher is its required
-submission path; callers must not separately call the low-level
-`TriggerIngressItem::admit_to()` and then attempt to dispatch the same item.
+`TriggerDispatcher` owns the immutable registry and sealed response execution
+boundary. `TriggerConnectionOwner::submit()` is the only supported host
+transaction: it resolves a handler, reserves bounded executor capacity, admits
+the session correlation, registers its task owner, and only then commits the
+worker. The former synchronous dispatcher `submit()` API was removed because it
+could not make that ownership transaction safe.
 
 Every successful `TriggerSession::admit()` mints an opaque `AdmissionReceipt`
 containing a process-unique session instance ID and a monotonic per-session
 generation. `publish()` requires that receipt and checks owner, timestamp, and
 generation before accepting output. A stale handler cannot inject into a later
 command that reuses the same timestamp, and a receipt cannot cross sessions or
-be revived by reconstructing a session at the same address. `rollback()` is
+be revived by same-address session reconstruction. `rollback()` is
 allowed only before any response has entered the queue; visible progress or a
 terminal batch makes rollback return `response_already_queued` without changing
 the queue or correlation.
@@ -41,13 +40,13 @@ the actual command such as `start_custom_task`.
 immutable vector of descriptor-to-handler bindings. Descriptor names must
 exactly equal catalog `canonical_name` values. Stable registry errors distinguish
 `invalid_limits`, `unknown_descriptor`, `duplicate_registration`, and
-`empty_handler`; submit distinguishes `unregistered_command` before admission.
+`empty_handler`; the execution owner distinguishes `unregistered_command`
+before admission.
 
-`submit()` invokes a handler synchronously. The immutable dispatcher itself may
-be used concurrently for independent sessions. A registered callback may be
-called concurrently and must synchronize any mutable state it captures. The
-request and response sink are callback-scoped and must not be retained or used
-by detached work.
+The bounded executor invokes handlers asynchronously with a read-only
+`std::stop_token`. The immutable dispatcher may be shared by workers, so a
+registered callback may be called concurrently and must synchronize captured
+mutable state. Request and response sink objects remain callback-scoped.
 
 ## Controlled response publication
 
@@ -66,38 +65,37 @@ that success to the client. On exception the staged terminal is discarded and
 replaced with a bounded error terminal. Exception diagnostics are capped and
 converted to printable ASCII, which is valid UTF-8. A second allocation or
 encoding failure is caught by an outer boundary and returns
-`internal_failure/close_session`; no handler exception crosses `submit()`.
+`internal_failure/close_session`; no handler exception crosses the worker
+boundary.
 
 `TriggerSession::publish(receipt, OutboundBatch&&)` validates before moving the
 batch. Queue backpressure leaves the caller-owned batch unchanged. If a staged
-terminal meets `queue_full` or `queued_bytes_exceeded`, submit returns
-`retry_response` plus one owning `PendingTriggerResponse`. Its `retry()` moves
-the same batch only after capacity exists, so a large binary is not copied on
-each retry. Only terminal batches become pending; rejected progress followed by
-handler return or exception is converted into a retryable terminal error or an
-explicit `close_session` result, never an orphaned progress continuation.
+terminal meets `queue_full` or `queued_bytes_exceeded`, the execution owner
+retains the returned `PendingTriggerResponse` in its completed task slot. Egress
+capacity release retries the same moved batch, so a large binary is not copied
+and the handler is never rerun. Only terminal batches become pending; rejected
+progress followed by return or exception becomes a retryable terminal, never an
+orphaned continuation.
 
 Other publish failures, including closed session, invalid receipt, or
 `cancellation_response_required`, are preserved in `TriggerResponseResult` and
 produce `close_session`. The caller must close that session and propagate the
 returned active-command cancellation list. A response that fails encoding can
 be corrected by the handler while it is still running; if no terminal can be
-formed after the handler exits, submit also returns `close_session`. Failed
-publication never releases the correlation.
+formed after the handler exits, the owner closes the session. Failed publication
+never releases the correlation before that close handoff is consumed.
 
 ## Verification and remaining boundary
 
-`BAAS_service_trigger_dispatch_tests` covers registry failures, pre-admission
-unregistered rejection, prefix identity, single/stream rules, unique terminals,
-binary batching, success-then-throw replacement, hostile exception text,
-large-binary backpressure retry, ignored progress backpressure on return and
-throw, cancellation/closed propagation, receipt owner and generation ABA,
-same-address session reconstruction, rollback visibility, and concurrent
-independent sessions. Debug and Release CI build it as an independent target.
+`BAAS_service_trigger_dispatch_tests` covers immutable registry validation.
+`BAAS_service_trigger_executor_tests` exercises the admitted execution and
+response safety properties through the only supported owner path, including
+prefix identity, single/stream rules, exception replacement, backpressure,
+receipt ABA, rollback visibility, cancellation, and concurrency.
 
 Still required before task execution is complete:
 
-- real catalog handler implementations and runtime/executor ownership;
-- executor cancellation/deadline propagation and a live backpressure waiter;
+- real catalog handler implementations and runtime integration;
+- deadlines and a live transport backpressure wakeup;
 - authenticated WebSocket and local Pipe hosts using submit and egress leases;
 - shared Python/C++/Tauri fixtures, load/fault tests, and end-to-end execution.

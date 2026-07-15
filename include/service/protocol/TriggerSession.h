@@ -352,6 +352,11 @@ public:
     [[nodiscard]] std::vector<ActiveCommand> close();
 
     [[nodiscard]] TriggerSessionStats stats() const;
+    // Execution-owner claim is process-local and independent of transport.
+    // It prevents two executor pools from assigning separate locks and limits
+    // to the same session. The successful owner must release exactly once.
+    [[nodiscard]] bool try_claim_execution_owner() noexcept;
+    void release_execution_owner() noexcept;
     [[nodiscard]] const TriggerSessionLimits& limits() const noexcept { return limits_; }
 
 private:
@@ -374,6 +379,9 @@ private:
     [[nodiscard]] SendLeaseId next_lease_id() noexcept;
 
     std::deque<std::shared_ptr<const OutboundBatch>> outbound_;
+    // Reserved once at construction so close/fail-send handoff does not
+    // allocate after the session transition begins.
+    std::vector<ActiveCommand> cancellation_handoff_;
     std::optional<SendLeaseId> active_lease_id_;
     SendLeaseId next_lease_id_{1};
     std::size_t queued_bytes_{};
@@ -391,6 +399,7 @@ private:
     std::size_t queue_backpressure_{};
     std::uint64_t next_admission_generation_{1};
     bool closed_{};
+    bool execution_owner_claimed_{};
 };
 
 }  // namespace baas::service::protocol::trigger

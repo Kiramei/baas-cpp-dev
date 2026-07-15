@@ -586,18 +586,19 @@ error; it MUST NOT grow without bound or silently drop trigger/sync data.
 server-side handshake deadline, heartbeat liveness threshold, and performance
 budgets have not been selected or parity-tested. The anchored Python service
 uses unbounded `asyncio.Queue` in several paths and therefore is not evidence
-that this requirement is complete.
+that this requirement is complete. The C++ trigger executor now has explicit
+global, queued, and per-connection task limits, but wire overload codes,
+deadlines, and cross-language parity remain pending.
 
 **[REQUIRED]** Connection loss cancels connection-owned sender/receiver tasks.
 Shutdown stops admission before canceling work. A response MUST NOT be emitted
 after its owning request/session is canceled unless the response is an explicit
 terminal cancellation result.
 
-**[MISSING]** v1 has stop commands but no general request cancellation envelope
-and no verified stale-task cleanup contract. The C++ trigger core provides an
-idempotent embedding cancellation request, cancellation-wins publication, and
-disconnect enumeration for its future executor owner; this is not a new wire
-message and is not yet connected to live tasks.
+**[MISSING]** v1 has stop commands but no general request cancellation envelope.
+The C++ trigger execution owner now connects the embedding cancellation request
+and disconnect handoff to bounded tasks and read-only stop tokens; this is not a
+new wire message and is not yet connected to real handlers or live transports.
 
 ## 11. Lifecycle and persistence
 

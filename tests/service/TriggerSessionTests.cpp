@@ -11,9 +11,17 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <type_traits>
 #include <vector>
 
 namespace trigger = baas::service::protocol::trigger;
+
+using TriggerSessionPublishSignature = trigger::PublishResult (
+    trigger::TriggerSession::*)(
+        const trigger::AdmissionReceipt&, trigger::OutboundBatch&&);
+static_assert(std::is_same_v<
+    decltype(&trigger::TriggerSession::publish),
+    TriggerSessionPublishSignature>);
 
 namespace {
 
@@ -285,8 +293,10 @@ void test_cancellation_and_disconnect_cleanup()
           "disconnect test must preserve prior cancellation state");
     const auto active = session.close();
     check(active.size() == 2, "disconnect must return every task without a terminal response");
-    check(active[0].timestamp == 41 && active[0].cancel_requested
-              && active[1].timestamp == 42 && !active[1].cancel_requested,
+    check(active[0].command == "start_scheduler" && active[0].timestamp == 41
+              && active[0].cancel_requested
+              && active[1].command == "status" && active[1].timestamp == 42
+              && !active[1].cancel_requested,
           "disconnect cancellation list must be deterministic and complete");
     check(session.stats().queued_batches == 0 && session.stats().active_correlations == 0,
           "closed connection must drop unsendable output and all correlations");

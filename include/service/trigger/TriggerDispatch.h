@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <functional>
 #include <optional>
+#include <stop_token>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -13,6 +14,8 @@
 namespace baas::service::trigger {
 
 namespace trigger_protocol = baas::service::protocol::trigger;
+
+class TriggerExecutor;
 
 struct TriggerDispatchLimits {
     trigger_protocol::TriggerEnvelopeLimits response_envelope{};
@@ -95,6 +98,7 @@ private:
 
     friend class TriggerDispatcher;
     friend class TriggerResponseSink;
+    friend class TriggerExecutor;
 
     trigger_protocol::TriggerIngressItem item_;
     trigger_protocol::TriggerSession* session_{};
@@ -110,19 +114,24 @@ public:
 
     [[nodiscard]] TriggerResponseResult retry();
     [[nodiscard]] bool pending() const noexcept { return batch_.has_value(); }
+    [[nodiscard]] std::size_t bytes() const noexcept;
+    [[nodiscard]] bool replace_with_cancelled() noexcept;
 
 private:
     PendingTriggerResponse(
         trigger_protocol::TriggerSession& session,
         trigger_protocol::AdmissionReceipt receipt,
-        trigger_protocol::OutboundBatch batch) noexcept;
+        trigger_protocol::OutboundBatch batch,
+        std::optional<trigger_protocol::OutboundBatch> cancelled_fallback) noexcept;
 
     friend class TriggerResponseSink;
     friend class TriggerDispatcher;
+    friend class TriggerExecutor;
 
     trigger_protocol::TriggerSession* session_{};
     trigger_protocol::AdmissionReceipt receipt_;
     std::optional<trigger_protocol::OutboundBatch> batch_;
+    std::optional<trigger_protocol::OutboundBatch> cancelled_fallback_;
 };
 
 // Synchronous handler-scoped publisher. Identity fields are always copied from
@@ -180,7 +189,7 @@ private:
 };
 
 using TriggerHandler = std::function<void(
-    const AdmittedTriggerRequest&, TriggerResponseSink&)>;
+    const AdmittedTriggerRequest&, TriggerResponseSink&, std::stop_token)>;
 
 struct TriggerHandlerRegistration {
     // Must exactly equal a catalog descriptor canonical_name. Prefix
@@ -228,9 +237,9 @@ struct TriggerDispatchResult {
 
 struct TriggerDispatcherBuildResult;
 
-// Immutable after create(). submit() is thread-safe with respect to dispatcher
-// state; registered handlers may be invoked concurrently and must synchronize
-// any state they share.
+// Immutable after create(). TriggerExecutor is the only execution owner allowed
+// to turn a resolved ingress item into an admitted handler invocation. This
+// keeps capacity reservation and task registration ahead of worker execution.
 class TriggerDispatcher final {
 public:
     TriggerDispatcher(const TriggerDispatcher&) = delete;
@@ -241,12 +250,6 @@ public:
     [[nodiscard]] static TriggerDispatcherBuildResult create(
         std::vector<TriggerHandlerRegistration> registrations,
         TriggerDispatchLimits limits = {});
-
-    // Move-consuming transaction: resolves a handler before admission, admits
-    // exactly once, then invokes the handler synchronously with sealed identity.
-    [[nodiscard]] TriggerDispatchResult submit(
-        trigger_protocol::TriggerIngressItem item,
-        trigger_protocol::TriggerSession& session) const;
 
 private:
     struct ResolvedHandler {
@@ -262,6 +265,12 @@ private:
 
     [[nodiscard]] const TriggerHandler* find_handler(
         const TriggerCommandDescriptor& descriptor) const noexcept;
+    [[nodiscard]] TriggerDispatchResult execute_admitted(
+        const TriggerHandler& handler,
+        const AdmittedTriggerRequest& request,
+        std::stop_token stop_token) const;
+
+    friend class TriggerExecutor;
 
     std::vector<ResolvedHandler> handlers_;
     TriggerDispatchLimits limits_;

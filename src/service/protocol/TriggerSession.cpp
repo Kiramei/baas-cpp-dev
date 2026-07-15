@@ -198,6 +198,7 @@ TriggerSession::TriggerSession(const TriggerSessionLimits limits)
     : limits_(limits), instance_id_(allocate_session_instance_id())
 {
     validate_limits(limits_);
+    cancellation_handoff_.reserve(limits_.max_in_flight);
 }
 
 AdmissionResult TriggerSession::admit(CommandAdmission command)
@@ -412,11 +413,11 @@ FailSendResult TriggerSession::fail_send(const SendLease& lease)
 std::vector<ActiveCommand> TriggerSession::close_locked()
 {
     if (closed_) return {};
-    std::vector<ActiveCommand> active;
-    active.reserve(entries_.size());
-    for (const auto& [timestamp, entry] : entries_) {
+    cancellation_handoff_.clear();
+    for (auto& [timestamp, entry] : entries_) {
         if (!entry.terminal_queued) {
-            active.push_back({entry.command, timestamp, entry.cancel_requested});
+            cancellation_handoff_.push_back(
+                {std::move(entry.command), timestamp, entry.cancel_requested});
         }
     }
     dropped_batches_ += outbound_.size();
@@ -426,13 +427,35 @@ std::vector<ActiveCommand> TriggerSession::close_locked()
     outbound_.clear();
     queued_bytes_ = 0;
     active_lease_id_.reset();
-    return active;
+    auto handoff = std::move(cancellation_handoff_);
+    return handoff;
 }
 
 std::vector<ActiveCommand> TriggerSession::close()
 {
     std::lock_guard lock(mutex_);
     return close_locked();
+}
+
+bool TriggerSession::try_claim_execution_owner() noexcept
+{
+    try {
+        std::lock_guard lock(mutex_);
+        if (closed_ || execution_owner_claimed_) return false;
+        execution_owner_claimed_ = true;
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+void TriggerSession::release_execution_owner() noexcept
+{
+    try {
+        std::lock_guard lock(mutex_);
+        execution_owner_claimed_ = false;
+    } catch (...) {
+    }
 }
 
 TriggerSessionStats TriggerSession::stats() const

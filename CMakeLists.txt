@@ -90,6 +90,8 @@ option(BUILD_SERVICE_TRIGGER_DISPATCH "Build the transport-independent trigger d
 option(BUILD_SERVICE_TRIGGER_DISPATCH_TESTS "Build native tests for trigger dispatch" OFF)
 option(BUILD_SERVICE_PIPE_HOST "Build the bounded native Pipe host" OFF)
 option(BUILD_SERVICE_PIPE_HOST_TESTS "Build deterministic tests for the Pipe host" OFF)
+option(BUILD_SERVICE_TRIGGER_EXECUTOR "Build the bounded trigger execution owner" OFF)
+option(BUILD_SERVICE_TRIGGER_EXECUTOR_TESTS "Build native tests for trigger execution ownership" OFF)
 option(BUILD_SERVICE_ROUTER     "Build the transport-independent BAAS service router" OFF)
 option(BUILD_SERVICE_ROUTER_TESTS "Build native tests for the BAAS service router" OFF)
 option(BUILD_SERVICE_ORIGIN_POLICY "Build the standalone HTTP Origin/CORS policy" OFF)
@@ -145,6 +147,22 @@ endif()
 
 if(BUILD_SERVICE_PIPE_HOST AND NOT BUILD_SERVICE_PROTOCOL)
     set(BUILD_SERVICE_PROTOCOL ON CACHE BOOL "Build the standalone BAAS service protocol library" FORCE)
+endif()
+
+if(BUILD_SERVICE_TRIGGER_EXECUTOR_TESTS AND NOT BUILD_SERVICE_TRIGGER_EXECUTOR)
+    set(BUILD_SERVICE_TRIGGER_EXECUTOR ON CACHE BOOL "Build the bounded trigger execution owner" FORCE)
+endif()
+
+if(BUILD_SERVICE_TRIGGER_EXECUTOR AND NOT BUILD_SERVICE_TRIGGER_DISPATCH)
+    set(BUILD_SERVICE_TRIGGER_DISPATCH ON CACHE BOOL "Build the transport-independent trigger dispatcher" FORCE)
+endif()
+
+if(BUILD_SERVICE_TRIGGER_EXECUTOR AND NOT BUILD_SERVICE_PROTOCOL)
+    set(BUILD_SERVICE_PROTOCOL ON CACHE BOOL "Build the standalone BAAS service protocol library" FORCE)
+endif()
+
+if(BUILD_SERVICE_TRIGGER_EXECUTOR AND NOT BUILD_SERVICE_TRIGGER_CATALOG)
+    set(BUILD_SERVICE_TRIGGER_CATALOG ON CACHE BOOL "Build the transport-independent trigger command catalog" FORCE)
 endif()
 
 if(BUILD_SERVICE_ROUTER_TESTS AND NOT BUILD_SERVICE_ROUTER)
@@ -299,6 +317,10 @@ endif()
 
 if(BUILD_SERVICE_PIPE_HOST)
     include("${CMAKE_CURRENT_LIST_DIR}/cmake/ServicePipeHost.cmake")
+endif()
+
+if(BUILD_SERVICE_TRIGGER_EXECUTOR)
+    include("${CMAKE_CURRENT_LIST_DIR}/cmake/ServiceTriggerExecutor.cmake")
 endif()
 
 if(BUILD_SERVICE_ROUTER)

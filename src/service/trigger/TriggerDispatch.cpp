@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <exception>
+#include <limits>
 #include <utility>
 
 namespace baas::service::trigger {
@@ -12,15 +13,6 @@ using trigger_protocol::PublishError;
 constexpr std::string_view exception_prefix = "handler exception: ";
 constexpr std::string_view incomplete_handler =
     "handler returned without terminal response";
-
-// Keep the dependency on TriggerIngressItem::admit_to() in one place so its
-// result-policy evolution does not spread through the dispatcher.
-[[nodiscard]] trigger_protocol::AdmissionResult admit_ingress_item(
-    const trigger_protocol::TriggerIngressItem& item,
-    trigger_protocol::TriggerSession& session)
-{
-    return session.admit(item.admission());
-}
 
 [[nodiscard]] TriggerResponseDisposition disposition_for(
     const PublishError error) noexcept
@@ -185,11 +177,41 @@ const TriggerCommandDescriptor& AdmittedTriggerRequest::descriptor() const noexc
 PendingTriggerResponse::PendingTriggerResponse(
     trigger_protocol::TriggerSession& session,
     trigger_protocol::AdmissionReceipt receipt,
-    trigger_protocol::OutboundBatch batch) noexcept
+    trigger_protocol::OutboundBatch batch,
+    std::optional<trigger_protocol::OutboundBatch> cancelled_fallback) noexcept
     : session_(&session),
       receipt_(std::move(receipt)),
-      batch_(std::move(batch))
+      batch_(std::move(batch)),
+      cancelled_fallback_(std::move(cancelled_fallback))
 {}
+
+std::size_t PendingTriggerResponse::bytes() const noexcept
+{
+    const auto batch_bytes = [](const auto& batch) noexcept {
+        if (!batch) return std::size_t{0};
+        const auto json = batch->json().size();
+        const auto binary = batch->binary().size();
+        return binary > std::numeric_limits<std::size_t>::max() - json
+            ? std::numeric_limits<std::size_t>::max()
+            : json + binary;
+    };
+    const auto primary = batch_bytes(batch_);
+    const auto fallback = batch_bytes(cancelled_fallback_);
+    return fallback > std::numeric_limits<std::size_t>::max() - primary
+        ? std::numeric_limits<std::size_t>::max()
+        : primary + fallback;
+}
+
+bool PendingTriggerResponse::replace_with_cancelled() noexcept
+{
+    if (!batch_) return false;
+    if (batch_->status() == trigger_protocol::ResponseStatus::cancelled)
+        return true;
+    if (!cancelled_fallback_) return false;
+    batch_.emplace(std::move(*cancelled_fallback_));
+    cancelled_fallback_.reset();
+    return true;
+}
 
 TriggerResponseResult PendingTriggerResponse::retry()
 {
@@ -217,6 +239,7 @@ TriggerResponseResult PendingTriggerResponse::retry()
         };
     }
     batch_.reset();
+    cancelled_fallback_.reset();
     return {};
 }
 
@@ -402,9 +425,21 @@ TriggerResponseResult TriggerResponseSink::commit_staged_terminal()
     if (!published) {
         const auto disposition = disposition_for(published.error);
         if (disposition == TriggerResponseDisposition::retryable_backpressure) {
+            std::optional<trigger_protocol::OutboundBatch> cancelled_fallback;
+            trigger_protocol::CommandResponse cancelled;
+            cancelled.command = std::string{request_.command()};
+            cancelled.timestamp = request_.timestamp();
+            cancelled.status = trigger_protocol::ResponseStatus::cancelled;
+            cancelled.response_mode = request_.response_mode();
+            cancelled.terminal = true;
+            cancelled.error = "cancelled";
+            auto encoded_cancelled = trigger_protocol::encode_command_response(
+                std::move(cancelled), limits_.response_envelope);
+            if (encoded_cancelled)
+                cancelled_fallback.emplace(std::move(encoded_cancelled.batch));
             pending_.emplace(PendingTriggerResponse{
                 *request_.session_, request_.receipt_,
-                std::move(*staged_terminal_)});
+                std::move(*staged_terminal_), std::move(cancelled_fallback)});
         }
         staged_terminal_.reset();
         last_result_ = {
@@ -475,57 +510,61 @@ const TriggerHandler* TriggerDispatcher::find_handler(
     return iterator == handlers_.end() ? nullptr : &iterator->handler;
 }
 
-TriggerDispatchResult TriggerDispatcher::submit(
-    trigger_protocol::TriggerIngressItem item,
-    trigger_protocol::TriggerSession& session) const
+TriggerDispatchResult TriggerDispatcher::execute_admitted(
+    const TriggerHandler& handler,
+    const AdmittedTriggerRequest& request,
+    const std::stop_token stop_token) const
 {
-    // Handler resolution is deliberately before admission: an unregistered
-    // descriptor can never reserve a timestamp/correlation.
-    const auto* const handler = find_handler(item.descriptor());
-    if (handler == nullptr) {
-        return {
-            TriggerDispatchError::unregistered_command,
-            TriggerDispatchDisposition::rejected_before_admission,
-        };
-    }
-
-    auto admission = admit_ingress_item(item, session);
-    if (!admission || !admission.receipt) {
-        return {
-            TriggerDispatchError::admission_rejected,
-            TriggerDispatchDisposition::rejected_before_admission,
-            admission.error,
-        };
-    }
-
-    AdmittedTriggerRequest request{
-        std::move(item), session, std::move(*admission.receipt)};
     TriggerResponseSink sink{request, limits_};
     try {
         TriggerDispatchError dispatch_error = TriggerDispatchError::none;
         TriggerResponseResult boundary_response{};
-        try {
-            (*handler)(request, sink);
-        } catch (const std::exception& exception) {
-            dispatch_error = TriggerDispatchError::handler_exception;
-            sink.discard_staged_terminal();
-            boundary_response = sink.error(bounded_exception_message(
-                exception.what(), limits_.max_exception_error_bytes));
-        } catch (...) {
-            dispatch_error = TriggerDispatchError::handler_exception;
-            sink.discard_staged_terminal();
-            boundary_response = sink.error(bounded_exception_message(
-                "non-standard exception", limits_.max_exception_error_bytes));
+        if (stop_token.stop_requested()) {
+            // A task cancelled while queued must never enter business code.
+            // The bridge still completes its admitted correlation exactly once.
+            boundary_response = sink.cancelled();
+        } else {
+            try {
+                handler(request, sink, stop_token);
+            } catch (const std::exception& exception) {
+                dispatch_error = TriggerDispatchError::handler_exception;
+                sink.discard_staged_terminal();
+                boundary_response = sink.error(bounded_exception_message(
+                    exception.what(), limits_.max_exception_error_bytes));
+            } catch (...) {
+                dispatch_error = TriggerDispatchError::handler_exception;
+                sink.discard_staged_terminal();
+                boundary_response = sink.error(bounded_exception_message(
+                    "non-standard exception", limits_.max_exception_error_bytes));
+            }
         }
 
-        if (dispatch_error == TriggerDispatchError::none
-            && !sink.staged_terminal_) {
+        if (stop_token.stop_requested()
+            && (!sink.staged_terminal_
+                || sink.staged_terminal_->status()
+                    != trigger_protocol::ResponseStatus::cancelled)) {
+            // Cancellation wins until the terminal batch is actually queued.
+            sink.discard_staged_terminal();
+            boundary_response = sink.cancelled();
+        } else if (dispatch_error == TriggerDispatchError::none
+                   && !sink.staged_terminal_) {
             dispatch_error = TriggerDispatchError::handler_returned_without_terminal;
             boundary_response = sink.error(std::string{incomplete_handler});
         }
 
-        if (sink.staged_terminal_)
+        if (sink.staged_terminal_) {
             boundary_response = sink.commit_staged_terminal();
+            if (boundary_response.publish_error
+                == trigger_protocol::PublishError::cancellation_response_required) {
+                // TriggerSession records cancellation before the executor stop
+                // source. Cancellation can therefore land after the token
+                // check above but before terminal publication. Recover that
+                // ordered race with the required cancelled terminal.
+                boundary_response = sink.cancelled();
+                if (sink.staged_terminal_)
+                    boundary_response = sink.commit_staged_terminal();
+            }
+        }
 
         if (sink.terminal_published()) {
             return {

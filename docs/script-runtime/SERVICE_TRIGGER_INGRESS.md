@@ -42,11 +42,11 @@ Duplicate/saturated session admission is a correlated command
 rejection; a closed session yields the explicit `closed` disposition.
 
 The intended host execution path move-consumes the ready item through
-`TriggerDispatcher::submit()`. Host integrations must use this transaction. The
-dispatcher resolves a registered descriptor
-before its centralized admission call, so an unregistered command cannot leak a
-correlation. Direct `admit_to()` remains a low-level integration/testing API and
-must not be combined with a later dispatcher submit of the same logical item.
+`TriggerConnectionOwner::submit()`. It resolves the dispatcher registration and
+reserves global/per-connection executor capacity before admission, then registers
+the task owner before committing a worker. Direct `admit_to()` remains a
+low-level integration/testing API and must not be combined with owner submission
+of the same logical item.
 
 Before frame state changes, ingress returns stable `unknown_command`,
 `config_id_required`, `binary_marker_required`, or

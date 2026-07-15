@@ -274,11 +274,15 @@ Python fallback is needed for migrated representative workflows.
   aggregate limits, and complete input admission item. The sealed
   `TriggerDispatcher` resolves registered descriptors before admission and
   provides receipt-bound, exception-safe terminal publication with explicit
-  backpressure retry. Real command handlers/executor ownership, live
-  WebSocket/Pipe hosts, deadlines, stale-task cleanup,
+  backpressure retry. `TriggerExecutor` now adds bounded global/per-connection
+  task ownership, reserve-before-admit transactions, asynchronous stop-token
+  handlers, queued-cancel suppression, owner-held pending terminal retry, and
+  close/fail-send cancellation handoff. Real command handlers, live
+  WebSocket/Pipe hosts, deadlines,
   and cross-language load/E2E remain pending; see
   `SERVICE_TRIGGER_SESSION.md`, `SERVICE_TRIGGER_ENVELOPE.md`,
-  `SERVICE_TRIGGER_INGRESS.md`, and `SERVICE_TRIGGER_DISPATCH.md`.
+  `SERVICE_TRIGGER_INGRESS.md`, `SERVICE_TRIGGER_DISPATCH.md`, and
+  `SERVICE_TRIGGER_EXECUTOR.md`.
 - [ ] Implement configuration and resource update APIs with atomic persistence.
 - [ ] Implement authentication/origin/listen-address policy appropriate to local
   desktop and Android deployment.
