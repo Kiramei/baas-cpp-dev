@@ -1,6 +1,9 @@
 #include "service/auth/CanonicalJson.h"
 #include "service/auth/Crypto.h"
 #include "service/auth/SecureEnvelope.h"
+#include "service/auth/SecretStream.h"
+
+#include <sodium.h>
 
 #include <algorithm>
 #include <array>
@@ -15,7 +18,20 @@
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <tuple>
+#include <type_traits>
 #include <vector>
+
+static_assert(!std::is_copy_constructible_v<
+              baas::service::auth::SecretStreamPush>);
+static_assert(!std::is_copy_assignable_v<
+              baas::service::auth::SecretStreamPush>);
+static_assert(std::is_nothrow_move_constructible_v<
+              baas::service::auth::SecretStreamPush>);
+static_assert(!std::is_copy_constructible_v<
+              baas::service::auth::SecretStreamPull>);
+static_assert(std::is_nothrow_move_assignable_v<
+              baas::service::auth::SecretStreamPull>);
 
 #ifndef BAAS_SERVICE_CONTRACT_VECTOR_PATH
 #error BAAS_SERVICE_CONTRACT_VECTOR_PATH must identify the checked-in v1 fixture
@@ -630,6 +646,296 @@ void test_secure_envelopes(const service_auth::CanonicalJsonValue& root)
           "authenticated invalid UTF-8 plaintext must be rejected");
 }
 
+[[nodiscard]] service_auth::PublicBytes stream_aad(
+    const std::span<const std::byte> prefix, const std::uint64_t sequence)
+{
+    service_auth::PublicBytes aad(prefix.size()
+                                  + service_auth::secretstream_sequence_bytes);
+    std::copy(prefix.begin(), prefix.end(), aad.begin());
+    for (std::size_t offset = 0;
+         offset < service_auth::secretstream_sequence_bytes; ++offset) {
+        aad[aad.size() - 1U - offset] = static_cast<std::byte>(
+            (sequence >> (offset * 8U)) & 0xFFU);
+    }
+    return aad;
+}
+
+void test_secretstream()
+{
+    service_auth::PublicBytes key(service_auth::secretstream_key_bytes);
+    for (std::size_t index = 0; index < key.size(); ++index)
+        key[index] = static_cast<std::byte>(index + 1U);
+    constexpr std::string_view prefix_text =
+        R"({"channel":"control","session_id":"test"})";
+    const auto prefix = bytes(prefix_text);
+
+    check(service_auth::secretstream_key_bytes == 32
+              && service_auth::secretstream_header_bytes == 24
+              && service_auth::secretstream_overhead_bytes == 17,
+          "secretstream public wire widths must match libsodium");
+    check(service_auth::SecretStreamPush::create(
+              std::span<const std::byte>{key}.first(31), prefix).error
+              == service_auth::SecretStreamError::invalid_key,
+          "secretstream push keys must be exactly 32 bytes");
+    auto oversized_key = key;
+    oversized_key.push_back(std::byte{0});
+    check(service_auth::SecretStreamPush::create(oversized_key, prefix).error
+              == service_auth::SecretStreamError::invalid_key,
+          "secretstream push must reject oversized keys");
+    auto width_sender_result = service_auth::SecretStreamPush::create(key, prefix);
+    check(width_sender_result, "secretstream width-test sender must initialize");
+    check(service_auth::SecretStreamPull::create(
+              std::span<const std::byte>{key}.first(31),
+              width_sender_result.value->header(), prefix).error
+              == service_auth::SecretStreamError::invalid_key,
+          "secretstream pull keys must be exactly 32 bytes");
+    check(service_auth::SecretStreamPull::create(
+              key,
+              std::span<const std::byte>{width_sender_result.value->header()}.first(23),
+              prefix).error == service_auth::SecretStreamError::invalid_header,
+          "secretstream pull headers must be exactly 24 bytes");
+    service_auth::PublicBytes oversized_header(
+        width_sender_result.value->header().begin(),
+        width_sender_result.value->header().end());
+    oversized_header.push_back(std::byte{0});
+    check(service_auth::SecretStreamPull::create(
+              key, oversized_header, prefix).error
+              == service_auth::SecretStreamError::invalid_header,
+          "secretstream pull must reject oversized headers");
+
+    auto sender_result = service_auth::SecretStreamPush::create(key, prefix);
+    check(sender_result, "secretstream sender must initialize");
+    auto sender = std::move(*sender_result.value);
+    const auto header = sender.header();
+    auto receiver_result = service_auth::SecretStreamPull::create(key, header, prefix);
+    check(receiver_result, "secretstream receiver must initialize");
+    auto receiver = std::move(*receiver_result.value);
+
+    const auto first = sender.push(bytes("first"));
+    const auto second = sender.push(bytes(""));
+    const auto terminal = sender.push(
+        bytes("last"), service_auth::SecretStreamTag::final);
+    check(first && second && terminal,
+          "secretstream must encrypt multiple records including empty plaintext");
+    check(first.sequence == 0 && second.sequence == 1 && terminal.sequence == 2,
+          "secretstream transmit sequence must advance exactly once per success");
+    check(first.ciphertext.size() == 5 + service_auth::secretstream_overhead_bytes
+              && second.ciphertext.size()
+                  == service_auth::secretstream_overhead_bytes,
+          "secretstream ciphertext must add exactly 17 bytes");
+
+    const auto opened_first = receiver.pull(first.ciphertext);
+    const auto opened_second = receiver.pull(second.ciphertext);
+    const auto opened_terminal = receiver.pull(terminal.ciphertext);
+    check(opened_first
+              && service_auth::constant_time_equal(
+                  opened_first.plaintext.bytes(), bytes("first")),
+          "secretstream first record must roundtrip");
+    check(opened_second && opened_second.plaintext.empty(),
+          "secretstream empty record must roundtrip");
+    check(opened_terminal
+              && opened_terminal.tag == service_auth::SecretStreamTag::final
+              && service_auth::constant_time_equal(
+                  opened_terminal.plaintext.bytes(), bytes("last")),
+          "secretstream FINAL must deliver its authenticated plaintext");
+    check(sender.finalized() && receiver.finalized(),
+          "secretstream FINAL must close both directions");
+    check(sender.next_sequence() == 3 && receiver.next_sequence() == 3,
+          "secretstream FINAL success must advance both sequences once");
+    check(sender.push(bytes("after-final")).error
+              == service_auth::SecretStreamError::stream_closed
+              && receiver.pull(terminal.ciphertext).error
+                  == service_auth::SecretStreamError::stream_closed,
+          "secretstream operations after FINAL must fail closed");
+
+    auto native_sender_result = service_auth::SecretStreamPush::create(key, prefix);
+    auto native_sender = std::move(*native_sender_result.value);
+    const auto native_first = native_sender.push(bytes("zero"));
+    const auto native_second = native_sender.push(
+        bytes("one"), service_auth::SecretStreamTag::final);
+    crypto_secretstream_xchacha20poly1305_state native_pull{};
+    check(crypto_secretstream_xchacha20poly1305_init_pull(
+              &native_pull,
+              reinterpret_cast<const unsigned char*>(native_sender.header().data()),
+              reinterpret_cast<const unsigned char*>(key.data())) == 0,
+          "native secretstream receiver must initialize for AAD cross-check");
+    for (const auto& [record, sequence, plaintext_text] : {
+             std::tuple{&native_first, std::uint64_t{0}, std::string_view{"zero"}},
+             std::tuple{&native_second, std::uint64_t{1}, std::string_view{"one"}}}) {
+        auto aad = stream_aad(prefix, sequence);
+        service_auth::PublicBytes plaintext(record->ciphertext.size());
+        unsigned long long plaintext_size = 0;
+        unsigned char native_record_tag = 0;
+        const auto status = crypto_secretstream_xchacha20poly1305_pull(
+            &native_pull,
+            reinterpret_cast<unsigned char*>(plaintext.data()),
+            &plaintext_size,
+            &native_record_tag,
+            reinterpret_cast<const unsigned char*>(record->ciphertext.data()),
+            record->ciphertext.size(),
+            reinterpret_cast<const unsigned char*>(aad.data()),
+            aad.size());
+        check(status == 0 && plaintext_size == plaintext_text.size()
+                  && service_auth::constant_time_equal(
+                      std::span<const std::byte>{plaintext}.first(
+                          static_cast<std::size_t>(plaintext_size)),
+                      bytes(plaintext_text)),
+              "secretstream AAD must be prefix plus uint64 big-endian sequence");
+    }
+    sodium_memzero(&native_pull, sizeof(native_pull));
+
+    auto attack_sender_result = service_auth::SecretStreamPush::create(key, prefix);
+    auto attack_sender = std::move(*attack_sender_result.value);
+    const auto attack_first = attack_sender.push(bytes("a"));
+    const auto attack_second = attack_sender.push(bytes("b"));
+
+    auto replay_result = service_auth::SecretStreamPull::create(
+        key, attack_sender.header(), prefix);
+    auto replay = std::move(*replay_result.value);
+    check(replay.pull(attack_first.ciphertext),
+          "secretstream first replay-test record must open once");
+    check(replay.pull(attack_first.ciphertext).error
+              == service_auth::SecretStreamError::authentication_failed
+              && replay.poisoned()
+              && replay.pull(attack_second.ciphertext).error
+                  == service_auth::SecretStreamError::poisoned,
+          "secretstream replay must authenticate-fail and permanently poison");
+
+    auto reorder_result = service_auth::SecretStreamPull::create(
+        key, attack_sender.header(), prefix);
+    auto reorder = std::move(*reorder_result.value);
+    check(reorder.pull(attack_second.ciphertext).error
+              == service_auth::SecretStreamError::authentication_failed
+              && reorder.poisoned(),
+          "secretstream reorder or skipped record must poison the receiver");
+
+    auto tampered = attack_first.ciphertext;
+    tampered.back() ^= std::byte{1};
+    auto tamper_result = service_auth::SecretStreamPull::create(
+        key, attack_sender.header(), prefix);
+    auto tamper_receiver = std::move(*tamper_result.value);
+    check(tamper_receiver.pull(tampered).error
+              == service_auth::SecretStreamError::authentication_failed
+              && tamper_receiver.poisoned(),
+          "secretstream ciphertext modification must poison the receiver");
+    auto truncated_result = service_auth::SecretStreamPull::create(
+        key, attack_sender.header(), prefix);
+    auto truncated_receiver = std::move(*truncated_result.value);
+    check(truncated_receiver.pull(
+              std::span<const std::byte>{attack_first.ciphertext}.first(16)).error
+              == service_auth::SecretStreamError::invalid_input
+              && truncated_receiver.poisoned(),
+          "secretstream records shorter than the 17-byte overhead must poison");
+
+    auto wrong_key = key;
+    wrong_key.front() ^= std::byte{1};
+    auto wrong_key_result = service_auth::SecretStreamPull::create(
+        wrong_key, attack_sender.header(), prefix);
+    auto wrong_key_receiver = std::move(*wrong_key_result.value);
+    check(wrong_key_receiver.pull(attack_first.ciphertext).error
+              == service_auth::SecretStreamError::authentication_failed,
+          "secretstream wrong keys must fail authentication");
+    auto wrong_header = attack_sender.header();
+    wrong_header.front() ^= std::byte{1};
+    auto wrong_header_result = service_auth::SecretStreamPull::create(
+        key, wrong_header, prefix);
+    auto wrong_header_receiver = std::move(*wrong_header_result.value);
+    check(wrong_header_receiver.pull(attack_first.ciphertext).error
+              == service_auth::SecretStreamError::authentication_failed,
+          "secretstream wrong headers must fail on the first record");
+    auto wrong_prefix_result = service_auth::SecretStreamPull::create(
+        key, attack_sender.header(), bytes("wrong-prefix"));
+    auto wrong_prefix_receiver = std::move(*wrong_prefix_result.value);
+    check(wrong_prefix_receiver.pull(attack_first.ciphertext).error
+              == service_auth::SecretStreamError::authentication_failed,
+          "secretstream wrong AAD prefixes must fail authentication");
+
+#if defined(BAAS_SECRETSTREAM_TEST_HOOKS)
+    auto allocation_sender_result =
+        service_auth::SecretStreamPush::create(key, prefix);
+    auto allocation_sender = std::move(*allocation_sender_result.value);
+    auto allocation_receiver_result = service_auth::SecretStreamPull::create(
+        key, allocation_sender.header(), prefix);
+    auto allocation_receiver = std::move(*allocation_receiver_result.value);
+    service_auth::detail::fail_next_secretstream_output_allocation_for_test();
+    check(allocation_sender.push(bytes("retryable")).error
+              == service_auth::SecretStreamError::resource_exhausted
+              && allocation_sender.next_sequence() == 0
+              && !allocation_sender.poisoned(),
+          "secretstream push allocation failure must not advance or poison");
+    const auto retryable_ciphertext = allocation_sender.push(bytes("retryable"));
+    check(retryable_ciphertext && retryable_ciphertext.sequence == 0,
+          "secretstream push must remain usable after pre-transition allocation failure");
+    service_auth::detail::fail_next_secretstream_output_allocation_for_test();
+    check(allocation_receiver.pull(retryable_ciphertext.ciphertext).error
+              == service_auth::SecretStreamError::resource_exhausted
+              && allocation_receiver.next_sequence() == 0
+              && !allocation_receiver.poisoned(),
+          "secretstream pull allocation failure must not advance or poison");
+    check(allocation_receiver.pull(retryable_ciphertext.ciphertext),
+          "secretstream pull must retry the same frame after allocation failure");
+#endif
+
+    auto aad_zero = stream_aad(prefix, 0);
+    const std::array<std::byte, 1> push_tag_plaintext{std::byte{0x78}};
+    for (const auto forbidden_tag : {
+             crypto_secretstream_xchacha20poly1305_TAG_PUSH,
+             crypto_secretstream_xchacha20poly1305_TAG_REKEY}) {
+        crypto_secretstream_xchacha20poly1305_state forbidden_tag_state{};
+        service_auth::SecretStreamHeader forbidden_tag_header{};
+        check(crypto_secretstream_xchacha20poly1305_init_push(
+                  &forbidden_tag_state,
+                  reinterpret_cast<unsigned char*>(forbidden_tag_header.data()),
+                  reinterpret_cast<const unsigned char*>(key.data())) == 0,
+              "native secretstream sender must initialize for tag-policy test");
+        service_auth::PublicBytes forbidden_tag_ciphertext(
+            1 + service_auth::secretstream_overhead_bytes);
+        unsigned long long forbidden_tag_size = 0;
+        check(crypto_secretstream_xchacha20poly1305_push(
+                  &forbidden_tag_state,
+                  reinterpret_cast<unsigned char*>(forbidden_tag_ciphertext.data()),
+                  &forbidden_tag_size,
+                  reinterpret_cast<const unsigned char*>(
+                      push_tag_plaintext.data()),
+                  push_tag_plaintext.size(),
+                  reinterpret_cast<const unsigned char*>(aad_zero.data()),
+                  aad_zero.size(), forbidden_tag) == 0,
+              "native forbidden record must be available for v1 rejection test");
+        auto forbidden_tag_receiver_result =
+            service_auth::SecretStreamPull::create(
+                key, forbidden_tag_header, prefix);
+        auto forbidden_tag_receiver =
+            std::move(*forbidden_tag_receiver_result.value);
+        check(forbidden_tag_receiver.pull(forbidden_tag_ciphertext).error
+                  == service_auth::SecretStreamError::unexpected_tag
+                  && forbidden_tag_receiver.poisoned(),
+              "service v1 must reject and poison authenticated PUSH/REKEY records");
+        sodium_memzero(&forbidden_tag_state, sizeof(forbidden_tag_state));
+    }
+
+    auto move_push_result = service_auth::SecretStreamPush::create(key, prefix);
+    auto moved_from_push = std::move(*move_push_result.value);
+    auto moved_push = std::move(moved_from_push);
+    const auto moved_first = moved_push.push(bytes("moved"));
+    check(moved_from_push.push(bytes("x")).error
+              == service_auth::SecretStreamError::poisoned
+              && moved_first,
+          "secretstream push move must transfer the only live state");
+    auto move_pull_result = service_auth::SecretStreamPull::create(
+        key, moved_push.header(), prefix);
+    auto moved_from_pull = std::move(*move_pull_result.value);
+    auto moved_pull = std::move(moved_from_pull);
+    check(moved_from_pull.pull(attack_first.ciphertext).error
+              == service_auth::SecretStreamError::poisoned,
+          "secretstream pull moved-from objects must fail safely");
+    check(moved_pull.pull(moved_first.ciphertext),
+          "secretstream pull move must preserve the initial receive state");
+    const auto moved_ciphertext = moved_push.push(
+        bytes("done"), service_auth::SecretStreamTag::final);
+    check(moved_pull.pull(moved_ciphertext.ciphertext),
+          "secretstream pull move must transfer the live native state");
+}
+
 void test_low_level_aead_and_secret_hardening(const service_auth::CanonicalJsonValue& root)
 {
     const auto key = from_hex(string_value(member(
@@ -709,6 +1015,7 @@ int main()
         test_hash_hmac_hkdf(*fixture.value);
         test_asymmetric_and_argon2(*fixture.value);
         test_secure_envelopes(*fixture.value);
+        test_secretstream();
         test_low_level_aead_and_secret_hardening(*fixture.value);
     } catch (const std::exception& error) {
         std::cerr << "unexpected test exception: " << error.what() << '\n';

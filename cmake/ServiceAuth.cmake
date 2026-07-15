@@ -16,6 +16,7 @@ add_library(
         "${BAAS_PROJECT_PATH}/src/service/auth/CanonicalJson.cpp"
         "${BAAS_PROJECT_PATH}/src/service/auth/Crypto.cpp"
         "${BAAS_PROJECT_PATH}/src/service/auth/SecureEnvelope.cpp"
+        "${BAAS_PROJECT_PATH}/src/service/auth/SecretStream.cpp"
 )
 target_compile_features(BAAS_service_auth_crypto PUBLIC cxx_std_20)
 target_include_directories(
@@ -54,6 +55,10 @@ endif()
 
 if(BUILD_SERVICE_AUTH_CRYPTO_TESTS)
     include(CTest)
+    target_compile_definitions(
+            BAAS_service_auth_crypto
+            PRIVATE BAAS_SECRETSTREAM_TEST_HOOKS=1
+    )
     add_executable(
             BAAS_service_auth_crypto_tests
             "${BAAS_PROJECT_PATH}/tests/service/ServiceAuthCryptoTests.cpp"
@@ -63,6 +68,7 @@ if(BUILD_SERVICE_AUTH_CRYPTO_TESTS)
             BAAS_service_auth_crypto_tests
             PRIVATE
             BAAS_SERVICE_CONTRACT_VECTOR_PATH="${BAAS_PROJECT_PATH}/tests/service_contract/v1_vectors.json"
+            BAAS_SECRETSTREAM_TEST_HOOKS=1
     )
     target_link_libraries(
             BAAS_service_auth_crypto_tests
