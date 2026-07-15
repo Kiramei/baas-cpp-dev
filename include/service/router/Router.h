@@ -23,6 +23,11 @@ struct Request {
     std::string_view method;
     std::string_view path;
     std::string_view body;
+    // Transport adapters expose only the bounded metadata needed by HTTP
+    // authentication. The views remain valid for the synchronous handle call.
+    std::optional<std::string_view> cookie;
+    bool malformed_cookie_headers = false;
+    bool secure_transport = false;
 };
 
 struct Response {
@@ -109,26 +114,38 @@ public:
     [[nodiscard]] virtual ShutdownDecision request_shutdown() noexcept = 0;
 };
 
+// A transport-independent optional route family. Returning nullopt leaves the
+// request to Router's built-in health/version/shutdown routes.
+class RouteExtension {
+public:
+    virtual ~RouteExtension() = default;
+    [[nodiscard]] virtual std::optional<Response> handle(
+        const Request& request) const = 0;
+};
+
 class Router final {
 public:
     explicit Router(
         ServiceInfo service,
         SizeBudget budget = {},
-        ShutdownIntent* shutdown_intent = nullptr
+        ShutdownIntent* shutdown_intent = nullptr,
+        std::shared_ptr<RouteExtension> extension = {}
     );
 
     [[nodiscard]] static Router with_health_snapshot(
         ServiceInfo service,
         HealthSnapshot health,
         SizeBudget budget = {},
-        ShutdownIntent* shutdown_intent = nullptr
+        ShutdownIntent* shutdown_intent = nullptr,
+        std::shared_ptr<RouteExtension> extension = {}
     );
 
     [[nodiscard]] static Router with_health_provider(
         ServiceInfo service,
         std::shared_ptr<HealthSnapshotProvider> health_provider,
         SizeBudget budget = {},
-        ShutdownIntent* shutdown_intent = nullptr
+        ShutdownIntent* shutdown_intent = nullptr,
+        std::shared_ptr<RouteExtension> extension = {}
     );
 
     [[nodiscard]] Response handle(const Request& request) const;
@@ -140,7 +157,8 @@ private:
         SizeBudget budget,
         ShutdownIntent* shutdown_intent,
         std::optional<HealthSnapshot> health_snapshot,
-        std::shared_ptr<HealthSnapshotProvider> health_provider
+        std::shared_ptr<HealthSnapshotProvider> health_provider,
+        std::shared_ptr<RouteExtension> extension
     );
 
     [[nodiscard]] Response route(const Request& request) const;
@@ -154,6 +172,7 @@ private:
     ShutdownIntent* shutdown_intent_;
     std::optional<HealthSnapshot> health_snapshot_;
     std::shared_ptr<HealthSnapshotProvider> health_provider_;
+    std::shared_ptr<RouteExtension> extension_;
 };
 
 }  // namespace baas::service::router

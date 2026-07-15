@@ -251,6 +251,12 @@ write followed by EOF, concurrent connections, and error delivery are pending.
 returns `{ok:true, expires_at}` and sets `baas_remember` as HttpOnly,
 `SameSite=Lax`, path `/`, and Secure when HTTPS or policy forces it.
 
+The C++ `AuthHttpAdapter` implements these two authentication routes as a
+transport-independent Router extension. Its logout path passes the presented
+remember token to `AuthOwner` before expiring the cookie, so logout revokes the
+persisted server-side bearer token rather than only changing browser state.
+Malformed or ambiguous JSON/Cookie inputs fail closed with stable JSON errors.
+
 **[REQUIRED]** `/health` MUST remain callable before authentication. Readiness
 MUST be false or the endpoint unavailable until required persistent state is
 loaded; a listening socket alone is not readiness. The C++ foundation now
