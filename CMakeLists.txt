@@ -114,6 +114,8 @@ option(BUILD_SERVICE_PROVIDER_HANDLER "Build the transport-independent provider 
 option(BUILD_SERVICE_PROVIDER_HANDLER_TESTS "Build deterministic provider-handler tests" OFF)
 option(BUILD_SERVICE_SYNC_HANDLER "Build the transport-independent sync handler" OFF)
 option(BUILD_SERVICE_SYNC_HANDLER_TESTS "Build deterministic sync-handler tests" OFF)
+option(BUILD_SERVICE_PRODUCTION_HTTP_HOST "Build the production HTTP host composition root" OFF)
+option(BUILD_SERVICE_PRODUCTION_HTTP_HOST_TESTS "Build production HTTP host composition tests" OFF)
 
 # BAAS_APP owns the production script Host adapters. Standalone runtime builds
 # stay opt-in, while application builds always compile the runtime and its
@@ -180,6 +182,18 @@ endif()
 
 if(BUILD_SERVICE_SYNC_HANDLER AND NOT BUILD_SERVICE_BUSINESS_SESSION)
     set(BUILD_SERVICE_BUSINESS_SESSION ON CACHE BOOL "Build authenticated business WebSocket drivers" FORCE)
+endif()
+
+if(BUILD_SERVICE_PRODUCTION_HTTP_HOST_TESTS AND NOT BUILD_SERVICE_PRODUCTION_HTTP_HOST)
+    set(BUILD_SERVICE_PRODUCTION_HTTP_HOST ON CACHE BOOL "Build the production HTTP host composition root" FORCE)
+endif()
+
+if(BUILD_SERVICE_PRODUCTION_HTTP_HOST)
+    set(BUILD_SERVICE_AUTH_HTTP ON CACHE BOOL "Build transport-independent HTTP authentication routes" FORCE)
+    set(BUILD_SERVICE_BUSINESS_SESSION ON CACHE BOOL "Build authenticated business WebSocket drivers" FORCE)
+    set(BUILD_SERVICE_PROVIDER_HANDLER ON CACHE BOOL "Build the transport-independent provider handler" FORCE)
+    set(BUILD_SERVICE_SYNC_HANDLER ON CACHE BOOL "Build the transport-independent sync handler" FORCE)
+    set(BUILD_SERVICE_HTTP ON CACHE BOOL "Build the optional cpp-httplib service adapter" FORCE)
 endif()
 
 if(BUILD_SERVICE_BUSINESS_SESSION_TESTS AND NOT BUILD_SERVICE_BUSINESS_SESSION)
@@ -463,6 +477,10 @@ endif()
 
 if(BUILD_SERVICE_HTTP)
     include("${CMAKE_CURRENT_LIST_DIR}/cmake/ServiceHttp.cmake")
+endif()
+
+if(BUILD_SERVICE_PRODUCTION_HTTP_HOST)
+    include("${CMAKE_CURRENT_LIST_DIR}/cmake/ServiceProductionHttpHost.cmake")
 endif()
 
 if(NOT TARGET_OS_NAME STREQUAL "Android")
