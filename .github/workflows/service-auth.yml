@@ -13,6 +13,7 @@ on:
       - 'cmake/ServiceControlSession.cmake'
       - 'cmake/ServiceBusinessSession.cmake'
       - 'cmake/ServiceTriggerHandler.cmake'
+      - 'cmake/ServiceProviderBackend.cmake'
       - 'cmake/ServiceProtocol.cmake'
       - 'cmake/ServiceTriggerCatalog.cmake'
       - 'cmake/ServiceTriggerDispatch.cmake'
@@ -35,6 +36,10 @@ on:
       - 'include/service/channels/TriggerHandler.h'
       - 'src/service/channels/TriggerHandler.cpp'
       - 'tests/service/TriggerHandlerTests.cpp'
+      - 'include/service/app/ProductionProviderBackend.h'
+      - 'src/service/app/ProductionProviderBackend.cpp'
+      - 'tests/service/ProductionProviderBackendTests.cpp'
+      - 'tests/docs/test_service_provider_backend.py'
       - 'include/service/protocol/Trigger*.h'
       - 'src/service/protocol/Trigger*.cpp'
       - 'include/service/trigger/**'
@@ -49,6 +54,7 @@ on:
       - 'docs/script-runtime/SERVICE_CONTROL_SESSION.md'
       - 'docs/script-runtime/SERVICE_BUSINESS_SESSION.md'
       - 'docs/script-runtime/SERVICE_TRIGGER_HANDLER.md'
+      - 'docs/script-runtime/SERVICE_PROVIDER_BACKEND.md'
       - 'docs/script-runtime/SERVICE_WEBSOCKET_OWNER.md'
       - 'docs/script-runtime/SERVICE_PROTOCOL_V1.md'
   pull_request:
@@ -66,6 +72,7 @@ on:
       - 'cmake/ServiceControlSession.cmake'
       - 'cmake/ServiceBusinessSession.cmake'
       - 'cmake/ServiceTriggerHandler.cmake'
+      - 'cmake/ServiceProviderBackend.cmake'
       - 'cmake/ServiceProtocol.cmake'
       - 'cmake/ServiceTriggerCatalog.cmake'
       - 'cmake/ServiceTriggerDispatch.cmake'
@@ -88,6 +95,10 @@ on:
       - 'include/service/channels/TriggerHandler.h'
       - 'src/service/channels/TriggerHandler.cpp'
       - 'tests/service/TriggerHandlerTests.cpp'
+      - 'include/service/app/ProductionProviderBackend.h'
+      - 'src/service/app/ProductionProviderBackend.cpp'
+      - 'tests/service/ProductionProviderBackendTests.cpp'
+      - 'tests/docs/test_service_provider_backend.py'
       - 'include/service/protocol/Trigger*.h'
       - 'src/service/protocol/Trigger*.cpp'
       - 'include/service/trigger/**'
@@ -102,6 +113,7 @@ on:
       - 'docs/script-runtime/SERVICE_CONTROL_SESSION.md'
       - 'docs/script-runtime/SERVICE_BUSINESS_SESSION.md'
       - 'docs/script-runtime/SERVICE_TRIGGER_HANDLER.md'
+      - 'docs/script-runtime/SERVICE_PROVIDER_BACKEND.md'
       - 'docs/script-runtime/SERVICE_WEBSOCKET_OWNER.md'
       - 'docs/script-runtime/SERVICE_PROTOCOL_V1.md'
 
@@ -202,6 +214,7 @@ jobs:
           -DBUILD_SERVICE_CONTROL_SESSION_TESTS=ON
           -DBUILD_SERVICE_BUSINESS_SESSION_TESTS=ON
           -DBUILD_SERVICE_TRIGGER_HANDLER_TESTS=ON
+          -DBUILD_SERVICE_PROVIDER_BACKEND_TESTS=ON
           -DBUILD_APP_BAAS=OFF
           -DBUILD_APP_ISA=OFF
           -DBUILD_BAAS_OCR=OFF
@@ -219,6 +232,7 @@ jobs:
           BAAS_service_control_session_tests
           BAAS_service_business_session_tests
           BAAS_service_trigger_handler_tests
+          BAAS_service_provider_backend_tests
 
       - name: Run service authentication tests
         run: >-
@@ -226,7 +240,7 @@ jobs:
           --build-config ${{ matrix.build_type }}
           --output-on-failure
           --timeout 60
-          -R "^BAAS_service_(auth_(crypto|owner)|websocket_(handshake|owner)|control_session|business_session|trigger_handler)_tests$"
+          -R "^BAAS_service_(auth_(crypto|owner)|websocket_(handshake|owner)|control_session|business_session|trigger_handler|provider_backend)_tests$"
 
   android-auth:
     name: Android ${{ matrix.abi }} / Release
