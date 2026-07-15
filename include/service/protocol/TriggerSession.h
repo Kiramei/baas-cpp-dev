@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <deque>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -175,17 +176,97 @@ struct ActiveCommand {
     bool cancel_requested{};
 };
 
+using SendLeaseId = std::uint64_t;
+
+// A read-only, shared ownership view of the queue head. The session retains the
+// same batch and its byte charge until complete_send() confirms the entire
+// JSON-plus-optional-binary unit. Copies are safe; stale acknowledgements are
+// rejected by the unique lease id.
+class SendLease final {
+public:
+    SendLease(const SendLease&) = default;
+    SendLease& operator=(const SendLease&) = default;
+    SendLease(SendLease&&) noexcept = default;
+    SendLease& operator=(SendLease&&) noexcept = default;
+
+    [[nodiscard]] SendLeaseId id() const noexcept { return id_; }
+    [[nodiscard]] const OutboundBatch& batch() const noexcept { return *batch_; }
+
+private:
+    SendLease(SendLeaseId id, std::shared_ptr<const OutboundBatch> batch)
+        : id_(id), batch_(std::move(batch))
+    {}
+
+    friend class TriggerSession;
+
+    SendLeaseId id_{};
+    std::shared_ptr<const OutboundBatch> batch_;
+};
+
+enum class BeginSendError : std::uint8_t {
+    none,
+    closed,
+    queue_empty,
+    send_in_progress,
+};
+
+[[nodiscard]] std::string_view begin_send_error_name(BeginSendError error) noexcept;
+
+struct BeginSendResult {
+    std::optional<SendLease> lease;
+    BeginSendError error{BeginSendError::none};
+
+    [[nodiscard]] explicit operator bool() const noexcept
+    {
+        return error == BeginSendError::none && lease.has_value();
+    }
+};
+
+enum class SendTransitionError : std::uint8_t {
+    none,
+    closed,
+    no_active_lease,
+    lease_mismatch,
+};
+
+[[nodiscard]] std::string_view send_transition_error_name(
+    SendTransitionError error) noexcept;
+
+struct CompleteSendResult {
+    SendTransitionError error{SendTransitionError::none};
+
+    [[nodiscard]] explicit operator bool() const noexcept
+    {
+        return error == SendTransitionError::none;
+    }
+};
+
+struct FailSendResult {
+    SendTransitionError error{SendTransitionError::none};
+    std::vector<ActiveCommand> cancel;
+
+    [[nodiscard]] explicit operator bool() const noexcept
+    {
+        return error == SendTransitionError::none;
+    }
+};
+
 struct TriggerSessionStats {
     std::size_t accepted{};
     std::size_t admission_rejections{};
     std::size_t published_batches{};
     std::size_t publish_rejections{};
     std::size_t popped_batches{};
+    std::size_t send_leases_started{};
+    std::size_t send_failures{};
+    std::size_t dropped_batches{};
+    std::size_t dropped_bytes{};
     std::size_t cancellations_requested{};
     std::size_t queue_backpressure{};
     std::size_t active_correlations{};
     std::size_t queued_batches{};
     std::size_t queued_bytes{};
+    bool send_in_progress{};
     bool closed{};
 };
 
@@ -203,7 +284,17 @@ public:
     [[nodiscard]] AdmissionResult admit(CommandAdmission command);
     [[nodiscard]] CancelDecision request_cancel(Timestamp timestamp);
     [[nodiscard]] PublishResult publish(OutboundBatch batch);
-    [[nodiscard]] std::optional<OutboundBatch> pop();
+    [[nodiscard]] BeginSendResult begin_send();
+
+    // Confirms that every frame in the leased batch was written successfully.
+    // Only this transition removes the queue head and releases a terminal
+    // correlation. Duplicate or stale confirmations never affect a newer lease.
+    [[nodiscard]] CompleteSendResult complete_send(const SendLease& lease);
+
+    // A write failure is connection-fatal because a JSON/binary batch may be
+    // partially visible. A matching failure atomically closes the session,
+    // drops all unsendable output, and returns still-running commands to cancel.
+    [[nodiscard]] FailSendResult fail_send(const SendLease& lease);
 
     // Stops admission, drops unsendable queued output, and returns every command
     // whose executor/task owner must be cancelled because the connection ended.
@@ -225,13 +316,22 @@ private:
     TriggerSessionLimits limits_;
     mutable std::mutex mutex_;
     std::map<Timestamp, Entry> entries_;
-    std::deque<OutboundBatch> outbound_;
+    [[nodiscard]] std::vector<ActiveCommand> close_locked();
+    [[nodiscard]] SendLeaseId next_lease_id() noexcept;
+
+    std::deque<std::shared_ptr<const OutboundBatch>> outbound_;
+    std::optional<SendLeaseId> active_lease_id_;
+    SendLeaseId next_lease_id_{1};
     std::size_t queued_bytes_{};
     std::size_t accepted_{};
     std::size_t admission_rejections_{};
     std::size_t published_batches_{};
     std::size_t publish_rejections_{};
     std::size_t popped_batches_{};
+    std::size_t send_leases_started_{};
+    std::size_t send_failures_{};
+    std::size_t dropped_batches_{};
+    std::size_t dropped_bytes_{};
     std::size_t cancellations_requested_{};
     std::size_t queue_backpressure_{};
     bool closed_{};

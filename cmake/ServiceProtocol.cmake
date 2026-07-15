@@ -52,6 +52,21 @@ if(BUILD_SERVICE_PROTOCOL_TESTS)
     )
 
     add_executable(
+            BAAS_service_trigger_egress_tests
+            "${BAAS_PROJECT_PATH}/tests/service/TriggerEgressTests.cpp"
+    )
+    target_compile_features(BAAS_service_trigger_egress_tests PRIVATE cxx_std_20)
+    target_link_libraries(BAAS_service_trigger_egress_tests PRIVATE BAAS_service_protocol)
+    add_test(
+            NAME BAAS_service_trigger_egress_tests
+            COMMAND BAAS_service_trigger_egress_tests
+    )
+    set_tests_properties(
+            BAAS_service_trigger_egress_tests
+            PROPERTIES TIMEOUT 30
+    )
+
+    add_executable(
             BAAS_service_trigger_envelope_tests
             "${BAAS_PROJECT_PATH}/tests/service/TriggerEnvelopeTests.cpp"
     )

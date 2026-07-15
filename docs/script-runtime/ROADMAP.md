@@ -263,8 +263,10 @@ Python fallback is needed for migrated representative workflows.
 - [~] Implement task submission, progress/events, cancellation, and result APIs.
   The transport-independent `TriggerSession` foundation now bounds live
   timestamp correlations and output, enforces single/stream terminal state and
-  cancellation precedence, returns disconnect cleanup work, and coalesces each
-  BPIP JSON/binary response pair into one owning send batch. The bounded
+  cancellation precedence, retains one leased send until whole-batch
+  confirmation, deterministically returns send-failure/disconnect cleanup work,
+  and coalesces each BPIP JSON/binary response pair into one owning send batch.
+  The bounded
   dependency-free `TriggerEnvelope` codec now validates request schemas and
   hostile JSON budgets, builds deterministic response envelopes, and owns exact
   binary-size declarations including zero-byte frames. `TriggerIngress` now

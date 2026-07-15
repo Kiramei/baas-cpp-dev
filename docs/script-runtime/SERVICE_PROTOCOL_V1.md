@@ -500,8 +500,11 @@ frame. Declared size MUST equal actual size.
 **[MISSING]** Exhaustive table-driven command execution and cross-language load
 tests remain pending. The C++ `TriggerSession` foundation now bounds live
 correlations and output, rejects duplicate timestamps, enforces stream terminal
-state, and keeps JSON/binary output in one indivisible batch; its BPIP adapter
-emits the two frames in one owning write buffer. `TriggerEnvelope` now parses
+state, and keeps JSON/binary output in one indivisible batch. A single
+transport-neutral send lease retains queue ownership and correlation until the
+whole batch is confirmed; failure closes the session and deterministically
+hands still-running commands back for cancellation. Its BPIP adapter emits the
+two frames in one owning write buffer. `TriggerEnvelope` now parses
 bounded duplicate-free command JSON, creates session admissions, builds the
 exact response envelope, and exclusively injects verified binary sizes,
 including zero-byte frames. `TriggerIngress` now enforces one-outstanding input,
@@ -695,7 +698,7 @@ defined.
 | [MISSING] | Password, remember, epoch, persistent key, expiry, restart vectors | Not covered by current fixture |
 | [MISSING] | Complete HTTP route/status/body parity including reset-auth | C++ has an owned readiness provider and `/health` lifecycle, but no real runtime/auth owner wiring or shared route suite, and one route is absent in Python |
 | [MISSING] | Provider/sync/trigger/remote shared contract suite | Inventoried only; focused tests incomplete |
-| [MISSING] | Bounded queues, overload, timeout, cancellation, load gates | Trigger correlation/output constants, backpressure, cancellation precedence, disconnect cleanup, concurrency tests, and BPIP batching exist; transport-wide deadlines, global load policy, live executor propagation, and cross-language load remain absent |
+| [MISSING] | Bounded queues, overload, timeout, cancellation, load gates | Trigger correlation/output constants, leased-send backpressure, cancellation precedence, send-failure/disconnect cleanup, close-race tests, and BPIP batching exist; transport-wide deadlines, global load policy, live executor propagation, and cross-language load remain absent |
 | [MISSING] | Live Windows pipe and Unix socket interoperability/fuzz | Framing unit tests only |
 | [MISSING] | C++ WebSocket/auth/secretstream implementation | Not implemented |
 | [MISSING] | Windows desktop Tauri end-to-end | Not run |

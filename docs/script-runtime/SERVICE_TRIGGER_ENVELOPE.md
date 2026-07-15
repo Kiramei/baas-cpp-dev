@@ -59,6 +59,12 @@ rejects a batch whose mode differs from admission. Thus server correlation
 release and Tauri callback cleanup cannot diverge. Error/cancelled output is
 always terminal and uses Tauri's existing error cleanup path.
 
+Publication still does not mean delivery. `TriggerSession::begin_send()` keeps
+the immutable batch and correlation owned and byte-accounted until the
+transport confirms the complete JSON-plus-optional-binary unit with
+`complete_send()`. A write failure uses `fail_send()` and makes that connection
+unusable for further frames.
+
 When binary output is present, data must be an object and must not already
 contain the reserved top-level `binary` key. The codec alone injects
 `data.binary.size` from the attached vector. A present empty vector is distinct
@@ -100,8 +106,8 @@ timestamp/schema failures, hostile JSON and parser budgets, deterministic
 success/error/cancellation responses, stream terminal wire binding, response
 mode mismatch, inbound binary presence, reserved binary metadata, non-object
 binary data, zero-byte frames, and codec-to-session correlation. The target is
-part of the Debug/Release foundation CI matrix alongside framing and session
-tests.
+part of the Debug/Release foundation CI matrix alongside framing, session, and
+egress lease/race tests.
 
 Still required before Phase 4 task APIs are complete:
 

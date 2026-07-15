@@ -138,6 +138,30 @@ std::string_view publish_error_name(const PublishError error) noexcept
     return "unknown";
 }
 
+std::string_view begin_send_error_name(const BeginSendError error) noexcept
+{
+    using enum BeginSendError;
+    switch (error) {
+        case none: return "none";
+        case closed: return "closed";
+        case queue_empty: return "queue_empty";
+        case send_in_progress: return "send_in_progress";
+    }
+    return "unknown";
+}
+
+std::string_view send_transition_error_name(const SendTransitionError error) noexcept
+{
+    using enum SendTransitionError;
+    switch (error) {
+        case none: return "none";
+        case closed: return "closed";
+        case no_active_lease: return "no_active_lease";
+        case lease_mismatch: return "lease_mismatch";
+    }
+    return "unknown";
+}
+
 TriggerSession::TriggerSession(const TriggerSessionLimits limits) : limits_(limits)
 {
     validate_limits(limits_);
@@ -260,28 +284,66 @@ PublishResult TriggerSession::publish(OutboundBatch batch)
         return reject(PublishError::queued_bytes_exceeded);
     }
 
-    outbound_.push_back(std::move(batch));
+    outbound_.push_back(std::make_shared<const OutboundBatch>(std::move(batch)));
     queued_bytes_ += bytes;
-    if (outbound_.back().terminal()) entry.terminal_queued = true;
+    if (outbound_.back()->terminal()) entry.terminal_queued = true;
     ++published_batches_;
     return {};
 }
 
-std::optional<OutboundBatch> TriggerSession::pop()
+SendLeaseId TriggerSession::next_lease_id() noexcept
 {
-    std::lock_guard lock(mutex_);
-    if (outbound_.empty()) return std::nullopt;
-    auto result = std::move(outbound_.front());
-    outbound_.pop_front();
-    queued_bytes_ -= batch_bytes(result);
-    if (result.terminal()) entries_.erase(result.timestamp());
-    ++popped_batches_;
+    const auto result = next_lease_id_++;
+    if (next_lease_id_ == 0) next_lease_id_ = 1;
     return result;
 }
 
-std::vector<ActiveCommand> TriggerSession::close()
+BeginSendResult TriggerSession::begin_send()
 {
     std::lock_guard lock(mutex_);
+    if (closed_) return {std::nullopt, BeginSendError::closed};
+    if (active_lease_id_)
+        return {std::nullopt, BeginSendError::send_in_progress};
+    if (outbound_.empty()) return {std::nullopt, BeginSendError::queue_empty};
+
+    const auto id = next_lease_id();
+    active_lease_id_ = id;
+    ++send_leases_started_;
+    return {SendLease{id, outbound_.front()}, BeginSendError::none};
+}
+
+CompleteSendResult TriggerSession::complete_send(const SendLease& lease)
+{
+    std::lock_guard lock(mutex_);
+    if (closed_) return {SendTransitionError::closed};
+    if (!active_lease_id_) return {SendTransitionError::no_active_lease};
+    if (*active_lease_id_ != lease.id())
+        return {SendTransitionError::lease_mismatch};
+
+    const auto& batch = *outbound_.front();
+    queued_bytes_ -= batch_bytes(batch);
+    if (batch.terminal()) entries_.erase(batch.timestamp());
+    outbound_.pop_front();
+    active_lease_id_.reset();
+    ++popped_batches_;
+    return {};
+}
+
+FailSendResult TriggerSession::fail_send(const SendLease& lease)
+{
+    std::lock_guard lock(mutex_);
+    if (closed_) return {SendTransitionError::closed, {}};
+    if (!active_lease_id_)
+        return {SendTransitionError::no_active_lease, {}};
+    if (*active_lease_id_ != lease.id())
+        return {SendTransitionError::lease_mismatch, {}};
+
+    ++send_failures_;
+    return {SendTransitionError::none, close_locked()};
+}
+
+std::vector<ActiveCommand> TriggerSession::close_locked()
+{
     if (closed_) return {};
     std::vector<ActiveCommand> active;
     active.reserve(entries_.size());
@@ -290,11 +352,20 @@ std::vector<ActiveCommand> TriggerSession::close()
             active.push_back({entry.command, timestamp, entry.cancel_requested});
         }
     }
+    dropped_batches_ += outbound_.size();
+    dropped_bytes_ += queued_bytes_;
     closed_ = true;
     entries_.clear();
     outbound_.clear();
     queued_bytes_ = 0;
+    active_lease_id_.reset();
     return active;
+}
+
+std::vector<ActiveCommand> TriggerSession::close()
+{
+    std::lock_guard lock(mutex_);
+    return close_locked();
 }
 
 TriggerSessionStats TriggerSession::stats() const
@@ -306,11 +377,16 @@ TriggerSessionStats TriggerSession::stats() const
         published_batches_,
         publish_rejections_,
         popped_batches_,
+        send_leases_started_,
+        send_failures_,
+        dropped_batches_,
+        dropped_bytes_,
         cancellations_requested_,
         queue_backpressure_,
         entries_.size(),
         outbound_.size(),
         queued_bytes_,
+        active_lease_id_.has_value(),
         closed_,
     };
 }

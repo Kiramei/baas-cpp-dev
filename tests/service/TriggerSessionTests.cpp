@@ -62,6 +62,14 @@ void check(const bool condition, const std::string_view message)
     return std::move(encoded.batch);
 }
 
+[[nodiscard]] std::optional<trigger::SendLease> begin_and_complete(
+    trigger::TriggerSession& session)
+{
+    auto begun = session.begin_send();
+    if (!begun || !session.complete_send(*begun.lease)) return std::nullopt;
+    return std::move(begun.lease);
+}
+
 void test_limits_and_stable_error_names()
 {
     auto limits = trigger::TriggerSessionLimits{};
@@ -133,10 +141,11 @@ void test_admission_validation_and_correlation_reservation()
     check(session.admit(command("status", 10)).error
               == trigger::AdmissionError::duplicate_timestamp,
           "terminal correlation must remain reserved until the response is sent");
-    const auto sent = session.pop();
-    check(sent && sent->timestamp() == 10, "pop must return the oldest terminal response");
+    const auto sent = begin_and_complete(session);
+    check(sent && sent->batch().timestamp() == 10,
+          "send confirmation must complete the oldest terminal response");
     check(static_cast<bool>(session.admit(command("status", 10))),
-          "timestamp may be reused only after its terminal response is popped");
+          "timestamp may be reused only after its terminal response is confirmed");
 
     const auto stats = session.stats();
     check(stats.accepted == 3 && stats.admission_rejections == 7,
@@ -173,17 +182,18 @@ void test_streaming_order_and_atomic_binary_batch()
               == trigger::PublishError::terminal_already_queued,
           "no response may follow a queued stream terminal");
 
-    const auto first = session.pop();
-    const auto second = session.pop();
-    const auto third = session.pop();
-    check(first && !first->terminal() && first->binary().empty(),
+    const auto first = begin_and_complete(session);
+    const auto second = begin_and_complete(session);
+    const auto third = begin_and_complete(session);
+    check(first && !first->batch().terminal() && first->batch().binary().empty(),
           "first stream progress must preserve FIFO order");
-    check(second && !second->terminal() && second->binary().size() == 4,
+    check(second && !second->batch().terminal() && second->batch().binary().size() == 4,
           "binary bytes must remain attached to their declaring JSON response");
-    check(third && third->terminal(), "terminal stream result must be last");
-    check(!session.pop(), "queue must be empty after all batches are sent");
+    check(third && third->batch().terminal(), "terminal stream result must be last");
+    check(session.begin_send().error == trigger::BeginSendError::queue_empty,
+          "queue must be empty after all batches are confirmed");
     check(session.stats().active_correlations == 0,
-          "terminal pop must release the stream correlation");
+          "terminal send confirmation must release the stream correlation");
 }
 
 void test_publish_validation_backpressure_and_retry()
@@ -211,7 +221,8 @@ void test_publish_validation_backpressure_and_retry()
           "full outbound queue must report retryable backpressure");
     check(session.stats().active_correlations == 1,
           "failed terminal enqueue must not complete the correlation");
-    check(static_cast<bool>(session.pop()), "draining one batch must create capacity");
+    check(static_cast<bool>(begin_and_complete(session)),
+          "confirming one batch must create capacity");
     check(static_cast<bool>(session.publish(std::move(terminal))),
           "terminal publication must succeed when retried after drain");
 
@@ -291,7 +302,9 @@ void test_concurrent_admission_and_publication()
     check(accepted == 64, "concurrent commands must publish without data races");
 
     std::vector<trigger::Timestamp> observed;
-    while (const auto batch = session.pop()) observed.push_back(batch->timestamp());
+    while (const auto sent = begin_and_complete(session)) {
+        observed.push_back(sent->batch().timestamp());
+    }
     std::sort(observed.begin(), observed.end());
     check(observed.size() == 64 && observed.front() == 1 && observed.back() == 64,
           "every concurrent terminal response must be retained exactly once");

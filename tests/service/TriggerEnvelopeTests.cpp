@@ -344,9 +344,10 @@ void test_response_rejections_and_session_integration()
     const auto reply = trigger::encode_command_response(success("status", 24));
     check(reply && session.publish(reply.batch),
           "only codec-produced response metadata must enter the session");
-    const auto popped = session.pop();
-    check(popped && popped->command() == decoded.envelope.command
-              && popped->timestamp() == decoded.envelope.timestamp,
+    auto begun = session.begin_send();
+    const bool completed = begun && session.complete_send(*begun.lease);
+    check(completed && begun.lease->batch().command() == decoded.envelope.command
+              && begun.lease->batch().timestamp() == decoded.envelope.timestamp,
           "codec and session must retain exact correlation metadata end to end");
 }
 
