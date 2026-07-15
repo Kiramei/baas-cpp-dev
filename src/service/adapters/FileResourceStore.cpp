@@ -1075,12 +1075,12 @@ bool valid_limits(const channels::ResourceStoreLimits& limits) noexcept
         && limits.max_resource_id_bytes != 0 && limits.max_origin_bytes != 0;
 }
 
-constexpr std::size_t config_copy_max_files = 4'096;
+constexpr std::size_t config_copy_max_entries = 4'096;
 constexpr std::uintmax_t config_copy_max_bytes = 64U * 1'024U * 1'024U;
 constexpr std::size_t config_copy_max_depth = 32;
 
 struct ConfigTreeStats {
-    std::size_t files{};
+    std::size_t entries{};
     std::uintmax_t bytes{};
 };
 
@@ -1259,6 +1259,11 @@ struct ConfigTreeStats {
             if (!found->contains("daily_reset")
                 || !found->at("daily_reset").is_array()) return defaults;
             for (auto& reset : (*found)["daily_reset"]) {
+                // Python's len(reset) raises for JSON scalars and the outer
+                // initializer falls back to the complete default event file.
+                if (reset.is_null() || reset.is_boolean() || reset.is_number()) {
+                    return defaults;
+                }
                 if (!reset.is_array() || reset.size() != 3) reset = Json::array({0, 0, 0});
             }
             for (const auto& [key, value] : default_item.items()) {
@@ -1312,6 +1317,12 @@ struct ConfigTreeStats {
         if (iterator.depth() >= static_cast<int>(config_copy_max_depth)) {
             return ConfigCommandError::capacity;
         }
+        // Count every source entry before creating its destination. Empty
+        // directories consume enumeration, inode, and disk capacity just like
+        // files and therefore must not bypass the tree budget.
+        if (++stats.entries > config_copy_max_entries) {
+            return ConfigCommandError::capacity;
+        }
         const auto relative = iterator->path().lexically_relative(source);
         if (relative.empty()) return ConfigCommandError::invalid_data;
         const auto destination = target / relative;
@@ -1322,9 +1333,6 @@ struct ConfigTreeStats {
                 return directory_created;
             }
         } else if (kind == PathKind::regular_file) {
-            if (++stats.files > config_copy_max_files) {
-                return ConfigCommandError::capacity;
-            }
             auto [bytes, read_error] = reader(iterator->path());
             if (!bytes) return read_error;
             if (bytes->size() > config_copy_max_bytes
@@ -2210,6 +2218,9 @@ ConfigCopyResult FileResourceStore::copy_config(
         target_id.clear();
     }
     if (target_id.empty()) return {{}, {}, ConfigCommandError::conflict};
+    const ResourceKey target_config_key{SyncResource::config, target_id};
+    const ResourceKey target_event_key{SyncResource::event, target_id};
+    const ResourceKey static_key{SyncResource::static_data, std::nullopt};
 
     static std::atomic<std::uint64_t> staging_sequence{};
     const auto staging = impl->config_root /
@@ -2319,7 +2330,7 @@ ConfigCopyResult FileResourceStore::copy_config(
                     != AtomicWriteResult::not_committed;
             }
             if (path_kind(path) != PathKind::missing) return false;
-            if (++tree_stats.files > config_copy_max_files) return false;
+            if (++tree_stats.entries > config_copy_max_entries) return false;
 #if defined(_WIN32)
             return durable_create_new(path, bytes, impl->windows_root);
 #else
@@ -2458,6 +2469,12 @@ ConfigCopyResult FileResourceStore::copy_config(
         return {{}, {}, path_kind(target) == PathKind::missing
                 ? ConfigCommandError::internal_error : ConfigCommandError::conflict};
     }
+    {
+        std::lock_guard state_lock(impl->state_mutex);
+        impl->resources.erase(target_config_key);
+        impl->resources.erase(target_event_key);
+        if (update_static) impl->resources.erase(static_key);
+    }
     remove_tree_best_effort(static_backup);
     return {std::move(target_id), std::move(copy_name), ConfigCommandError::none};
 } catch (...) {
@@ -2474,10 +2491,20 @@ ConfigRemoveResult FileResourceStore::remove_config(
     if (!valid_resource_id(id, impl->limits.max_resource_id_bytes)) {
         return {ConfigCommandError::invalid_id};
     }
+    const ResourceKey config_key{SyncResource::config, id};
+    const ResourceKey event_key{SyncResource::event, id};
+    const auto invalidate_cache = [&] {
+        std::lock_guard state_lock(impl->state_mutex);
+        impl->resources.erase(config_key);
+        impl->resources.erase(event_key);
+    };
     std::unique_lock mutation_lock(impl->mutation_mutex);
     if (stop.stop_requested()) return {ConfigCommandError::cancelled};
     const auto target = impl->config_root / id;
-    if (path_kind(target) == PathKind::missing) return {};
+    if (path_kind(target) == PathKind::missing) {
+        invalidate_cache();
+        return {};
+    }
     if (path_kind(target) != PathKind::directory) {
         return {ConfigCommandError::invalid_data};
     }
@@ -2508,14 +2535,13 @@ ConfigRemoveResult FileResourceStore::remove_config(
 #endif
     }
     if (renamed == DirectoryRenameResult::not_committed) {
-        return {path_kind(target) == PathKind::missing
-                ? ConfigCommandError::none : ConfigCommandError::internal_error};
+        if (path_kind(target) != PathKind::missing) {
+            return {ConfigCommandError::internal_error};
+        }
+        invalidate_cache();
+        return {};
     }
-    {
-        std::lock_guard state_lock(impl->state_mutex);
-        impl->resources.erase({SyncResource::config, id});
-        impl->resources.erase({SyncResource::event, id});
-    }
+    invalidate_cache();
     mutation_lock.unlock();
     remove_tree_best_effort(tombstone);
     return {};

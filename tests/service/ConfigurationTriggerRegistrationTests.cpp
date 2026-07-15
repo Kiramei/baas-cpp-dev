@@ -19,6 +19,7 @@
 using namespace std::chrono_literals;
 namespace adapters = baas::service::adapters;
 namespace app = baas::service::app;
+namespace channels = baas::service::channels;
 namespace protocol = baas::service::protocol::trigger;
 namespace trigger = baas::service::trigger;
 using Json = nlohmann::json;
@@ -121,6 +122,20 @@ struct Response {
     protocol::ResponseStatus status{protocol::ResponseStatus::error};
     std::string json;
 };
+
+[[nodiscard]] bool has_private_config_transaction(
+    const std::filesystem::path& config_root)
+{
+    std::error_code error;
+    std::filesystem::directory_iterator iterator(config_root, error);
+    const std::filesystem::directory_iterator end;
+    for (; !error && iterator != end; iterator.increment(error)) {
+        if (iterator->path().filename().string().starts_with(".baas-")) {
+            return true;
+        }
+    }
+    return false;
+}
 
 Response execute(
     const std::shared_ptr<trigger::TriggerExecutor>& executor,
@@ -275,6 +290,120 @@ void test_validation_bounds_and_fail_closed_paths()
     executor->shutdown();
 }
 
+void test_wide_tree_entry_budget_and_cancellation_cleanup()
+{
+    TempProject project;
+    project.add_server("wide", "日服");
+    const auto source = project.root / "config" / "wide";
+    constexpr std::size_t wide_directories = 4'097;
+    for (std::size_t index = 0; index < wide_directories; ++index) {
+        std::filesystem::create_directory(
+            source / ("empty-" + std::to_string(index)));
+    }
+
+    auto store = std::make_shared<adapters::FileResourceStore>(project.root);
+    const auto before_capacity = store->config_list({});
+    const auto rejected = store->copy_config("wide", {});
+    const auto after_capacity = store->config_list({});
+    check(rejected.error == adapters::ConfigCommandError::capacity,
+          "wide empty-directory trees must consume the 4,096-entry budget");
+    check(before_capacity && after_capacity
+              && before_capacity->data_json == after_capacity->data_json
+              && !has_private_config_transaction(project.root / "config"),
+          "entry-capacity failure must remove staging and publish no partial copy");
+
+    // Keep the source below the entry ceiling but wide enough to ensure that
+    // cancellation can be observed after private staging is created.
+    for (std::size_t index = wide_directories - 16;
+         index < wide_directories; ++index) {
+        std::filesystem::remove(
+            source / ("empty-" + std::to_string(index)));
+    }
+    const auto before_cancel = store->config_list({});
+    std::stop_source stop;
+    std::optional<adapters::ConfigCopyResult> cancelled_result;
+    std::thread worker([&] {
+        cancelled_result = store->copy_config("wide", stop.get_token());
+    });
+    const bool saw_staging = wait_until([&] {
+        return has_private_config_transaction(project.root / "config");
+    });
+    static_cast<void>(stop.request_stop());
+    worker.join();
+    const auto after_cancel = store->config_list({});
+    check(saw_staging && cancelled_result
+              && cancelled_result->error == adapters::ConfigCommandError::cancelled,
+          "a wide traversal must observe cancellation after staging begins");
+    check(before_cancel && after_cancel
+              && before_cancel->data_json == after_cancel->data_json
+              && !has_private_config_transaction(project.root / "config"),
+          "cancelled wide traversal must remove staging and publish no partial copy");
+}
+
+void test_structural_success_invalidates_cached_resources()
+{
+    TempProject project;
+    project.add_server("source", "日服");
+    project.add_server("4242", "日服");
+    std::ofstream(project.root / "config" / "4242" / "config.json",
+                  std::ios::trunc) << R"({"name":"stale","server":"日服"})";
+    std::ofstream(project.root / "config" / "4242" / "event.json",
+                  std::ios::trunc) << R"({"stale":true})";
+    std::ofstream(project.root / "config" / "static.json")
+        << R"({"stale":true})";
+
+    adapters::FileResourceStoreDependencies dependencies;
+    dependencies.clock = [] { return 4'242.0; };
+    auto store = std::make_shared<adapters::FileResourceStore>(
+        project.root, std::move(dependencies));
+    const channels::ResourceKey config_key{
+        channels::SyncResource::config, "4242"};
+    const channels::ResourceKey event_key{
+        channels::SyncResource::event, "4242"};
+    const channels::ResourceKey static_key{
+        channels::SyncResource::static_data, std::nullopt};
+    check(store->pull(config_key, {}) && store->pull(event_key, {})
+              && store->pull(static_key, {}),
+          "cache invalidation fixture must cache old target and static resources");
+    std::filesystem::remove_all(project.root / "config" / "4242");
+
+    const auto copied = store->copy_config("source", {});
+    const auto fresh_config = store->pull(config_key, {});
+    const auto fresh_event = store->pull(event_key, {});
+    const auto fresh_static = store->pull(static_key, {});
+    check(copied && copied.serial == "4242"
+              && fresh_config && fresh_event && fresh_static,
+          "copy must support safe clock-id reuse and reload every affected cache");
+    if (fresh_config && fresh_event && fresh_static) {
+        const auto config = Json::parse(fresh_config->data_json);
+        const auto event = Json::parse(fresh_event->data_json);
+        const auto static_data = Json::parse(fresh_static->data_json);
+        check(config.value("name", "") == "source_copy"
+                  && event.is_array()
+                  && static_data.contains("create_item_order")
+                  && !static_data.contains("stale"),
+              "post-copy pulls must not return stale config/event/static snapshots");
+    }
+
+    project.add_server("externally-removed", "日服");
+    const channels::ResourceKey removed_config_key{
+        channels::SyncResource::config, "externally-removed"};
+    const channels::ResourceKey removed_event_key{
+        channels::SyncResource::event, "externally-removed"};
+    check(store->pull(removed_config_key, {})
+              && store->pull(removed_event_key, {}),
+          "idempotent remove fixture must cache both externally removed resources");
+    std::filesystem::remove_all(
+        project.root / "config" / "externally-removed");
+    const auto removed = store->remove_config("externally-removed", {});
+    const auto missing_config = store->pull(removed_config_key, {});
+    const auto missing_event = store->pull(removed_event_key, {});
+    check(removed && !missing_config && !missing_event
+              && missing_config.error == channels::ResourceStoreError::not_found
+              && missing_event.error == channels::ResourceStoreError::not_found,
+          "idempotent successful remove must invalidate externally deleted caches");
+}
+
 void test_python_initializer_migration_vector()
 {
     TempProject project;
@@ -339,6 +468,22 @@ void test_python_initializer_migration_vector()
     check(repaired_event.size() == 26
               && repaired_event[0]["func_name"] == "restart",
           "an event item missing func_name must reset the whole file to defaults");
+
+    project.add("scalar-reset", "Scalar");
+    std::ofstream(project.root / "config" / "scalar-reset" / "event.json",
+                  std::ios::trunc)
+        << R"([{"func_name":"restart","daily_reset":[5]}])";
+    const auto scalar_repaired = store->copy_config("scalar-reset", {});
+    check(static_cast<bool>(scalar_repaired),
+          "scalar daily_reset fixture must remain recoverable");
+    if (scalar_repaired) {
+        const auto scalar_event = Json::parse(std::ifstream(
+            project.root / "config" / scalar_repaired.serial / "event.json"));
+        check(scalar_event.size() == 26
+                  && scalar_event[0]["func_name"] == "restart"
+                  && scalar_event[0]["daily_reset"][0].is_array(),
+              "daily_reset scalar must trigger Python's whole-file default fallback");
+    }
 
     const auto unsupported = project.root / "config" / "unsupported";
     std::filesystem::create_directories(unsupported);
@@ -496,6 +641,8 @@ int main()
     try {
         test_copy_and_remove_exact_python_envelopes();
         test_validation_bounds_and_fail_closed_paths();
+        test_wide_tree_entry_budget_and_cancellation_cleanup();
+        test_structural_success_invalidates_cached_resources();
         test_python_initializer_migration_vector();
         test_commit_point_wins_late_stop_and_staging_is_protected_scope();
         test_all_python_server_mappings_and_invalid_servers();

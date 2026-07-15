@@ -36,6 +36,13 @@ bytes, subscribers, and patch operations. Malformed, over-depth, over-node, or
 over-size documents never enter the visible cache. Cancellation is checked
 before filesystem or mutation work.
 
+Configuration-tree copy additionally limits the actual traversal to 4,096
+entries across regular files and directories, 64 MiB of file data, and 32
+directory levels. Each entry is charged before its destination is created, so
+wide trees of empty directories cannot consume unbounded enumeration, inode,
+or disk capacity. Capacity and cancellation failures remove private staging
+without publishing a partial configuration.
+
 ## Patch and commit boundary
 
 Patch behavior matches `InMemoryResourceStore`: `add`, `remove`, and `replace`
@@ -82,9 +89,18 @@ this method after observing an external change.
 The production `copy_config` and `remove_config*` trigger registrations use
 explicit structural operations on this store. They share the patch mutation
 gate, use bounded auth-protected siblings under `config/` plus same-volume rename,
-and invalidate removed config/event cache entries. Recursive copy reads only
-regular files through the persistent root anchor and commits destination files
-through anchored create-exclusive and replacement writers. See
+and invalidate affected config/event cache entries on every successful outcome;
+copy also invalidates `static_data` when it refreshes `config/static.json`.
+This includes idempotent removal of an already-absent directory and reuse of a
+clock-derived identifier whose old files disappeared externally. Recursive copy
+reads only regular files through the persistent root anchor and commits
+destination files through anchored create-exclusive and replacement writers.
+
+Structural command methods invalidate caches but do not synthesize subscriber
+updates. Their trigger response owns command acknowledgement; a host filesystem
+watcher that needs a subscription update calls `refresh_and_publish` after
+observing the committed change, using that method's validation and publication
+barrier. See
 `SERVICE_CONFIGURATION_TRIGGERS.md` for
 the Python parity boundary and deferred commands.
 

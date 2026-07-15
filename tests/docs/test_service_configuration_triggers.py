@@ -48,7 +48,7 @@ class ServiceConfigurationTriggerDocsTests(unittest.TestCase):
             "ServiceRuntime._copy_config_sync",
             "ServiceRuntime.remove_config",
             "`add_config*`, `export_config`, `import_config`, and `update_setup_toml` remain",
-            "4,096 regular files",
+            "4,096 total tree entries",
             "64 MiB total",
             "protected DACL",
         ):
