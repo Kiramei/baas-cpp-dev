@@ -1,6 +1,7 @@
 # ADR-0003: Privileged Python operation boundaries
 
-Status: Accepted for migration inventory; adapters and parity remain pending.
+Status: Accepted for privileged ownership. ADR-0004 supersedes the default
+source-scope disposition for `core/*`; adapters and parity remain pending.
 
 ## Context
 
@@ -18,7 +19,8 @@ have been implemented.
 
 ## Decision
 
-The following boundaries are normative for taxonomy v4. Rules are evaluated
+The following exact boundaries originated in taxonomy v4 and remain normative
+under taxonomy v5. Rules are evaluated
 before dynamic, unresolved, external-dependency, and standard-library defaults.
 Source-qualified rules apply per source file before equivalent decisions are
 aggregated, so an identical symbol in another file does not inherit authority.
@@ -34,7 +36,7 @@ aggregated, so an identical symbol in another file does not inherit authority.
 | `context.send` in `core/exception.py` and the named shared-memory release in `core/ipc_manager.py` | C++ service IPC internals | `raw-ipc-service-boundary-v4`; no script-visible raw pipe or shared-memory handle |
 | every operation in `core/ocr/baas_ocr_client/server_installer.py`, including `pygit2` and `ZipFile.extractall` | offline migration/updater tooling | `ocr-updater-tooling-boundary-v4`; the updater moves as one unit and is not a runtime capability |
 | `s.bind` in `core/ocr/ocr.py` | C++ service listener and port-probe internals | `socket-listener-service-boundary-v4`; `baas/socket` remains connect-only |
-| `av.*`, `codec.decode`, `codec.parse`, and `frame.to_ndarray` | bounded vision decoding | `vision-host-v2`; `VisionHost`, `baas/vision` |
+| `av.*`, `codec.decode`, `codec.parse`, and `frame.to_ndarray` | native vision/device implementation | `CPP_RUNTIME_INTERNAL` under ADR-0004; raw codec handles are not a script API |
 
 The notification boundary deliberately does not assign legacy notification UI
 to Tauri. `baas/notify.show` preserves one-way notification behavior and

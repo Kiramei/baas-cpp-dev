@@ -13,12 +13,13 @@ SPEC_PATH = ROOT / "docs" / "script-runtime" / "HOST_CAPABILITY_CONTRACTS.md"
 CATALOG_PATH = ROOT / "docs" / "script-runtime" / "host-capabilities.v1.json"
 INDEX_PATH = ROOT / "docs" / "script-runtime" / "evidence" / "operation-index.json"
 MATRIX_PATH = ROOT / "docs" / "script-runtime" / "MIGRATION_MATRIX.md"
-RULES_PATH = ROOT / "scripts" / "migration" / "operation_rules.v4.json"
+RULES_PATH = ROOT / "scripts" / "migration" / "operation_rules.v5.json"
 ROADMAP_PATH = ROOT / "docs" / "script-runtime" / "ROADMAP.md"
 PACKAGE_PATH = ROOT / "docs" / "script-runtime" / "PACKAGE_VERSIONING.md"
 LANGUAGE_PATH = ROOT / "docs" / "script-runtime" / "LANGUAGE_SPEC_DRAFT.md"
 ADR_PATH = ROOT / "docs" / "script-runtime" / "ADR-0001-runtime-architecture.md"
 PRIVILEGED_ADR_PATH = ROOT / "docs" / "script-runtime" / "ADR-0003-privileged-operation-boundaries.md"
+CORE_BOUNDARY_ADR_PATH = ROOT / "docs" / "script-runtime" / "ADR-0004-core-runtime-boundary.md"
 ASYNC_PATH = ROOT / "docs" / "script-runtime" / "ASYNC_TASKS.md"
 ERRORS_PATH = ROOT / "docs" / "script-runtime" / "ERRORS_AND_CLEANUP.md"
 WORKFLOW_PATH = ROOT / ".github" / "workflows" / "foundation-runtime.yml"
@@ -104,6 +105,7 @@ class HostCapabilityContractTests(unittest.TestCase):
         cls.language = read(LANGUAGE_PATH)
         cls.adr = read(ADR_PATH)
         cls.privileged_adr = read(PRIVILEGED_ADR_PATH)
+        cls.core_boundary_adr = read(CORE_BOUNDARY_ADR_PATH)
         cls.async_spec = read(ASYNC_PATH)
         cls.errors_spec = read(ERRORS_PATH)
         cls.workflow = read(WORKFLOW_PATH)
@@ -289,10 +291,12 @@ class HostCapabilityContractTests(unittest.TestCase):
             for decision in operation["scope_decisions"]:
                 if decision["disposition"] == "HOST_BINDING_REQUIRED":
                     host_decisions.append((operation, decision))
-        self.assertEqual(len(host_decisions), 358)
+        self.assertEqual(len(host_decisions), 145)
+        decision_rules = {decision["classification_rule"] for _, decision in host_decisions}
+        self.assertTrue(decision_rules.issubset(mappings))
         self.assertEqual(
-            {decision["classification_rule"] for _, decision in host_decisions},
-            set(mappings),
+            set(mappings) - decision_rules,
+            {"process-host-v3", "http-host-v3", "socket-host-v3"},
         )
         for operation, decision in host_decisions:
             with self.subTest(operation=operation["id"]):
@@ -332,7 +336,31 @@ class HostCapabilityContractTests(unittest.TestCase):
             self.workflow,
         )
 
-    def test_eleven_v3_gaps_resolve_to_exact_capabilities_and_bindings(self) -> None:
+    def test_core_and_module_sources_have_disjoint_v5_ownership(self) -> None:
+        source_rules = {item["id"]: item for item in self.rules["source_scope_rules"]}
+        self.assertEqual(
+            source_rules["cpp-runtime-sources-v5"],
+            {"id": "cpp-runtime-sources-v5", "source_patterns": ["core/*"], "source_scope": "CPP_RUNTIME"},
+        )
+        self.assertEqual(
+            source_rules["script-runtime-sources-v5"]["source_patterns"],
+            ["module/*", "main.py", "cli.example.py"],
+        )
+        summary = self.index["summary"]
+        self.assertEqual(summary["unresolved_disposition_scope_decisions"], 0)
+        self.assertEqual(summary["host_binding_gaps"], 0)
+        self.assertEqual(summary["parse_errors"], 0)
+        self.assertEqual(summary["disposition_scope_decisions"]["CPP_RUNTIME_INTERNAL"], 761)
+        self.assertIn("`core/*`", self.core_boundary_adr)
+        self.assertIn("`module/*`", self.core_boundary_adr)
+        self.assertIn("CPP_RUNTIME_INTERNAL", self.core_boundary_adr)
+        self.assertIn("does not claim", self.core_boundary_adr)
+        self.assertGreaterEqual(
+            self.workflow.count("'docs/script-runtime/ADR-0004-core-runtime-boundary.md'"),
+            2,
+        )
+
+    def test_eleven_v3_gaps_are_native_and_retain_reserved_host_contracts(self) -> None:
         gaps = self.catalog["gap_resolutions"]
         self.assertEqual({item["operation_id"] for item in gaps}, EXPECTED_GAP_IDS)
         self.assertEqual(len(gaps), 11)
@@ -342,7 +370,6 @@ class HostCapabilityContractTests(unittest.TestCase):
             for binding in module["bindings"]
         }
         operations = {operation["id"]: operation for operation in self.index["operations"]}
-        mappings = {item["rule"]: item for item in self.catalog["taxonomy_mappings"]}
         for gap in gaps:
             with self.subTest(operation=gap["operation_id"]):
                 self.assertIn(gap["legacy_rule"], {"process-host-gap-v2", "network-host-gap-v2"})
@@ -353,13 +380,12 @@ class HostCapabilityContractTests(unittest.TestCase):
                 decision = next(
                     item
                     for item in operation["scope_decisions"]
-                    if item["source_scope"] == "SCRIPT_RUNTIME"
-                    and item["classification_rule"] == gap["taxonomy_rule"]
+                    if item["source_scope"] == gap["taxonomy_v5_source_scope"]
+                    and item["classification_rule"] == gap["taxonomy_v5_rule"]
                 )
-                self.assertEqual(decision["classification_rule"], gap["taxonomy_rule"])
-                mapping = mappings[gap["taxonomy_rule"]]
-                self.assertEqual(decision["cpp_host_binding"], mapping["cpp_binding"])
-                self.assertEqual(decision["parity_test_id"], mapping["parity_test"])
+                self.assertEqual(decision["disposition"], gap["taxonomy_v5_disposition"])
+                self.assertEqual(decision["cpp_host_binding"], "NOT_APPLICABLE")
+                self.assertEqual(decision["parity_test_id"], "NOT_APPLICABLE")
 
     def test_v3_rules_and_evidence_digest_encode_the_contract_assignments(self) -> None:
         rules = {item["id"]: item for item in self.rules["rules"]}
@@ -470,7 +496,7 @@ class HostCapabilityContractTests(unittest.TestCase):
     def test_catalog_patterns_do_not_silently_claim_unmapped_operations(self) -> None:
         rule_by_id = {item["id"]: item for item in self.rules["rules"]}
         for gap in self.catalog["gap_resolutions"]:
-            rule = rule_by_id[gap["taxonomy_rule"]]
+            rule = rule_by_id[gap["legacy_host_taxonomy_rule"]]
             self.assertTrue(
                 any(fnmatch.fnmatchcase(gap["symbol"], pattern) for pattern in rule["symbol_patterns"])
             )

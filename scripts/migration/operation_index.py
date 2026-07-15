@@ -25,11 +25,11 @@ from typing import Any, Iterable
 
 SCHEMA_VERSION = 2
 IDENTITY_VERSION = 1
-GENERATOR_VERSION = "4.1.0"
-RULES_VERSION = 4
+GENERATOR_VERSION = "5.0.0"
+RULES_VERSION = 5
 BEGIN_MARKER = "<!-- BEGIN GENERATED OPERATION INDEX -->"
 END_MARKER = "<!-- END GENERATED OPERATION INDEX -->"
-DEFAULT_RULES = Path(__file__).with_name("operation_rules.v4.json")
+DEFAULT_RULES = Path(__file__).with_name("operation_rules.v5.json")
 IGNORED_DIRECTORIES = frozenset(
     {
         ".git",
@@ -1267,6 +1267,7 @@ class RuleSet:
         {
             "HOST_BINDING_REQUIRED",
             "SCRIPT_LANGUAGE_OR_MODULE",
+            "CPP_RUNTIME_INTERNAL",
             "CPP_SERVICE_INTERNAL",
             "TAURI_UI_REPLACED",
             "MIGRATION_TOOLING_ONLY",
@@ -1438,6 +1439,7 @@ class RuleSet:
         # dynamic/unresolved expressions do not manufacture false disposition
         # gaps outside the script runtime.
         defaults = {
+            "CPP_RUNTIME": ("CPP_RUNTIME_INTERNAL", "runtime.core", "C++ Runtime"),
             "CPP_SERVICE": ("CPP_SERVICE_INTERNAL", "service.internal", "C++ Service"),
             "DEPLOYMENT_TOOLING": (
                 "MIGRATION_TOOLING_ONLY",
@@ -1460,7 +1462,8 @@ class RuleSet:
             return disposition_result(
                 disposition,
                 (
-                    f"{source_scope.lower()}-boundary-v4"
+                    f"{source_scope.lower()}-boundary-"
+                    f"{'v5' if source_scope == 'CPP_RUNTIME' else 'v4'}"
                     if unresolved_owner
                     else f"{source_scope.lower()}-default-v2"
                 ),

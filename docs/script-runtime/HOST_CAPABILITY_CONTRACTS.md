@@ -275,13 +275,16 @@ MUST NOT be implied by `network.http` or `network.socket`.
 
 Every current `HOST_BINDING_REQUIRED` scope decision MUST match exactly one
 `taxonomy_mappings` rule in the machine catalog, including family, proposed C++
-binding, parity ID, and owning module. Every decision ID MUST appear in the
-generated matrix. The eleven taxonomy-v3 gaps listed below MUST retain their
-operation IDs while receiving the stated capability and binding contract.
+binding, parity ID, and owning module. Catalog mappings without a current Host
+decision are reserved script APIs and MUST NOT be presented as legacy migration
+requirements. Every decision ID MUST appear in the generated matrix. The eleven
+taxonomy-v3 gaps listed below retain their operation IDs and reserved capability
+contracts, but taxonomy v5 classifies their observed `core/*` occurrences as
+`CPP_RUNTIME_INTERNAL`; they do not require a script Host binding.
 `INVENTORIED` means specified and assigned only; it MUST NOT mean implemented,
 linked, parity-complete, or safe for production.
 
-| Operation evidence | Python symbol | Capability | Stable binding ID | Taxonomy rule |
+| Operation evidence | Python symbol | Reserved capability | Reserved binding ID | Historical Host rule |
 | --- | --- | --- | --- | --- |
 | `op-aebb00093f62aa31` | `psutil.Process` | `process.inspect` | `host.process.inspect.v1` | `process-host-v3` |
 | `op-4c8a2ce2dc27e423` | `psutil.process_iter` | `process.inspect` | `host.process.list.v1` | `process-host-v3` |

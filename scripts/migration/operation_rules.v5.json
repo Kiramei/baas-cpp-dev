@@ -1,0 +1,756 @@
+{
+  "rules_version": 5,
+  "source_scope_rules": [
+    {
+      "id": "cpp-runtime-sources-v5",
+      "source_patterns": ["core/*"],
+      "source_scope": "CPP_RUNTIME"
+    },
+    {
+      "id": "script-runtime-sources-v5",
+      "source_patterns": ["module/*", "main.py", "cli.example.py"],
+      "source_scope": "SCRIPT_RUNTIME"
+    },
+    {
+      "id": "generated-resource-sources-v2",
+      "source_patterns": ["src/*"],
+      "source_scope": "GENERATED_RESOURCE"
+    },
+    {
+      "id": "cpp-service-sources-v2",
+      "source_patterns": ["service/*", "main.service.py", "service.example.py"],
+      "source_scope": "CPP_SERVICE"
+    },
+    {
+      "id": "legacy-gui-sources-v2",
+      "source_patterns": ["gui/*", "window.py"],
+      "source_scope": "LEGACY_GUI"
+    },
+    {
+      "id": "test-sources-v2",
+      "source_patterns": ["tests/*"],
+      "source_scope": "TEST"
+    },
+    {
+      "id": "migration-tooling-sources-v2",
+      "source_patterns": ["develop_tools/*"],
+      "source_scope": "MIGRATION_TOOLING"
+    },
+    {
+      "id": "deployment-tooling-sources-v2",
+      "source_patterns": ["deploy/*"],
+      "source_scope": "DEPLOYMENT_TOOLING"
+    }
+  ],
+  "value_type_rules": [
+    {
+      "id": "builtin-constructors-v3",
+      "call_patterns": [
+        "builtins.bool",
+        "builtins.bytes",
+        "builtins.bytearray",
+        "builtins.complex",
+        "builtins.dict",
+        "builtins.float",
+        "builtins.frozenset",
+        "builtins.int",
+        "builtins.list",
+        "builtins.memoryview",
+        "builtins.object",
+        "builtins.range",
+        "builtins.set",
+        "builtins.str",
+        "builtins.tuple"
+      ],
+      "result_type": "$callable"
+    },
+    {
+      "id": "stdlib-constructors-v3",
+      "call_patterns": [
+        "argparse.ArgumentParser",
+        "collections.Counter",
+        "collections.OrderedDict",
+        "collections.defaultdict",
+        "collections.deque",
+        "datetime.date",
+        "datetime.datetime",
+        "datetime.time",
+        "datetime.timedelta",
+        "pathlib.Path",
+        "queue.Queue",
+        "threading.Event",
+        "threading.Thread"
+      ],
+      "result_type": "$callable"
+    },
+    {
+      "id": "stdlib-factory-results-v3",
+      "call_patterns": ["logging.getLogger"],
+      "result_type": "logging.Logger"
+    },
+    {
+      "id": "hash-factory-results-v3",
+      "call_patterns": [
+        "hashlib.blake2b",
+        "hashlib.blake2s",
+        "hashlib.md5",
+        "hashlib.sha1",
+        "hashlib.sha224",
+        "hashlib.sha256",
+        "hashlib.sha384",
+        "hashlib.sha3_224",
+        "hashlib.sha3_256",
+        "hashlib.sha3_384",
+        "hashlib.sha3_512",
+        "hashlib.sha512",
+        "hashlib.shake_128",
+        "hashlib.shake_256"
+      ],
+      "result_type": "hashlib.Hash"
+    },
+    {
+      "id": "datetime-factory-results-v3",
+      "call_patterns": [
+        "datetime.datetime.combine",
+        "datetime.datetime.fromisoformat",
+        "datetime.datetime.fromtimestamp",
+        "datetime.datetime.now",
+        "datetime.datetime.strptime",
+        "datetime.datetime.today",
+        "datetime.datetime.utcnow"
+      ],
+      "result_type": "datetime.datetime"
+    },
+    {
+      "id": "date-factory-results-v3",
+      "call_patterns": [
+        "datetime.date.fromisoformat",
+        "datetime.date.fromtimestamp",
+        "datetime.date.today"
+      ],
+      "result_type": "datetime.date"
+    },
+    {
+      "id": "platform-text-results-v3",
+      "call_patterns": [
+        "platform.machine",
+        "platform.node",
+        "platform.platform",
+        "platform.processor",
+        "platform.python_version",
+        "platform.release",
+        "platform.system",
+        "platform.version"
+      ],
+      "result_type": "builtins.str"
+    },
+    {
+      "id": "filesystem-open-results-v3",
+      "call_patterns": ["builtins.open", "pathlib.Path.open"],
+      "result_type": "io.IOBase"
+    },
+    {
+      "id": "path-operation-results-v3",
+      "call_patterns": [
+        "pathlib.Path.absolute",
+        "pathlib.Path.expanduser",
+        "pathlib.Path.joinpath",
+        "pathlib.Path.resolve",
+        "pathlib.Path.with_name",
+        "pathlib.Path.with_suffix"
+      ],
+      "result_type": "pathlib.Path"
+    },
+    {
+      "id": "path-parent-result-v3",
+      "attribute_patterns": ["pathlib.Path.parent"],
+      "result_type": "pathlib.Path"
+    },
+    {
+      "id": "path-text-attribute-results-v3",
+      "attribute_patterns": [
+        "pathlib.Path.name",
+        "pathlib.Path.stem",
+        "pathlib.Path.suffix"
+      ],
+      "result_type": "builtins.str"
+    },
+    {
+      "id": "http-response-text-result-v3",
+      "attribute_patterns": ["requests.Response.text"],
+      "result_type": "builtins.str"
+    },
+    {
+      "id": "http-response-content-result-v3",
+      "attribute_patterns": ["requests.Response.content"],
+      "result_type": "builtins.bytes"
+    },
+    {
+      "id": "string-operation-results-v3",
+      "call_patterns": [
+        "builtins.str.casefold",
+        "builtins.str.format",
+        "builtins.str.join",
+        "builtins.str.lower",
+        "builtins.str.lstrip",
+        "builtins.str.removeprefix",
+        "builtins.str.removesuffix",
+        "builtins.str.replace",
+        "builtins.str.rstrip",
+        "builtins.str.strip",
+        "builtins.str.upper",
+        "json.dumps"
+      ],
+      "result_type": "builtins.str"
+    },
+    {
+      "id": "string-split-results-v4",
+      "call_patterns": [
+        "builtins.str.rsplit",
+        "builtins.str.split",
+        "builtins.str.splitlines"
+      ],
+      "element_type": "builtins.str",
+      "result_type": "builtins.list"
+    },
+    {
+      "id": "text-codec-results-v3",
+      "call_patterns": ["builtins.bytes.decode"],
+      "result_type": "builtins.str"
+    },
+    {
+      "id": "binary-codec-results-v3",
+      "call_patterns": ["builtins.str.encode"],
+      "result_type": "builtins.bytes"
+    },
+    {
+      "id": "dict-copy-result-v3",
+      "call_patterns": ["builtins.dict.copy"],
+      "result_type": "builtins.dict"
+    },
+    {
+      "id": "list-copy-result-v3",
+      "call_patterns": ["builtins.list.copy"],
+      "result_type": "builtins.list"
+    },
+    {
+      "id": "set-copy-result-v3",
+      "call_patterns": ["builtins.set.copy"],
+      "result_type": "builtins.set"
+    },
+    {
+      "id": "http-response-results-v3",
+      "call_patterns": [
+        "requests.delete",
+        "requests.get",
+        "requests.head",
+        "requests.options",
+        "requests.patch",
+        "requests.post",
+        "requests.put",
+        "requests.request"
+      ],
+      "result_type": "requests.Response"
+    },
+    {
+      "id": "regular-expression-results-v3",
+      "call_patterns": ["re.compile"],
+      "result_type": "re.Pattern"
+    },
+    {
+      "id": "adb-device-factory-result-v4",
+      "call_patterns": ["adbutils.adb.device"],
+      "result_type": "adbutils.AdbDevice"
+    },
+    {
+      "id": "logging-handler-factory-result-v4",
+      "call_patterns": ["logging.StreamHandler"],
+      "result_type": "logging.Handler"
+    },
+    {
+      "id": "process-handle-factory-result-v4",
+      "call_patterns": ["psutil.Process"],
+      "result_type": "psutil.Process"
+    },
+    {
+      "id": "socket-handle-factory-result-v4",
+      "call_patterns": ["socket.socket"],
+      "result_type": "socket.socket"
+    },
+    {
+      "id": "subprocess-handle-factory-result-v4",
+      "call_patterns": ["subprocess.Popen"],
+      "result_type": "subprocess.Popen"
+    },
+    {
+      "id": "timer-handle-factory-result-v4",
+      "call_patterns": ["threading.Timer"],
+      "result_type": "threading.Timer"
+    },
+    {
+      "id": "regular-expression-match-results-v4",
+      "call_patterns": ["re.fullmatch", "re.match", "re.search"],
+      "result_type": "re.Match"
+    },
+    {
+      "id": "process-iterable-element-result-v4",
+      "call_patterns": ["psutil.process_iter"],
+      "element_type": "psutil.Process",
+      "result_type": "collections.abc.Iterator"
+    },
+    {
+      "id": "regex-iterable-element-result-v4",
+      "call_patterns": ["re.finditer"],
+      "element_type": "re.Match",
+      "result_type": "collections.abc.Iterator"
+    }
+  ],
+  "rules": [
+    {
+      "cpp_host_binding": "NOT_APPLICABLE",
+      "disposition": "MIGRATION_TOOLING_ONLY",
+      "family": "tooling.updater",
+      "id": "ocr-updater-tooling-boundary-v4",
+      "migration_status": "SCOPED",
+      "owner": "Migration Tooling",
+      "parity_test_id": "NOT_APPLICABLE",
+      "reason": "OCR repository download, archive extraction, and Git mutation move to installation tooling as one boundary",
+      "source_patterns": ["core/ocr/baas_ocr_client/server_installer.py"],
+      "source_scopes": ["CPP_RUNTIME"],
+      "symbol_patterns": ["*"]
+    },
+    {
+      "cpp_host_binding": "NOT_APPLICABLE",
+      "disposition": "MIGRATION_TOOLING_ONLY",
+      "family": "tooling.platform-shortcut",
+      "id": "windows-shortcut-tooling-boundary-v4",
+      "migration_status": "SCOPED",
+      "owner": "Migration Tooling",
+      "parity_test_id": "NOT_APPLICABLE",
+      "reason": "Windows shortcut resolution is bootstrap compatibility work and does not become a script or Device API",
+      "source_patterns": ["core/Baas_thread.py"],
+      "source_scopes": ["CPP_RUNTIME"],
+      "symbol_patterns": ["shell.CreateShortCut", "win32com.client.Dispatch"]
+    },
+    {
+      "cpp_host_binding": "baas::script::host::DeviceHost",
+      "disposition": "HOST_BINDING_REQUIRED",
+      "family": "device.emulator-discovery",
+      "id": "emulator-registry-device-boundary-v4",
+      "migration_status": "INVENTORIED",
+      "owner": "Runtime Device",
+      "parity_test_id": "PARITY-DEVICE-HOST",
+      "reason": "emulator registry discovery is replaced by policy-scoped Device lifecycle discovery rather than exposing the Windows registry",
+      "source_patterns": ["core/device/emulator_manager/*"],
+      "source_scopes": ["CPP_RUNTIME"],
+      "symbol_patterns": ["bst_read_registry_key", "winreg.*"]
+    },
+    {
+      "cpp_host_binding": "baas::script::host::DeviceHost",
+      "disposition": "HOST_BINDING_REQUIRED",
+      "family": "device.window-input",
+      "id": "window-input-device-boundary-v4",
+      "migration_status": "INVENTORIED",
+      "owner": "Runtime Device",
+      "parity_test_id": "PARITY-DEVICE-HOST",
+      "reason": "monitor geometry and mouse input calibration are internal facts of Device capture/input adapters",
+      "source_patterns": [
+        "core/device/control/pyautogui.py",
+        "core/device/window_capture/windows/window_info.py"
+      ],
+      "source_scopes": ["CPP_RUNTIME"],
+      "symbol_patterns": ["get_monitor_info", "monitor_from_window", "user32.SystemParametersInfoA"]
+    },
+    {
+      "cpp_host_binding": "baas::script::host::DeviceHost",
+      "disposition": "HOST_BINDING_REQUIRED",
+      "family": "device.native-adapter",
+      "id": "nemu-native-device-boundary-v4",
+      "migration_status": "INVENTORIED",
+      "owner": "Runtime Device",
+      "parity_test_id": "PARITY-DEVICE-HOST",
+      "reason": "Nemu ctypes pointers and native buffer allocation remain wholly inside the Device adapter",
+      "source_patterns": ["core/device/nemu_client.py"],
+      "source_scopes": ["CPP_RUNTIME"],
+      "symbol_patterns": [
+        "ctypes.*",
+        "dynamic:BinOp",
+        "dynamic:call-result(dynamic:BinOp)()",
+        "dynamic:call-result(ctypes.*"
+      ]
+    },
+    {
+      "cpp_host_binding": "baas::script::host::DeviceHost",
+      "disposition": "HOST_BINDING_REQUIRED",
+      "family": "device.native-adapter",
+      "id": "device-descriptor-boundary-v4",
+      "migration_status": "INVENTORIED",
+      "owner": "Runtime Device",
+      "parity_test_id": "PARITY-DEVICE-HOST",
+      "reason": "native descriptor redirection remains inside the Device adapter; scripts never receive file descriptors",
+      "source_patterns": ["core/device/nemu_client.py"],
+      "source_scopes": ["CPP_RUNTIME"],
+      "symbol_patterns": ["file_err.fileno", "file_out.fileno", "io.IOBase.fileno"]
+    },
+    {
+      "cpp_host_binding": "NOT_APPLICABLE",
+      "disposition": "CPP_SERVICE_INTERNAL",
+      "family": "service.listener",
+      "id": "socket-listener-service-boundary-v4",
+      "migration_status": "SCOPED",
+      "owner": "Service Platform",
+      "parity_test_id": "NOT_APPLICABLE",
+      "reason": "listener and port-probe ownership stays in the service platform and is not granted by network.socket",
+      "source_patterns": ["core/ocr/ocr.py"],
+      "source_scopes": ["CPP_RUNTIME"],
+      "symbol_patterns": ["s.bind", "socket.socket.bind"]
+    },
+    {
+      "cpp_host_binding": "NOT_APPLICABLE",
+      "disposition": "CPP_SERVICE_INTERNAL",
+      "family": "service.ipc-internal",
+      "id": "raw-ipc-service-boundary-v4",
+      "migration_status": "SCOPED",
+      "owner": "Service Platform",
+      "parity_test_id": "NOT_APPLICABLE",
+      "reason": "raw context pipes and shared-memory release are service internals rather than script-visible handles",
+      "source_patterns": ["core/exception.py", "core/ipc_manager.py"],
+      "source_scopes": ["CPP_RUNTIME"],
+      "symbol_patterns": [
+        "context.send",
+        "dynamic:subscript(core.ipc_manager.SharedMemory.shm_map)._release"
+      ]
+    },
+    {
+      "cpp_host_binding": "baas::script::host::NotifyHost",
+      "disposition": "HOST_BINDING_REQUIRED",
+      "family": "notification.user",
+      "id": "notification-host-boundary-v4",
+      "migration_status": "INVENTORIED",
+      "owner": "Runtime Notification",
+      "parity_test_id": "PARITY-NOTIFY-HOST",
+      "reason": "baas/notify preserves user notification and bounded action-response behavior while platform presentation stays in its adapter",
+      "source_patterns": ["core/notification.py"],
+      "source_scopes": ["CPP_RUNTIME"],
+      "symbol_patterns": ["_notify", "_toast"]
+    },
+    {
+      "cpp_host_binding": "baas::script::host::SchedulerHost::register_task",
+      "disposition": "HOST_BINDING_REQUIRED",
+      "family": "task.scheduler",
+      "id": "task-registry-v2",
+      "migration_status": "INVENTORIED",
+      "owner": "Runtime Scheduling",
+      "parity_test_id": "PARITY-TASK-REGISTRY",
+      "source_scopes": ["CPP_RUNTIME"],
+      "symbol_patterns": ["registry:core.Baas_thread.func_dict:*"]
+    },
+    {
+      "cpp_host_binding": "baas::script::host::SchedulerHost::dispatch",
+      "disposition": "HOST_BINDING_REQUIRED",
+      "family": "task.action",
+      "id": "task-action-dispatch-v2",
+      "migration_status": "INVENTORIED",
+      "owner": "Runtime Scheduling",
+      "parity_test_id": "PARITY-TASK-ACTION",
+      "source_scopes": ["SCRIPT_RUNTIME"],
+      "symbol_patterns": ["dispatch:operation:*"]
+    },
+    {
+      "cpp_host_binding": "baas::service::TransportRegistry::open_channel",
+      "disposition": "CPP_SERVICE_INTERNAL",
+      "family": "service.transport",
+      "id": "service-channel-registry-v2",
+      "migration_status": "INVENTORIED",
+      "owner": "Service Platform",
+      "parity_test_id": "PARITY-SERVICE-CHANNEL",
+      "source_scopes": ["CPP_SERVICE"],
+      "symbol_patterns": ["registry:service.transport.pipe_server._HANDLERS:*"]
+    },
+    {
+      "cpp_host_binding": "baas::service::Router::dispatch",
+      "disposition": "CPP_SERVICE_INTERNAL",
+      "family": "service.transport",
+      "id": "service-route-v2",
+      "migration_status": "INVENTORIED",
+      "owner": "Service Platform",
+      "parity_test_id": "PARITY-SERVICE-ROUTE",
+      "source_scopes": ["CPP_SERVICE"],
+      "symbol_patterns": ["route:*"]
+    },
+    {
+      "cpp_host_binding": "baas::service::CommandDispatcher::dispatch",
+      "disposition": "CPP_SERVICE_INTERNAL",
+      "family": "service.transport",
+      "id": "service-command-dispatch-v2",
+      "migration_status": "INVENTORIED",
+      "owner": "Service Platform",
+      "parity_test_id": "PARITY-SERVICE-COMMAND",
+      "source_scopes": ["CPP_SERVICE"],
+      "symbol_patterns": ["dispatch:command:*", "dispatch:channel:*", "dispatch:msg_type:*", "dispatch:req_type:*"]
+    },
+    {
+      "cpp_host_binding": "baas::script::host::DeviceHost",
+      "disposition": "HOST_BINDING_REQUIRED",
+      "family": "device.input-capture",
+      "id": "device-host-v2",
+      "migration_status": "INVENTORIED",
+      "owner": "Runtime Device",
+      "parity_test_id": "PARITY-DEVICE-HOST",
+      "source_scopes": ["SCRIPT_RUNTIME", "GENERATED_RESOURCE"],
+      "symbol_patterns": [
+        "adbutils.*",
+        "core.device.*",
+        "dynamic:call-result(self.u2)().pinch_in",
+        "mss.*",
+        "pyautogui.*",
+        "self.check_atx*",
+        "self.check_resolution*",
+        "self.click*",
+        "self.control.*",
+        "self.get_screenshot_array",
+        "self.normalize_screenshot",
+        "self.screenshot.*",
+        "self.start_emulator*",
+        "self.swipe*",
+        "self.u2_*",
+        "self.update_screenshot_array",
+        "uiautomator2.*"
+      ]
+    },
+    {
+      "cpp_host_binding": "baas::script::host::VisionHost",
+      "disposition": "HOST_BINDING_REQUIRED",
+      "family": "image.detect",
+      "id": "vision-host-v2",
+      "migration_status": "INVENTORIED",
+      "owner": "Runtime Vision",
+      "parity_test_id": "PARITY-VISION-HOST",
+      "source_scopes": ["SCRIPT_RUNTIME", "GENERATED_RESOURCE"],
+      "symbol_patterns": [
+        "av.*",
+        "buy_list.any",
+        "buy_list.sum",
+        "codec.decode",
+        "codec.parse",
+        "core.color.*",
+        "core.image.*",
+        "core.picture.*",
+        "cv2.*",
+        "dynamic:BinOp.sum",
+        "dynamic:subscript(button_detected).any",
+        "frame.to_ndarray",
+        "numpy.*",
+        "res.argmin",
+        "unable_to_fight_formation.all"
+      ]
+    },
+    {
+      "cpp_host_binding": "baas::script::host::OcrHost",
+      "disposition": "HOST_BINDING_REQUIRED",
+      "family": "ocr.inference",
+      "id": "ocr-host-v2",
+      "migration_status": "INVENTORIED",
+      "owner": "Runtime OCR",
+      "parity_test_id": "PARITY-OCR-HOST",
+      "source_scopes": ["SCRIPT_RUNTIME", "GENERATED_RESOURCE"],
+      "symbol_patterns": ["core.ocr.*", "self.ocr.*"]
+    },
+    {
+      "cpp_host_binding": "baas::script::host::ConfigHost",
+      "disposition": "HOST_BINDING_REQUIRED",
+      "family": "config.state",
+      "id": "config-host-v2",
+      "migration_status": "INVENTORIED",
+      "owner": "Runtime Configuration",
+      "parity_test_id": "PARITY-CONFIG-HOST",
+      "source_scopes": ["SCRIPT_RUNTIME", "GENERATED_RESOURCE"],
+      "symbol_patterns": ["core.config.*", "self.config.*", "self.config_set.*"]
+    },
+    {
+      "cpp_host_binding": "baas::script::host::LogHost",
+      "disposition": "HOST_BINDING_REQUIRED",
+      "family": "log.event",
+      "id": "logging-host-v2",
+      "migration_status": "INVENTORIED",
+      "owner": "Runtime Observability",
+      "parity_test_id": "PARITY-LOG-EVENT",
+      "source_scopes": ["SCRIPT_RUNTIME", "GENERATED_RESOURCE"],
+      "symbol_patterns": ["_logger.*", "dynamic:attribute-result(core.Baas_thread.Baas_thread.logger).info", "logger.*", "logging.*", "self.logger.*"]
+    },
+    {
+      "cpp_host_binding": "baas::script::host::SchedulerHost",
+      "disposition": "HOST_BINDING_REQUIRED",
+      "family": "task.scheduler-thread",
+      "id": "scheduler-host-v2",
+      "migration_status": "INVENTORIED",
+      "owner": "Runtime Scheduling",
+      "parity_test_id": "PARITY-SCHEDULER-HOST",
+      "source_scopes": ["SCRIPT_RUNTIME", "GENERATED_RESOURCE"],
+      "symbol_patterns": ["asyncio.*", "concurrent.futures.*", "core.scheduler.*", "ret_queue.put", "self.scheduler.*", "threading.*", "time.sleep"]
+    },
+    {
+      "cpp_host_binding": "baas::script::host::ResourceHost",
+      "disposition": "HOST_BINDING_REQUIRED",
+      "family": "resource.filesystem",
+      "id": "resource-host-v2",
+      "migration_status": "INVENTORIED",
+      "owner": "Runtime Resources",
+      "parity_test_id": "PARITY-RESOURCE-HOST",
+      "source_scopes": ["SCRIPT_RUNTIME", "GENERATED_RESOURCE"],
+      "symbol_patterns": [
+        "builtins.open",
+        "glob.*",
+        "os.listdir",
+        "os.makedirs",
+        "os.mkdir",
+        "os.remove",
+        "os.rename",
+        "os.replace",
+        "os.walk",
+        "shutil.*"
+      ]
+    },
+    {
+      "cpp_host_binding": "baas::script::host::ProcessHost",
+      "disposition": "HOST_BINDING_REQUIRED",
+      "family": "system.process",
+      "id": "process-host-v3",
+      "migration_status": "INVENTORIED",
+      "owner": "Runtime Privileged I/O",
+      "parity_test_id": "PARITY-PROCESS-HOST",
+      "source_scopes": ["SCRIPT_RUNTIME", "GENERATED_RESOURCE"],
+      "symbol_patterns": ["os.popen", "os.system", "psutil.*", "subprocess.*"]
+    },
+    {
+      "cpp_host_binding": "NOT_APPLICABLE",
+      "disposition": "SCRIPT_LANGUAGE_OR_MODULE",
+      "family": "network.response",
+      "id": "http-response-language-layer-v3",
+      "migration_status": "SCOPED",
+      "owner": "Script Runtime",
+      "parity_test_id": "LANGUAGE-CONFORMANCE",
+      "source_scopes": ["SCRIPT_RUNTIME", "GENERATED_RESOURCE"],
+      "symbol_patterns": ["requests.Response.*", "requests.exceptions.*"]
+    },
+    {
+      "cpp_host_binding": "baas::script::host::HttpHost",
+      "disposition": "HOST_BINDING_REQUIRED",
+      "family": "network.http",
+      "id": "http-host-v3",
+      "migration_status": "INVENTORIED",
+      "owner": "Runtime Privileged I/O",
+      "parity_test_id": "PARITY-HTTP-HOST",
+      "source_scopes": ["SCRIPT_RUNTIME", "GENERATED_RESOURCE"],
+      "symbol_patterns": ["requests.delete", "requests.get", "requests.head", "requests.options", "requests.patch", "requests.post", "requests.put", "requests.request"]
+    },
+    {
+      "cpp_host_binding": "baas::script::host::SocketHost",
+      "disposition": "HOST_BINDING_REQUIRED",
+      "family": "network.socket",
+      "id": "socket-host-v3",
+      "migration_status": "INVENTORIED",
+      "owner": "Runtime Privileged I/O",
+      "parity_test_id": "PARITY-SOCKET-HOST",
+      "source_scopes": ["SCRIPT_RUNTIME", "GENERATED_RESOURCE"],
+      "symbol_patterns": ["socket.*"]
+    },
+    {
+      "disposition": "HOST_BINDING_REQUIRED",
+      "family": "network.external",
+      "id": "network-host-gap-v2",
+      "migration_status": "BINDING_REQUIRED",
+      "source_scopes": ["SCRIPT_RUNTIME", "GENERATED_RESOURCE"],
+      "symbol_patterns": ["aiohttp.*", "requests.*", "socket.*", "urllib.*", "websocket.*", "websockets.*"]
+    },
+    {
+      "cpp_host_binding": "NOT_APPLICABLE",
+      "disposition": "SCRIPT_LANGUAGE_OR_MODULE",
+      "family": "language.intrinsic",
+      "id": "audited-module-intrinsics-v4",
+      "migration_status": "SCOPED",
+      "owner": "Script Runtime",
+      "parity_test_id": "LANGUAGE-CONFORMANCE",
+      "reason": "exact receiver operations manually audited at the pinned Python source revision remain language-level text, collection, or local-module behavior",
+      "source_patterns": ["module/*"],
+      "source_scopes": ["SCRIPT_RUNTIME"],
+      "symbol_patterns": [
+        "check_state.item_quantity",
+        "check_state.next_possible_item_name",
+        "check_state.pop_checked_item",
+        "count.split",
+        "detect_episode_list.remove",
+        "dict2.copy",
+        "dynamic:call-result(dynamic:call-result(dynamic:call-result(st.replace)().replace)().replace)().replace",
+        "dynamic:call-result(dynamic:call-result(st.replace)().replace)().replace",
+        "dynamic:call-result(st.replace)().replace",
+        "dynamic:subscript(builtins.dict).add",
+        "dynamic:subscript(builtins.dict).remove",
+        "dynamic:subscript(builtins.list).__str__",
+        "dynamic:subscript(builtins.list).setdefault",
+        "dynamic:subscript(builtins.list).split",
+        "dynamic:subscript(builtins.tuple)",
+        "dynamic:subscript(builtins.tuple).items",
+        "dynamic:subscript(data).replace",
+        "dynamic:subscript(dynamic:call-result(mostPossibleMaterial.split)()).split",
+        "dynamic:subscript(dynamic:subscript(ocr_res)).lower",
+        "dynamic:subscript(func)",
+        "dynamic:subscript(info).isdigit",
+        "dynamic:subscript(name).isdigit",
+        "dynamic:subscript(name).lower",
+        "dynamic:subscript(ocr_res).isdigit",
+        "dynamic:subscript(ocr_res).lower",
+        "dynamic:subscript(res).isdigit",
+        "dynamic:subscript(self.static_config.lesson_region_name).copy",
+        "dynamic:subscript(self.static_config.main_story_available_episodes).copy",
+        "dynamic:subscript(self.total_assault_difficulty_names).lower",
+        "dynamic:subscript(self.total_assault_difficulty_names).upper",
+        "dynamic:subscript(task).items",
+        "dynamic:subscript(times).split",
+        "filename.endswith",
+        "func",
+        "img.split",
+        "info.copy",
+        "items.remove",
+        "last_detected_ep.index",
+        "level_str.split",
+        "mostPossibleMaterial.split",
+        "name.lower",
+        "name.replace",
+        "name.startswith",
+        "ocr_res.lower",
+        "ocr_res.split",
+        "operation.startswith",
+        "origin_lst.index",
+        "phase_text.startswith",
+        "region.split",
+        "region_data.items",
+        "region_data.keys",
+        "res.count",
+        "res.pop",
+        "res.sort",
+        "res.split",
+        "ret.startswith",
+        "st.lower",
+        "st.replace",
+        "status.count",
+        "t.isdigit",
+        "task_data_name.startswith",
+        "times.split",
+        "value.split",
+        "x_y_range.keys"
+      ]
+    },
+    {
+      "cpp_host_binding": "NOT_APPLICABLE",
+      "disposition": "SCRIPT_LANGUAGE_OR_MODULE",
+      "family": "language.intrinsic",
+      "id": "language-builtins-v2",
+      "migration_status": "SCOPED",
+      "owner": "Script Runtime",
+      "parity_test_id": "LANGUAGE-CONFORMANCE",
+      "source_scopes": ["SCRIPT_RUNTIME", "GENERATED_RESOURCE"],
+      "symbol_patterns": ["builtins.*", "collections.*", "copy.*", "itertools.*", "json.*", "math.*", "operator.*"]
+    }
+  ]
+}

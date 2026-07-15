@@ -31,19 +31,17 @@ an isolated prototype is not considered project completion.
   targets in `baas-cpp-dev`.
 - [x] Inventory the current `baas-tauri` process and service contract without
   modifying its existing dirty worktree.
-- [~] Record every discovered Python operation in `MIGRATION_MATRIX.md` with an
+- [x] Record every discovered Python operation in `MIGRATION_MATRIX.md` with an
   owner, C++ host binding, parity test, and migration status.
-  Taxonomy v4 with generator 4.1 preserves all 15,469 sites as 4,340 operations and 4,965
-  operation/source-scope decisions. It separates script Host requirements,
-  script/module rewrites, C++ service internals, Tauri UI replacement,
-  tooling/tests, dependencies, and unresolved calls. Bounded AST/type
-  resolution plus authoritative source-and-symbol boundaries reduced unresolved
-  decisions from 1,842 to 109 without guessing script-runtime owners. All 358
-  Host decisions now have proposed contracts, while the remaining 109 `core/*`
-  disposition decisions remain strict gaps. Privileged Windows,
-  notification, IPC, updater, listener/descriptor, and codec ownership is fixed
-  by `ADR-0003-privileged-operation-boundaries.md`. See
-  `OPERATION_INDEX_AUDIT.md`.
+  Taxonomy v5 with generator 5.0 preserves all 15,469 sites as 4,340 operations
+  and 5,060 operation/source-scope decisions. It separates script Host
+  requirements, script/module rewrites, C++ runtime and service internals,
+  Tauri UI replacement, and tooling/tests. Bounded AST/type resolution plus the
+  authoritative `core/*`/`module/*` split reduced unresolved decisions from
+  1,842 to zero without receiver-name guessing. All 145 Host decisions have
+  proposed contracts; Host-contract gaps and parse errors are also zero.
+  Privileged ownership and the native core boundary are fixed by ADR-0003 and
+  ADR-0004. See `OPERATION_INDEX_AUDIT.md`.
 - [x] Implement an opt-in, deterministic, bounded Python parity trace foundation
   on `feat/cpp-parity-trace` without changing the default execution path.
 - [x] Add a deterministic static migration validator for grid actions, image
@@ -119,10 +117,11 @@ and deterministic scheduler/clock/trace hooks; its static anchors and pending
 VM/task/host bridge boundary are checked in Foundation CI.
 `HOST_CAPABILITY_CONTRACTS.md` fixes stable module, capability, binding, value,
 error, cancellation, budget, permission, threading/strand, and parity
-responsibilities. Its schema-1 catalog maps every current Host decision and the
-eleven former taxonomy-v3 contract gaps. This completes the Phase 1 API
-specification only; every Phase 3 binding and parity implementation remains
-pending.
+responsibilities. Its schema-1 catalog maps every current Host decision and
+retains the eleven former taxonomy-v3 contracts as reserved APIs; taxonomy v5
+classifies their observed `core/*` sites as native runtime internals. This
+completes the Phase 1 API specification only; every Phase 3 binding and parity
+implementation remains pending.
 
 ## Phase 2 — C++ runtime and developer tooling
 

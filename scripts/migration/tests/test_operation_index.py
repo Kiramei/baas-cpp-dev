@@ -23,7 +23,7 @@ from scripts.migration.operation_index import (
 HERE = Path(__file__).resolve().parent
 FIXTURE_REPO = HERE / "fixtures" / "operation_repo"
 INDEXER = HERE.parent / "operation_index.py"
-RULES = HERE.parent / "operation_rules.v4.json"
+RULES = HERE.parent / "operation_rules.v5.json"
 
 
 class OperationIndexTests(unittest.TestCase):
@@ -45,7 +45,11 @@ class OperationIndexTests(unittest.TestCase):
         self.assertEqual(by_symbol["core.picture.co_detect"]["call_form"], "alias-member")
         self.assertEqual(by_symbol["self.click"]["call_form"], "self")
         self.assertEqual(by_symbol["self.click"]["occurrences"], 3)
-        self.assertEqual(by_symbol["self.ocr.recognize"]["family"], "ocr.inference")
+        self.assertEqual(by_symbol["self.ocr.recognize"]["family"], "runtime.core")
+        self.assertEqual(
+            by_symbol["self.ocr.recognize"]["disposition"],
+            "CPP_RUNTIME_INTERNAL",
+        )
         self.assertEqual(by_symbol["obj.member"]["call_form"], "member")
         self.assertEqual(by_symbol["super().run"]["call_form"], "super")
         self.assertEqual(
@@ -57,14 +61,14 @@ class OperationIndexTests(unittest.TestCase):
             for operation in report["operations"]
             if operation["symbol"].startswith("dynamic:getattr(self,?)")
         )
-        self.assertEqual(dynamic["migration_status"], "UNRESOLVED")
-        self.assertEqual(dynamic["disposition"], "UNRESOLVED")
+        self.assertEqual(dynamic["migration_status"], "SCOPED")
+        self.assertEqual(dynamic["disposition"], "CPP_RUNTIME_INTERNAL")
         self.assertEqual(dynamic["resolution"], "dynamic")
 
         alias = by_symbol["core.device.Control.Control"]
         self.assertEqual(alias["call_form"], "alias")
-        self.assertEqual(alias["family"], "device.input-capture")
-        self.assertEqual(alias["disposition"], "HOST_BINDING_REQUIRED")
+        self.assertEqual(alias["family"], "runtime.core")
+        self.assertEqual(alias["disposition"], "CPP_RUNTIME_INTERNAL")
 
     def test_relative_imports_package_init_shadowing_and_rebinding(self) -> None:
         report = self.generate()
@@ -185,6 +189,7 @@ class OperationIndexTests(unittest.TestCase):
                 "tests/test_unknown.py": "TEST",
                 "deploy/tool.py": "DEPLOYMENT_TOOLING",
                 "develop_tools/tool.py": "MIGRATION_TOOLING",
+                "core/runtime.py": "CPP_RUNTIME",
                 "module/task.py": "SCRIPT_RUNTIME",
             }
             for relative in sources:
@@ -204,6 +209,7 @@ class OperationIndexTests(unittest.TestCase):
                 "TEST": "TEST_ONLY",
                 "DEPLOYMENT_TOOLING": "MIGRATION_TOOLING_ONLY",
                 "MIGRATION_TOOLING": "MIGRATION_TOOLING_ONLY",
+                "CPP_RUNTIME": "CPP_RUNTIME_INTERNAL",
                 "SCRIPT_RUNTIME": "UNRESOLVED",
             }
             covered_scopes: set[str] = set()
@@ -219,7 +225,11 @@ class OperationIndexTests(unittest.TestCase):
                     )
                     if decision["source_scope"] != "SCRIPT_RUNTIME":
                         self.assertTrue(
-                            decision["classification_rule"].endswith("-boundary-v4")
+                            decision["classification_rule"].endswith(
+                                "-boundary-v5"
+                                if decision["source_scope"] == "CPP_RUNTIME"
+                                else "-boundary-v4"
+                            )
                         )
             self.assertEqual(covered_scopes, set(sources.values()))
 
@@ -312,7 +322,10 @@ class OperationIndexTests(unittest.TestCase):
                 "core/exception.py": {"raw-ipc-service-boundary-v4"},
                 "core/ocr/baas_ocr_client/server_installer.py": {"ocr-updater-tooling-boundary-v4"},
                 "core/ocr/ocr.py": {"socket-listener-service-boundary-v4"},
-                "core/device/scrcpy/core.py": {"vision-host-v2"},
+                "core/device/scrcpy/core.py": {
+                    "cpp_runtime-boundary-v5",
+                    "cpp_runtime-default-v2",
+                },
             }
             for filename, rules in expected_rules.items():
                 with self.subTest(filename=filename):
@@ -329,13 +342,23 @@ class OperationIndexTests(unittest.TestCase):
                 },
                 {"raw-ipc-service-boundary-v4"},
             )
-            for filename in ("module/ordinary.py", "core/device/other.py", "core/ocr/other.py"):
+            self.assertTrue(
+                all(
+                    item["disposition"] == "UNRESOLVED"
+                    for item in decisions_by_file["module/ordinary.py"]
+                )
+            )
+            for filename in ("core/device/other.py", "core/ocr/other.py"):
                 self.assertTrue(
-                    all(item["disposition"] == "UNRESOLVED" for item in decisions_by_file[filename]),
+                    all(
+                        item["disposition"] == "CPP_RUNTIME_INTERNAL"
+                        and item["classification_rule"] == "cpp_runtime-boundary-v5"
+                        for item in decisions_by_file[filename]
+                    ),
                     filename,
                 )
 
-    def test_audited_module_receivers_are_exact_and_preserve_unknown_core_calls(self) -> None:
+    def test_audited_module_receivers_are_exact_and_preserve_core_ownership(self) -> None:
         cases = {
             "module/cafe_reward.py": (
                 "def run(name, ret_queue, self):\n"
@@ -385,8 +408,9 @@ class OperationIndexTests(unittest.TestCase):
             )
             report = self.generate(repository)
             operation = next(item for item in report["operations"] if item["symbol"] == "name.replace")
-            decision = self.scope_decision(operation, "SCRIPT_RUNTIME")
-            self.assertEqual(decision["disposition"], "UNRESOLVED")
+            decision = self.scope_decision(operation, "CPP_RUNTIME")
+            self.assertEqual(decision["disposition"], "CPP_RUNTIME_INTERNAL")
+            self.assertEqual(decision["classification_rule"], "cpp_runtime-boundary-v5")
 
     def test_exact_type_guards_and_proven_container_elements_propagate_conservatively(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -517,8 +541,8 @@ class OperationIndexTests(unittest.TestCase):
         self.assertEqual(click["id"], "op-8446093f5f2315e0")
         self.assertEqual(report["schema_version"], 2)
         self.assertEqual(report["identity_version"], 1)
-        self.assertEqual(report["generator_version"], "4.1.0")
-        self.assertEqual(report["rules"]["rules_version"], 4)
+        self.assertEqual(report["generator_version"], "5.0.0")
+        self.assertEqual(report["rules"]["rules_version"], 5)
 
     def test_strict_fails_for_unresolved_disposition_and_parse_error(self) -> None:
         process = subprocess.run(

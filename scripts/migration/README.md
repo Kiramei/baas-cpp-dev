@@ -32,7 +32,7 @@ route decorators, and string dispatch operations. Rule schema v4 first applies
 bounded AST owner/type inference, then assigns each occurrence to a versioned
 source scope and makes a conservative disposition decision for every
 operation/scope pair. The decisions distinguish
-required script Host APIs, script-language/module rewrites, C++ service
+required script Host APIs, script-language/module rewrites, C++ runtime/service
 internals, legacy UI replaced by Tauri, migration/deployment tooling, tests,
 external dependencies, and unresolved expressions.
 
@@ -49,15 +49,17 @@ A normal run returns zero after producing evidence even if gaps remain.
 `--strict` returns 1 when an operation/scope disposition is `UNRESOLVED`, a
 `HOST_BINDING_REQUIRED` decision lacks its proposed binding/owner/parity
 contract, or a source cannot be parsed. The JSON reports unresolved-disposition
-and host-binding-gap counts separately. For `service/`, `gui/`, `tests/`,
-`deploy/`, and `develop_tools/`, the source root itself fixes the migration
-boundary, so unresolved receiver ownership no longer creates a false
-disposition gap. Dynamic/unresolved calls under the script runtime remain
-unresolved unless an explicit rule proves their boundary. Generator 4.1 owner
+and host-binding-gap counts separately. Taxonomy v5 treats `core/` as the C++
+runtime implementation and `module/` as hot-update script source. For `core/`,
+`service/`, `gui/`, `tests/`, `deploy/`, and `develop_tools/`, the source root
+itself fixes the migration boundary, so unresolved receiver ownership no longer
+creates a false disposition gap. Dynamic/unresolved calls under the script
+runtime remain unresolved unless an explicit rule proves their boundary.
+Generator 5.0 owner
 inference resolves only concrete annotations, local constructors,
 literal/container assignments, positive `isinstance` or exact `type(x) is T`
 branches, proven container element types, AST-visible wildcard exports, and
-exact return-type rules retained in `operation_rules.v4.json`.
+exact return-type rules retained in `operation_rules.v5.json`.
 
 Schema v2 retains operation identity version 1. Unchanged
 `(kind, call_form, symbol)` identities therefore keep their existing IDs;
