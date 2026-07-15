@@ -2473,7 +2473,7 @@ ConfigCopyResult FileResourceStore::copy_config(
         std::lock_guard state_lock(impl->state_mutex);
         impl->resources.erase(target_config_key);
         impl->resources.erase(target_event_key);
-        if (update_static) impl->resources.erase(static_key);
+        impl->resources.erase(static_key);
     }
     remove_tree_best_effort(static_backup);
     return {std::move(target_id), std::move(copy_name), ConfigCommandError::none};

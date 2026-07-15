@@ -8,6 +8,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <iterator>
 #include <memory>
 #include <optional>
 #include <stop_token>
@@ -383,6 +384,32 @@ void test_structural_success_invalidates_cached_resources()
                   && static_data.contains("create_item_order")
                   && !static_data.contains("stale"),
               "post-copy pulls must not return stale config/event/static snapshots");
+    }
+
+    // Cache a value that is newer than the disk view, then restore the disk to
+    // the already-correct defaults. The next copy takes update_static=false,
+    // but its successful structural boundary must still invalidate the cache.
+    std::ifstream default_static_stream(
+        project.root / "config" / "static.json", std::ios::binary);
+    const std::string default_static_bytes{
+        std::istreambuf_iterator<char>{default_static_stream},
+        std::istreambuf_iterator<char>{}};
+    std::ofstream(project.root / "config" / "static.json", std::ios::trunc)
+        << R"({"stale_cache":true})";
+    check(store->refresh_and_publish(static_key, "test"),
+          "static cache fixture must accept the externally changed stale value");
+    std::ofstream(project.root / "config" / "static.json",
+                  std::ios::binary | std::ios::trunc)
+        << default_static_bytes;
+    const auto no_static_write = store->copy_config("source", {});
+    const auto reloaded_static = store->pull(static_key, {});
+    check(no_static_write && reloaded_static,
+          "copy with an already-current static file must still reload its cache");
+    if (reloaded_static) {
+        const auto static_data = Json::parse(reloaded_static->data_json);
+        check(static_data.contains("create_item_order")
+                  && !static_data.contains("stale_cache"),
+              "update_static=false success must not retain an older static cache");
     }
 
     project.add_server("externally-removed", "日服");

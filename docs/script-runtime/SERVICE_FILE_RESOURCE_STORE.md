@@ -90,7 +90,8 @@ The production `copy_config` and `remove_config*` trigger registrations use
 explicit structural operations on this store. They share the patch mutation
 gate, use bounded auth-protected siblings under `config/` plus same-volume rename,
 and invalidate affected config/event cache entries on every successful outcome;
-copy also invalidates `static_data` when it refreshes `config/static.json`.
+copy also invalidates `static_data` on every success, including when the disk
+file already matches the current default and requires no replacement.
 This includes idempotent removal of an already-absent directory and reuse of a
 clock-derived identifier whose old files disappeared externally. Recursive copy
 reads only regular files through the persistent root anchor and commits
