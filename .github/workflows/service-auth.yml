@@ -1,0 +1,241 @@
+name: Service auth crypto
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/service-auth.yml'
+      - 'CMakeLists.txt'
+      - 'cmake/BAASDependency.cmake'
+      - 'cmake/ServiceAuth.cmake'
+      - 'deploy/conan/conanfile.py'
+      - 'deploy/conan/profiles/android-clang-*-release'
+      - 'deploy/conan/profiles/dependency-versions-default'
+      - 'deploy/conan/recipes/baas-libsodium/**'
+      - 'deploy/conan/scripts/manage_recipes.py'
+      - 'include/service/auth/**'
+      - 'src/service/auth/**'
+      - 'tests/service/ServiceAuthCryptoTests.cpp'
+      - 'tests/service_contract/**'
+      - 'docs/script-runtime/SERVICE_AUTH_CRYPTO.md'
+      - 'docs/script-runtime/SERVICE_PROTOCOL_V1.md'
+  pull_request:
+    branches:
+      - main
+    types:
+      - opened
+      - synchronize
+      - reopened
+    paths:
+      - '.github/workflows/service-auth.yml'
+      - 'CMakeLists.txt'
+      - 'cmake/BAASDependency.cmake'
+      - 'cmake/ServiceAuth.cmake'
+      - 'deploy/conan/conanfile.py'
+      - 'deploy/conan/profiles/android-clang-*-release'
+      - 'deploy/conan/profiles/dependency-versions-default'
+      - 'deploy/conan/recipes/baas-libsodium/**'
+      - 'deploy/conan/scripts/manage_recipes.py'
+      - 'include/service/auth/**'
+      - 'src/service/auth/**'
+      - 'tests/service/ServiceAuthCryptoTests.cpp'
+      - 'tests/service_contract/**'
+      - 'docs/script-runtime/SERVICE_AUTH_CRYPTO.md'
+      - 'docs/script-runtime/SERVICE_PROTOCOL_V1.md'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: service-auth-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  host-auth-crypto:
+    name: ${{ matrix.os }} / ${{ matrix.build_type }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        include:
+          - os: windows-latest
+            build_type: Debug
+            conan_settings: '-s:h compiler.runtime_type=Debug'
+          - os: windows-latest
+            build_type: Release
+            conan_settings: '-s:h compiler.runtime_type=Release'
+          - os: ubuntu-latest
+            build_type: Debug
+            conan_settings: ''
+          - os: ubuntu-latest
+            build_type: Release
+            conan_settings: ''
+          - os: macos-latest
+            build_type: Debug
+            conan_settings: ''
+          - os: macos-latest
+            build_type: Release
+            conan_settings: ''
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Conan
+        run: python -m pip install --disable-pip-version-check conan==2.30.0
+
+      - name: Detect build profile
+        run: conan profile detect --force
+
+      - name: Build and verify pinned libsodium recipe
+        run: >-
+          conan create deploy/conan/recipes/baas-libsodium
+          -s:h build_type=${{ matrix.build_type }}
+          -s:b build_type=Release
+          ${{ matrix.conan_settings }}
+          --build=missing
+          --no-remote
+
+      - name: Generate auth-only CMake dependencies
+        run: >-
+          conan install --requires=baas-libsodium/1.0.22
+          -of build/conan/service-auth
+          -s:h build_type=${{ matrix.build_type }}
+          -s:b build_type=Release
+          ${{ matrix.conan_settings }}
+          -g CMakeDeps
+          -g CMakeToolchain
+          --build=missing
+          --no-remote
+
+      - name: Configure service auth crypto tests
+        run: >-
+          cmake -S . -B build/service-auth
+          "-DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}/build/conan/service-auth/conan_toolchain.cmake"
+          -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
+          -DBUILD_TESTING=ON
+          -DBUILD_SERVICE_AUTH_CRYPTO_TESTS=ON
+          -DBUILD_APP_BAAS=OFF
+          -DBUILD_APP_ISA=OFF
+          -DBUILD_BAAS_OCR=OFF
+          -DBUILD_BAAS_AW_CHECKER=OFF
+          -DBUILD_BAAS_NMS_BENCHMARK=OFF
+          -DBAAS_FETCH_RESOURCES=OFF
+
+      - name: Build service auth crypto tests
+        run: >-
+          cmake --build build/service-auth
+          --config ${{ matrix.build_type }}
+          --parallel 4
+          --target BAAS_service_auth_crypto_tests
+
+      - name: Run service auth crypto contract tests
+        run: >-
+          ctest --test-dir build/service-auth
+          --build-config ${{ matrix.build_type }}
+          --output-on-failure
+          --timeout 60
+          -R "^BAAS_service_auth_crypto_tests$"
+
+  android-auth-crypto:
+    name: Android ${{ matrix.abi }} / Release
+    needs: host-auth-crypto
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        include:
+          - abi: arm64-v8a
+            profile: android-clang-arm64-v8a-release
+          - abi: x86_64
+            profile: android-clang-x86_64-release
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Android build tools
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes autoconf automake build-essential libtool ninja-build
+          android_sdk="${ANDROID_SDK_ROOT:-${ANDROID_HOME}}"
+          test -n "${android_sdk}"
+          sdkmanager 'ndk;29.0.13846066'
+          test -d "${android_sdk}/ndk/29.0.13846066"
+          echo "ANDROID_NDK_HOME=${android_sdk}/ndk/29.0.13846066" >> "$GITHUB_ENV"
+
+      - name: Install Conan
+        run: python -m pip install --disable-pip-version-check conan==2.30.0
+
+      - name: Detect build profile
+        run: conan profile detect --force
+
+      - name: Cross-build and verify pinned libsodium recipe
+        shell: bash
+        run: >-
+          conan create deploy/conan/recipes/baas-libsodium
+          -pr:h=deploy/conan/profiles/${{ matrix.profile }}
+          -pr:b=default
+          -c:h "tools.android:ndk_path=${ANDROID_NDK_HOME}"
+          --build=missing
+          --no-remote
+
+      - name: Generate Android auth-only CMake dependencies
+        shell: bash
+        run: >-
+          conan install --requires=baas-libsodium/1.0.22
+          -of build/conan/service-auth-android-${{ matrix.abi }}
+          -pr:h=deploy/conan/profiles/${{ matrix.profile }}
+          -pr:b=default
+          -c:h "tools.android:ndk_path=${ANDROID_NDK_HOME}"
+          -g CMakeDeps
+          -g CMakeToolchain
+          --build=missing
+          --no-remote
+
+      - name: Configure Android service auth crypto
+        shell: bash
+        run: >-
+          cmake -S . -B build/service-auth-android-${{ matrix.abi }}
+          "-DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}/build/conan/service-auth-android-${{ matrix.abi }}/conan_toolchain.cmake"
+          -DCMAKE_BUILD_TYPE=Release
+          -DBUILD_TESTING=OFF
+          -DBUILD_SERVICE_AUTH_CRYPTO=ON
+          -DBUILD_SERVICE_AUTH_CRYPTO_TESTS=OFF
+          -DBUILD_APP_BAAS=OFF
+          -DBUILD_APP_ISA=OFF
+          -DBUILD_BAAS_OCR=OFF
+          -DBUILD_BAAS_AW_CHECKER=OFF
+          -DBUILD_BAAS_NMS_BENCHMARK=OFF
+          -DBAAS_FETCH_RESOURCES=OFF
+
+      - name: Cross-build Android service auth crypto
+        shell: bash
+        run: >-
+          cmake --build build/service-auth-android-${{ matrix.abi }}
+          --config Release
+          --parallel 4
+          --target BAAS_service_auth_crypto
