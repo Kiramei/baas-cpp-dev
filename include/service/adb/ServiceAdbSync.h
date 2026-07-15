@@ -33,6 +33,10 @@ public:
     explicit ServiceAdbSync(
         ServiceAdbTransport& transport,
         AdbSyncLimits limits = {});
+    ServiceAdbSync(const ServiceAdbSync&) = delete;
+    ServiceAdbSync& operator=(const ServiceAdbSync&) = delete;
+    ServiceAdbSync(ServiceAdbSync&&) = delete;
+    ServiceAdbSync& operator=(ServiceAdbSync&&) = delete;
 
     [[nodiscard]] AdbTransportResult<AdbSyncStat> stat(
         std::string_view exact_serial,

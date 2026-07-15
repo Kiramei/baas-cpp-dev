@@ -20,6 +20,10 @@ class ServiceAdbSyncDocumentationTests(unittest.TestCase):
             "local_io_error",
             "emulator-5556",
             "no shell, forward,",
+            "ignored 32-bit value",
+            "same anchored native",
+            "non-movable borrowed facade",
+            "UNC/device paths",
         ):
             self.assertIn(required, spec)
 

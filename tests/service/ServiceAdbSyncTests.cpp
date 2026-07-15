@@ -14,12 +14,16 @@
 #include <mutex>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
 #include <vector>
 
 using namespace std::chrono_literals;
 using namespace baas::service::adb;
 
 namespace {
+
+static_assert(!std::is_copy_constructible_v<ServiceAdbSync>);
+static_assert(!std::is_move_constructible_v<ServiceAdbSync>);
 
 struct CheckFailure final : std::runtime_error {
     using std::runtime_error::runtime_error;
@@ -242,7 +246,7 @@ void test_push_data_done_and_okay()
     CHECK(control->written == expected);
 }
 
-void test_push_rejects_fail_and_nonempty_okay()
+void test_push_rejects_fail_and_ignores_okay_length()
 {
     const std::array<std::byte, 1> bytes{std::byte{1}};
     {
@@ -263,8 +267,8 @@ void test_push_rejects_fail_and_nonempty_okay()
         ServiceAdbSync sync(transport);
         const auto result = sync.push(
             "emulator-5556", "/data/local/tmp/a.jar", bytes);
-        CHECK(!result);
-        CHECK(result.error == AdbTransportError::protocol_error);
+        CHECK(result);
+        CHECK(*result.value == 1U);
     }
 }
 
@@ -302,6 +306,19 @@ void test_bounds_and_cancellation_fail_before_sync_side_effects()
         std::filesystem::temp_directory_path()
             / "baas-service-adb-sync-definitely-missing.bin").error
         == AdbTransportError::local_io_error);
+    CHECK(sync.push_file("emulator-5556", "/data/local/tmp/a",
+        std::filesystem::temp_directory_path()).error
+        == AdbTransportError::local_io_error);
+#if defined(_WIN32)
+    CHECK(sync.push_file("emulator-5556", "/data/local/tmp/a",
+        LR"(\\server\share\scrcpy-server.jar)").error
+        == AdbTransportError::invalid_argument);
+#endif
+    CHECK(control->written.empty());
+
+    CHECK(sync.push_file("emulator-5556", "/data/local/tmp/a",
+        std::filesystem::path("does-not-matter"), 0755, 0,
+        cancelled.get_token()).error == AdbTransportError::cancelled);
     CHECK(control->written.empty());
 }
 
@@ -368,7 +385,7 @@ int main()
         test_fragmented_stat_and_exact_serial,
         test_stat_fail_and_malformed_frames,
         test_push_data_done_and_okay,
-        test_push_rejects_fail_and_nonempty_okay,
+        test_push_rejects_fail_and_ignores_okay_length,
         test_bounds_and_cancellation_fail_before_sync_side_effects,
         test_timeout_and_push_file,
         test_invalid_limits,

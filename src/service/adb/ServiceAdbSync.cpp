@@ -3,11 +3,24 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
-#include <fstream>
 #include <limits>
+#include <optional>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
+
+#if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <Windows.h>
+#else
+#include <cerrno>
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
 
 namespace baas::service::adb {
 namespace {
@@ -19,6 +32,204 @@ AdbTransportResult<T> fail(
     const AdbTransportError error, std::string message = {})
 {
     return {std::nullopt, error, std::move(message)};
+}
+
+class AnchoredLocalFile final {
+public:
+    AnchoredLocalFile() = default;
+    ~AnchoredLocalFile() { close(); }
+    AnchoredLocalFile(const AnchoredLocalFile&) = delete;
+    AnchoredLocalFile& operator=(const AnchoredLocalFile&) = delete;
+    AnchoredLocalFile(AnchoredLocalFile&& other) noexcept
+        : size_(other.size_)
+    {
+#if defined(_WIN32)
+        handle_ = std::exchange(other.handle_, INVALID_HANDLE_VALUE);
+#else
+        descriptor_ = std::exchange(other.descriptor_, -1);
+#endif
+    }
+    AnchoredLocalFile& operator=(AnchoredLocalFile&& other) noexcept
+    {
+        if (this == &other) return *this;
+        close();
+        size_ = other.size_;
+#if defined(_WIN32)
+        handle_ = std::exchange(other.handle_, INVALID_HANDLE_VALUE);
+#else
+        descriptor_ = std::exchange(other.descriptor_, -1);
+#endif
+        return *this;
+    }
+
+    [[nodiscard]] std::uint64_t size() const noexcept { return size_; }
+
+    [[nodiscard]] AdbTransportResult<std::size_t> read(
+        const std::span<std::byte> output, const std::stop_token stop)
+    {
+        if (stop.stop_requested()) {
+            return fail<std::size_t>(AdbTransportError::cancelled);
+        }
+#if defined(_WIN32)
+        DWORD transferred{};
+        if (!ReadFile(handle_, output.data(), static_cast<DWORD>(output.size()),
+                      &transferred, nullptr)) {
+            return fail<std::size_t>(
+                AdbTransportError::local_io_error, "failed to read local source");
+        }
+        return {static_cast<std::size_t>(transferred),
+                AdbTransportError::none, {}};
+#else
+        for (;;) {
+            const auto transferred = ::read(descriptor_, output.data(), output.size());
+            if (transferred >= 0) {
+                return {static_cast<std::size_t>(transferred),
+                        AdbTransportError::none, {}};
+            }
+            if (errno != EINTR) {
+                return fail<std::size_t>(AdbTransportError::local_io_error,
+                                         "failed to read local source");
+            }
+            if (stop.stop_requested()) {
+                return fail<std::size_t>(AdbTransportError::cancelled);
+            }
+        }
+#endif
+    }
+
+private:
+    void close() noexcept
+    {
+#if defined(_WIN32)
+        if (handle_ != INVALID_HANDLE_VALUE) {
+            CloseHandle(handle_);
+            handle_ = INVALID_HANDLE_VALUE;
+        }
+#else
+        if (descriptor_ >= 0) {
+            // Do not retry close(EINTR): on platforms that already released
+            // the descriptor, a retry could close a concurrently reused fd.
+            static_cast<void>(::close(descriptor_));
+            descriptor_ = -1;
+        }
+#endif
+    }
+
+    std::uint64_t size_{};
+#if defined(_WIN32)
+    HANDLE handle_{INVALID_HANDLE_VALUE};
+#else
+    int descriptor_{-1};
+#endif
+    friend AdbTransportResult<AnchoredLocalFile> open_anchored_local_file(
+        const std::filesystem::path&, std::uint64_t, std::stop_token);
+};
+
+AdbTransportResult<AnchoredLocalFile> open_anchored_local_file(
+    const std::filesystem::path& path, const std::uint64_t maximum_size,
+    const std::stop_token stop)
+{
+    if (stop.stop_requested()) {
+        return fail<AnchoredLocalFile>(AdbTransportError::cancelled);
+    }
+    if (path.empty()) {
+        return fail<AnchoredLocalFile>(
+            AdbTransportError::invalid_argument, "local source path is empty");
+    }
+    const auto& native_path = path.native();
+    if (native_path.size() > 32'768
+        || std::find(native_path.begin(), native_path.end(),
+                     std::filesystem::path::value_type{}) != native_path.end()) {
+        return fail<AnchoredLocalFile>(
+            AdbTransportError::invalid_argument, "invalid local source path");
+    }
+    AnchoredLocalFile file;
+#if defined(_WIN32)
+    if (native_path.size() >= 2
+        && native_path[0] == L'\\' && native_path[1] == L'\\') {
+        return fail<AnchoredLocalFile>(AdbTransportError::invalid_argument,
+            "UNC and device paths are not allowed for bounded local uploads");
+    }
+    const DWORD required = GetFullPathNameW(
+        native_path.c_str(), 0, nullptr, nullptr);
+    if (required == 0 || required > 32'768) {
+        return fail<AnchoredLocalFile>(AdbTransportError::local_io_error,
+                                       "failed to resolve local source path");
+    }
+    std::wstring absolute(required, L'\0');
+    const DWORD written = GetFullPathNameW(
+        native_path.c_str(), required, absolute.data(), nullptr);
+    if (written == 0 || written >= required) {
+        return fail<AnchoredLocalFile>(AdbTransportError::local_io_error,
+                                       "failed to resolve local source path");
+    }
+    absolute.resize(written);
+    if (absolute.size() < 3 || absolute[1] != L':'
+        || (absolute[2] != L'\\' && absolute[2] != L'/')) {
+        return fail<AnchoredLocalFile>(AdbTransportError::invalid_argument,
+                                       "local source must resolve to a drive path");
+    }
+    const std::wstring root{absolute.substr(0, 3)};
+    const auto drive_type = GetDriveTypeW(root.c_str());
+    if (drive_type == DRIVE_REMOTE || drive_type == DRIVE_UNKNOWN
+        || drive_type == DRIVE_NO_ROOT_DIR) {
+        return fail<AnchoredLocalFile>(AdbTransportError::invalid_argument,
+            "network and unresolved drives are not allowed for bounded local uploads");
+    }
+    if (stop.stop_requested()) {
+        return fail<AnchoredLocalFile>(AdbTransportError::cancelled);
+    }
+    file.handle_ = CreateFileW(absolute.c_str(), GENERIC_READ, FILE_SHARE_READ,
+        nullptr, OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT
+            | FILE_FLAG_SEQUENTIAL_SCAN,
+        nullptr);
+    if (file.handle_ == INVALID_HANDLE_VALUE) {
+        return fail<AnchoredLocalFile>(
+            AdbTransportError::local_io_error, "failed to open local source");
+    }
+    FILE_ATTRIBUTE_TAG_INFO attributes{};
+    FILE_STANDARD_INFO standard{};
+    FILE_REMOTE_PROTOCOL_INFO remote_protocol{};
+    if (GetFileInformationByHandleEx(file.handle_, FileRemoteProtocolInfo,
+            &remote_protocol, sizeof(remote_protocol))) {
+        return fail<AnchoredLocalFile>(AdbTransportError::invalid_argument,
+            "remote filesystems are not allowed for bounded local uploads");
+    }
+    if (!GetFileInformationByHandleEx(file.handle_, FileAttributeTagInfo,
+            &attributes, sizeof(attributes))
+        || !GetFileInformationByHandleEx(file.handle_, FileStandardInfo,
+            &standard, sizeof(standard))
+        || (attributes.FileAttributes
+            & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) != 0
+        || standard.EndOfFile.QuadPart < 0) {
+        return fail<AnchoredLocalFile>(AdbTransportError::local_io_error,
+                                       "local source is not an anchored regular file");
+    }
+    file.size_ = static_cast<std::uint64_t>(standard.EndOfFile.QuadPart);
+#else
+    if (stop.stop_requested()) {
+        return fail<AnchoredLocalFile>(AdbTransportError::cancelled);
+    }
+    file.descriptor_ = ::open(
+        path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
+    if (file.descriptor_ < 0) {
+        return fail<AnchoredLocalFile>(
+            AdbTransportError::local_io_error, "failed to open local source");
+    }
+    struct stat metadata {};
+    if (::fstat(file.descriptor_, &metadata) != 0 || !S_ISREG(metadata.st_mode)
+        || metadata.st_size < 0) {
+        return fail<AnchoredLocalFile>(AdbTransportError::local_io_error,
+                                       "local source is not an anchored regular file");
+    }
+    file.size_ = static_cast<std::uint64_t>(metadata.st_size);
+#endif
+    if (file.size_ > maximum_size) {
+        return fail<AnchoredLocalFile>(
+            AdbTransportError::capacity, "local source exceeds ADB SYNC limit");
+    }
+    return {std::move(file), AdbTransportError::none, {}};
 }
 
 bool valid_utf8(const std::string_view value) noexcept
@@ -168,11 +379,10 @@ AdbTransportResult<bool> expect_status(
     }
     auto length = read_exact(stream, 4, deadline, stop);
     if (!length) return fail<bool>(length.error, std::move(length.message));
-    if (decode_le32(std::span<const std::byte, 4>(
-            length->data(), length->size())) != 0) {
-        return fail<bool>(AdbTransportError::protocol_error,
-                          "ADB SYNC OKAY payload must be empty");
-    }
+    // AOSP defines this as msglen, but SYNC.TXT explicitly says the value in
+    // an OKAY response is ignored. Reading it still preserves frame alignment.
+    static_cast<void>(decode_le32(std::span<const std::byte, 4>(
+        length->data(), length->size())));
     return {true, AdbTransportError::none, {}};
 }
 
@@ -242,7 +452,12 @@ AdbTransportResult<std::uint64_t> push_impl(
     while (total < expected_size) {
         const auto wanted = static_cast<std::size_t>(std::min<std::uint64_t>(
             chunk.size(), expected_size - total));
-        const auto got = reader(std::span<std::byte>(chunk.data(), wanted));
+        auto read_result = reader(std::span<std::byte>(chunk.data(), wanted));
+        if (!read_result) {
+            return fail<std::uint64_t>(
+                read_result.error, std::move(read_result.message));
+        }
+        const auto got = *read_result.value;
         if (got != wanted) {
             return fail<std::uint64_t>(
                 AdbTransportError::local_io_error, "local source changed or read failed");
@@ -351,9 +566,13 @@ AdbTransportResult<std::uint64_t> ServiceAdbSync::push(
     return push_impl(*transport_, limits_, exact_serial, remote_path,
         contents.size(), permissions, modified_time,
         [&](const std::span<std::byte> output) {
+            if (stop.stop_requested()) {
+                return fail<std::size_t>(AdbTransportError::cancelled);
+            }
             std::copy_n(contents.data() + offset, output.size(), output.data());
             offset += output.size();
-            return output.size();
+            return AdbTransportResult<std::size_t>{
+                output.size(), AdbTransportError::none, {}};
         }, stop);
 } catch (...) {
     return fail<std::uint64_t>(AdbTransportError::internal_error);
@@ -364,26 +583,20 @@ AdbTransportResult<std::uint64_t> ServiceAdbSync::push_file(
     const std::filesystem::path& local_path, const std::uint32_t permissions,
     const std::uint32_t modified_time, const std::stop_token stop) try
 {
-    std::error_code filesystem_error;
-    const auto size = std::filesystem::file_size(local_path, filesystem_error);
-    if (filesystem_error || size > limits_.max_file_bytes) {
-        return fail<std::uint64_t>(
-            filesystem_error ? AdbTransportError::local_io_error
-                             : AdbTransportError::capacity,
-            filesystem_error ? "local source is not a readable regular file"
-                             : "local source exceeds ADB SYNC limit");
+    if (stop.stop_requested()) {
+        return fail<std::uint64_t>(AdbTransportError::cancelled);
     }
-    std::ifstream input(local_path, std::ios::binary);
-    if (!input) {
+    auto opened_file = open_anchored_local_file(
+        local_path, limits_.max_file_bytes, stop);
+    if (!opened_file) {
         return fail<std::uint64_t>(
-            AdbTransportError::local_io_error, "failed to open local source");
+            opened_file.error, std::move(opened_file.message));
     }
+    auto input = std::move(*opened_file.value);
     auto result = push_impl(*transport_, limits_, exact_serial, remote_path,
-        size, permissions, modified_time,
+        input.size(), permissions, modified_time,
         [&](const std::span<std::byte> output) {
-            input.read(reinterpret_cast<char*>(output.data()),
-                       static_cast<std::streamsize>(output.size()));
-            return static_cast<std::size_t>(input.gcount());
+            return input.read(output, stop);
         }, stop);
     return result;
 } catch (...) {

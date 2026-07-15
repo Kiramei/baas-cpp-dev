@@ -26,11 +26,12 @@ protocol then uses four-byte ASCII command IDs and unsigned little-endian
 
 - `STAT` + path length + path; response `STAT` + mode + size + mtime;
 - `SEND` + `path,mode`, then zero or more `DATA` + length + bytes;
-- `DONE` + mtime, then `OKAY` + zero, or `FAIL` + message length + message.
+- `DONE` + mtime, then `OKAY` + ignored 32-bit value, or `FAIL` + message length + message.
 
 All fields are read exactly across arbitrary fragmentation. Unknown IDs,
-truncated fields, non-empty `OKAY`, oversized `FAIL`, and ADB `FAIL` responses
-fail closed. A zero mode from legacy `STAT` is preserved as `exists() ==
+truncated fields, oversized `FAIL`, and ADB `FAIL` responses fail closed. The
+four bytes following `OKAY` are always consumed for alignment and ignored as
+required by AOSP SYNC.TXT. A zero mode from legacy `STAT` is preserved as `exists() ==
 false`. The implementation does not negotiate the newer `STA2`, `LST2`, or
 `SND2` feature extensions.
 
@@ -52,9 +53,21 @@ remain bounded by `ServiceAdbTransport`'s connect and I/O deadlines.
 
 `std::stop_token` is checked before connection and throughout reads and
 writes. Every result path destroys its move-only `AdbServiceStream`; transport
-`stop()` still strongly closes it. Local files are size-checked before the
-first ADB side effect, read in bounded chunks, and fail with `local_io_error`
-if opened, truncated, or unreadable. Live-device verification is deliberately
+`stop()` still strongly closes it. `ServiceAdbSync` is a non-copyable,
+non-movable borrowed facade: its referenced `ServiceAdbTransport` must outlive
+it and callers must serialize destruction against operations.
+
+`push_file` checks cancellation before any local filesystem operation. It
+opens once, validates regular-file type and size on that same anchored native
+handle, and reads only from that handle, so path replacement cannot switch the
+uploaded object after validation. Windows denies write/delete sharing, rejects
+final reparse points, UNC/device paths, and mapped or unresolved network drives
+before ADB is opened. POSIX uses `O_NOFOLLOW | O_NONBLOCK` and validates with
+`fstat` on the opened descriptor. POSIX has no portable API that identifies
+all network mounts, so callers requiring a hard deadline for an untrusted or
+remote source must supply already-bounded memory to `push`; `push_file` is for
+trusted local filesystems. Local files fail with `local_io_error` if opening,
+validation, or reading fails. Live-device verification is deliberately
 read-only: no CI or developer smoke test pushes to `emulator-5556`.
 
 ## Build and verification
@@ -62,9 +75,10 @@ read-only: no CI or developer smoke test pushes to `emulator-5556`.
 Configure with `-DBUILD_SERVICE_ADB_SYNC_TESTS=ON` and build
 `BAAS_service_adb_sync_tests`. The deterministic fake smart-socket/SYNC suite
 covers exact serial selection, single-byte fragmentation, STAT success/FAIL,
-SEND/DATA/DONE byte vectors, OKAY/FAIL handling, malformed/truncated frames,
-caps, invalid paths and modes, cancellation, timeout, and bounded local-file
-streaming.
+SEND/DATA/DONE byte vectors, ignored OKAY values, FAIL handling,
+malformed/truncated frames, caps, invalid paths and modes, pre-cancellation,
+timeout, anchored regular-file checks, Windows network-path denial, and bounded
+local-file streaming.
 
 The foundation CI builds and runs this target on Windows, Linux, and macOS in
 both Debug and Release. It never requires an ADB daemon or device.
