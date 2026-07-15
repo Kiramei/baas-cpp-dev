@@ -119,7 +119,7 @@ class ServicePipeHostTests(unittest.TestCase):
         )
         self.assertEqual(self.workflow.count("docs/script-runtime/SERVICE_PIPE_HOST.md"), 2)
         for boundary in (
-            "never open a\nreal OS endpoint", "no real provider, sync, trigger",
+            "never open a\nreal OS endpoint", "no built-in business\nhandler",
             "live OS security/load tests remain pending", "fake listeners and streams",
             "precondition\nfor an external `join()`", "MUST keep `PipeHost` alive",
             "Destroying the host from its own factory\nor handler callback is unsupported",
@@ -128,7 +128,7 @@ class ServicePipeHostTests(unittest.TestCase):
             "permanently poisons that\nconnection writer",
         ):
             self.assertIn(boundary, self.spec)
-        self.assertIn("real provider/sync/trigger/remote handler wiring", self.protocol)
+        self.assertIn("real provider/sync/remote handler wiring", self.protocol)
 
 
 if __name__ == "__main__":

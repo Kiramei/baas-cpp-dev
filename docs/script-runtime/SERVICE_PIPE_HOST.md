@@ -104,10 +104,12 @@ MUST observe it around any potentially blocking production work. The host can
 request cooperative cancellation but cannot forcibly unwind arbitrary user
 callback code that ignores this contract.
 Handlers receive only validated business JSON/BYTES frames and a bounded
-writer. This milestone intentionally provides no real provider, sync, trigger,
-or remote handler and does not start a listener in tests. Wiring the existing
-trigger dispatcher, provider/sync owners, remote proxy, application-selected
-endpoint, observability, and live OS security/load tests remain pending.
+writer. The foundation target intentionally provides no built-in business
+handler. `BAAS_service_trigger_pipe_channel` now supplies the separately
+selectable production Trigger adapter; real provider, sync, and remote
+adapters remain pending. Neither target starts a listener in tests. Wiring the
+provider/sync owners, remote proxy, application-selected endpoint,
+observability, and live OS security/load tests remain pending.
 
 `BAAS_service_pipe_host_tests` covers all four channels, bounded hostile open
 JSON, fragmented/coalesced BPIP, open ordering, atomic JSON+zero-byte-BYTES,
