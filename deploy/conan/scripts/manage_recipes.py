@@ -22,6 +22,7 @@ RECIPES_ROOT = CONAN_ROOT / "recipes"
 GENERATED_RECIPES_ROOT = ROOT / "build" / "conan" / "generated-recipes"
 
 EXPORT_ORDER = [
+    "baas-libsodium",
     "baas-lz4",
     "baas-nlohmann-json",
     "baas-cpp-httplib",

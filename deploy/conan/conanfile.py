@@ -39,6 +39,7 @@ class BAASDepsConan(ConanFile):
         "use_ffmpeg": [True, False],
         "use_benchmark": [True, False],
         "use_opencv_dnn": [True, False],
+        "use_libsodium": [True, False],
     }
 
     default_options = {
@@ -46,6 +47,7 @@ class BAASDepsConan(ConanFile):
         "use_ffmpeg": True,
         "use_benchmark": True,
         "use_opencv_dnn": False,
+        "use_libsodium": False,
         "baas-onnxruntime/*:provider": "cpu",
         "baas-opencv/*:with_dnn": False,
     }
@@ -59,6 +61,11 @@ class BAASDepsConan(ConanFile):
         self.options["baas-opencv"].with_dnn = bool(self.options.use_opencv_dnn)
 
     def requirements(self):
+        if self.options.use_libsodium:
+            self.requires(
+                f"baas-libsodium/{self._selected_dependency_version('baas-libsodium')}"
+            )
+
         for dependency in DEPENDENCY_ORDER:
             self.requires(f"{dependency}/{self._selected_dependency_version(dependency)}")
 

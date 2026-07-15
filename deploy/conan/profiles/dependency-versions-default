@@ -1,4 +1,5 @@
 [conf]
+user.baas.dependencies:libsodium_version=1.0.22
 user.baas.dependencies:lz4_version=1.10.0
 user.baas.dependencies:nlohmann_json_version=3.11.3
 user.baas.dependencies:cpp_httplib_version=0.50.1
