@@ -26,6 +26,13 @@ class ServiceTriggerHandlerDocsTests(unittest.TestCase):
         self.assertIn("BAAS_service_trigger_handler_tests", workflow)
         self.assertIn("include/service/protocol/Trigger*.h", workflow)
         self.assertIn("include/service/trigger/**", workflow)
+        for dependency_cmake in (
+            "cmake/ServiceProtocol.cmake",
+            "cmake/ServiceTriggerCatalog.cmake",
+            "cmake/ServiceTriggerDispatch.cmake",
+            "cmake/ServiceTriggerExecutor.cmake",
+        ):
+            self.assertEqual(workflow.count(dependency_cmake), 2)
         self.assertIn("Completion-confirmed egress", spec)
         self.assertIn("one observed batch in flight", spec)
 
