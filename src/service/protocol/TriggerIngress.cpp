@@ -142,8 +142,13 @@ TriggerIngressItem::TriggerIngressItem(
 
 TriggerIngressResult TriggerIngressItem::admit_to(TriggerSession& session) const
 {
-    const auto admitted = session.admit(admission());
-    if (admitted) return {TriggerIngressOutcome::admitted};
+    auto admitted = session.admit(admission());
+    if (admitted) {
+        TriggerIngressResult result;
+        result.outcome = TriggerIngressOutcome::admitted;
+        result.receipt = std::move(admitted.receipt);
+        return result;
+    }
 
     if (admitted.error == AdmissionError::closed) {
         TriggerIngressResult result;

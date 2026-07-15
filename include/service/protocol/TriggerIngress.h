@@ -96,6 +96,10 @@ struct TriggerIngressResult {
     AdmissionError admission_error{AdmissionError::none};
     std::size_t error_offset{};
     std::optional<TriggerCommandRejection> command_rejection;
+    // Populated only when admit_to() succeeds. The caller must retain this
+    // capability for receipt-bound publication or rollback; admitting and
+    // discarding it would leave an unreachable live correlation.
+    std::optional<AdmissionReceipt> receipt;
 
     [[nodiscard]] explicit operator bool() const noexcept
     {

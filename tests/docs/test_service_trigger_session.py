@@ -168,12 +168,14 @@ class ServiceTriggerSessionTests(unittest.TestCase):
             "TriggerIngressDisposition",
             "TriggerCommandRejection",
             "std::optional<TriggerCommandRejection>",
+            "std::optional<AdmissionReceipt>",
         ):
             self.assertIn(anchor, self.ingress_header)
         self.assertIn("decode_command_envelope", self.ingress_source)
         self.assertIn("make_admission", self.ingress_source)
         self.assertIn("pending_binary_.reset();", self.ingress_source)
         self.assertIn("checked_add", self.ingress_source)
+        self.assertIn("result.receipt = std::move(admitted.receipt)", self.ingress_source)
         for policy_anchor in (
             "TriggerCommandCatalog::lookup",
             "unknown_command",

@@ -35,8 +35,10 @@ ready item owns the decoded `CommandEnvelope`, optional bytes, successful
 `BuildAdmissionResult`/`CommandAdmission`, and stable catalog descriptor. Its
 single/stream `ResponseMode` comes only from that descriptor; callers cannot
 override it. `admit_to(TriggerSession&)` submits the immutable catalog-derived
-admission without reconstructing policy and returns the same ingress policy
-result shape. Duplicate/saturated session admission is a correlated command
+admission without reconstructing policy and returns the session-minted
+`AdmissionReceipt` on success. A low-level caller must retain that capability
+for publication or rollback; it must never admit and discard the receipt.
+Duplicate/saturated session admission is a correlated command
 rejection; a closed session yields the explicit `closed` disposition.
 
 The intended host execution path move-consumes the ready item through

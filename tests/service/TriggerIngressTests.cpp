@@ -240,9 +240,11 @@ void test_catalog_policy_and_direct_session_admission()
               && item->admission().response_mode == trigger::ResponseMode::single,
           "ready item must retain the exact catalog decision and response mode");
     trigger::TriggerSession session;
-    check(item && item->admit_to(session).outcome
-              == trigger::TriggerIngressOutcome::admitted,
-          "catalog-derived ready item must admit directly to TriggerSession");
+    const auto admitted = item
+        ? item->admit_to(session) : trigger::TriggerIngressResult{};
+    check(admitted.outcome == trigger::TriggerIngressOutcome::admitted
+              && admitted.receipt,
+          "catalog-derived ready item must admit with a retained receipt");
     const auto duplicate = item
         ? item->admit_to(session) : trigger::TriggerIngressResult{};
     check_command_rejection(
@@ -251,6 +253,8 @@ void test_catalog_policy_and_direct_session_admission()
         "session admission rejection must preserve safe correlation identity");
     check(duplicate.admission_error == trigger::AdmissionError::duplicate_timestamp,
           "session admission rejection must retain its stable admission subtype");
+    check(!duplicate.receipt,
+          "rejected admission must never expose a receipt capability");
 
     trigger::TriggerIngress closed_ingress;
     check(closed_ingress.receive_json_frame(command(28)),
@@ -265,7 +269,8 @@ void test_catalog_policy_and_direct_session_admission()
               && closed_admission.admission_error == trigger::AdmissionError::closed
               && closed_admission.disposition()
                   == trigger::TriggerIngressDisposition::closed
-              && !closed_admission.command_rejection,
+              && !closed_admission.command_rejection
+              && !closed_admission.receipt,
           "closed session admission must not claim a sendable command rejection");
 }
 
