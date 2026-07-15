@@ -11,6 +11,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <functional>
 #include <limits>
 #include <mutex>
 #include <optional>
@@ -1004,6 +1005,87 @@ bool valid_limits(const channels::ResourceStoreLimits& limits) noexcept
         && limits.max_resource_id_bytes != 0 && limits.max_origin_bytes != 0;
 }
 
+constexpr std::size_t config_copy_max_files = 4'096;
+constexpr std::uintmax_t config_copy_max_bytes = 64U * 1'024U * 1'024U;
+constexpr std::size_t config_copy_max_depth = 32;
+
+[[nodiscard]] ConfigCommandError inspect_config_tree(
+    const std::filesystem::path& root, const std::stop_token stop)
+{
+    std::error_code error;
+    if (path_kind(root) == PathKind::missing) return ConfigCommandError::not_found;
+    if (path_kind(root) != PathKind::directory) return ConfigCommandError::invalid_data;
+    std::filesystem::recursive_directory_iterator iterator(
+        root, std::filesystem::directory_options::none, error);
+    const std::filesystem::recursive_directory_iterator end;
+    std::size_t files{};
+    std::uintmax_t bytes{};
+    for (; !error && iterator != end; iterator.increment(error)) {
+        if (stop.stop_requested()) return ConfigCommandError::cancelled;
+        if (iterator.depth() >= static_cast<int>(config_copy_max_depth)) {
+            return ConfigCommandError::capacity;
+        }
+        const auto kind = path_kind(iterator->path());
+        if (kind == PathKind::directory) continue;
+        if (kind != PathKind::regular_file) {
+            return ConfigCommandError::invalid_data;
+        }
+        if (++files > config_copy_max_files) return ConfigCommandError::capacity;
+        const auto size = iterator->file_size(error);
+        if (error) break;
+        if (size > config_copy_max_bytes || bytes > config_copy_max_bytes - size) {
+            return ConfigCommandError::capacity;
+        }
+        bytes += size;
+    }
+    return error ? ConfigCommandError::internal_error : ConfigCommandError::none;
+}
+
+[[nodiscard]] ConfigCommandError copy_config_tree(
+    const std::filesystem::path& source,
+    const std::filesystem::path& target,
+    const std::stop_token stop,
+    const std::function<std::pair<std::optional<std::string>, ConfigCommandError>(
+        const std::filesystem::path&)>& reader,
+    const std::function<bool(const std::filesystem::path&, std::string_view)>& writer)
+{
+    std::error_code error;
+    const auto created = std::filesystem::create_directory(target, error);
+    if (error) return ConfigCommandError::internal_error;
+    if (!created) return ConfigCommandError::conflict;
+    std::filesystem::recursive_directory_iterator iterator(
+        source, std::filesystem::directory_options::none, error);
+    const std::filesystem::recursive_directory_iterator end;
+    for (; !error && iterator != end; iterator.increment(error)) {
+        if (stop.stop_requested()) return ConfigCommandError::cancelled;
+        const auto relative = iterator->path().lexically_relative(source);
+        if (relative.empty()) return ConfigCommandError::invalid_data;
+        const auto destination = target / relative;
+        const auto kind = path_kind(iterator->path());
+        if (kind == PathKind::directory) {
+            const auto directory_created =
+                std::filesystem::create_directory(destination, error);
+            if (!error && !directory_created) return ConfigCommandError::conflict;
+        } else if (kind == PathKind::regular_file) {
+            auto [bytes, read_error] = reader(iterator->path());
+            if (!bytes) return read_error;
+            if (!writer(destination, *bytes)) {
+                return ConfigCommandError::internal_error;
+            }
+        } else {
+            return ConfigCommandError::invalid_data;
+        }
+        if (error) break;
+    }
+    return error ? ConfigCommandError::internal_error : ConfigCommandError::none;
+}
+
+void remove_tree_best_effort(const std::filesystem::path& path) noexcept
+{
+    std::error_code ignored;
+    std::filesystem::remove_all(path, ignored);
+}
+
 }  // namespace
 
 class FileResourceStore::Impl {
@@ -1724,6 +1806,252 @@ bool FileResourceStore::refresh_and_publish(ResourceKey key, std::string origin)
 const std::filesystem::path& FileResourceStore::project_root() const noexcept
 {
     return impl_->root;
+}
+
+ConfigCopyResult FileResourceStore::copy_config(
+    const std::string_view source_id, const std::stop_token stop) try
+{
+    const auto impl = impl_;
+    if (stop.stop_requested()) return {{}, {}, ConfigCommandError::cancelled};
+    const std::string source_name{source_id};
+    if (!valid_resource_id(source_name, impl->limits.max_resource_id_bytes)) {
+        return {{}, {}, ConfigCommandError::invalid_id};
+    }
+    std::unique_lock mutation_lock(impl->mutation_mutex);
+    if (stop.stop_requested()) return {{}, {}, ConfigCommandError::cancelled};
+
+    const ResourceKey config_key{SyncResource::config, source_name};
+    const ResourceKey event_key{SyncResource::event, source_name};
+    auto config = impl->load(config_key);
+    if (!config.value) {
+        const auto mapped = config.error == ResourceStoreError::not_found
+            ? ConfigCommandError::not_found
+            : config.error == ResourceStoreError::capacity
+                ? ConfigCommandError::capacity
+                : config.error == ResourceStoreError::invalid_data
+                    ? ConfigCommandError::invalid_data
+                    : ConfigCommandError::internal_error;
+        return {{}, {}, mapped};
+    }
+    auto event = impl->load(event_key);
+    if (!event.value) {
+        const auto mapped = event.error == ResourceStoreError::not_found
+            ? ConfigCommandError::not_found
+            : event.error == ResourceStoreError::capacity
+                ? ConfigCommandError::capacity
+                : event.error == ResourceStoreError::invalid_data
+                    ? ConfigCommandError::invalid_data
+                    : ConfigCommandError::internal_error;
+        return {{}, {}, mapped};
+    }
+    static_cast<void>(event);
+    const auto source = config.value->path.parent_path();
+    if (const auto inspected = inspect_config_tree(source, stop);
+        inspected != ConfigCommandError::none) {
+        return {{}, {}, inspected};
+    }
+
+    std::string base_name = source_name;
+    if (const auto found = config.value->document.find("name");
+        found != config.value->document.end() && found->is_string()) {
+        base_name = found->get<std::string>();
+        if (base_name.empty()) base_name = source_name;
+    }
+    std::unordered_set<std::string> existing_names;
+    std::error_code iteration_error;
+    std::filesystem::directory_iterator iterator(
+        impl->config_root, std::filesystem::directory_options::skip_permission_denied,
+        iteration_error);
+    const std::filesystem::directory_iterator end;
+    for (; !iteration_error && iterator != end; iterator.increment(iteration_error)) {
+        if (stop.stop_requested()) return {{}, {}, ConfigCommandError::cancelled};
+        std::string id;
+        try {
+            id = filename_utf8(iterator->path());
+        } catch (...) {
+            continue;
+        }
+        if (!valid_resource_id(id, impl->limits.max_resource_id_bytes)) continue;
+        auto loaded = impl->load({SyncResource::config, id});
+        if (!loaded.value) continue;
+        const auto name = loaded.value->document.find("name");
+        if (name != loaded.value->document.end() && name->is_string()) {
+            existing_names.insert(name->get<std::string>());
+        }
+    }
+    if (iteration_error) return {{}, {}, ConfigCommandError::internal_error};
+
+    std::string copy_name = base_name + "_copy";
+    for (std::size_t suffix = 2; existing_names.contains(copy_name); ++suffix) {
+        if (suffix > impl->limits.max_resources + 2) {
+            return {{}, {}, ConfigCommandError::capacity};
+        }
+        copy_name = base_name + "_copy" + std::to_string(suffix);
+    }
+    if (copy_name.size() > impl->limits.max_json_bytes) {
+        return {{}, {}, ConfigCommandError::capacity};
+    }
+
+    double now{};
+    try {
+        now = impl->clock();
+    } catch (...) {
+        return {{}, {}, ConfigCommandError::internal_error};
+    }
+    if (!std::isfinite(now) || now < 0
+        || now > static_cast<double>(
+            std::numeric_limits<std::int64_t>::max() - 1'024)) {
+        return {{}, {}, ConfigCommandError::internal_error};
+    }
+    const auto initial = static_cast<std::int64_t>(now);
+    std::string target_id;
+    std::filesystem::path target;
+    for (std::size_t attempt = 0; attempt < 1'024; ++attempt) {
+        target_id = std::to_string(initial + static_cast<std::int64_t>(attempt));
+        target = impl->config_root / target_id;
+        if (path_kind(target) == PathKind::missing) break;
+        target_id.clear();
+    }
+    if (target_id.empty()) return {{}, {}, ConfigCommandError::conflict};
+
+    const auto staging_root = impl->root / ".baas-config-staging";
+    std::error_code filesystem_error;
+    if (path_kind(staging_root) == PathKind::missing) {
+        std::filesystem::create_directory(staging_root, filesystem_error);
+    }
+    if (filesystem_error || path_kind(staging_root) != PathKind::directory) {
+        return {{}, {}, ConfigCommandError::internal_error};
+    }
+    static std::atomic<std::uint64_t> staging_sequence{};
+    const auto staging = staging_root /
+        ("copy-" + target_id + "-" +
+         std::to_string(staging_sequence.fetch_add(1, std::memory_order_relaxed)));
+    if (path_kind(staging) != PathKind::missing) {
+        return {{}, {}, ConfigCommandError::conflict};
+    }
+    const auto reader = [impl](const std::filesystem::path& path)
+        -> std::pair<std::optional<std::string>, ConfigCommandError> {
+#if defined(_WIN32)
+        auto result = read_windows_resource(
+            *impl->windows_root, path,
+            static_cast<std::size_t>(config_copy_max_bytes));
+#else
+        auto result = read_posix_resource(
+            *impl->posix_root, path,
+            static_cast<std::size_t>(config_copy_max_bytes));
+#endif
+        if (result.error == ResourceStoreError::none) {
+            return {std::move(result.bytes), ConfigCommandError::none};
+        }
+        if (result.error == ResourceStoreError::capacity) {
+            return {std::nullopt, ConfigCommandError::capacity};
+        }
+        if (result.error == ResourceStoreError::invalid_data) {
+            return {std::nullopt, ConfigCommandError::invalid_data};
+        }
+        if (result.error == ResourceStoreError::not_found) {
+            return {std::nullopt, ConfigCommandError::conflict};
+        }
+        return {std::nullopt, ConfigCommandError::internal_error};
+    };
+    const auto writer = [impl](const std::filesystem::path& path,
+                               const std::string_view bytes) {
+        try {
+            return impl->atomic_writer(path, bytes)
+                != AtomicWriteResult::not_committed;
+        } catch (...) {
+            return false;
+        }
+    };
+    const auto copied = copy_config_tree(source, staging, stop, reader, writer);
+    if (copied != ConfigCommandError::none) {
+        remove_tree_best_effort(staging);
+        return {{}, {}, copied};
+    }
+    auto copied_document = config.value->document;
+    copied_document["name"] = copy_name;
+    std::string copied_bytes;
+    try {
+        copied_bytes = copied_document.dump(2);
+    } catch (...) {
+        remove_tree_best_effort(staging);
+        return {{}, {}, ConfigCommandError::internal_error};
+    }
+    if (copied_bytes.size() > impl->limits.max_json_bytes) {
+        remove_tree_best_effort(staging);
+        return {{}, {}, ConfigCommandError::capacity};
+    }
+    AtomicWriteResult write{AtomicWriteResult::not_committed};
+    try {
+        write = impl->atomic_writer(staging / "config.json", copied_bytes);
+    } catch (...) {
+    }
+    if (write == AtomicWriteResult::not_committed) {
+        remove_tree_best_effort(staging);
+        return {{}, {}, ConfigCommandError::internal_error};
+    }
+    if (stop.stop_requested()) {
+        remove_tree_best_effort(staging);
+        return {{}, {}, ConfigCommandError::cancelled};
+    }
+    std::filesystem::rename(staging, target, filesystem_error);
+    if (filesystem_error) {
+        remove_tree_best_effort(staging);
+        return {{}, {}, path_kind(target) == PathKind::missing
+                ? ConfigCommandError::internal_error : ConfigCommandError::conflict};
+    }
+    return {std::move(target_id), std::move(copy_name), ConfigCommandError::none};
+} catch (...) {
+    return {{}, {}, ConfigCommandError::internal_error};
+}
+
+ConfigRemoveResult FileResourceStore::remove_config(
+    const std::string_view config_id, const std::stop_token stop) try
+{
+    const auto impl = impl_;
+    if (stop.stop_requested()) return {ConfigCommandError::cancelled};
+    const std::string id{config_id};
+    if (!valid_resource_id(id, impl->limits.max_resource_id_bytes)) {
+        return {ConfigCommandError::invalid_id};
+    }
+    std::unique_lock mutation_lock(impl->mutation_mutex);
+    if (stop.stop_requested()) return {ConfigCommandError::cancelled};
+    const auto target = impl->config_root / id;
+    if (path_kind(target) == PathKind::missing) return {};
+    if (const auto inspected = inspect_config_tree(target, stop);
+        inspected != ConfigCommandError::none) {
+        return {inspected};
+    }
+    const auto staging_root = impl->root / ".baas-config-staging";
+    std::error_code error;
+    if (path_kind(staging_root) == PathKind::missing) {
+        std::filesystem::create_directory(staging_root, error);
+    }
+    if (error || path_kind(staging_root) != PathKind::directory) {
+        return {ConfigCommandError::internal_error};
+    }
+    static std::atomic<std::uint64_t> removal_sequence{};
+    const auto tombstone = staging_root /
+        ("remove-" + std::to_string(removal_sequence.fetch_add(
+                         1, std::memory_order_relaxed)));
+    if (path_kind(tombstone) != PathKind::missing) {
+        return {ConfigCommandError::conflict};
+    }
+    std::filesystem::rename(target, tombstone, error);
+    if (error) {
+        return {path_kind(target) == PathKind::missing
+                ? ConfigCommandError::none : ConfigCommandError::internal_error};
+    }
+    {
+        std::lock_guard state_lock(impl->state_mutex);
+        impl->resources.erase({SyncResource::config, id});
+        impl->resources.erase({SyncResource::event, id});
+    }
+    mutation_lock.unlock();
+    remove_tree_best_effort(tombstone);
+    return {};
+} catch (...) {
+    return {ConfigCommandError::internal_error};
 }
 
 }  // namespace baas::service::adapters

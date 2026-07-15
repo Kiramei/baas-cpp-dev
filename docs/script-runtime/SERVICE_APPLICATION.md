@@ -28,13 +28,14 @@ setup `4`, composition `5`, HTTP start `6`, readiness `7`, and internal `8`.
 - `ServiceShutdownCoordinator`, `ServiceSignalOwner`, and
   `HealthReadinessOwner`;
 - `ProductionProviderBackend` and `FileResourceStore`;
-- one `status` registration, `TriggerDispatcher`, `TriggerExecutor`, and
-  `TriggerHandlerFactory`;
+- real `status`, `copy_config`, and `remove_config*` registrations,
+  `TriggerDispatcher`, `TriggerExecutor`, and `TriggerHandlerFactory`;
 - file auth storage, system clock, system random, and sodium password deriver;
 - `ProductionHttpHost` on the exact CLI port.
 
-The status source reads the thread-safe production provider snapshot. Every
-other catalog trigger remains unregistered. Remote policy is explicitly
+The status source reads the thread-safe production provider snapshot.
+Configuration triggers use the same durable `FileResourceStore` supplied to
+the sync channel. Other catalog triggers remain unregistered. Remote policy is explicitly
 `disabled` and its factory is null. This release does not install a remote
 route.
 
@@ -73,7 +74,7 @@ The executable is opt-in and excluded from the legacy `BAAS_CORE` glob:
 
 `BAAS_service_application_tests` links hook-free production targets. It covers
 real loopback `/version`, health `503` to ready `200`, auth routing, HTTP
-shutdown, fixed-port conflict, real status and an unregistered trigger,
+shutdown, fixed-port conflict, real status and durable `copy_config`,
 persistent auth restart and second-instance locking, and Pipe rejection before
 filesystem side effects. Separate CTest entries execute the actual binary for
 `--help` and `--version`. CI provisions pinned cpp-httplib, libsodium, and

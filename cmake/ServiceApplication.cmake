@@ -23,6 +23,7 @@ target_link_libraries(
         BAAS_service_provider_backend
         BAAS_service_file_resource_store
         BAAS_service_status_trigger
+        BAAS_service_configuration_triggers
         BAAS_service_trigger_handler
 )
 

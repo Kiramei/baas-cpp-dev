@@ -4,10 +4,12 @@
 #include "service/protocol/TriggerIngress.h"
 
 #include <httplib.h>
+#include <nlohmann/json.hpp>
 
 #include <chrono>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <memory>
 #include <optional>
@@ -91,11 +93,12 @@ public:
 }
 
 [[nodiscard]] std::optional<protocol::TriggerIngressItem> ingress_item(
-    const std::string_view command, const protocol::Timestamp timestamp)
+    const std::string_view command, const protocol::Timestamp timestamp,
+    const std::string_view payload = "{}")
 {
     const std::string json = std::string{"{\"type\":\"command\",\"command\":\""}
         + std::string{command} + "\",\"timestamp\":"
-        + std::to_string(timestamp) + ",\"payload\":{}}";
+        + std::to_string(timestamp) + ",\"payload\":" + std::string{payload} + "}";
     protocol::TriggerIngress ingress;
     if (!ingress.receive_json_frame(json)) return std::nullopt;
     return ingress.take_ready();
@@ -173,6 +176,23 @@ void test_information_and_pipe_fail_before_side_effect()
 void test_real_loopback_lifecycle_trigger_and_persistence()
 {
     TemporaryRoot root{"lifecycle"};
+    std::filesystem::create_directories(root.path / "config" / "source");
+    {
+        std::ofstream config(
+            root.path / "config" / "source" / "config.json",
+            std::ios::binary | std::ios::trunc);
+        config << R"({"name":"Alpha","server":"日服"})";
+        config.close();
+        if (!config) throw std::runtime_error("config fixture write failed");
+    }
+    {
+        std::ofstream event(
+            root.path / "config" / "source" / "event.json",
+            std::ios::binary | std::ios::trunc);
+        event << "[]";
+        event.close();
+        if (!event) throw std::runtime_error("event fixture write failed");
+    }
     const auto port = unused_loopback_port();
     auto opened = app::ServiceApplication::open(options(root.path, port));
     check(static_cast<bool>(opened),
@@ -232,12 +252,41 @@ void test_real_loopback_lifecycle_trigger_and_persistence()
 
     auto session = std::make_shared<protocol::TriggerSession>();
     auto connection = application->trigger_executor()->connect(session);
-    auto unregistered = ingress_item("copy_config", 1);
-    check(unregistered.has_value(), "unregistered ingress fixture must parse");
-    if (unregistered) {
-        const auto submitted = connection.submit(std::move(*unregistered));
-        check(submitted.error == trigger::TriggerSubmitError::unregistered_command,
-              "application dispatcher must not install placeholder commands");
+    auto copy = ingress_item("copy_config", 1, R"({"id":"source"})");
+    check(copy.has_value(), "copy_config production ingress fixture must parse");
+    if (copy) {
+        const auto submitted = connection.submit(std::move(*copy));
+        check(static_cast<bool>(submitted),
+              "application dispatcher must install the real copy_config handler");
+        std::optional<protocol::SendLease> lease;
+        check(wait_until([&] {
+                  auto begun = session->begin_send();
+                  if (!begun) return false;
+                  lease = std::move(*begun.lease);
+                  return true;
+              }),
+              "copy_config must complete through the production executor");
+        if (lease) {
+            const auto envelope = nlohmann::json::parse(lease->batch().json());
+            const bool valid_copy_response = envelope.value("status", "") == "ok"
+                && envelope.contains("data") && envelope.at("data").is_object()
+                && envelope.at("data").contains("serial")
+                && envelope.at("data").at("serial").is_string()
+                && envelope.at("data").contains("name")
+                && envelope.at("data").at("name").is_string();
+            check(valid_copy_response,
+                  "copy_config production response must be successful");
+            if (valid_copy_response) {
+                const auto& data = envelope.at("data");
+                const auto serial = data.at("serial").get<std::string>();
+                check(data.at("name") == "Alpha_copy"
+                      && std::filesystem::is_regular_file(
+                          root.path / "config" / serial / "event.json"),
+                      "BAAS_service must execute a real durable configuration copy");
+            }
+            check(static_cast<bool>(connection.complete_send(*lease)),
+                  "copy_config terminal must complete through executor ownership");
+        }
     }
 
     auto status = ingress_item("status", 2);
