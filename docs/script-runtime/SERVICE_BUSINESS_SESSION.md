@@ -94,6 +94,7 @@ orders and timeout, revocation, default bounds, strict routing, and remote
 policy. CI also cross-builds the library for Android, where `/ws/remote` is
 unavailable.
 
-This is session-boundary evidence, not a production E2E claim. Concrete
-provider/sync/trigger/remote handlers, host installation, Tauri/Python updates,
-and device/service smoke tests remain outside this target.
+This is session-boundary evidence, not a production E2E claim. The production
+composition boundary is documented in `SERVICE_HTTP_COMPOSITION.md`; concrete
+trigger/remote factories, application installation, Tauri/Python updates, and
+device/service smoke tests remain outside this target.
