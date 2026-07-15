@@ -212,6 +212,11 @@ channel.
 non-`open` type, or unsupported channel causes ERROR followed by connection
 close. Extra open fields MAY be ignored.
 
+The C++ `PipeHost` foundation now implements this bounded open state over the
+incremental BPIP decoder with an injected channel factory. Its deterministic
+tests use fake streams; real provider/sync/trigger/remote handler wiring and
+live cross-process endpoint tests remain pending.
+
 ### 5.5 Close and error
 
 **[REQUIRED]** CLOSE has a zero-length payload and means no more application
@@ -648,7 +653,10 @@ MUST default to loopback and MUST require explicit policy before LAN exposure.
 Secrets MUST use cryptographic randomness, constant-time MAC/signature checks,
 and protected persistence appropriate to the platform.
 
-**[MISSING]** Windows named-pipe ACL audit, local hostile-process tests, key-file
+The compiled Windows Pipe backend installs a protected current-user DACL and
+rejects remote clients. The compiled Unix backend requires a canonical private
+parent, mode `0600`, owned-inode cleanup, and same-user peer credentials where
+the platform exposes them. **[MISSING]** Windows named-pipe ACL audit, local hostile-process tests, key-file
 permission tests, origin/CORS matrix, LAN threat model, rate limiting, and
 security review are pending.
 
