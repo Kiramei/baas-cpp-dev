@@ -47,6 +47,7 @@ struct HttpHostRouterConfig {
     std::optional<router::HealthSnapshot> health_snapshot;
     std::shared_ptr<router::HealthSnapshotProvider> health_provider;
     std::shared_ptr<router::ShutdownIntent> shutdown_intent;
+    std::shared_ptr<router::RouteExtension> route_extension;
     std::shared_ptr<websocket::SessionFactory> websocket_sessions;
 };
 

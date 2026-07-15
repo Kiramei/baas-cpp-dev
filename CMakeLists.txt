@@ -104,6 +104,8 @@ option(BUILD_SERVICE_AUTH_CRYPTO "Build the service v1 cryptographic foundation"
 option(BUILD_SERVICE_AUTH_CRYPTO_TESTS "Build service v1 cryptographic contract tests" OFF)
 option(BUILD_SERVICE_AUTH_OWNER "Build the persistent service authentication owner" OFF)
 option(BUILD_SERVICE_AUTH_OWNER_TESTS "Build deterministic AuthOwner tests" OFF)
+option(BUILD_SERVICE_AUTH_HTTP "Build transport-independent HTTP authentication routes" OFF)
+option(BUILD_SERVICE_AUTH_HTTP_TESTS "Build HTTP authentication route tests" OFF)
 option(BUILD_SERVICE_CONTROL_SESSION "Build the authenticated control WebSocket driver" OFF)
 option(BUILD_SERVICE_CONTROL_SESSION_TESTS "Build deterministic control-driver tests" OFF)
 option(BUILD_SERVICE_BUSINESS_SESSION "Build authenticated business WebSocket drivers" OFF)
@@ -138,6 +140,16 @@ endif()
 
 if(BUILD_SERVICE_AUTH_OWNER AND NOT BUILD_SERVICE_AUTH_CRYPTO)
     set(BUILD_SERVICE_AUTH_CRYPTO ON CACHE BOOL "Build the service v1 cryptographic foundation" FORCE)
+endif()
+
+if(BUILD_SERVICE_AUTH_HTTP_TESTS AND NOT BUILD_SERVICE_AUTH_HTTP)
+    set(BUILD_SERVICE_AUTH_HTTP ON CACHE BOOL "Build transport-independent HTTP authentication routes" FORCE)
+endif()
+
+if(BUILD_SERVICE_AUTH_HTTP)
+    set(BUILD_SERVICE_AUTH_OWNER ON CACHE BOOL "Build the persistent service authentication owner" FORCE)
+    set(BUILD_SERVICE_AUTH_CRYPTO ON CACHE BOOL "Build the service v1 cryptographic foundation" FORCE)
+    set(BUILD_SERVICE_ROUTER ON CACHE BOOL "Build the transport-independent BAAS service router" FORCE)
 endif()
 
 if(BUILD_SERVICE_CONTROL_SESSION_TESTS AND NOT BUILD_SERVICE_CONTROL_SESSION)
@@ -402,6 +414,10 @@ endif()
 
 if(BUILD_SERVICE_AUTH_CRYPTO OR BUILD_SERVICE_AUTH_OWNER)
     include("${CMAKE_CURRENT_LIST_DIR}/cmake/ServiceAuth.cmake")
+endif()
+
+if(BUILD_SERVICE_AUTH_HTTP)
+    include("${CMAKE_CURRENT_LIST_DIR}/cmake/ServiceAuthHttp.cmake")
 endif()
 
 if(BUILD_SERVICE_CONTROL_SESSION)

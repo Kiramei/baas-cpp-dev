@@ -52,7 +52,8 @@ struct ListenerLaunch final {
             std::move(config.service),
             std::move(*config.health_snapshot),
             config.budget,
-            shutdown_intent.get()
+            shutdown_intent.get(),
+            std::move(config.route_extension)
         );
     }
     if (config.health_provider) {
@@ -60,11 +61,13 @@ struct ListenerLaunch final {
             std::move(config.service),
             std::move(config.health_provider),
             config.budget,
-            shutdown_intent.get()
+            shutdown_intent.get(),
+            std::move(config.route_extension)
         );
     }
     return router::Router{
-        std::move(config.service), config.budget, shutdown_intent.get()
+        std::move(config.service), config.budget, shutdown_intent.get(),
+        std::move(config.route_extension)
     };
 }
 
