@@ -137,6 +137,9 @@ public:
     // Encodes all frames into one owning buffer and performs one logical
     // write_all operation, preserving JSON+BYTES adjacency.
     [[nodiscard]] PipeHostError write_batch(std::span<const bpip::Frame> frames);
+    // Connection-fatal business adapters use this to interrupt a concurrent
+    // read/write before waiting for their output callback barrier. Idempotent.
+    void close_connection() noexcept;
 
 private:
     [[nodiscard]] bool transport_poisoned() noexcept;
@@ -155,6 +158,7 @@ private:
     std::size_t max_atomic_write_bytes_{};
     std::chrono::milliseconds write_timeout_{};
     std::mutex mutex_;
+    std::atomic_bool close_requested_{};
     bool transport_poisoned_{};
 };
 
