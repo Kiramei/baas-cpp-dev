@@ -57,6 +57,23 @@ class ServiceApplicationContractTests(unittest.TestCase):
         for exit_code in ("command_line = 2", "pipe_unavailable = 3", "host_start = 6"):
             self.assertIn(exit_code, self.header)
 
+    def test_executable_and_tauri_wire_identities_are_separate(self) -> None:
+        self.assertIn(
+            'service_application_executable_name =\n    "BAAS_service"', self.header
+        )
+        self.assertIn(
+            'service_application_wire_name =\n    "BAAS Service"', self.header
+        )
+        self.assertIn("std::string{service_application_wire_name}", self.source)
+        self.assertIn('"service":"BAAS Service"', self.tests)
+        for anchor in (
+            "`baas-tauri` revision `a1c8c837`",
+            "`src-tauri/src/commands.rs`",
+            "`cpp_backend_ready`",
+            "exact service\nliteral `BAAS Service`",
+        ):
+            self.assertIn(anchor, self.docs)
+
     def test_real_evidence_is_hook_free_and_cross_platform(self) -> None:
         for anchor in (
             "health_starting",
@@ -74,6 +91,19 @@ class ServiceApplicationContractTests(unittest.TestCase):
             self.assertIn(platform, self.workflow)
         for build_type in ("Debug", "Release"):
             self.assertIn(build_type, self.workflow)
+
+    def test_application_ci_path_filter_covers_shared_build_and_conan_glue(self) -> None:
+        for path in (
+            "'cmake/**'",
+            "'deploy/conan/conanfile.py'",
+            "'deploy/conan/profiles/**'",
+            "'deploy/conan/scripts/**'",
+            "'deploy/conan/recipes/baas-libsodium/**'",
+            "'deploy/conan/recipes/baas-cpp-httplib/**'",
+            "'deploy/conan/recipes/baas-nlohmann-json/**'",
+        ):
+            self.assertEqual(self.workflow.count(path), 2)
+        self.assertNotIn("'cmake/Service*.cmake'", self.workflow)
 
 
 if __name__ == "__main__":

@@ -8,6 +8,14 @@ Windows), matching `baas-tauri`'s `launch_cpp_backend_command`:
 BAAS_service --project-root <directory> --host 127.0.0.1 --port <1..65535>
 ```
 
+The executable identity and wire identity are intentionally separate.
+`BAAS_service` is the process/package name and remains the `--version` prefix;
+the HTTP `GET /version` response uses `"service":"BAAS Service"`. This is an
+explicit cross-repository contract with `baas-tauri` revision `a1c8c837`,
+`src-tauri/src/commands.rs`, function `cpp_backend_ready`, whose strict
+readiness check requires `ok=true`, `api_version=1`, and the exact service
+literal `BAAS Service` before it accepts `/health` as ready.
+
 `--help` and `--version` succeed without constructing the service. Windows uses
 `wmain` and converts bounded UTF-16 arguments to UTF-8; other hosts use `main`.
 Stable failures use exit codes: command line `2`, unavailable Pipe `3`, signal

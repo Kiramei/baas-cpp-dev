@@ -17,7 +17,13 @@
 
 namespace baas::service::app {
 
-inline constexpr std::string_view service_application_name = "BAAS_service";
+// Process/package identity is deliberately distinct from the protocol identity.
+// baas-tauri launches BAAS_service(.exe), while its strict readiness probe
+// accepts only /version.service == "BAAS Service".
+inline constexpr std::string_view service_application_executable_name =
+    "BAAS_service";
+inline constexpr std::string_view service_application_wire_name =
+    "BAAS Service";
 #if !defined(BAAS_SERVICE_VERSION)
 #define BAAS_SERVICE_VERSION "1.1.1"
 #endif

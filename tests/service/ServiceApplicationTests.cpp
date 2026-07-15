@@ -114,6 +114,12 @@ template <typename Predicate>
 
 void test_information_and_pipe_fail_before_side_effect()
 {
+    check(app::service_application_executable_name == "BAAS_service"
+              && app::service_application_wire_name == "BAAS Service"
+              && app::service_application_executable_name
+                  != app::service_application_wire_name,
+          "executable and wire identities must remain explicitly separated");
+
     std::ostringstream output;
     std::ostringstream diagnostics;
     const std::string_view version_arguments[]{"--version"};
@@ -195,11 +201,11 @@ void test_real_loopback_lifecycle_trigger_and_persistence()
     client.set_write_timeout(2s);
     const auto version = client.Get("/version");
     const std::string expected_version =
-        std::string{R"({"api_version":1,"ok":true,"service":"BAAS_service","version":")"}
+        std::string{R"({"api_version":1,"ok":true,"service":"BAAS Service","version":")"}
         + std::string{app::service_application_version} + R"("})";
     check(version && version->status == 200
               && version->body == expected_version,
-          "real loopback /version must expose the executable identity");
+          "real loopback /version must expose the Tauri wire identity");
     const auto starting = client.Get("/health");
     check(starting && starting->status == 503
               && starting->body.find("health_starting") != std::string::npos,

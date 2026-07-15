@@ -201,7 +201,7 @@ ServiceApplicationOpenResult ServiceApplication::open(
 
         http::ProductionHttpHostConfig config;
         config.service = {
-            std::string{service_application_name},
+            std::string{service_application_wire_name},
             std::string{service_application_version},
         };
         config.health_provider = impl->readiness;
@@ -391,8 +391,8 @@ int run_service_application(
             return static_cast<int>(ServiceProcessExit::success);
         }
         if (parsed.disposition == ServiceCommandLineDisposition::version) {
-            output << service_application_name << ' ' << service_application_version
-                   << '\n';
+            output << service_application_executable_name << ' '
+                   << service_application_version << '\n';
             return static_cast<int>(ServiceProcessExit::success);
         }
 
