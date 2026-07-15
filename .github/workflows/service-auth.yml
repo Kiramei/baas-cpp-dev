@@ -12,6 +12,7 @@ on:
       - 'cmake/ServiceAuth.cmake'
       - 'cmake/ServiceControlSession.cmake'
       - 'cmake/ServiceBusinessSession.cmake'
+      - 'cmake/ServiceTriggerHandler.cmake'
       - 'cmake/ServiceWebSocket.cmake'
       - 'deploy/conan/conanfile.py'
       - 'deploy/conan/profiles/android-clang-*-release'
@@ -27,6 +28,9 @@ on:
       - 'src/service/websocket/ControlSessionFactory.cpp'
       - 'src/service/websocket/BusinessSessionFactory.cpp'
       - 'src/service/websocket/WebSocketOwner.cpp'
+      - 'include/service/channels/TriggerHandler.h'
+      - 'src/service/channels/TriggerHandler.cpp'
+      - 'tests/service/TriggerHandlerTests.cpp'
       - 'tests/service/ServiceAuth*Tests.cpp'
       - 'tests/service/ServiceControlSessionTests.cpp'
       - 'tests/service/ServiceBusinessSessionTests.cpp'
@@ -36,6 +40,7 @@ on:
       - 'docs/script-runtime/SERVICE_AUTH_OWNER.md'
       - 'docs/script-runtime/SERVICE_CONTROL_SESSION.md'
       - 'docs/script-runtime/SERVICE_BUSINESS_SESSION.md'
+      - 'docs/script-runtime/SERVICE_TRIGGER_HANDLER.md'
       - 'docs/script-runtime/SERVICE_WEBSOCKET_OWNER.md'
       - 'docs/script-runtime/SERVICE_PROTOCOL_V1.md'
   pull_request:
@@ -52,6 +57,7 @@ on:
       - 'cmake/ServiceAuth.cmake'
       - 'cmake/ServiceControlSession.cmake'
       - 'cmake/ServiceBusinessSession.cmake'
+      - 'cmake/ServiceTriggerHandler.cmake'
       - 'cmake/ServiceWebSocket.cmake'
       - 'deploy/conan/conanfile.py'
       - 'deploy/conan/profiles/android-clang-*-release'
@@ -67,6 +73,9 @@ on:
       - 'src/service/websocket/ControlSessionFactory.cpp'
       - 'src/service/websocket/BusinessSessionFactory.cpp'
       - 'src/service/websocket/WebSocketOwner.cpp'
+      - 'include/service/channels/TriggerHandler.h'
+      - 'src/service/channels/TriggerHandler.cpp'
+      - 'tests/service/TriggerHandlerTests.cpp'
       - 'tests/service/ServiceAuth*Tests.cpp'
       - 'tests/service/ServiceControlSessionTests.cpp'
       - 'tests/service/ServiceBusinessSessionTests.cpp'
@@ -76,6 +85,7 @@ on:
       - 'docs/script-runtime/SERVICE_AUTH_OWNER.md'
       - 'docs/script-runtime/SERVICE_CONTROL_SESSION.md'
       - 'docs/script-runtime/SERVICE_BUSINESS_SESSION.md'
+      - 'docs/script-runtime/SERVICE_TRIGGER_HANDLER.md'
       - 'docs/script-runtime/SERVICE_WEBSOCKET_OWNER.md'
       - 'docs/script-runtime/SERVICE_PROTOCOL_V1.md'
 
@@ -175,6 +185,7 @@ jobs:
           -DBUILD_SERVICE_WEBSOCKET_TESTS=ON
           -DBUILD_SERVICE_CONTROL_SESSION_TESTS=ON
           -DBUILD_SERVICE_BUSINESS_SESSION_TESTS=ON
+          -DBUILD_SERVICE_TRIGGER_HANDLER_TESTS=ON
           -DBUILD_APP_BAAS=OFF
           -DBUILD_APP_ISA=OFF
           -DBUILD_BAAS_OCR=OFF
@@ -191,6 +202,7 @@ jobs:
           BAAS_service_websocket_handshake_tests BAAS_service_websocket_owner_tests
           BAAS_service_control_session_tests
           BAAS_service_business_session_tests
+          BAAS_service_trigger_handler_tests
 
       - name: Run service authentication tests
         run: >-
@@ -198,7 +210,7 @@ jobs:
           --build-config ${{ matrix.build_type }}
           --output-on-failure
           --timeout 60
-          -R "^BAAS_service_(auth_(crypto|owner)|websocket_(handshake|owner)|control_session|business_session)_tests$"
+          -R "^BAAS_service_(auth_(crypto|owner)|websocket_(handshake|owner)|control_session|business_session|trigger_handler)_tests$"
 
   android-auth:
     name: Android ${{ matrix.abi }} / Release

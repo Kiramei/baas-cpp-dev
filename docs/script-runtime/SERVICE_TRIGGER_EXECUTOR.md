@@ -7,6 +7,10 @@ task ownership, cancellation signals, and terminal-response retry state. It has
 no dependency on BAAS globals, the script VM, networking, devices, services, or
 application lifecycle.
 
+The production WebSocket consumer is documented in
+`SERVICE_TRIGGER_HANDLER.md`; it delegates admission, cancellation, retry, and
+send-confirmation transitions to this owner instead of duplicating execution.
+
 ## Submission transaction
 
 Every live connection has one exclusive `TriggerConnectionOwner`. `connect()`
@@ -120,6 +124,6 @@ The test-enabled link also contains a production-header consumer translation
 unit without the hook macro; the unconditional test-access forward declaration
 and friend keep `TriggerExecutor`'s class definition identical in both views.
 
-Still pending are real catalog handlers, authenticated WebSocket and local Pipe
-connection hosts that consume the egress wakeup seam, deadlines, BAAS runtime integration,
+Still pending are real catalog handlers, the local Pipe connection host,
+deadlines, BAAS runtime integration,
 and end-to-end service execution. This target starts no service or application.

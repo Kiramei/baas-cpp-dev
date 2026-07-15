@@ -165,6 +165,7 @@ Still required before the Phase 4 task API item is complete:
   pending;
 - a coordinated general cancellation message or exact legacy stop-command
   mapping;
-- WebSocket and live Pipe channel hosts using this core;
+- live Pipe integration (the authenticated WebSocket trigger handler now uses
+  completion-confirmed leases from this core);
 - shared Python/C++/Tauri fixtures, deadlines, load tests, stale-task cleanup,
   and end-to-end execution.

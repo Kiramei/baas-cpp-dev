@@ -240,7 +240,7 @@ class ServiceTriggerSessionTests(unittest.TestCase):
         self.assertIn("- [~] Implement task submission", self.roadmap)
         for pending in (
             "actual command handlers and runtime/executor ownership",
-            "WebSocket and live Pipe channel hosts",
+            "authenticated WebSocket trigger handler now uses",
             "shared Python/C++/Tauri fixtures",
         ):
             self.assertIn(pending, self.spec)

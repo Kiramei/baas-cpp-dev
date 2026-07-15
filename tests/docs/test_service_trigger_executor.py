@@ -127,7 +127,7 @@ class ServiceTriggerExecutorTests(unittest.TestCase):
         )
         self.assertIn("no dependency on BAAS globals", self.spec)
         self.assertIn("real catalog handlers", self.spec)
-        self.assertIn("authenticated WebSocket and local Pipe", self.spec)
+        self.assertIn("local Pipe connection host", self.spec)
         self.assertIn("starts no service or application", self.spec)
 
 
