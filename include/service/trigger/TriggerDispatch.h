@@ -116,13 +116,18 @@ public:
     [[nodiscard]] bool pending() const noexcept { return batch_.has_value(); }
     [[nodiscard]] std::size_t bytes() const noexcept;
     [[nodiscard]] bool replace_with_cancelled() noexcept;
+    [[nodiscard]] bool cancellation_replaceable() const noexcept
+    {
+        return !irrevocable_;
+    }
 
 private:
     PendingTriggerResponse(
         trigger_protocol::TriggerSession& session,
         trigger_protocol::AdmissionReceipt receipt,
         trigger_protocol::OutboundBatch batch,
-        std::optional<trigger_protocol::OutboundBatch> cancelled_fallback) noexcept;
+        std::optional<trigger_protocol::OutboundBatch> cancelled_fallback,
+        bool irrevocable) noexcept;
 
     friend class TriggerResponseSink;
     friend class TriggerDispatcher;
@@ -132,6 +137,7 @@ private:
     trigger_protocol::AdmissionReceipt receipt_;
     std::optional<trigger_protocol::OutboundBatch> batch_;
     std::optional<trigger_protocol::OutboundBatch> cancelled_fallback_;
+    bool irrevocable_{};
 };
 
 // Synchronous handler-scoped publisher. Identity fields are always copied from
@@ -149,6 +155,15 @@ public:
     [[nodiscard]] TriggerResponseResult success(
         std::optional<std::string> data_json = std::nullopt,
         std::optional<std::vector<std::byte>> binary = std::nullopt);
+    // Encodes the terminal first, then atomically closes the Session's
+    // cancellation window without publishing it. Use only immediately before
+    // an irreversible side-effect commit.
+    [[nodiscard]] TriggerResponseResult irrevocable_success(
+        std::optional<std::string> data_json = std::nullopt,
+        std::optional<std::vector<std::byte>> binary = std::nullopt);
+    // Replaces a prepared irrevocable success when the side-effect commit did
+    // not happen. Cancellation remains closed, but no success is reported.
+    [[nodiscard]] TriggerResponseResult irrevocable_error(std::string message);
     [[nodiscard]] TriggerResponseResult error(std::string message);
     [[nodiscard]] TriggerResponseResult cancelled(
         std::string message = "cancelled");
@@ -161,6 +176,10 @@ public:
     [[nodiscard]] bool has_pending_terminal() const noexcept
     {
         return pending_.has_value() && pending_->pending();
+    }
+    [[nodiscard]] bool irrevocable_terminal_claimed() const noexcept
+    {
+        return irrevocable_terminal_claimed_;
     }
 
 private:
@@ -183,6 +202,7 @@ private:
     const AdmittedTriggerRequest& request_;
     TriggerDispatchLimits limits_;
     bool terminal_committed_{};
+    bool irrevocable_terminal_claimed_{};
     std::optional<trigger_protocol::OutboundBatch> staged_terminal_;
     std::optional<PendingTriggerResponse> pending_;
     TriggerResponseResult last_result_{};

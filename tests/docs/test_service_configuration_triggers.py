@@ -1,4 +1,7 @@
+import hashlib
+import json
 import pathlib
+import re
 import unittest
 
 
@@ -6,6 +9,24 @@ ROOT = pathlib.Path(__file__).resolve().parents[2]
 
 
 class ServiceConfigurationTriggerDocsTests(unittest.TestCase):
+    def test_embedded_python_static_default_is_complete(self) -> None:
+        defaults = (
+            ROOT / "src/service/adapters/ConfigurationDefaults.h"
+        ).read_text(encoding="utf-8")
+        parts = re.findall(
+            r'R"BAAS_STATIC\((.*?)\)BAAS_STATIC"', defaults, re.DOTALL
+        )
+        self.assertEqual(len(parts), 13)
+        document = json.loads("".join(parts))
+        canonical = json.dumps(
+            document, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")
+        self.assertEqual(
+            hashlib.sha256(canonical).hexdigest(),
+            "4b31c708fbbcd88300eb00e1ec71a556bc22f596467e5af356330b5496d2b247",
+        )
+        self.assertEqual(len(document), 25)
+
     def test_production_slice_is_registered_built_and_migration_bounded(self) -> None:
         header = (ROOT / "include/service/app/ConfigurationTriggerRegistration.h").read_text(encoding="utf-8")
         source = (ROOT / "src/service/app/ConfigurationTriggerRegistration.cpp").read_text(encoding="utf-8")

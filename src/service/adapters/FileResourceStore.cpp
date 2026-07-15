@@ -1,4 +1,5 @@
 #include "service/adapters/FileResourceStore.h"
+#include "ConfigurationDefaults.h"
 
 #include <nlohmann/json.hpp>
 
@@ -329,7 +330,7 @@ Json operations_json(const std::vector<ResourcePatchOperation>& operations)
 bool valid_resource_id(const std::string& value, const std::size_t maximum)
 {
     if (value.empty() || value.size() > maximum || !is_valid_utf8(value)
-        || value == "." || value == "..") {
+        || value == "." || value == ".." || value.starts_with(".baas-")) {
         return false;
     }
     const bool safe_characters = std::none_of(
@@ -990,6 +991,75 @@ AtomicWriteResult durable_atomic_write(const std::filesystem::path& target,
 }
 #endif
 
+#if defined(_WIN32)
+bool durable_create_new(const std::filesystem::path& target,
+                        const std::string_view bytes,
+                        const std::shared_ptr<WindowsRootAnchor>& anchor)
+{
+    if (!anchor || target.filename().empty()) return false;
+    auto directory = open_windows_resource_parent(*anchor, target, true);
+    if (!directory) return false;
+    auto file = open_relative_windows(
+        directory.get(), target.filename().native(),
+        GENERIC_WRITE | DELETE | FILE_READ_ATTRIBUTES, FILE_CREATE, false);
+    if (!file) return false;
+    bool ok = true;
+    std::size_t offset{};
+    while (offset < bytes.size()) {
+        const auto chunk = static_cast<DWORD>(std::min<std::size_t>(
+            bytes.size() - offset, std::numeric_limits<DWORD>::max()));
+        DWORD written{};
+        if (!WriteFile(file.get(), bytes.data() + offset, chunk, &written, nullptr)
+            || written == 0) {
+            ok = false;
+            break;
+        }
+        offset += written;
+    }
+    if (ok && !FlushFileBuffers(file.get())) ok = false;
+    if (!ok) {
+        FILE_DISPOSITION_INFO disposition{TRUE};
+        static_cast<void>(SetFileInformationByHandle(
+            file.get(), FileDispositionInfo, &disposition, sizeof(disposition)));
+    }
+    return ok;
+}
+#else
+bool durable_create_new(const std::filesystem::path& target,
+                        const std::string_view bytes,
+                        const std::shared_ptr<PosixRootAnchor>& anchor)
+{
+    if (!anchor || target.filename().empty()) return false;
+    auto directory = open_posix_resource_parent(*anchor, target);
+    if (!directory) return false;
+    const auto name = target.filename().native();
+    const int descriptor = ::openat(
+        directory.get(), name.c_str(),
+        O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0600);
+    if (descriptor < 0) return false;
+    bool ok = true;
+    std::size_t offset{};
+    while (offset < bytes.size()) {
+        const auto written =
+            ::write(descriptor, bytes.data() + offset, bytes.size() - offset);
+        if (written < 0 && errno == EINTR) continue;
+        if (written <= 0) {
+            ok = false;
+            break;
+        }
+        offset += static_cast<std::size_t>(written);
+    }
+    if (ok && ::fsync(descriptor) != 0) ok = false;
+    if (::close(descriptor) != 0) ok = false;
+    if (ok && ::fsync(directory.get()) != 0) ok = false;
+    if (!ok) {
+        static_cast<void>(::unlinkat(directory.get(), name.c_str(), 0));
+        static_cast<void>(::fsync(directory.get()));
+    }
+    return ok;
+}
+#endif
+
 double system_clock_ms()
 {
     return std::chrono::duration<double, std::milli>(
@@ -1009,36 +1079,217 @@ constexpr std::size_t config_copy_max_files = 4'096;
 constexpr std::uintmax_t config_copy_max_bytes = 64U * 1'024U * 1'024U;
 constexpr std::size_t config_copy_max_depth = 32;
 
-[[nodiscard]] ConfigCommandError inspect_config_tree(
-    const std::filesystem::path& root, const std::stop_token stop)
-{
-    std::error_code error;
-    if (path_kind(root) == PathKind::missing) return ConfigCommandError::not_found;
-    if (path_kind(root) != PathKind::directory) return ConfigCommandError::invalid_data;
-    std::filesystem::recursive_directory_iterator iterator(
-        root, std::filesystem::directory_options::none, error);
-    const std::filesystem::recursive_directory_iterator end;
+struct ConfigTreeStats {
     std::size_t files{};
     std::uintmax_t bytes{};
-    for (; !error && iterator != end; iterator.increment(error)) {
-        if (stop.stop_requested()) return ConfigCommandError::cancelled;
-        if (iterator.depth() >= static_cast<int>(config_copy_max_depth)) {
-            return ConfigCommandError::capacity;
+};
+
+[[nodiscard]] std::string trim_config_name(std::string value)
+{
+    const auto whitespace = [](const std::uint32_t code_point) {
+        return (code_point >= 0x09U && code_point <= 0x0dU)
+            || (code_point >= 0x1cU && code_point <= 0x20U)
+            || code_point == 0x85U || code_point == 0xa0U
+            || code_point == 0x1680U
+            || (code_point >= 0x2000U && code_point <= 0x200aU)
+            || code_point == 0x2028U || code_point == 0x2029U
+            || code_point == 0x202fU || code_point == 0x205fU
+            || code_point == 0x3000U;
+    };
+    std::size_t index{};
+    std::size_t begin = value.size();
+    std::size_t end{};
+    while (index < value.size()) {
+        const auto code_point_begin = index;
+        const auto lead = static_cast<unsigned char>(value[index++]);
+        std::uint32_t code_point = lead;
+        std::size_t trailing{};
+        if ((lead & 0xe0U) == 0xc0U) {
+            code_point = lead & 0x1fU;
+            trailing = 1;
+        } else if ((lead & 0xf0U) == 0xe0U) {
+            code_point = lead & 0x0fU;
+            trailing = 2;
+        } else if ((lead & 0xf8U) == 0xf0U) {
+            code_point = lead & 0x07U;
+            trailing = 3;
         }
-        const auto kind = path_kind(iterator->path());
-        if (kind == PathKind::directory) continue;
-        if (kind != PathKind::regular_file) {
-            return ConfigCommandError::invalid_data;
+        for (std::size_t offset = 0;
+             offset < trailing && index < value.size(); ++offset) {
+            code_point = (code_point << 6U)
+                | (static_cast<unsigned char>(value[index++]) & 0x3fU);
         }
-        if (++files > config_copy_max_files) return ConfigCommandError::capacity;
-        const auto size = iterator->file_size(error);
-        if (error) break;
-        if (size > config_copy_max_bytes || bytes > config_copy_max_bytes - size) {
-            return ConfigCommandError::capacity;
+        if (!whitespace(code_point)) {
+            if (begin == value.size()) begin = code_point_begin;
+            end = index;
         }
-        bytes += size;
     }
-    return error ? ConfigCommandError::internal_error : ConfigCommandError::none;
+    return begin == value.size() ? std::string{}
+                                 : value.substr(begin, end - begin);
+}
+
+[[nodiscard]] bool python_truthy(const Json& value) noexcept
+{
+    if (value.is_null()) return false;
+    if (value.is_boolean()) return value.get<bool>();
+    if (value.is_number_integer()) return value.get<std::int64_t>() != 0;
+    if (value.is_number_unsigned()) return value.get<std::uint64_t>() != 0;
+    if (value.is_number_float()) return value.get<double>() != 0.0;
+    if (value.is_string()) return !value.get_ref<const std::string&>().empty();
+    return !value.empty();
+}
+
+[[nodiscard]] std::string python_string(const Json& value)
+{
+    if (value.is_string()) return value.get<std::string>();
+    if (value.is_boolean()) return value.get<bool>() ? "True" : "False";
+    if (value.is_null()) return "None";
+    return value.dump();
+}
+
+[[nodiscard]] std::optional<Json> migrated_user_config(
+    Json document, const std::string_view copy_name)
+{
+    try {
+        if (!document.is_object()) return std::nullopt;
+        const auto defaults = Json::parse(config_defaults::user);
+        for (auto iterator = document.begin(); iterator != document.end();) {
+            if (!defaults.contains(iterator.key())) iterator = document.erase(iterator);
+            else ++iterator;
+        }
+        for (const auto& [key, value] : defaults.items()) {
+            if (!document.contains(key)) document[key] = value;
+        }
+        document["name"] = copy_name;
+        const auto server = document.at("server").get<std::string>();
+        const auto utf8 = [](const std::u8string_view value) {
+            return std::string_view{
+                reinterpret_cast<const char*>(value.data()), value.size()};
+        };
+        std::string_view server_mode;
+        if (server == utf8(u8"\u5b98\u670d")
+            || server == utf8(u8"B\u670d")) {
+            server_mode = "CN";
+        } else if (server == utf8(u8"\u56fd\u9645\u670d")
+                   || server == utf8(u8"\u56fd\u9645\u670d\u9752\u5c11\u5e74")
+                   || server == utf8(u8"\u97e9\u56fdONE")
+                   || server == utf8(u8"Steam\u56fd\u9645\u670d")) {
+            server_mode = "Global";
+        } else if (server == utf8(u8"\u65e5\u670d")
+                   || server == utf8(u8"\u65e5\u670dPC\u7aef")) {
+            server_mode = "JP";
+        } else {
+            return std::nullopt;
+        }
+        const auto create_order = Json::parse(config_defaults::create_item_order);
+        const auto& basic = create_order.at(server_mode).at("basic");
+        auto& quantities = document.at("create_item_holding_quantity");
+        if (!quantities.is_object()) return std::nullopt;
+        std::unordered_set<std::string> valid_items;
+        for (const auto& entries : basic) {
+            for (const auto& item : entries) {
+                valid_items.insert(item.get<std::string>());
+            }
+        }
+        for (auto iterator = quantities.begin(); iterator != quantities.end();) {
+            if (!valid_items.contains(iterator.key())) iterator = quantities.erase(iterator);
+            else ++iterator;
+        }
+        for (const auto& item : valid_items) {
+            if (!quantities.contains(item)) quantities[item] = -1;
+        }
+        return document;
+    } catch (...) {
+        return std::nullopt;
+    }
+}
+
+[[nodiscard]] Json server_event_defaults(const Json& user_config)
+{
+    auto defaults = Json::parse(config_defaults::event);
+    const auto server = user_config.value("server", std::string{});
+    const auto utf8 = [](const std::u8string_view value) {
+        return std::string_view{
+            reinterpret_cast<const char*>(value.data()), value.size()};
+    };
+    const bool china = server == utf8(u8"\u5b98\u670d")
+        || server == utf8(u8"B\u670d");
+    if (!china) {
+        for (auto& item : defaults) {
+            for (auto& reset : item["daily_reset"]) {
+                reset[0] = reset[0].get<int>() - 1;
+            }
+        }
+    }
+    return defaults;
+}
+
+[[nodiscard]] Json migrated_event_config(
+    const std::optional<Json>& source, const Json& user_config)
+{
+    auto defaults = server_event_defaults(user_config);
+    if (!source || !source->is_array()) return defaults;
+    try {
+        auto result = *source;
+        if (std::any_of(result.begin(), result.end(), [](const Json& item) {
+                return !item.is_object() || !item.contains("func_name");
+            })) {
+            return defaults;
+        }
+        const auto enable = user_config.value(
+            "new_event_enable_state", std::string{"default"});
+        for (std::size_t index = 0; index < defaults.size(); ++index) {
+            const auto& default_item = defaults[index];
+            const auto function = default_item.at("func_name");
+            const auto found = std::find_if(
+                result.begin(), result.end(), [&](const Json& existing) {
+                    return existing.is_object()
+                        && existing.contains("func_name")
+                        && existing.at("func_name") == function;
+                });
+            if (found == result.end()) {
+                auto inserted = default_item;
+                if (enable == "on") inserted["enabled"] = true;
+                else if (enable == "off") inserted["enabled"] = false;
+                result.insert(
+                    result.begin() + static_cast<Json::difference_type>(index),
+                    std::move(inserted));
+                continue;
+            }
+            if (!found->contains("daily_reset")
+                || !found->at("daily_reset").is_array()) return defaults;
+            for (auto& reset : (*found)["daily_reset"]) {
+                if (!reset.is_array() || reset.size() != 3) reset = Json::array({0, 0, 0});
+            }
+            for (const auto& [key, value] : default_item.items()) {
+                if (!found->contains(key)) (*found)[key] = value;
+            }
+        }
+        return result;
+    } catch (...) {
+        return defaults;
+    }
+}
+
+[[nodiscard]] ConfigCommandError create_private_directory(
+    const std::filesystem::path& path)
+{
+    std::error_code error;
+    if (!std::filesystem::create_directory(path, error)) {
+        return error ? ConfigCommandError::internal_error
+                     : ConfigCommandError::conflict;
+    }
+#if !defined(_WIN32)
+    std::filesystem::permissions(
+        path, std::filesystem::perms::owner_all,
+        std::filesystem::perm_options::replace, error);
+    if (error) {
+        std::error_code ignored;
+        std::filesystem::remove_all(path, ignored);
+        return ConfigCommandError::internal_error;
+    }
+#endif
+    return ConfigCommandError::none;
 }
 
 [[nodiscard]] ConfigCommandError copy_config_tree(
@@ -1047,28 +1298,40 @@ constexpr std::size_t config_copy_max_depth = 32;
     const std::stop_token stop,
     const std::function<std::pair<std::optional<std::string>, ConfigCommandError>(
         const std::filesystem::path&)>& reader,
-    const std::function<bool(const std::filesystem::path&, std::string_view)>& writer)
+    const std::function<bool(const std::filesystem::path&, std::string_view)>& writer,
+    ConfigTreeStats& stats)
 {
     std::error_code error;
-    const auto created = std::filesystem::create_directory(target, error);
-    if (error) return ConfigCommandError::internal_error;
-    if (!created) return ConfigCommandError::conflict;
+    if (const auto created = create_private_directory(target);
+        created != ConfigCommandError::none) return created;
     std::filesystem::recursive_directory_iterator iterator(
         source, std::filesystem::directory_options::none, error);
     const std::filesystem::recursive_directory_iterator end;
     for (; !error && iterator != end; iterator.increment(error)) {
         if (stop.stop_requested()) return ConfigCommandError::cancelled;
+        if (iterator.depth() >= static_cast<int>(config_copy_max_depth)) {
+            return ConfigCommandError::capacity;
+        }
         const auto relative = iterator->path().lexically_relative(source);
         if (relative.empty()) return ConfigCommandError::invalid_data;
         const auto destination = target / relative;
         const auto kind = path_kind(iterator->path());
         if (kind == PathKind::directory) {
-            const auto directory_created =
-                std::filesystem::create_directory(destination, error);
-            if (!error && !directory_created) return ConfigCommandError::conflict;
+            if (const auto directory_created = create_private_directory(destination);
+                directory_created != ConfigCommandError::none) {
+                return directory_created;
+            }
         } else if (kind == PathKind::regular_file) {
+            if (++stats.files > config_copy_max_files) {
+                return ConfigCommandError::capacity;
+            }
             auto [bytes, read_error] = reader(iterator->path());
             if (!bytes) return read_error;
+            if (bytes->size() > config_copy_max_bytes
+                || stats.bytes > config_copy_max_bytes - bytes->size()) {
+                return ConfigCommandError::capacity;
+            }
+            stats.bytes += bytes->size();
             if (!writer(destination, *bytes)) {
                 return ConfigCommandError::internal_error;
             }
@@ -1079,6 +1342,45 @@ constexpr std::size_t config_copy_max_depth = 32;
     }
     return error ? ConfigCommandError::internal_error : ConfigCommandError::none;
 }
+
+enum class DirectoryRenameResult { not_committed, committed, committed_uncertain };
+
+#if defined(_WIN32)
+[[nodiscard]] DirectoryRenameResult durable_directory_rename(
+    const std::filesystem::path& source,
+    const std::filesystem::path& target) noexcept
+{
+    if (!MoveFileExW(source.c_str(), target.c_str(), MOVEFILE_WRITE_THROUGH)) {
+        return DirectoryRenameResult::not_committed;
+    }
+    return DirectoryRenameResult::committed;
+}
+#else
+[[nodiscard]] DirectoryRenameResult durable_directory_rename(
+    const std::filesystem::path& source,
+    const std::filesystem::path& target,
+    const std::shared_ptr<PosixRootAnchor>& anchor) noexcept
+{
+    try {
+        auto directory = open_posix_resource_parent(*anchor, target);
+        if (!directory || source.parent_path() != target.parent_path()) {
+            return DirectoryRenameResult::not_committed;
+        }
+        const auto source_name = source.filename().native();
+        const auto target_name = target.filename().native();
+        if (::renameat(
+                directory.get(), source_name.c_str(), directory.get(),
+                target_name.c_str()) != 0) {
+            return DirectoryRenameResult::not_committed;
+        }
+        return ::fsync(directory.get()) == 0
+            ? DirectoryRenameResult::committed
+            : DirectoryRenameResult::committed_uncertain;
+    } catch (...) {
+        return DirectoryRenameResult::not_committed;
+    }
+}
+#endif
 
 void remove_tree_best_effort(const std::filesystem::path& path) noexcept
 {
@@ -1456,6 +1758,7 @@ channels::ResourceStoreResult<ResourceSnapshot> FileResourceStore::config_list(
 {
     const auto impl = impl_;
     if (stop.stop_requested()) return {std::nullopt, ResourceStoreError::internal_error};
+    std::lock_guard mutation_lock(impl->mutation_mutex);
     std::vector<std::string> identifiers;
     const auto config_kind = path_kind(impl->config_root);
     if (config_kind == PathKind::missing) {
@@ -1809,7 +2112,8 @@ const std::filesystem::path& FileResourceStore::project_root() const noexcept
 }
 
 ConfigCopyResult FileResourceStore::copy_config(
-    const std::string_view source_id, const std::stop_token stop) try
+    const std::string_view source_id, const std::stop_token stop,
+    ConfigCopyCommitClaim claim) try
 {
     const auto impl = impl_;
     if (stop.stop_requested()) return {{}, {}, ConfigCommandError::cancelled};
@@ -1821,7 +2125,6 @@ ConfigCopyResult FileResourceStore::copy_config(
     if (stop.stop_requested()) return {{}, {}, ConfigCommandError::cancelled};
 
     const ResourceKey config_key{SyncResource::config, source_name};
-    const ResourceKey event_key{SyncResource::event, source_name};
     auto config = impl->load(config_key);
     if (!config.value) {
         const auto mapped = config.error == ResourceStoreError::not_found
@@ -1833,28 +2136,12 @@ ConfigCopyResult FileResourceStore::copy_config(
                     : ConfigCommandError::internal_error;
         return {{}, {}, mapped};
     }
-    auto event = impl->load(event_key);
-    if (!event.value) {
-        const auto mapped = event.error == ResourceStoreError::not_found
-            ? ConfigCommandError::not_found
-            : event.error == ResourceStoreError::capacity
-                ? ConfigCommandError::capacity
-                : event.error == ResourceStoreError::invalid_data
-                    ? ConfigCommandError::invalid_data
-                    : ConfigCommandError::internal_error;
-        return {{}, {}, mapped};
-    }
-    static_cast<void>(event);
     const auto source = config.value->path.parent_path();
-    if (const auto inspected = inspect_config_tree(source, stop);
-        inspected != ConfigCommandError::none) {
-        return {{}, {}, inspected};
-    }
 
     std::string base_name = source_name;
     if (const auto found = config.value->document.find("name");
-        found != config.value->document.end() && found->is_string()) {
-        base_name = found->get<std::string>();
+        found != config.value->document.end() && python_truthy(*found)) {
+        base_name = trim_config_name(python_string(*found));
         if (base_name.empty()) base_name = source_name;
     }
     std::unordered_set<std::string> existing_names;
@@ -1874,9 +2161,19 @@ ConfigCopyResult FileResourceStore::copy_config(
         if (!valid_resource_id(id, impl->limits.max_resource_id_bytes)) continue;
         auto loaded = impl->load({SyncResource::config, id});
         if (!loaded.value) continue;
+        const auto event_path =
+            impl->unchecked_path({SyncResource::event, id});
+#if defined(_WIN32)
+        if (!windows_regular_resource_exists(*impl->windows_root, event_path)) continue;
+#else
+        if (!posix_regular_resource_exists(*impl->posix_root, event_path)) continue;
+#endif
         const auto name = loaded.value->document.find("name");
-        if (name != loaded.value->document.end() && name->is_string()) {
-            existing_names.insert(name->get<std::string>());
+        if (name != loaded.value->document.end() && !name->is_null()) {
+            auto existing_name = trim_config_name(python_string(*name));
+            if (!existing_name.empty()) {
+                existing_names.insert(std::move(existing_name));
+            }
         }
     }
     if (iteration_error) return {{}, {}, ConfigCommandError::internal_error};
@@ -1914,17 +2211,9 @@ ConfigCopyResult FileResourceStore::copy_config(
     }
     if (target_id.empty()) return {{}, {}, ConfigCommandError::conflict};
 
-    const auto staging_root = impl->root / ".baas-config-staging";
-    std::error_code filesystem_error;
-    if (path_kind(staging_root) == PathKind::missing) {
-        std::filesystem::create_directory(staging_root, filesystem_error);
-    }
-    if (filesystem_error || path_kind(staging_root) != PathKind::directory) {
-        return {{}, {}, ConfigCommandError::internal_error};
-    }
     static std::atomic<std::uint64_t> staging_sequence{};
-    const auto staging = staging_root /
-        ("copy-" + target_id + "-" +
+    const auto staging = impl->config_root /
+        (".baas-copy-" + target_id + "-" +
          std::to_string(staging_sequence.fetch_add(1, std::memory_order_relaxed)));
     if (path_kind(staging) != PathKind::missing) {
         return {{}, {}, ConfigCommandError::conflict};
@@ -1957,56 +2246,227 @@ ConfigCopyResult FileResourceStore::copy_config(
     const auto writer = [impl](const std::filesystem::path& path,
                                const std::string_view bytes) {
         try {
-            return impl->atomic_writer(path, bytes)
-                != AtomicWriteResult::not_committed;
-        } catch (...) {
-            return false;
-        }
+#if defined(_WIN32)
+            return durable_create_new(path, bytes, impl->windows_root);
+#else
+            return durable_create_new(path, bytes, impl->posix_root);
+#endif
+        } catch (...) { return false; }
     };
-    const auto copied = copy_config_tree(source, staging, stop, reader, writer);
+    ConfigTreeStats tree_stats;
+    const auto copied =
+        copy_config_tree(source, staging, stop, reader, writer, tree_stats);
     if (copied != ConfigCommandError::none) {
         remove_tree_best_effort(staging);
         return {{}, {}, copied};
     }
-    auto copied_document = config.value->document;
-    copied_document["name"] = copy_name;
+    auto copied_document = migrated_user_config(config.value->document, copy_name);
+    if (!copied_document) {
+        remove_tree_best_effort(staging);
+        return {{}, {}, ConfigCommandError::invalid_data};
+    }
+    std::optional<Json> source_event;
+    const auto event_path = staging / "event.json";
+    if (path_kind(event_path) == PathKind::regular_file) {
+#if defined(_WIN32)
+        auto event_read = read_windows_resource(
+            *impl->windows_root, event_path, impl->limits.max_json_bytes);
+#else
+        auto event_read = read_posix_resource(
+            *impl->posix_root, event_path, impl->limits.max_json_bytes);
+#endif
+        if (event_read.error == ResourceStoreError::capacity) {
+            remove_tree_best_effort(staging);
+            return {{}, {}, ConfigCommandError::capacity};
+        }
+        if (event_read.error == ResourceStoreError::none) {
+            source_event = parse_json(event_read.bytes, impl->bounds());
+        }
+    }
+    auto event_document = migrated_event_config(source_event, *copied_document);
+    Json switch_document;
     std::string copied_bytes;
+    std::string event_bytes;
+    std::string switch_bytes;
     try {
-        copied_bytes = copied_document.dump(2);
+        switch_document = Json::parse(config_defaults::switches);
+        copied_bytes = copied_document->dump(2);
+        event_bytes = event_document.dump(2);
+        switch_bytes = switch_document.dump(2);
     } catch (...) {
         remove_tree_best_effort(staging);
         return {{}, {}, ConfigCommandError::internal_error};
     }
-    if (copied_bytes.size() > impl->limits.max_json_bytes) {
+    const auto generated_fits = [&](const std::string_view bytes) {
+        if (bytes.size() > impl->limits.max_json_bytes
+            || bytes.size() > config_copy_max_bytes
+            || tree_stats.bytes > config_copy_max_bytes - bytes.size()) {
+            return false;
+        }
+        tree_stats.bytes += bytes.size();
+        return true;
+    };
+    if (!generated_fits(copied_bytes) || !generated_fits(event_bytes)
+        || !generated_fits(switch_bytes)) {
         remove_tree_best_effort(staging);
         return {{}, {}, ConfigCommandError::capacity};
     }
-    AtomicWriteResult write{AtomicWriteResult::not_committed};
-    try {
-        write = impl->atomic_writer(staging / "config.json", copied_bytes);
-    } catch (...) {
-    }
-    if (write == AtomicWriteResult::not_committed) {
+    const auto write_initialized = [&](const std::filesystem::path& path,
+                                       const std::string_view bytes) {
+        try {
+            if (path_kind(path) == PathKind::regular_file) {
+                return impl->atomic_writer(path, bytes)
+                    != AtomicWriteResult::not_committed;
+            }
+            if (path_kind(path) != PathKind::missing) return false;
+            if (++tree_stats.files > config_copy_max_files) return false;
+#if defined(_WIN32)
+            return durable_create_new(path, bytes, impl->windows_root);
+#else
+            return durable_create_new(path, bytes, impl->posix_root);
+#endif
+        } catch (...) { return false; }
+    };
+    if (!write_initialized(staging / "config.json", copied_bytes)
+        || !write_initialized(event_path, event_bytes)
+        || !write_initialized(staging / "switch.json", switch_bytes)) {
         remove_tree_best_effort(staging);
         return {{}, {}, ConfigCommandError::internal_error};
     }
-    if (stop.stop_requested()) {
+    std::error_code display_error;
+    static_cast<void>(std::filesystem::remove(
+        staging / "display.json", display_error));
+
+    const auto default_static = config_defaults::static_json();
+    const auto static_path = impl->config_root / "static.json";
+    bool update_static = true;
+    if (path_kind(static_path) == PathKind::regular_file) {
+#if defined(_WIN32)
+        auto current_static = read_windows_resource(
+            *impl->windows_root, static_path, impl->limits.max_json_bytes);
+#else
+        auto current_static = read_posix_resource(
+            *impl->posix_root, static_path, impl->limits.max_json_bytes);
+#endif
+        if (current_static.error == ResourceStoreError::capacity) {
+            remove_tree_best_effort(staging);
+            return {{}, {}, ConfigCommandError::capacity};
+        }
+        if (current_static.error == ResourceStoreError::none) {
+            const auto parsed = parse_json(current_static.bytes, impl->bounds());
+            const auto expected = parse_json(default_static, impl->bounds());
+            update_static = !parsed || !expected || *parsed != *expected;
+        }
+    } else if (path_kind(static_path) != PathKind::missing) {
         remove_tree_best_effort(staging);
-        return {{}, {}, ConfigCommandError::cancelled};
+        return {{}, {}, ConfigCommandError::invalid_data};
     }
-    std::filesystem::rename(staging, target, filesystem_error);
-    if (filesystem_error) {
+    const auto static_candidate = impl->config_root /
+        (".baas-static-" + target_id + "-" +
+         std::to_string(staging_sequence.fetch_add(1, std::memory_order_relaxed)));
+    const auto static_backup = impl->config_root /
+        (".baas-static-backup-" + target_id + "-" +
+         std::to_string(staging_sequence.fetch_add(1, std::memory_order_relaxed)));
+    if (update_static) {
+        if (default_static.size() > impl->limits.max_json_bytes
+            || path_kind(static_candidate) != PathKind::missing
+            || path_kind(static_backup) != PathKind::missing
+            || !writer(static_candidate, default_static)) {
+            remove_tree_best_effort(staging);
+            remove_tree_best_effort(static_candidate);
+            return {{}, {}, ConfigCommandError::internal_error};
+        }
+    }
+    std::mutex commit_mutex;
+    bool cancellation_observed = stop.stop_requested();
+    std::stop_callback cancellation(stop, [&] {
+        std::lock_guard lock(commit_mutex);
+        cancellation_observed = true;
+    });
+    DirectoryRenameResult renamed{DirectoryRenameResult::not_committed};
+    bool static_backed_up{};
+    bool static_installed{};
+    {
+        std::lock_guard commit_lock(commit_mutex);
+        if (cancellation_observed || stop.stop_requested()) {
+            remove_tree_best_effort(staging);
+            return {{}, {}, ConfigCommandError::cancelled};
+        }
+        if (claim && !claim(target_id, copy_name)) {
+            remove_tree_best_effort(staging);
+            remove_tree_best_effort(static_candidate);
+            return {{}, {}, ConfigCommandError::cancelled};
+        }
+        if (update_static && path_kind(static_path) == PathKind::regular_file) {
+#if defined(_WIN32)
+            static_backed_up = durable_directory_rename(
+                static_path, static_backup) != DirectoryRenameResult::not_committed;
+#else
+            static_backed_up = durable_directory_rename(
+                static_path, static_backup, impl->posix_root)
+                != DirectoryRenameResult::not_committed;
+#endif
+            if (!static_backed_up) {
+                remove_tree_best_effort(staging);
+                remove_tree_best_effort(static_candidate);
+                return {{}, {}, ConfigCommandError::internal_error};
+            }
+        }
+        if (update_static) {
+#if defined(_WIN32)
+            static_installed = durable_directory_rename(
+                static_candidate, static_path)
+                != DirectoryRenameResult::not_committed;
+#else
+            static_installed = durable_directory_rename(
+                static_candidate, static_path, impl->posix_root)
+                != DirectoryRenameResult::not_committed;
+#endif
+            if (!static_installed) {
+#if defined(_WIN32)
+                if (static_backed_up) static_cast<void>(durable_directory_rename(
+                    static_backup, static_path));
+#else
+                if (static_backed_up) static_cast<void>(durable_directory_rename(
+                    static_backup, static_path, impl->posix_root));
+#endif
+                remove_tree_best_effort(staging);
+                remove_tree_best_effort(static_candidate);
+                return {{}, {}, ConfigCommandError::internal_error};
+            }
+        }
+#if defined(_WIN32)
+        renamed = durable_directory_rename(staging, target);
+#else
+        renamed = durable_directory_rename(staging, target, impl->posix_root);
+#endif
+    }
+    if (renamed == DirectoryRenameResult::not_committed) {
+        if (static_installed) {
+            std::error_code ignored;
+            static_cast<void>(std::filesystem::remove(static_path, ignored));
+        }
+#if defined(_WIN32)
+        if (static_backed_up) static_cast<void>(durable_directory_rename(
+            static_backup, static_path));
+#else
+        if (static_backed_up) static_cast<void>(durable_directory_rename(
+            static_backup, static_path, impl->posix_root));
+#endif
         remove_tree_best_effort(staging);
+        remove_tree_best_effort(static_candidate);
         return {{}, {}, path_kind(target) == PathKind::missing
                 ? ConfigCommandError::internal_error : ConfigCommandError::conflict};
     }
+    remove_tree_best_effort(static_backup);
     return {std::move(target_id), std::move(copy_name), ConfigCommandError::none};
 } catch (...) {
     return {{}, {}, ConfigCommandError::internal_error};
 }
 
 ConfigRemoveResult FileResourceStore::remove_config(
-    const std::string_view config_id, const std::stop_token stop) try
+    const std::string_view config_id, const std::stop_token stop,
+    ConfigRemoveCommitClaim claim) try
 {
     const auto impl = impl_;
     if (stop.stop_requested()) return {ConfigCommandError::cancelled};
@@ -2018,27 +2478,36 @@ ConfigRemoveResult FileResourceStore::remove_config(
     if (stop.stop_requested()) return {ConfigCommandError::cancelled};
     const auto target = impl->config_root / id;
     if (path_kind(target) == PathKind::missing) return {};
-    if (const auto inspected = inspect_config_tree(target, stop);
-        inspected != ConfigCommandError::none) {
-        return {inspected};
-    }
-    const auto staging_root = impl->root / ".baas-config-staging";
-    std::error_code error;
-    if (path_kind(staging_root) == PathKind::missing) {
-        std::filesystem::create_directory(staging_root, error);
-    }
-    if (error || path_kind(staging_root) != PathKind::directory) {
-        return {ConfigCommandError::internal_error};
+    if (path_kind(target) != PathKind::directory) {
+        return {ConfigCommandError::invalid_data};
     }
     static std::atomic<std::uint64_t> removal_sequence{};
-    const auto tombstone = staging_root /
-        ("remove-" + std::to_string(removal_sequence.fetch_add(
+    const auto tombstone = impl->config_root /
+        (".baas-remove-" + std::to_string(removal_sequence.fetch_add(
                          1, std::memory_order_relaxed)));
     if (path_kind(tombstone) != PathKind::missing) {
         return {ConfigCommandError::conflict};
     }
-    std::filesystem::rename(target, tombstone, error);
-    if (error) {
+    std::mutex commit_mutex;
+    bool cancellation_observed = stop.stop_requested();
+    std::stop_callback cancellation(stop, [&] {
+        std::lock_guard lock(commit_mutex);
+        cancellation_observed = true;
+    });
+    DirectoryRenameResult renamed{DirectoryRenameResult::not_committed};
+    {
+        std::lock_guard commit_lock(commit_mutex);
+        if (cancellation_observed || stop.stop_requested()) {
+            return {ConfigCommandError::cancelled};
+        }
+        if (claim && !claim()) return {ConfigCommandError::cancelled};
+#if defined(_WIN32)
+        renamed = durable_directory_rename(target, tombstone);
+#else
+        renamed = durable_directory_rename(target, tombstone, impl->posix_root);
+#endif
+    }
+    if (renamed == DirectoryRenameResult::not_committed) {
         return {path_kind(target) == PathKind::missing
                 ? ConfigCommandError::none : ConfigCommandError::internal_error};
     }

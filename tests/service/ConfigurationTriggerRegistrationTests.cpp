@@ -14,6 +14,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <vector>
 
 using namespace std::chrono_literals;
 namespace adapters = baas::service::adapters;
@@ -57,6 +58,24 @@ public:
             << "{\"name\":" << Json(name).dump() << ",\"server\":\"日服\"}";
         std::ofstream(directory / "event.json") << "[]";
         std::ofstream(directory / "nested" / "kept.txt") << "kept";
+    }
+    void add_legacy_without_event(const std::string& id) const
+    {
+        const auto directory = root / "config" / id;
+        std::filesystem::create_directories(directory);
+        std::ofstream(directory / "config.json")
+            << R"({"name":"\u3000Legacy\u3000","server":"日服","legacy_key":true,"create_item_holding_quantity":{"obsolete":7}})";
+        std::ofstream(directory / "switch.json") << R"([{"legacy":true}])";
+        std::ofstream(directory / "display.json") << "{}";
+    }
+    void add_server(const std::string& id, const std::string& server) const
+    {
+        const auto directory = root / "config" / id;
+        std::filesystem::create_directories(directory);
+        std::ofstream(directory / "config.json")
+            << Json{{"name", id}, {"server", server},
+                    {"create_item_holding_quantity", Json::object()}}.dump();
+        std::ofstream(directory / "event.json") << "[]";
     }
     std::filesystem::path root;
 };
@@ -152,12 +171,22 @@ void test_copy_and_remove_exact_python_envelopes()
 
     const auto copied = execute(executor, "copy_config", 7, R"({"id":"source"})");
     check(copied.status == protocol::ResponseStatus::ok,
-          "copy_config must complete successfully");
+          std::string{"copy_config must complete successfully: "} + copied.json);
     const auto envelope = Json::parse(copied.json);
-    check(envelope["command"] == "copy_config" && envelope["timestamp"] == 7
-              && envelope["data"]["name"] == "Alpha_copy2",
+    const bool valid_copy = copied.status == protocol::ResponseStatus::ok
+        && envelope.contains("data") && envelope.at("data").is_object()
+        && envelope.at("data").contains("serial")
+        && envelope.at("data").at("serial").is_string()
+        && envelope.at("data").contains("name");
+    check(valid_copy && envelope.value("command", "") == "copy_config"
+              && envelope.value("timestamp", 0) == 7
+              && envelope.at("data").at("name") == "Alpha_copy2",
           "copy_config must preserve Python serial/name response data");
-    const auto serial = envelope["data"]["serial"].get<std::string>();
+    if (!valid_copy) {
+        executor->shutdown();
+        return;
+    }
+    const auto serial = envelope.at("data").at("serial").get<std::string>();
     check(serial != "source"
               && std::filesystem::is_regular_file(
                   project.root / "config" / serial / "event.json")
@@ -246,6 +275,151 @@ void test_validation_bounds_and_fail_closed_paths()
     executor->shutdown();
 }
 
+void test_python_initializer_migration_vector()
+{
+    TempProject project;
+    project.add_legacy_without_event("legacy");
+    auto store = std::make_shared<adapters::FileResourceStore>(project.root);
+    auto executor = std::make_shared<trigger::TriggerExecutor>(dispatcher(store));
+    const auto copied = execute(executor, "copy_config", 20, R"({"id":"legacy"})");
+    check(copied.status == protocol::ResponseStatus::ok,
+          std::string{"copy must repair a source without event.json: "} + copied.json);
+    const auto envelope = Json::parse(copied.json);
+    const bool valid_copy = copied.status == protocol::ResponseStatus::ok
+        && envelope.contains("data") && envelope.at("data").is_object()
+        && envelope.at("data").contains("serial")
+        && envelope.at("data").at("serial").is_string();
+    if (!valid_copy) {
+        check(false, "initializer migration response must contain a serial");
+        executor->shutdown();
+        return;
+    }
+    const auto serial = envelope.at("data").at("serial").get<std::string>();
+    const auto directory = project.root / "config" / serial;
+    const auto config = Json::parse(std::ifstream(directory / "config.json"));
+    const auto event = Json::parse(std::ifstream(directory / "event.json"));
+    const auto switches = Json::parse(std::ifstream(directory / "switch.json"));
+    check(envelope.at("data").at("name") == "Legacy_copy"
+              && config["name"] == "Legacy_copy"
+              && config["server"] == "日服"
+              && config.contains("purchase_arena_ticket_times")
+              && !config.contains("legacy_key")
+              && config["create_item_holding_quantity"].size() == 157
+              && !config["create_item_holding_quantity"].contains("obsolete"),
+          "copy must apply Unicode strip, current keys, and JP manufacturing entries");
+    check(event.is_array() && !event.empty()
+              && event[0]["func_name"] == "restart"
+              && event[0]["daily_reset"][0][0] == 19,
+          "missing event.json must use the real non-CN default migration vector");
+    check(switches.is_array() && switches.size() == 11
+              && !std::filesystem::exists(directory / "display.json"),
+          "copy must reset switch.json and delete deprecated display.json");
+    const auto static_config = Json::parse(std::ifstream(
+        project.root / "config" / "static.json"));
+    check(static_config.contains("create_item_order")
+              && static_config["create_item_order"]["JP"]["basic"].is_object(),
+          "copy initializer must atomically refresh the real global static config");
+
+    project.add("junk", "Junk");
+    std::ofstream(project.root / "config" / "junk" / "event.json",
+                  std::ios::trunc) << R"([{"enabled":true}])";
+    const auto repaired = execute(executor, "copy_config", 21, R"({"id":"junk"})");
+    const auto repaired_envelope = Json::parse(repaired.json);
+    if (repaired.status != protocol::ResponseStatus::ok
+        || !repaired_envelope.contains("data")
+        || !repaired_envelope.at("data").contains("serial")) {
+        check(false, "junk event repair response must contain a serial");
+        executor->shutdown();
+        return;
+    }
+    const auto repaired_serial = repaired_envelope.at("data").at("serial")
+        .get<std::string>();
+    const auto repaired_event = Json::parse(std::ifstream(
+        project.root / "config" / repaired_serial / "event.json"));
+    check(repaired_event.size() == 26
+              && repaired_event[0]["func_name"] == "restart",
+          "an event item missing func_name must reset the whole file to defaults");
+
+    const auto unsupported = project.root / "config" / "unsupported";
+    std::filesystem::create_directories(unsupported);
+    std::ofstream(unsupported / "config.json")
+        << R"({"name":"Unsupported","server":"CN"})";
+    std::ofstream(unsupported / "event.json") << "[]";
+    const auto rejected = execute(
+        executor, "copy_config", 22, R"({"id":"unsupported"})");
+    check(rejected.status == protocol::ResponseStatus::error
+              && rejected.json.find("config_invalid_data") != std::string::npos,
+          "literal CN and unknown servers must fail like Python ConfigSet");
+    executor->shutdown();
+}
+
+void test_commit_point_wins_late_stop_and_staging_is_protected_scope()
+{
+    TempProject project;
+    project.add("source", "Alpha");
+    auto store = std::make_shared<adapters::FileResourceStore>(project.root);
+    std::stop_source stop;
+    std::optional<std::thread> canceller;
+    bool saw_private_staging{};
+    bool saw_no_project_root_staging{};
+    const auto copied = store->copy_config(
+        "source", stop.get_token(),
+        [&](const std::string_view, const std::string_view) {
+            saw_no_project_root_staging = !std::filesystem::exists(
+                project.root / ".baas-config-staging");
+            for (const auto& child :
+                 std::filesystem::directory_iterator(project.root / "config")) {
+                const auto name = child.path().filename().string();
+                if (name.starts_with(".baas-copy-")) saw_private_staging = true;
+            }
+            canceller.emplace([&] { static_cast<void>(stop.request_stop()); });
+            check(wait_until([&] { return stop.stop_requested(); }),
+                  "late cancellation fixture must reach the commit gate");
+            return true;
+        });
+    if (canceller) canceller->join();
+    check(copied && stop.stop_requested()
+              && std::filesystem::is_directory(
+                  project.root / "config" / copied.serial),
+          "a commit that wins the linearization gate must never report cancelled");
+    check(saw_private_staging && saw_no_project_root_staging,
+          "copy staging must stay under the auth-protected config root");
+}
+
+void test_all_python_server_mappings_and_invalid_servers()
+{
+    TempProject project;
+    const std::vector<std::pair<std::string, std::size_t>> servers{
+        {"官服", 154}, {"B服", 154}, {"国际服", 157},
+        {"国际服青少年", 157}, {"韩国ONE", 157},
+        {"Steam国际服", 157}, {"日服", 157}, {"日服PC端", 157}};
+    auto store = std::make_shared<adapters::FileResourceStore>(project.root);
+    for (std::size_t index = 0; index < servers.size(); ++index) {
+        const auto id = "server-" + std::to_string(index);
+        project.add_server(id, servers[index].first);
+        const auto copied = store->copy_config(id, {});
+        check(static_cast<bool>(copied),
+              "every Python ConfigSet server label must copy");
+        if (!copied) continue;
+        const auto config = Json::parse(std::ifstream(
+            project.root / "config" / copied.serial / "config.json"));
+        check(config.at("create_item_holding_quantity").size()
+                  == servers[index].second,
+              "server mapping must install the exact manufacturing item count");
+    }
+    for (const auto& [id, server] :
+         std::vector<std::pair<std::string, std::string>>{
+             {"literal-cn", "CN"}, {"bogus", "bogus"}}) {
+        project.add_server(id, server);
+        const auto before = store->config_list({});
+        const auto rejected = store->copy_config(id, {});
+        const auto after = store->config_list({});
+        check(rejected.error == adapters::ConfigCommandError::invalid_data
+                  && before && after && before->data_json == after->data_json,
+              "unsupported server values must fail without publishing a target");
+    }
+}
+
 void test_registration_scope_and_limits()
 {
     check(app::make_configuration_trigger_registrations(nullptr).error
@@ -287,6 +461,11 @@ void test_backpressure_retries_terminal_without_repeating_copy()
           "backpressured copy_config must submit");
     check(wait_until([&] { return connection.stats().completed == 1; }),
           "completed copy_config terminal must be retained under backpressure");
+    const auto cancelled = connection.request_cancel(2);
+    check(cancelled.session_decision
+              == protocol::CancelDecision::terminal_already_queued
+              && !cancelled.stop_requested,
+          "post-commit cancellation must not replace an irrevocable success");
     auto listed = store->config_list({});
     check(listed && Json::parse(listed->data_json).size() == 2,
           "filesystem copy must execute exactly once before response retry");
@@ -317,6 +496,9 @@ int main()
     try {
         test_copy_and_remove_exact_python_envelopes();
         test_validation_bounds_and_fail_closed_paths();
+        test_python_initializer_migration_vector();
+        test_commit_point_wins_late_stop_and_staging_is_protected_scope();
+        test_all_python_server_mappings_and_invalid_servers();
         test_registration_scope_and_limits();
         test_backpressure_retries_terminal_without_repeating_copy();
     } catch (const std::exception& error) {

@@ -527,6 +527,39 @@ void test_output_ready_edges_subscription_and_close_race()
     static_cast<void>(close.get());
 }
 
+void test_irrevocable_terminal_claim_linearizes_cancellation()
+{
+    trigger::TriggerSession commit_wins;
+    const auto admitted = commit_wins.admit(command("copy_config", 201));
+    check(admitted
+              && commit_wins.claim_irrevocable_terminal(*admitted.receipt)
+              && commit_wins.request_cancel(201)
+                  == trigger::CancelDecision::terminal_already_queued
+              && commit_wins.publish(
+                  *admitted.receipt, response("copy_config", 201)),
+          "irrevocable claim must close cancellation without prepublishing success");
+    check(static_cast<bool>(begin_and_complete(commit_wins)),
+          "claimed terminal must retain ordinary publish/send ownership");
+
+    trigger::TriggerSession cancel_wins;
+    const auto cancelled = cancel_wins.admit(command("copy_config", 202));
+    check(cancelled
+              && cancel_wins.request_cancel(202)
+                  == trigger::CancelDecision::requested
+              && cancel_wins.claim_irrevocable_terminal(*cancelled.receipt).error
+                  == trigger::IrrevocableTerminalClaimError::cancellation_requested,
+          "cancellation recorded before claim must prevent irreversible commit");
+    check(cancel_wins.publish(
+              *cancelled.receipt, response("copy_config", 202)).error
+              == trigger::PublishError::cancellation_response_required
+              && cancel_wins.publish(
+                  *cancelled.receipt,
+                  response(
+                      "copy_config", 202, true,
+                      trigger::ResponseStatus::cancelled, std::nullopt)),
+          "a lost claim must still complete with exactly one cancelled terminal");
+}
+
 }  // namespace
 
 int main()
@@ -539,6 +572,7 @@ int main()
     test_concurrent_admission_and_publication();
     test_bpip_json_binary_batch_encoding();
     test_output_ready_edges_subscription_and_close_race();
+    test_irrevocable_terminal_claim_linearizes_cancellation();
 
     if (failures != 0) {
         std::cerr << failures << " trigger session test(s) failed\n";

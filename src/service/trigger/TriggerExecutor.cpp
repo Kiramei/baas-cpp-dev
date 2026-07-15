@@ -340,7 +340,8 @@ struct TriggerExecutor::Impl final {
                 if (result.disposition == TriggerDispatchDisposition::retry_response
                     && result.pending_response && slot.stop_source.stop_requested()
                     && connection_open) {
-                    if (!result.pending_response->replace_with_cancelled())
+                    if (result.pending_response->cancellation_replaceable()
+                        && !result.pending_response->replace_with_cancelled())
                         must_close = true;
                 }
                 const bool completion_forbidden = stopping || !connection_open;
@@ -468,7 +469,9 @@ struct TriggerExecutor::Impl final {
             && slot.timestamp == timestamp
             && slot.stop_source.get_token()
                 == target.source->get_token()) {
-            if (!slot.pending || !slot.pending->replace_with_cancelled())
+            if (!slot.pending) return true;
+            if (!slot.pending->cancellation_replaceable()) return false;
+            if (!slot.pending->replace_with_cancelled())
                 return true;
             pending_response_bytes -= slot.pending_bytes;
             slot.pending_bytes = slot.pending->bytes();

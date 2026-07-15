@@ -154,22 +154,40 @@ ConfigurationTriggerRegistrationResult make_configuration_trigger_registrations(
                     validate_or_error(parsed, sink);
                     return;
                 }
-                const auto result = store->copy_config(parsed.id, stop);
+                bool claim_attempted{};
+                const auto result = store->copy_config(
+                    parsed.id, stop,
+                    [&](const std::string_view serial,
+                        const std::string_view name) {
+                        claim_attempted = true;
+                        std::string data;
+                        try {
+                            data = "{\"serial\":" + Json(serial).dump()
+                                + ",\"name\":" + Json(name).dump() + "}";
+                        } catch (...) {
+                            stage_error(sink, "config_response_capacity");
+                            return false;
+                        }
+                        const auto prepared =
+                            sink.irrevocable_success(std::move(data));
+                        if (!prepared && !sink.irrevocable_terminal_claimed()) {
+                            stage_error(sink, "config_response_rejected");
+                        }
+                        return sink.irrevocable_terminal_claimed();
+                    });
+                if (claim_attempted) {
+                    if (!result && sink.irrevocable_terminal_claimed()) {
+                        static_cast<void>(sink.irrevocable_error(
+                            std::string{command_error(result.error)}));
+                    }
+                    return;
+                }
                 if (stop.stop_requested()
                     || result.error == adapters::ConfigCommandError::cancelled) {
                     return stage_cancelled(sink);
                 }
                 if (!result) return stage_error(sink, command_error(result.error));
-                std::string data;
-                try {
-                    data = "{\"serial\":" + Json(result.serial).dump()
-                        + ",\"name\":" + Json(result.name).dump() + "}";
-                } catch (...) {
-                    return stage_error(sink, "config_response_capacity");
-                }
-                if (!sink.success(std::move(data))) {
-                    stage_error(sink, "config_response_rejected");
-                }
+                stage_error(sink, "config_internal_error");
             },
         });
         registrations.push_back({
@@ -183,7 +201,22 @@ ConfigurationTriggerRegistrationResult make_configuration_trigger_registrations(
                     validate_or_error(parsed, sink);
                     return;
                 }
-                const auto result = store->remove_config(parsed.id, stop);
+                bool claim_attempted{};
+                const auto result = store->remove_config(parsed.id, stop, [&] {
+                    claim_attempted = true;
+                    const auto prepared = sink.irrevocable_success("{}");
+                    if (!prepared && !sink.irrevocable_terminal_claimed()) {
+                        stage_error(sink, "config_response_rejected");
+                    }
+                    return sink.irrevocable_terminal_claimed();
+                });
+                if (claim_attempted) {
+                    if (!result && sink.irrevocable_terminal_claimed()) {
+                        static_cast<void>(sink.irrevocable_error(
+                            std::string{command_error(result.error)}));
+                    }
+                    return;
+                }
                 if (stop.stop_requested()
                     || result.error == adapters::ConfigCommandError::cancelled) {
                     return stage_cancelled(sink);

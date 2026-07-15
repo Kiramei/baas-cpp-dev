@@ -390,7 +390,7 @@ AdmissionResult TriggerSession::admit(CommandAdmission command)
         command.timestamp,
         Entry{
             std::move(command.command), command.response_mode, false, false,
-            false, generation});
+            false, false, generation});
     ++accepted_;
     return {
         AdmissionError::none,
@@ -409,7 +409,8 @@ RollbackResult TriggerSession::rollback(const AdmissionReceipt& receipt)
         || iterator->second.generation != receipt.generation_) {
         return {RollbackError::invalid_admission_receipt};
     }
-    if (iterator->second.response_queued)
+    if (iterator->second.response_queued
+        || iterator->second.irrevocable_terminal_claimed)
         return {RollbackError::response_already_queued};
     entries_.erase(iterator);
     ++rolled_back_admissions_;
@@ -422,13 +423,35 @@ CancelDecision TriggerSession::request_cancel(const Timestamp timestamp)
     if (closed_) return CancelDecision::closed;
     const auto iterator = entries_.find(timestamp);
     if (iterator == entries_.end()) return CancelDecision::unknown_timestamp;
-    if (iterator->second.terminal_queued)
+    if (iterator->second.terminal_queued
+        || iterator->second.irrevocable_terminal_claimed)
         return CancelDecision::terminal_already_queued;
     if (iterator->second.cancel_requested)
         return CancelDecision::already_requested;
     iterator->second.cancel_requested = true;
     ++cancellations_requested_;
     return CancelDecision::requested;
+}
+
+IrrevocableTerminalClaimResult TriggerSession::claim_irrevocable_terminal(
+    const AdmissionReceipt& receipt)
+{
+    std::lock_guard lock(mutex_);
+    if (closed_) return {IrrevocableTerminalClaimError::closed};
+    if (receipt.owner_id_ != instance_id_)
+        return {IrrevocableTerminalClaimError::invalid_admission_receipt};
+    const auto iterator = entries_.find(receipt.timestamp_);
+    if (iterator == entries_.end()
+        || iterator->second.generation != receipt.generation_) {
+        return {IrrevocableTerminalClaimError::invalid_admission_receipt};
+    }
+    auto& entry = iterator->second;
+    if (entry.terminal_queued || entry.irrevocable_terminal_claimed)
+        return {IrrevocableTerminalClaimError::terminal_already_queued};
+    if (entry.cancel_requested)
+        return {IrrevocableTerminalClaimError::cancellation_requested};
+    entry.irrevocable_terminal_claimed = true;
+    return {};
 }
 
 std::size_t TriggerSession::batch_bytes(const OutboundBatch& batch) noexcept

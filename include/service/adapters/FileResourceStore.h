@@ -47,6 +47,10 @@ struct ConfigRemoveResult {
     }
 };
 
+using ConfigCopyCommitClaim =
+    std::function<bool(std::string_view serial, std::string_view name)>;
+using ConfigRemoveCommitClaim = std::function<bool()>;
+
 struct FileResourceStoreDependencies {
     using Clock = std::function<double()>;
     // Strong commit contract: the result must describe whether replacement is
@@ -106,10 +110,12 @@ public:
     // invalidate cached snapshots before becoming observable.
     [[nodiscard]] ConfigCopyResult copy_config(
         std::string_view source_id,
-        std::stop_token stop);
+        std::stop_token stop,
+        ConfigCopyCommitClaim claim = {});
     [[nodiscard]] ConfigRemoveResult remove_config(
         std::string_view config_id,
-        std::stop_token stop);
+        std::stop_token stop,
+        ConfigRemoveCommitClaim claim = {});
 
 private:
     class Impl;

@@ -81,10 +81,11 @@ this method after observing an external change.
 
 The production `copy_config` and `remove_config*` trigger registrations use
 explicit structural operations on this store. They share the patch mutation
-gate, use a bounded project-local staging directory plus same-volume rename,
+gate, use bounded auth-protected siblings under `config/` plus same-volume rename,
 and invalidate removed config/event cache entries. Recursive copy reads only
 regular files through the persistent root anchor and commits destination files
-through the durable atomic writer. See `SERVICE_CONFIGURATION_TRIGGERS.md` for
+through anchored create-exclusive and replacement writers. See
+`SERVICE_CONFIGURATION_TRIGGERS.md` for
 the Python parity boundary and deferred commands.
 
 ## Build and verification
