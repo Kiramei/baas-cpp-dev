@@ -31,6 +31,13 @@ on:
       - 'cmake/ServiceTriggerDispatch.cmake'
       - 'cmake/ServiceTriggerExecutor.cmake'
       - 'cmake/ServiceWebSocket.cmake'
+      - 'cmake/RuntimeRepository.cmake'
+      - 'cmake/ServiceRuntimeRepositoryOwner.cmake'
+      - 'cmake/ServiceProductionHttpHost.cmake'
+      - 'cmake/ServiceHttp.cmake'
+      - 'cmake/ServiceRouter.cmake'
+      - 'cmake/ServiceOriginPolicy.cmake'
+      - 'cmake/ServiceAuthHttp.cmake'
       - 'deploy/conan/conanfile.py'
       - 'deploy/conan/profiles/android-clang-*-release'
       - 'deploy/conan/profiles/dependency-versions-default'
@@ -41,6 +48,18 @@ on:
       - 'deploy/conan/scripts/manage_recipes.py'
       - 'include/service/auth/**'
       - 'src/service/auth/**'
+      - 'include/runtime/repository/**'
+      - 'src/runtime/repository/RuntimeRepositorySnapshot.cpp'
+      - 'include/service/app/ServiceRuntimeRepositoryOwner.h'
+      - 'src/service/app/ServiceRuntimeRepositoryOwner.cpp'
+      - 'tests/service/ServiceRuntimeRepositoryOwnerTests.cpp'
+      - 'include/service/http/ProductionHttpHost.h'
+      - 'src/service/http/ProductionHttpHost.cpp'
+      - 'tests/service/ProductionHttpHostAndroidPolicyCompile.cpp'
+      - 'include/service/http/**'
+      - 'src/service/http/**'
+      - 'include/service/router/**'
+      - 'src/service/router/**'
       - 'include/service/websocket/ControlSessionFactory.h'
       - 'include/service/websocket/BusinessSessionFactory.h'
       - 'include/service/websocket/WebSocketOwner.h'
@@ -117,6 +136,8 @@ on:
       - 'docs/script-runtime/SERVICE_ADB_DISCOVERY_TRIGGER.md'
       - 'docs/script-runtime/SERVICE_CONFIGURATION_TRIGGERS.md'
       - 'docs/script-runtime/SERVICE_FILE_RESOURCE_STORE.md'
+      - 'docs/script-runtime/SERVICE_RUNTIME_REPOSITORY_OWNER.md'
+      - 'docs/script-runtime/RUNTIME_REPOSITORIES.md'
   pull_request:
     branches:
       - main
@@ -150,6 +171,13 @@ on:
       - 'cmake/ServiceTriggerDispatch.cmake'
       - 'cmake/ServiceTriggerExecutor.cmake'
       - 'cmake/ServiceWebSocket.cmake'
+      - 'cmake/RuntimeRepository.cmake'
+      - 'cmake/ServiceRuntimeRepositoryOwner.cmake'
+      - 'cmake/ServiceProductionHttpHost.cmake'
+      - 'cmake/ServiceHttp.cmake'
+      - 'cmake/ServiceRouter.cmake'
+      - 'cmake/ServiceOriginPolicy.cmake'
+      - 'cmake/ServiceAuthHttp.cmake'
       - 'deploy/conan/conanfile.py'
       - 'deploy/conan/profiles/android-clang-*-release'
       - 'deploy/conan/profiles/dependency-versions-default'
@@ -160,6 +188,18 @@ on:
       - 'deploy/conan/scripts/manage_recipes.py'
       - 'include/service/auth/**'
       - 'src/service/auth/**'
+      - 'include/runtime/repository/**'
+      - 'src/runtime/repository/RuntimeRepositorySnapshot.cpp'
+      - 'include/service/app/ServiceRuntimeRepositoryOwner.h'
+      - 'src/service/app/ServiceRuntimeRepositoryOwner.cpp'
+      - 'tests/service/ServiceRuntimeRepositoryOwnerTests.cpp'
+      - 'include/service/http/ProductionHttpHost.h'
+      - 'src/service/http/ProductionHttpHost.cpp'
+      - 'tests/service/ProductionHttpHostAndroidPolicyCompile.cpp'
+      - 'include/service/http/**'
+      - 'src/service/http/**'
+      - 'include/service/router/**'
+      - 'src/service/router/**'
       - 'include/service/websocket/ControlSessionFactory.h'
       - 'include/service/websocket/BusinessSessionFactory.h'
       - 'include/service/websocket/WebSocketOwner.h'
@@ -236,6 +276,8 @@ on:
       - 'docs/script-runtime/SERVICE_ADB_DISCOVERY_TRIGGER.md'
       - 'docs/script-runtime/SERVICE_CONFIGURATION_TRIGGERS.md'
       - 'docs/script-runtime/SERVICE_FILE_RESOURCE_STORE.md'
+      - 'docs/script-runtime/SERVICE_RUNTIME_REPOSITORY_OWNER.md'
+      - 'docs/script-runtime/RUNTIME_REPOSITORIES.md'
 
 permissions:
   contents: read
@@ -513,6 +555,8 @@ jobs:
           -DBUILD_SERVICE_ADB_DISCOVERY_TRIGGER=ON
           -DBUILD_SERVICE_FILE_RESOURCE_STORE=ON
           -DBUILD_SERVICE_CONFIGURATION_TRIGGERS=ON
+          -DBUILD_SERVICE_RUNTIME_REPOSITORY_OWNER=ON
+          -DBUILD_SERVICE_PRODUCTION_HTTP_HOST_TESTS=ON
           -DBUILD_APP_BAAS=OFF
           -DBUILD_APP_ISA=OFF
           -DBUILD_BAAS_OCR=OFF
@@ -532,3 +576,5 @@ jobs:
           BAAS_service_adb_discovery_trigger
           BAAS_service_file_resource_store
           BAAS_service_configuration_triggers
+          BAAS_service_runtime_repository_owner
+          BAAS_service_production_http_host_android_policy_contract
