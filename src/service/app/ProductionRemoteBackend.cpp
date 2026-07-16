@@ -888,6 +888,22 @@ public:
         auto server = find_server(config->serial, stop);
         if (server.error != RemoteBackendError::none)
             return fail(server.error);
+        if (server.pid) {
+            // The first lease probe and process discovery are separate ADB
+            // round trips. Another backend can acquire the device lease and
+            // exec its child between them, so a discovered process is legacy
+            // only after a second, post-discovery lease probe says so.
+            const auto current_lease = dependencies_.adb->shell(
+                config->serial, lease_probe_command(), stop);
+            if (!current_lease)
+                return fail(map_adb_error(current_lease.error));
+            if (current_lease->starts_with("BUSY"))
+                return fail(RemoteBackendError::capacity);
+            if (!current_lease->starts_with("NONE")
+                && !current_lease->starts_with("STALE")) {
+                return fail(RemoteBackendError::internal_error);
+            }
+        }
         if (!server.pid) {
             std::optional<std::string> token;
             try { token = dependencies_.owner_token_factory(); }

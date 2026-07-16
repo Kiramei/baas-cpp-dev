@@ -123,6 +123,9 @@ public:
     std::optional<std::string> start_output_override;
     bool block_state{};
     bool state_entered{};
+    bool block_first_lease_probe{};
+    bool first_lease_probe_entered{};
+    bool release_first_lease_probe{};
     std::condition_variable cv;
     mutable std::mutex mutex;
 
@@ -140,21 +143,33 @@ public:
     adb::AdbTransportResult<std::string> shell(
         std::string_view serial, std::string_view command, std::stop_token) override
     {
-        std::lock_guard lock{mutex};
+        std::unique_lock lock{mutex};
         commands.emplace_back(std::string{serial} + ':' + std::string{command});
         if (lease && !cmdlines.contains(lease->child_pid)) lease.reset();
         if (command.starts_with("# BAAS_WS_LEASE_PROBE")) {
-            if (malicious_lease_target) return ok(std::string{"BUSY\n"});
-            if (!lease) return ok(std::string{"NONE\n"});
-            const auto start = start_times.find(lease->supervisor_pid);
-            const auto environment = environments.find(lease->supervisor_pid);
-            if (start != start_times.end() && start->second == lease->supervisor_start
-                && environment != environments.end()
-                && environment->second == owner_environ(lease->token)) {
-                return ok(std::string{"BUSY\n"});
+            std::string response;
+            if (malicious_lease_target) response = "BUSY\n";
+            else if (!lease) response = "NONE\n";
+            else {
+                const auto start = start_times.find(lease->supervisor_pid);
+                const auto environment = environments.find(lease->supervisor_pid);
+                if (start != start_times.end()
+                    && start->second == lease->supervisor_start
+                    && environment != environments.end()
+                    && environment->second == owner_environ(lease->token)) {
+                    response = "BUSY\n";
+                } else {
+                    lease.reset();
+                    response = "STALE\n";
+                }
             }
-            lease.reset();
-            return ok(std::string{"STALE\n"});
+            if (block_first_lease_probe) {
+                block_first_lease_probe = false;
+                first_lease_probe_entered = true;
+                cv.notify_all();
+                cv.wait(lock, [&] { return release_first_lease_probe; });
+            }
+            return ok(std::move(response));
         }
         if (command.starts_with("# BAAS_WS_SUPERVISOR_LAUNCH")) {
             constexpr std::string_view prefix = "token=";
@@ -569,6 +584,47 @@ void second_backend_cannot_reuse_an_owned_server()
     CHECK(second_backend->open(std::string{"alpha"}, log.callbacks(), {}).error
           == channels::RemoteBackendError::capacity);
     opened.session->close();
+    std::lock_guard lock{fixture.adb->mutex};
+    CHECK(fixture.adb->killed == std::vector<unsigned>{202});
+    CHECK(!fixture.adb->lease);
+}
+
+void stale_none_probe_cannot_reclassify_a_new_owned_server_as_legacy()
+{
+    Fixture fixture;
+    fixture.generated_owner_token = std::string{other_owner_token};
+    fixture.adb->block_first_lease_probe = true;
+    auto racing_backend = fixture.backend();
+    CallbackLog log;
+    auto racing_open = std::async(std::launch::async, [&] {
+        return racing_backend->open(std::string{"alpha"}, log.callbacks(), {});
+    });
+    {
+        std::unique_lock lock{fixture.adb->mutex};
+        CHECK(fixture.adb->cv.wait_for(lock, 2s, [&] {
+            return fixture.adb->first_lease_probe_entered;
+        }));
+    }
+
+    fixture.generated_owner_token = std::string{owner_token};
+    auto owning_backend = fixture.backend();
+    auto owned = owning_backend->open(std::string{"alpha"}, log.callbacks(), {});
+    CHECK(owned);
+    {
+        std::lock_guard lock{fixture.adb->mutex};
+        fixture.adb->ps =
+            "202 com.genymobile.scrcpy.Server 1.19-ws7 web ERROR 8886 true\n";
+        fixture.adb->release_first_lease_probe = true;
+        fixture.adb->cv.notify_all();
+    }
+
+    CHECK(racing_open.wait_for(2s) == std::future_status::ready);
+    auto raced = racing_open.get();
+    CHECK(raced.error == channels::RemoteBackendError::capacity);
+    CHECK(!raced.session);
+    CHECK(fixture.sockets.size() == 1);
+
+    owned.session->close();
     std::lock_guard lock{fixture.adb->mutex};
     CHECK(fixture.adb->killed == std::vector<unsigned>{202});
     CHECK(!fixture.adb->lease);
@@ -1068,6 +1124,7 @@ int main()
         {"never_kills_pid_reused_with_a_different_owner_token", never_kills_pid_reused_with_a_different_owner_token},
         {"supervisor_never_kills_a_reused_child_pid", supervisor_never_kills_a_reused_child_pid},
         {"second_backend_cannot_reuse_an_owned_server", second_backend_cannot_reuse_an_owned_server},
+        {"stale_none_probe_cannot_reclassify_a_new_owned_server_as_legacy", stale_none_probe_cannot_reclassify_a_new_owned_server_as_legacy},
         {"owner_token_failure_prevents_launch", owner_token_failure_prevents_launch},
         {"gate_write_failure_never_executes_server", gate_write_failure_never_executes_server},
         {"natural_child_exit_cleans_lease_without_kill", natural_child_exit_cleans_lease_without_kill},

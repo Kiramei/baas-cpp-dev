@@ -43,8 +43,11 @@ device-side supervisor. Only after that supervisor has atomically written its
 token, PID, and `/proc` start time may the launcher publish the global
 `baas-ws-scrcpy.lease` symlink. Symlink creation is the cross-process compare-
 and-set: if another live supervisor owns it, a second backend reports capacity
-and cannot reuse that backend's child by cmdline. A matching server with no
-lease remains a legacy, unowned server and may still be reused.
+and cannot reuse that backend's child by cmdline. Process discovery is followed
+by a second lease probe, closing the ADB round-trip window where an earlier
+`NONE` result could otherwise misclassify a newly owned child as legacy. A
+matching server with no lease after that second probe remains a legacy, unowned
+server and may still be reused.
 
 The supervisor starts the child behind a private gate. It records the child PID
 and start time before atomically publishing the gate; any metadata or gate write
