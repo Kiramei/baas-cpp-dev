@@ -122,6 +122,12 @@ enum class RuntimeRepositoryUpdateErrorCode {
     RecoveryFailed,
 };
 
+// Stable, non-sensitive text suitable for untrusted API consumers. Detailed
+// provider, backend, validator, and filesystem diagnostics are deliberately
+// excluded from RuntimeRepositoryUpdateResult.
+[[nodiscard]] std::string_view runtime_repository_update_error_message(
+    RuntimeRepositoryUpdateErrorCode code) noexcept;
+
 struct RuntimeRepositoryUpdateError final {
     RuntimeRepositoryUpdateErrorCode code{RuntimeRepositoryUpdateErrorCode::Io};
     std::string message;
@@ -185,6 +191,10 @@ class RuntimeRepositoryUpdaterHooks {
     virtual void checkpoint(RuntimeRepositoryUpdaterCheckpoint checkpoint) = 0;
     virtual void before_file_operation(RuntimeRepositoryFileOperation) {}
     virtual void committed(RuntimeRepositoryUpdaterCheckpoint) noexcept {}
+    // Receives the original local diagnostic before the public result is
+    // redacted. Implementations are trusted local sinks and must not forward
+    // this text to users or external telemetry without additional redaction.
+    virtual void diagnostic(RuntimeRepositoryUpdateErrorCode, std::string_view) noexcept {}
 };
 
 class RuntimeRepositoryUpdater final {

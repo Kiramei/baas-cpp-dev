@@ -37,6 +37,34 @@
 #endif
 
 namespace baas::runtime::repository {
+
+std::string_view runtime_repository_update_error_message(
+    const RuntimeRepositoryUpdateErrorCode code) noexcept {
+    switch (code) {
+    case RuntimeRepositoryUpdateErrorCode::Busy:
+        return "runtime repository update is already in progress";
+    case RuntimeRepositoryUpdateErrorCode::Cancelled:
+        return "runtime repository update was cancelled";
+    case RuntimeRepositoryUpdateErrorCode::InvalidPlan:
+        return "runtime repository update plan is invalid";
+    case RuntimeRepositoryUpdateErrorCode::FetchFailed:
+        return "runtime repository fetch failed";
+    case RuntimeRepositoryUpdateErrorCode::CommitMismatch:
+        return "runtime repository commit verification failed";
+    case RuntimeRepositoryUpdateErrorCode::ValidationFailed:
+        return "runtime repository validation failed";
+    case RuntimeRepositoryUpdateErrorCode::CurrentConflict:
+        return "runtime repository current generation conflict";
+    case RuntimeRepositoryUpdateErrorCode::NoPrevious:
+        return "previous runtime repository generation is unavailable";
+    case RuntimeRepositoryUpdateErrorCode::Io:
+        return "runtime repository storage operation failed";
+    case RuntimeRepositoryUpdateErrorCode::RecoveryFailed:
+        return "runtime repository recovery failed";
+    }
+    return "runtime repository update failed";
+}
+
 namespace {
 
 constexpr std::string_view journal_schema = "baas.runtime-repositories.publish-journal/v1";
@@ -304,10 +332,64 @@ class JsonParser final {
                 result.push_back('\r');
             else if (escaped == 't')
                 result.push_back('\t');
+            else if (escaped == 'u')
+                append_unicode_escape(result);
             else
                 invalid("unsupported JSON escape");
         }
         invalid("unterminated JSON string");
+    }
+
+    [[nodiscard]] static unsigned int hex_digit(const char character) {
+        if (character >= '0' && character <= '9')
+            return static_cast<unsigned int>(character - '0');
+        if (character >= 'a' && character <= 'f')
+            return static_cast<unsigned int>(character - 'a' + 10);
+        if (character >= 'A' && character <= 'F')
+            return static_cast<unsigned int>(character - 'A' + 10);
+        invalid("invalid JSON Unicode escape");
+    }
+
+    [[nodiscard]] std::uint32_t unicode_code_unit() {
+        std::uint32_t result{};
+        for (std::size_t index = 0; index < 4; ++index)
+            result = (result << 4U) | hex_digit(take());
+        return result;
+    }
+
+    static void append_utf8(std::string& result, const std::uint32_t codepoint) {
+        if (codepoint <= 0x7fU) {
+            result.push_back(static_cast<char>(codepoint));
+        } else if (codepoint <= 0x7ffU) {
+            result.push_back(static_cast<char>(0xc0U | (codepoint >> 6U)));
+            result.push_back(static_cast<char>(0x80U | (codepoint & 0x3fU)));
+        } else if (codepoint <= 0xffffU) {
+            result.push_back(static_cast<char>(0xe0U | (codepoint >> 12U)));
+            result.push_back(static_cast<char>(0x80U | ((codepoint >> 6U) & 0x3fU)));
+            result.push_back(static_cast<char>(0x80U | (codepoint & 0x3fU)));
+        } else {
+            result.push_back(static_cast<char>(0xf0U | (codepoint >> 18U)));
+            result.push_back(static_cast<char>(0x80U | ((codepoint >> 12U) & 0x3fU)));
+            result.push_back(static_cast<char>(0x80U | ((codepoint >> 6U) & 0x3fU)));
+            result.push_back(static_cast<char>(0x80U | (codepoint & 0x3fU)));
+        }
+    }
+
+    void append_unicode_escape(std::string& result) {
+        const auto first = unicode_code_unit();
+        if (first >= 0xdc00U && first <= 0xdfffU)
+            invalid("isolated low surrogate in JSON Unicode escape");
+        if (first < 0xd800U || first > 0xdbffU) {
+            append_utf8(result, first);
+            return;
+        }
+        if (take() != '\\' || take() != 'u')
+            invalid("high surrogate is not followed by a low surrogate");
+        const auto second = unicode_code_unit();
+        if (second < 0xdc00U || second > 0xdfffU)
+            invalid("high surrogate is not followed by a low surrogate");
+        append_utf8(result,
+                    0x10000U + ((first - 0xd800U) << 10U) + (second - 0xdc00U));
     }
 
     [[nodiscard]] Json::Object object(const std::size_t depth) {
@@ -828,8 +910,9 @@ class AnchoredFile final {
         FILE_STANDARD_INFO information{};
         if (file == INVALID_HANDLE_VALUE ||
             !GetFileInformationByHandleEx(file, FileStandardInfo, &information,
-                                          sizeof(information)) ||
-            information.Directory || information.EndOfFile.QuadPart < 0) {
+                                           sizeof(information)) ||
+            information.Directory || information.EndOfFile.QuadPart < 0 ||
+            information.NumberOfLinks != 1) {
             if (file != INVALID_HANDLE_VALUE)
                 CloseHandle(file);
             file = INVALID_HANDLE_VALUE;
@@ -904,7 +987,7 @@ class AnchoredFile final {
     }
     struct stat information{};
     if (fstat(parent, &information) != 0 || !S_ISREG(information.st_mode) ||
-        information.st_size < 0) {
+        information.st_size < 0 || information.st_nlink != 1) {
         close(parent);
         fail(RuntimeRepositoryUpdateErrorCode::ValidationFailed, "managed file handle is invalid");
     }
@@ -1544,17 +1627,25 @@ class NoopHooks final : public RuntimeRepositoryUpdaterHooks {
 
 [[nodiscard]] RuntimeRepositoryUpdateResult
 error_result(const UpdateFailure& error, const PublishDisposition disposition,
-             std::shared_ptr<const RuntimeRepositorySnapshot> pin) {
-    return RuntimeRepositoryUpdateResult{RuntimeRepositoryUpdateError{error.code(), error.what()},
-                                         disposition, pin ? pin->generation() : std::string{},
-                                         std::move(pin)};
+             std::shared_ptr<const RuntimeRepositorySnapshot> pin,
+             RuntimeRepositoryUpdaterHooks& hooks) {
+    hooks.diagnostic(error.code(), error.what());
+    return RuntimeRepositoryUpdateResult{
+        RuntimeRepositoryUpdateError{
+            error.code(), std::string(runtime_repository_update_error_message(error.code()))},
+        disposition, pin ? pin->generation() : std::string{}, std::move(pin)};
 }
 
 [[nodiscard]] RuntimeRepositoryUpdateResult
 unknown_error_result(const std::exception& error, const PublishDisposition disposition,
-                     std::shared_ptr<const RuntimeRepositorySnapshot> pin) {
+                     std::shared_ptr<const RuntimeRepositorySnapshot> pin,
+                     RuntimeRepositoryUpdaterHooks& hooks) {
+    hooks.diagnostic(RuntimeRepositoryUpdateErrorCode::Io, error.what());
     return RuntimeRepositoryUpdateResult{
-        RuntimeRepositoryUpdateError{RuntimeRepositoryUpdateErrorCode::Io, error.what()},
+        RuntimeRepositoryUpdateError{
+            RuntimeRepositoryUpdateErrorCode::Io,
+            std::string(runtime_repository_update_error_message(
+                RuntimeRepositoryUpdateErrorCode::Io))},
         disposition, pin ? pin->generation() : std::string{}, std::move(pin)};
 }
 
@@ -1707,7 +1798,11 @@ RepositoryTreeSeal StrictRuntimeRepositoryTreeValidator::validate_and_seal(
             fail(RuntimeRepositoryUpdateErrorCode::ValidationFailed,
                  "repository tree contains a special file");
         const auto size = iterator->file_size();
-        if (size > limits_.max_file_bytes || files.size() == limits_.max_files)
+        const auto maximum_size = relative == spec.manifest
+                                      ? std::min<std::uintmax_t>(limits_.max_file_bytes,
+                                                                limits_.max_manifest_bytes)
+                                      : limits_.max_file_bytes;
+        if (size > maximum_size || files.size() == limits_.max_files)
             fail(RuntimeRepositoryUpdateErrorCode::ValidationFailed,
                  "repository tree limit exceeded");
         files.push_back({relative, size, {}});
@@ -1969,7 +2064,7 @@ struct RuntimeRepositoryUpdater::Impl final {
                 } catch (...) {
                 }
                 return unknown_error_result(error, PublishDisposition::CommittedDurabilityUncertain,
-                                            std::move(pin));
+                                            std::move(pin), *hooks);
             }
         } catch (const UpdateFailure& error) {
             if (!current_replaced) {
@@ -1986,12 +2081,12 @@ struct RuntimeRepositoryUpdater::Impl final {
                     restored = false;
                 }
                 return error_result(error,
-                                    restored ? PublishDisposition::NotCommitted
-                                             : PublishDisposition::CommittedDurabilityUncertain,
-                                    std::move(old_pin));
+                                     restored ? PublishDisposition::NotCommitted
+                                              : PublishDisposition::CommittedDurabilityUncertain,
+                                     std::move(old_pin), *hooks);
             }
             return error_result(error, PublishDisposition::CommittedDurabilityUncertain,
-                                std::move(old_pin));
+                                std::move(old_pin), *hooks);
         } catch (const std::exception& error) {
             bool restored = !current_replaced;
             if (!current_replaced) {
@@ -2009,9 +2104,9 @@ struct RuntimeRepositoryUpdater::Impl final {
             }
             return unknown_error_result(error,
                                         current_replaced || !restored
-                                            ? PublishDisposition::CommittedDurabilityUncertain
-                                            : PublishDisposition::NotCommitted,
-                                        std::move(old_pin));
+                                             ? PublishDisposition::CommittedDurabilityUncertain
+                                             : PublishDisposition::NotCommitted,
+                                         std::move(old_pin), *hooks);
         }
     }
 
@@ -2039,7 +2134,8 @@ RuntimeRepositoryUpdateResult RuntimeRepositoryUpdater::update(
     if (!process_lock.owns_lock()) {
         const UpdateFailure error(RuntimeRepositoryUpdateErrorCode::Busy,
                                   "repository writer is busy");
-        return error_result(error, PublishDisposition::NotCommitted, std::move(old_pin));
+        return error_result(error, PublishDisposition::NotCommitted, std::move(old_pin),
+                            *impl_->hooks);
     }
     std::vector<std::filesystem::path> staging;
     try {
@@ -2048,7 +2144,14 @@ RuntimeRepositoryUpdateResult RuntimeRepositoryUpdater::update(
         impl_->set_pin(impl_->load_pin());
         old_pin = impl_->current_pin();
         check_cancelled(stop_token);
-        const auto plan = plan_provider.trusted_plan();
+        RuntimeRepositoryUpdatePlan plan;
+        try {
+            plan = plan_provider.trusted_plan();
+        } catch (const UpdateFailure&) {
+            throw;
+        } catch (const std::exception& error) {
+            fail(RuntimeRepositoryUpdateErrorCode::InvalidPlan, error.what());
+        }
         validate_plan(plan);
         impl_->checkpoint(RuntimeRepositoryUpdaterCheckpoint::PlanValidated);
         const auto old_current = read_pointer(impl_->root / "current.json");
@@ -2116,10 +2219,11 @@ RuntimeRepositoryUpdateResult RuntimeRepositoryUpdater::update(
         impl_->cleanup_staging(staging);
         if (error.disposition() != PublishDisposition::NotCommitted)
             old_pin = impl_->current_pin();
-        return error_result(error, error.disposition(), std::move(old_pin));
+        return error_result(error, error.disposition(), std::move(old_pin), *impl_->hooks);
     } catch (const std::exception& error) {
         impl_->cleanup_staging(staging);
-        return unknown_error_result(error, PublishDisposition::NotCommitted, std::move(old_pin));
+        return unknown_error_result(error, PublishDisposition::NotCommitted, std::move(old_pin),
+                                    *impl_->hooks);
     }
 }
 
@@ -2130,7 +2234,8 @@ RuntimeRepositoryUpdateResult RuntimeRepositoryUpdater::rollback(ExpectedCurrent
     if (!process_lock.owns_lock()) {
         const UpdateFailure error(RuntimeRepositoryUpdateErrorCode::Busy,
                                   "repository writer is busy");
-        return error_result(error, PublishDisposition::NotCommitted, std::move(old_pin));
+        return error_result(error, PublishDisposition::NotCommitted, std::move(old_pin),
+                            *impl_->hooks);
     }
     try {
         NativeWriterLock file_lock(impl_->root / ".writer.lock");
@@ -2154,9 +2259,10 @@ RuntimeRepositoryUpdateResult RuntimeRepositoryUpdater::rollback(ExpectedCurrent
     } catch (const UpdateFailure& error) {
         if (error.disposition() != PublishDisposition::NotCommitted)
             old_pin = impl_->current_pin();
-        return error_result(error, error.disposition(), std::move(old_pin));
+        return error_result(error, error.disposition(), std::move(old_pin), *impl_->hooks);
     } catch (const std::exception& error) {
-        return unknown_error_result(error, PublishDisposition::NotCommitted, std::move(old_pin));
+        return unknown_error_result(error, PublishDisposition::NotCommitted, std::move(old_pin),
+                                    *impl_->hooks);
     }
 }
 

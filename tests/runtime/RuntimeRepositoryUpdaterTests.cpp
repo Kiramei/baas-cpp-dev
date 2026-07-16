@@ -16,6 +16,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <random>
 #include <stdexcept>
 #include <stop_token>
 #include <string>
@@ -28,6 +29,8 @@
 #define NOMINMAX
 #include <windows.h>
 #include <winioctl.h>
+#else
+#include <unistd.h>
 #endif
 
 namespace repository = baas::runtime::repository;
@@ -47,10 +50,25 @@ class TempDirectory final {
   public:
     TempDirectory() {
         static std::atomic<unsigned long long> next{};
-        path_ = std::filesystem::temp_directory_path() /
-                ("baas-runtime-repository-updater-" + std::to_string(++next));
-        std::filesystem::remove_all(path_);
-        std::filesystem::create_directories(path_);
+        std::random_device random;
+#ifdef _WIN32
+        const auto process = static_cast<unsigned long long>(GetCurrentProcessId());
+#else
+        const auto process = static_cast<unsigned long long>(getpid());
+#endif
+        for (std::size_t attempt = 0; attempt < 128; ++attempt) {
+            const auto entropy = (static_cast<unsigned long long>(random()) << 32U) ^ random();
+            path_ = std::filesystem::temp_directory_path() /
+                    ("baas-runtime-repository-updater-" + std::to_string(process) + "-" +
+                     std::to_string(++next) + "-" + std::to_string(entropy));
+            std::error_code error;
+            if (std::filesystem::create_directory(path_, error))
+                return;
+            if (error && error != std::errc::file_exists)
+                throw std::filesystem::filesystem_error(
+                    "test temporary directory creation failed", path_, error);
+        }
+        throw std::runtime_error("test temporary directory allocation exhausted");
     }
 
     ~TempDirectory() {
@@ -161,6 +179,18 @@ class FakePlanProvider final : public repository::RuntimeRepositoryUpdatePlanPro
     EventLog* events_;
 };
 
+class ThrowingPlanProvider final : public repository::RuntimeRepositoryUpdatePlanProvider {
+  public:
+    explicit ThrowingPlanProvider(std::string detail) : detail_(std::move(detail)) {}
+
+    [[nodiscard]] repository::RuntimeRepositoryUpdatePlan trusted_plan() const override {
+        throw std::runtime_error(detail_);
+    }
+
+  private:
+    std::string detail_;
+};
+
 class FakeFetchBackend final : public repository::RuntimeRepositoryFetchBackend {
   public:
     explicit FakeFetchBackend(EventLog& events) : events_(&events) {}
@@ -195,6 +225,20 @@ class FakeFetchBackend final : public repository::RuntimeRepositoryFetchBackend 
     EventLog* events_;
 };
 
+class ThrowingFetchBackend final : public repository::RuntimeRepositoryFetchBackend {
+  public:
+    explicit ThrowingFetchBackend(std::string detail) : detail_(std::move(detail)) {}
+
+    [[nodiscard]] repository::RepositoryStageResult
+    stage_exact(const repository::RepositoryFetchSpec&, const std::filesystem::path&,
+                std::stop_token) override {
+        throw std::runtime_error(detail_);
+    }
+
+  private:
+    std::string detail_;
+};
+
 class FakeTreeValidator final : public repository::RuntimeRepositoryTreeValidator {
   public:
     explicit FakeTreeValidator(EventLog& events) : events_(&events) {}
@@ -221,6 +265,20 @@ class FakeTreeValidator final : public repository::RuntimeRepositoryTreeValidato
 
   private:
     EventLog* events_;
+};
+
+class ThrowingTreeValidator final : public repository::RuntimeRepositoryTreeValidator {
+  public:
+    explicit ThrowingTreeValidator(std::string detail) : detail_(std::move(detail)) {}
+
+    [[nodiscard]] repository::RepositoryTreeSeal
+    validate_and_seal(const repository::RepositoryFetchSpec&, const std::filesystem::path&,
+                      std::stop_token) const override {
+        throw std::runtime_error(detail_);
+    }
+
+  private:
+    std::string detail_;
 };
 
 class RejectInstalledRevalidationValidator final
@@ -263,6 +321,15 @@ constexpr std::string_view strict_manifest =
                   "\"mode\":\"file\"}";
     }
     return result + "]}\n";
+}
+
+[[nodiscard]] std::string tree_manifest_for_encoded_json_path(const std::string_view path) {
+    return "{\"schema\":\"baas.runtime-repository.tree-manifest/v1\",\"entries\":[{"
+           "\"path\":\"" +
+           std::string(path) +
+           "\",\"size\":\"7\",\"sha256\":"
+           "\"239f59ed55e737c77147cf55ad0c1b030b6d7ee748a7426952f9b852d5a935e5\","
+           "\"mode\":\"file\"}]}\n";
 }
 
 [[nodiscard]] repository::RepositoryFetchSpec
@@ -399,6 +466,39 @@ class FaultHooks final : public repository::RuntimeRepositoryUpdaterHooks {
     EventLog* events_;
 };
 
+class RecordingDiagnosticHooks : public repository::RuntimeRepositoryUpdaterHooks {
+  public:
+    void checkpoint(repository::RuntimeRepositoryUpdaterCheckpoint) override {}
+
+    void diagnostic(const repository::RuntimeRepositoryUpdateErrorCode code,
+                    const std::string_view detail) noexcept override {
+        try {
+            diagnostic_code = code;
+            diagnostic_detail.assign(detail);
+        } catch (...) {
+        }
+    }
+
+    std::optional<repository::RuntimeRepositoryUpdateErrorCode> diagnostic_code;
+    std::string diagnostic_detail;
+};
+
+class ThrowingFilesystemHooks final : public RecordingDiagnosticHooks {
+  public:
+    ThrowingFilesystemHooks(std::string detail, std::filesystem::path path)
+        : detail_(std::move(detail)), path_(std::move(path)) {}
+
+    void checkpoint(const repository::RuntimeRepositoryUpdaterCheckpoint checkpoint) override {
+        if (checkpoint == repository::RuntimeRepositoryUpdaterCheckpoint::PlanValidated)
+            throw std::filesystem::filesystem_error(
+                detail_, path_, std::make_error_code(std::errc::permission_denied));
+    }
+
+  private:
+    std::string detail_;
+    std::filesystem::path path_;
+};
+
 class BlockingCheckpointHooks final : public repository::RuntimeRepositoryUpdaterHooks {
   public:
     void arm() noexcept { armed_.store(true, std::memory_order_release); }
@@ -524,6 +624,86 @@ void check_success(const repository::RuntimeRepositoryUpdateResult& result,
         std::cerr << "UPDATE ERROR [" << static_cast<int>(result.error->code)
                   << "]: " << result.error->message << '\n';
     check(static_cast<bool>(result), message);
+}
+
+void check_redacted_error(const repository::RuntimeRepositoryUpdateResult& result,
+                          const repository::RuntimeRepositoryUpdateErrorCode expected,
+                          const RecordingDiagnosticHooks& hooks,
+                          const std::string_view sensitive_detail,
+                          const std::string_view message) {
+    check_error(result, expected, message);
+    check(result.error &&
+              result.error->message == repository::runtime_repository_update_error_message(expected),
+          "public updater errors must use the stable message for their category");
+    check(result.error && result.error->message.find("secret-token") == std::string::npos &&
+              result.error->message.find("alice:password") == std::string::npos &&
+              result.error->message.find("C:\\Users\\private") == std::string::npos,
+          "public updater errors must not expose credentials or local paths");
+    check(hooks.diagnostic_code == expected &&
+              hooks.diagnostic_detail.find(sensitive_detail) != std::string::npos,
+          "trusted local diagnostics must retain the original failure detail");
+}
+
+void test_public_errors_are_stable_and_sensitive_diagnostics_stay_local() {
+    constexpr std::string_view sensitive_url =
+        "https://alice:password@example.invalid/repository.git?token=secret-token";
+    constexpr std::string_view sensitive_path = "C:\\Users\\private\\runtime-repositories";
+    const auto detail = std::string("backend failed for ") + std::string(sensitive_url) +
+                        " through proxy at " + std::string(sensitive_path);
+
+    {
+        TempDirectory temporary;
+        EventLog events;
+        auto hooks = std::make_shared<RecordingDiagnosticHooks>();
+        repository::RuntimeRepositoryUpdater updater(temporary.path() / "state", hooks);
+        ThrowingPlanProvider provider(detail);
+        FakeFetchBackend backend(events);
+        FakeTreeValidator validator(events);
+        const auto result = updater.update(provider, backend, validator);
+        check_redacted_error(result, repository::RuntimeRepositoryUpdateErrorCode::InvalidPlan,
+                             *hooks, sensitive_url,
+                             "plan-provider exceptions must be categorized and redacted");
+    }
+    {
+        TempDirectory temporary;
+        EventLog events;
+        auto hooks = std::make_shared<RecordingDiagnosticHooks>();
+        repository::RuntimeRepositoryUpdater updater(temporary.path() / "state", hooks);
+        FakePlanProvider provider(plan('1', '2', 'a', 'b'), events);
+        ThrowingFetchBackend backend(detail);
+        FakeTreeValidator validator(events);
+        const auto result = updater.update(provider, backend, validator);
+        check_redacted_error(result, repository::RuntimeRepositoryUpdateErrorCode::FetchFailed,
+                             *hooks, sensitive_url,
+                             "fetch-backend exceptions must be categorized and redacted");
+    }
+    {
+        TempDirectory temporary;
+        EventLog events;
+        auto hooks = std::make_shared<RecordingDiagnosticHooks>();
+        repository::RuntimeRepositoryUpdater updater(temporary.path() / "state", hooks);
+        FakePlanProvider provider(plan('1', '2', 'a', 'b'), events);
+        FakeFetchBackend backend(events);
+        ThrowingTreeValidator validator(detail);
+        const auto result = updater.update(provider, backend, validator);
+        check_redacted_error(result,
+                             repository::RuntimeRepositoryUpdateErrorCode::ValidationFailed,
+                             *hooks, sensitive_path,
+                             "validator exceptions must be categorized and redacted");
+    }
+    {
+        TempDirectory temporary;
+        EventLog events;
+        auto hooks = std::make_shared<ThrowingFilesystemHooks>(detail, sensitive_path);
+        repository::RuntimeRepositoryUpdater updater(temporary.path() / "state", hooks);
+        FakePlanProvider provider(plan('1', '2', 'a', 'b'), events);
+        FakeFetchBackend backend(events);
+        FakeTreeValidator validator(events);
+        const auto result = updater.update(provider, backend, validator);
+        check_redacted_error(result, repository::RuntimeRepositoryUpdateErrorCode::Io, *hooks,
+                             sensitive_path,
+                             "filesystem exceptions must be categorized and redacted");
+    }
 }
 
 void test_update_order_protocol_vector_and_pin() {
@@ -806,6 +986,7 @@ void test_path_escape_plan_is_rejected_before_fetch() {
 #ifdef BAAS_RUNTIME_REPOSITORY_UPDATER_TESTING
 std::filesystem::path swap_test_outside;
 std::atomic<bool> swap_test_executed{};
+std::atomic<std::size_t> validation_read_count{};
 
 void swap_parent_before_anchored_read(const std::filesystem::path& root,
                                       const std::filesystem::path& relative) {
@@ -814,6 +995,10 @@ void swap_parent_before_anchored_read(const std::filesystem::path& root,
     std::filesystem::rename(root / "inside", root / "inside-original");
     if (!create_directory_link(swap_test_outside, root / "inside"))
         throw std::runtime_error("test parent swap link creation failed");
+}
+
+void count_validation_read(const std::filesystem::path&, const std::filesystem::path&) {
+    validation_read_count.fetch_add(1, std::memory_order_relaxed);
 }
 #endif
 
@@ -874,6 +1059,29 @@ void test_strict_validator_rejects_link_escape() {
     check(rejected, "strict tree validation must reject linked payload escape");
 }
 
+void test_strict_validator_rejects_staging_hard_links() {
+    TempDirectory temporary;
+    const auto root = temporary.path() / "candidate";
+    const auto outside = temporary.path() / "outside-payload.bin";
+    write_file(root / "manifest.json", strict_manifest);
+    write_file(outside, "payload");
+    std::error_code link_error;
+    std::filesystem::create_hard_link(outside, root / "payload.bin", link_error);
+    check(!link_error, "hard-link staging fixture must be created on the test filesystem");
+    if (link_error)
+        return;
+
+    bool rejected{};
+    try {
+        repository::StrictRuntimeRepositoryTreeValidator validator;
+        static_cast<void>(validator.validate_and_seal(
+            strict_spec_with_manifest_hash(manifest_sha256), root, {}));
+    } catch (...) {
+        rejected = true;
+    }
+    check(rejected, "strict validation must reject a staged file with link count not equal to one");
+}
+
 [[nodiscard]] bool strict_validation_rejected(const std::filesystem::path& root,
                                               const repository::RepositoryValidationLimits limits) {
     const repository::RepositoryFetchSpec spec{
@@ -926,6 +1134,54 @@ void test_strict_validator_enforces_file_and_byte_limits() {
     write_file(root / "nested" / "payload.bin", "payload");
     check(strict_validation_rejected(root, depth),
           "strict validator must enforce relative path depth");
+}
+
+void test_manifest_limit_applies_before_hashing() {
+    {
+        TempDirectory temporary;
+        const auto root = temporary.path() / "candidate";
+        write_file(root / "manifest.json", strict_manifest);
+        write_file(root / "payload.bin", "payload");
+        auto limits = repository::RepositoryValidationLimits{};
+        limits.max_manifest_bytes = strict_manifest.size();
+        bool accepted{};
+        try {
+            const repository::StrictRuntimeRepositoryTreeValidator validator(limits);
+            accepted = validator
+                           .validate_and_seal(
+                               strict_spec_with_manifest_hash(manifest_sha256), root, {})
+                           .file_count == 2;
+        } catch (...) {
+        }
+        check(accepted, "a manifest exactly at max_manifest_bytes must be accepted");
+    }
+    {
+        TempDirectory temporary;
+        const auto root = temporary.path() / "candidate";
+        write_file(root / "manifest.json", strict_manifest);
+        write_file(root / "payload.bin", "payload");
+        auto limits = repository::RepositoryValidationLimits{};
+        limits.max_manifest_bytes = strict_manifest.size() - 1;
+#ifdef BAAS_RUNTIME_REPOSITORY_UPDATER_TESTING
+        validation_read_count.store(0, std::memory_order_release);
+        repository::set_runtime_repository_validation_read_hook_for_testing(
+            &count_validation_read);
+#endif
+        bool rejected{};
+        try {
+            const repository::StrictRuntimeRepositoryTreeValidator validator(limits);
+            static_cast<void>(validator.validate_and_seal(
+                strict_spec_with_manifest_hash(manifest_sha256), root, {}));
+        } catch (...) {
+            rejected = true;
+        }
+#ifdef BAAS_RUNTIME_REPOSITORY_UPDATER_TESTING
+        repository::set_runtime_repository_validation_read_hook_for_testing(nullptr);
+        check(validation_read_count.load(std::memory_order_acquire) == 0,
+              "an oversized manifest must be rejected before any complete file hash read");
+#endif
+        check(rejected, "a manifest above max_manifest_bytes must be rejected");
+    }
 }
 
 void test_many_empty_directories_fail_without_quadratic_scan() {
@@ -1012,6 +1268,70 @@ void test_strict_manifest_portable_utf8_contract() {
     }
 }
 
+void test_json_unicode_escapes_match_standard_json_behavior() {
+    repository::StrictRuntimeRepositoryTreeValidator validator;
+    const auto accepted_manifest = [&](const std::string_view encoded_path,
+                                       const std::string_view decoded_path,
+                                       const std::string_view manifest_hash,
+                                       const std::string_view message) {
+        TempDirectory temporary;
+        const auto root = temporary.path() / "candidate";
+        write_file(root / "manifest.json", tree_manifest_for_encoded_json_path(encoded_path));
+        write_file(root / std::filesystem::path(std::u8string(
+                              reinterpret_cast<const char8_t*>(decoded_path.data()),
+                              decoded_path.size())),
+                   "payload");
+        bool accepted{};
+        try {
+            const auto seal = validator.validate_and_seal(
+                strict_spec_with_manifest_hash(manifest_hash), root, {});
+            accepted = seal.file_count == 2;
+        } catch (...) {
+        }
+        check(accepted, message);
+    };
+
+    const std::string cjk_path = "\xe6\x8f\x8f\xe8\xbf\xb0/"
+                                 "\xe6\x97\xa5\xe6\x9c\xac\xe8\xaa\x9e/"
+                                 "\xed\x95\x9c\xea\xb8\x80 file.txt";
+    accepted_manifest("\\u63cf\\u8ff0/\\u65e5\\u672c\\u8a9e/\\ud55c\\uae00 file.txt",
+                      cjk_path,
+                      "e9c5c589bc0d8b11ea8c8387ae899fc93c94b27032312b45e6463f43543bc8bb",
+                      "standard CJK Unicode escapes must decode to canonical UTF-8 paths");
+    accepted_manifest("rocket-\\ud83d\\ude80.txt", "rocket-\xf0\x9f\x9a\x80.txt",
+                      "40f7a63b67ad88cfbdb6f5a1cf85d88f0c2a0860f6f8a855c2e0fd6cbc89712d",
+                      "a valid JSON surrogate pair must decode to one supplementary code point");
+
+    const auto rejected_manifest = [&](const std::string_view encoded_path,
+                                       const std::string_view manifest_hash,
+                                       const std::string_view expected_diagnostic,
+                                       const std::string_view message) {
+        TempDirectory temporary;
+        const auto root = temporary.path() / "candidate";
+        write_file(root / "manifest.json", tree_manifest_for_encoded_json_path(encoded_path));
+        std::string diagnostic;
+        try {
+            static_cast<void>(validator.validate_and_seal(
+                strict_spec_with_manifest_hash(manifest_hash), root, {}));
+        } catch (const std::exception& error) {
+            diagnostic = error.what();
+        }
+        check(diagnostic.find(expected_diagnostic) != std::string::npos, message);
+    };
+    rejected_manifest("bad-\\ud83d.txt",
+                      "aac28b6ad82a2d812386f8cf8556dc30ecf8e7c5bb0f3d06c4d0018561586e8c",
+                      "high surrogate", "an isolated high surrogate must be rejected");
+    rejected_manifest("bad-\\ude80.txt",
+                      "b38b8acca629e932310a799e79d100afeff5f4f140e3c622a0822ec5e0451bf4",
+                      "isolated low surrogate", "an isolated low surrogate must be rejected");
+    rejected_manifest("bad-\\ud83d\\u0041.txt",
+                      "5e38bbf3ed4851e8494acb3a769436e1d0d7cc3cce1e69d26d7ee2e4057fc08f",
+                      "high surrogate", "a high surrogate followed by a BMP value must fail");
+    rejected_manifest("bad-\\u12x4.txt",
+                      "fcc97d063b145ddfd84b63626e98572409c96e466ec9f6782646777392e3c16f",
+                      "invalid JSON Unicode escape", "non-hex Unicode escape digits must fail");
+}
+
 void test_deduplicated_payload_tamper_is_rejected() {
     TempDirectory temporary;
     const auto state_root = temporary.path() / "runtime-repositories";
@@ -1040,6 +1360,42 @@ void test_deduplicated_payload_tamper_is_rejected() {
           "dedup tamper failure must preserve the current generation pin");
     check(directory_empty(state_root / "staging"),
           "dedup tamper failure must clean all staged candidates");
+}
+
+void test_installed_object_hard_link_is_rejected_before_reuse() {
+    TempDirectory temporary;
+    const auto state_root = temporary.path() / "runtime-repositories";
+    EventLog events;
+    repository::RuntimeRepositoryUpdater updater(state_root);
+    const auto update_plan = strict_plan('1', '2');
+    FakePlanProvider provider(update_plan, events);
+    StrictFixtureBackend backend;
+    repository::StrictRuntimeRepositoryTreeValidator validator;
+    const auto first =
+        updater.update(provider, backend, validator, repository::ExpectedCurrent::absent());
+    check_success(first, "installed hard-link baseline update must succeed");
+    if (!first)
+        return;
+
+    const auto installed_payload = state_root / "objects" / "resources" /
+                                   update_plan.repositories[0].exact_commit / "payload.bin";
+    const auto outside_alias = temporary.path() / "outside-installed-alias.bin";
+    std::error_code link_error;
+    std::filesystem::create_hard_link(installed_payload, outside_alias, link_error);
+    check(!link_error, "installed-object hard-link fixture must be created");
+    if (link_error)
+        return;
+
+    FakePlanProvider retry_provider(update_plan, events);
+    const auto retry = updater.update(retry_provider, backend, validator,
+                                      repository::ExpectedCurrent::exact(first.pinned_generation));
+    check_error(retry, repository::RuntimeRepositoryUpdateErrorCode::ValidationFailed,
+                "an installed object with an external hard-link alias must not be reused");
+    check(updater.pin_current() &&
+              updater.pin_current()->generation() == first.pinned_generation,
+          "hard-link rejection must preserve the previously pinned generation");
+    check(directory_empty(state_root / "staging"),
+          "hard-link rejection before reuse must not leave staging state");
 }
 
 void test_failed_installed_revalidation_does_not_poison_object_slot() {
@@ -1598,6 +1954,7 @@ void test_all_pre_current_faults_preserve_pinned_generation() {
 
 int main() {
     try {
+        test_public_errors_are_stable_and_sensitive_diagnostics_stay_local();
         test_update_order_protocol_vector_and_pin();
         test_commit_oid_mismatch_fails_closed();
         test_cancelled_update_does_not_publish();
@@ -1606,10 +1963,14 @@ int main() {
         test_path_escape_plan_is_rejected_before_fetch();
         test_parent_swap_between_enumeration_and_read_fails_closed();
         test_strict_validator_rejects_link_escape();
+        test_strict_validator_rejects_staging_hard_links();
         test_strict_validator_enforces_file_and_byte_limits();
+        test_manifest_limit_applies_before_hashing();
         test_many_empty_directories_fail_without_quadratic_scan();
         test_strict_manifest_portable_utf8_contract();
+        test_json_unicode_escapes_match_standard_json_behavior();
         test_deduplicated_payload_tamper_is_rejected();
+        test_installed_object_hard_link_is_rejected_before_reuse();
         test_failed_installed_revalidation_does_not_poison_object_slot();
         test_constructor_reports_corrupt_persisted_current();
         test_expected_current_conflicts_before_fetch();
