@@ -21,24 +21,7 @@ if (MSVC)
     add_compile_options(/W0)
 endif()
 
-baas_require_runtime_resources(
-        global_config
-        static_config
-        adb
-        scrcpy_server
-        ocr_models
-        yolo_models
-)
-
-baas_copy_local_runtime_resources(
-        BASE_DIR "${CMAKE_CURRENT_LIST_DIR}/resource"
-        ITEMS
-        config
-        image
-        feature
-        procedure
-        auto_fight_workflow
-)
+include("${CMAKE_CURRENT_LIST_DIR}/cmake/RuntimeResources.cmake")
 
 option(BAAS_APP_USE_CUDA "BAAS_APP Use CUDA" OFF)
 message(STATUS "BAAS_APP Use CUDA : ${BAAS_APP_USE_CUDA}")

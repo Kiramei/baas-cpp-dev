@@ -20,6 +20,7 @@ on:
       - 'resources.lock.json'
       - 'scripts/fetch_resources.py'
       - 'tests/docs/test_external_resource_boundary.py'
+      - 'tests/build/external_resource_boundary/**'
       - 'apps/BAAS/**'
       - 'apps/ISA/**'
       - 'resource/**'
@@ -115,13 +116,18 @@ jobs:
         run: >-
           python -B -m unittest
           tests.docs.test_external_resource_boundary.ExternalResourceBoundaryTests.test_every_legacy_command_and_preset_declares_the_full_profile
-          tests.docs.test_external_resource_boundary.ExternalResourceConfigureSmokeTests.test_each_legacy_entry_reaches_the_real_gate_without_fetching
+          tests.docs.test_external_resource_boundary.ExternalResourceDeclarationHarnessTests
           -v
 
   release:
     name: Release
     runs-on: ubuntu-latest
-    needs: Windows-latest-cmake-x64
+    needs:
+      - Windows-latest-cmake-x64
+      - legacy-resource-profile-smoke
+    permissions:
+      contents: write
+      actions: write
     if: ${{ ( github.event_name == 'push' && github.ref == 'refs/heads/main' ) || github.event.inputs.create_release == 'true' }}
 
     steps:

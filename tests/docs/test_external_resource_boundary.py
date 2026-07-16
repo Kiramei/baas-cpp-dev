@@ -4,6 +4,7 @@ import pathlib
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -66,12 +67,11 @@ class ExternalResourceBoundaryTests(unittest.TestCase):
 
         self.assertEqual(self.root_cmake.count("cmake/BAASResources.cmake"), 1)
         self.assertEqual(
-            self.root_cmake.count("baas_install_required_runtime_resources()"), 2
+            self.root_cmake.count("baas_install_required_runtime_resources()"), 1
         )
         self.assertRegex(self.root_cmake, guarded_include)
         self.assertRegex(self.root_cmake, guarded_install)
-        self.assertIn("if(BAAS_INTERNAL_RESOURCE_BOUNDARY_CONFIGURE_ONLY)", self.root_cmake)
-        self.assertIn('"tooling=enabled\\ninstaller=called\\n"', self.root_cmake)
+        self.assertNotIn("BAAS_INTERNAL_", self.root_cmake)
         self.assertIn(
             'option(BAAS_FETCH_RESOURCES "Download legacy BAAS runtime resources during configure" OFF)',
             " ".join(self.root_cmake.split()),
@@ -141,6 +141,7 @@ class ExternalResourceBoundaryTests(unittest.TestCase):
             "resources.lock.json",
             "scripts/fetch_resources.py",
             "tests/docs/test_external_resource_boundary.py",
+            "tests/build/external_resource_boundary/**",
         )
         workflows = {
             ROOT / ".github/workflows/baas_app.yaml": ("apps/BAAS/**", "apps/ISA/**"),
@@ -161,8 +162,17 @@ class ExternalResourceBoundaryTests(unittest.TestCase):
         self.assertNotRegex(app_workflow, r"(?m)^\s*ref:\s*[\"']?main")
         self.assertIn("legacy-resource-profile-smoke:", app_workflow)
         self.assertIn(
-            "test_each_legacy_entry_reaches_the_real_gate_without_fetching",
+            "ExternalResourceDeclarationHarnessTests",
             app_workflow,
+        )
+        self.assertRegex(
+            app_workflow,
+            r"needs:\s+- Windows-latest-cmake-x64\s+"
+            r"- legacy-resource-profile-smoke",
+        )
+        self.assertRegex(
+            app_workflow,
+            r"permissions:\s+contents: write\s+actions: write",
         )
         ocr_workflow = (ROOT / ".github/workflows/baas_ocr.yaml").read_text(
             encoding="utf-8"
@@ -203,6 +213,39 @@ class ExternalResourceBoundaryTests(unittest.TestCase):
             "add_subdirectory(apps/BAAS_auto_fight_workflow_checker)",
         ):
             self.assertLess(self.root_cmake.index(app_directory), install_at)
+
+    def test_apps_include_real_extracted_resource_declarations(self) -> None:
+        app_modules = {
+            "apps/BAAS": "apps/BAAS/cmake/RuntimeResources.cmake",
+            "apps/ISA": "apps/ISA/cmake/RuntimeResources.cmake",
+            "apps/ocr_server": "apps/ocr_server/cmake/RuntimeResources.cmake",
+            "apps/BAAS_auto_fight_workflow_checker": (
+                "apps/BAAS_auto_fight_workflow_checker/cmake/RuntimeResources.cmake"
+            ),
+        }
+        for app_directory, module_path in app_modules.items():
+            app_cmake = (ROOT / app_directory / "CMakeLists.txt").read_text(
+                encoding="utf-8"
+            )
+            module = (ROOT / module_path).read_text(encoding="utf-8")
+            self.assertIn('include("${CMAKE_CURRENT_LIST_DIR}/cmake/RuntimeResources.cmake")', app_cmake)
+            for resource_call in (
+                "baas_require_runtime_resources(",
+                "baas_fetch_resources(",
+                "baas_copy_local_runtime_resources(",
+            ):
+                self.assertNotIn(resource_call, app_cmake, app_directory)
+            self.assertTrue(
+                any(
+                    resource_call in module
+                    for resource_call in (
+                        "baas_require_runtime_resources(",
+                        "baas_fetch_resources(",
+                        "baas_copy_local_runtime_resources(",
+                    )
+                ),
+                module_path,
+            )
 
     def test_generated_state_and_ocr_fixtures_stay_out_of_source(self) -> None:
         gitignore = (ROOT / ".gitignore").read_text(encoding="utf-8")
@@ -354,37 +397,179 @@ class ExternalResourceConfigureSmokeTests(unittest.TestCase):
                     )
                     self._assert_no_resource_outputs(build)
 
-    def test_each_legacy_entry_reaches_the_real_gate_without_fetching(self) -> None:
-        for active_option in LEGACY_OPTIONS:
-            with self.subTest(active_option=active_option), tempfile.TemporaryDirectory() as temporary:
-                temp = pathlib.Path(temporary)
-                build = temp / "build"
-                result_sentinel = temp / "configure-result.txt"
-                fetch_guard = temp / "fetch-must-not-run"
-                fetch_guard.write_text("offline fetch sentinel\n", encoding="utf-8")
-                arguments = [
-                    "-DCMAKE_BUILD_TYPE=Debug",
-                    "-DBAAS_INTERNAL_RESOURCE_BOUNDARY_CONFIGURE_ONLY=ON",
-                    f"-DBAAS_INTERNAL_RESOURCE_BOUNDARY_SENTINEL={result_sentinel.as_posix()}",
-                    "-DBAAS_FETCH_RESOURCES=ON",
-                    f"-DBAAS_RESOURCE_DOWNLOAD_ROOT={fetch_guard.as_posix()}",
-                    f"-DBAAS_RESOURCE_OUTPUT_ROOT={fetch_guard.as_posix()}",
-                    *(
-                        f"-D{option}={'ON' if option == active_option else 'OFF'}"
-                        for option in LEGACY_OPTIONS
-                    ),
-                ]
-                result = self._run_configure(build, arguments)
-                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+class ExternalResourceDeclarationHarnessTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.cmake = shutil.which("cmake")
+        if cls.cmake is None and os.name == "nt":
+            bundled = pathlib.Path(
+                "C:/Program Files (x86)/Microsoft Visual Studio/2022/BuildTools/"
+                "Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/bin/cmake.exe"
+            )
+            if bundled.is_file():
+                cls.cmake = str(bundled)
+        if cls.cmake is None:
+            raise RuntimeError("CMake is required for resource declaration tests")
+        cls.harness = ROOT / "tests/build/external_resource_boundary"
+
+    def _run_harness(self, profile: str, mode: str) -> dict[str, str]:
+        with tempfile.TemporaryDirectory() as temporary:
+            temp = pathlib.Path(temporary)
+            build = temp / "build"
+            result_file = temp / "result.txt"
+            environment = os.environ.copy()
+            environment.update(
+                {
+                    "HTTP_PROXY": "http://127.0.0.1:9",
+                    "HTTPS_PROXY": "http://127.0.0.1:9",
+                    "ALL_PROXY": "http://127.0.0.1:9",
+                    "NO_PROXY": "",
+                }
+            )
+            result = subprocess.run(
+                [
+                    self.cmake,
+                    "-S",
+                    str(self.harness),
+                    "-B",
+                    str(build),
+                    f"-DBAAS_REPOSITORY_ROOT={ROOT.as_posix()}",
+                    f"-DBAAS_RESOURCE_PROFILE={profile}",
+                    f"-DBAAS_RESOURCE_HARNESS_MODE={mode}",
+                    f"-DBAAS_RESOURCE_RESULT_FILE={result_file.as_posix()}",
+                ],
+                cwd=ROOT,
+                env=environment,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=30,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            values = {}
+            for line in result_file.read_text(encoding="utf-8").splitlines():
+                key, value = line.split("=", 1)
+                values[key] = value.replace("\\", "/")
+            if mode == "execute":
+                fetch_sentinel = build / "fetch-must-not-run"
+                self.assertTrue(fetch_sentinel.is_file())
                 self.assertEqual(
-                    result_sentinel.read_text(encoding="utf-8"),
-                    "tooling=enabled\ninstaller=called\n",
-                )
-                self.assertEqual(
-                    fetch_guard.read_text(encoding="utf-8"),
+                    fetch_sentinel.read_text(encoding="utf-8"),
                     "offline fetch sentinel\n",
                 )
-                self._assert_no_resource_outputs(build)
+            return values
+
+    def test_real_declaration_modules_record_exact_resource_sets(self) -> None:
+        expected = {
+            "baas": {
+                "required": (
+                    "global_config,static_config,adb,scrcpy_server,ocr_models,"
+                    "yolo_models"
+                ),
+                "fetched": "",
+                "copy_items": ["config,image,feature,procedure,auto_fight_workflow"],
+                "copy_bases": ["/apps/BAAS/resource"],
+                "copy_destinations": [""],
+            },
+            "isa": {
+                "required": "global_config,static_config,adb,scrcpy_server,ocr_models",
+                "fetched": "",
+                "copy_items": ["config,image,feature,procedure"],
+                "copy_bases": ["/apps/ISA/resource"],
+                "copy_destinations": [""],
+            },
+            "ocr": {
+                "required": "global_config,static_config,ocr_models",
+                "fetched": "",
+                "copy_items": [],
+                "copy_bases": [],
+                "copy_destinations": [],
+            },
+            "afwc": {
+                "required": "",
+                "fetched": "yolo_models",
+                "copy_items": ["skill_active.json", "data.yaml"],
+                "copy_bases": [
+                    "/apps/BAAS/resource/image/CN/zh-cn/image_info",
+                    "/recorded-fetched-root/yolo_models",
+                ],
+                "copy_destinations": ["/runtime", "/runtime"],
+            },
+        }
+        for profile, contract in expected.items():
+            with self.subTest(profile=profile):
+                values = self._run_harness(profile, "record")
+                self.assertEqual(values["required"], contract["required"])
+                self.assertEqual(values["fetched"], contract["fetched"])
+                copy_count = int(values["copy_count"])
+                self.assertEqual(copy_count, len(contract["copy_items"]))
+                self.assertEqual(
+                    [values[f"copy_{index}_items"] for index in range(copy_count)],
+                    contract["copy_items"],
+                )
+                for index, suffix in enumerate(contract["copy_bases"]):
+                    self.assertTrue(values[f"copy_{index}_base"].endswith(suffix))
+                for index, suffix in enumerate(contract["copy_destinations"]):
+                    destination = values[f"copy_{index}_destination"]
+                    if suffix:
+                        self.assertTrue(destination.endswith(suffix))
+                    else:
+                        self.assertEqual(destination, "")
+
+    def test_real_declarations_copy_and_install_from_offline_preseed(self) -> None:
+        if os.name == "nt":
+            platform_name = "Windows"
+            adb_name = "adb.exe"
+        elif sys.platform == "darwin":
+            platform_name = "MacOS"
+            adb_name = "adb"
+        else:
+            platform_name = "Linux"
+            adb_name = "adb"
+
+        common_installed = {
+            "resource/global_setting.json",
+            "resource/static.json",
+        }
+        adb_installed = {
+            adb_name,
+            f"resource/bin/{platform_name}/platform-tools/{adb_name}",
+        }
+        expected_subsets = {
+            "baas": common_installed
+            | adb_installed
+            | {
+                "resource/bin/scrcpy/server.bin",
+                "resource/ocr_models/model.bin",
+                "resource/yolo_models/model.bin",
+                "resource/default_config.json",
+                "resource/image/CN/zh-cn/image_info/skill_active.json",
+            },
+            "isa": common_installed
+            | adb_installed
+            | {
+                "resource/bin/scrcpy/server.bin",
+                "resource/ocr_models/model.bin",
+                "resource/default_config.json",
+            },
+            "ocr": common_installed | {"resource/ocr_models/model.bin"},
+            "afwc": {"skill_active.json", "data.yaml"},
+        }
+        harness_source = (self.harness / "CMakeLists.txt").read_text(encoding="utf-8")
+        self.assertEqual(
+            harness_source.count("baas_install_required_runtime_resources()"), 1
+        )
+        self.assertIn("set(BAAS_FETCH_RESOURCES OFF)", harness_source)
+
+        for profile, expected_files in expected_subsets.items():
+            with self.subTest(profile=profile):
+                values = self._run_harness(profile, "execute")
+                installed = set(filter(None, values["files"].split(",")))
+                self.assertTrue(expected_files.issubset(installed), installed)
+                self.assertEqual(values["fetch_sentinel"], "unchanged")
 
 
 if __name__ == "__main__":

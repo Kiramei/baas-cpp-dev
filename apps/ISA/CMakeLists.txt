@@ -12,22 +12,7 @@ configure_file(
         ${CMAKE_BINARY_DIR}/ISA_version.h
 )
 
-baas_require_runtime_resources(
-        global_config
-        static_config
-        adb
-        scrcpy_server
-        ocr_models
-)
-
-baas_copy_local_runtime_resources(
-        BASE_DIR "${CMAKE_CURRENT_LIST_DIR}/resource"
-        ITEMS
-        config
-        image
-        feature
-        procedure
-)
+include("${CMAKE_CURRENT_LIST_DIR}/cmake/RuntimeResources.cmake")
 
 if (MSVC)
     add_compile_options("$<$<C_COMPILER_ID:MSVC>:/utf-8>")

@@ -19,6 +19,7 @@ on:
       - 'resources.lock.json'
       - 'scripts/fetch_resources.py'
       - 'tests/docs/test_external_resource_boundary.py'
+      - 'tests/build/external_resource_boundary/**'
       - 'apps/BAAS_auto_fight_workflow_checker/**'
   pull_request:
     branches: 
