@@ -3,3 +3,7 @@
 # build/, while these source-adjacent links must never become branch changes.
 CMakeUserPresets.json
 deploy/conan/recipes/*/test_package/CMakeUserPresets.json
+
+# Runtime state and generated test payloads are external to the source tree.
+.baas-updater/
+/apps/ocr_server/test/test_images/

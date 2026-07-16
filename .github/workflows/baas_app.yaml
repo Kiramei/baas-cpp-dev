@@ -74,7 +74,7 @@ jobs:
         id: cmake_build
         run: |
           Write-Output "::group::Generate CUDA ${{ matrix.BAAS_APP_USE_CUDA }}"
-          cmake -S . -B build -DBUILD_APP_BAAS=${{ env.BUILD_APP_BAAS }} -DBAAS_APP_USE_CUDA=${{ matrix.BAAS_APP_USE_CUDA }} -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} -G Ninja
+          cmake -S . -B build -DBUILD_APP_BAAS=${{ env.BUILD_APP_BAAS }} -DBAAS_APP_USE_CUDA=${{ matrix.BAAS_APP_USE_CUDA }} -DBAAS_FETCH_RESOURCES=ON -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} -G Ninja
           Write-Output "::endgroup::"
           Write-Output "::group::Build"
           cmake --build build --config Release -j 4

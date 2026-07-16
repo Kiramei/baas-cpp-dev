@@ -85,7 +85,7 @@ jobs:
         id: cmake_build
         run: |
           echo "::group::Generate makefile"
-          cmake -B build -DBUILD_BAAS_OCR=$BUILD_BAAS_OCR -DCMAKE_BUILD_TYPE=$BUILD_TYPE
+          cmake -B build -DBUILD_BAAS_OCR=$BUILD_BAAS_OCR -DBAAS_FETCH_RESOURCES=ON -DCMAKE_BUILD_TYPE=$BUILD_TYPE
           echo "::endgroup::"
           echo "::group::Build"
           cmake --build build --config Release -j $(nproc)
@@ -179,7 +179,7 @@ jobs:
         id: cmake_build
         run: |
           echo "::group::Generate makefile"
-          cmake -B build -DBUILD_BAAS_OCR=$BUILD_BAAS_OCR -DCMAKE_BUILD_TYPE=$BUILD_TYPE
+          cmake -B build -DBUILD_BAAS_OCR=$BUILD_BAAS_OCR -DBAAS_FETCH_RESOURCES=ON -DCMAKE_BUILD_TYPE=$BUILD_TYPE
           echo "::endgroup::"
           echo "::group::Build"
           cmake --build build --config Release -j $(sysctl -n hw.logicalcpu)
@@ -277,7 +277,7 @@ jobs:
         id: cmake_configure_and_build
         run: |
           Write-Output "::group::Generate makefile"
-          cmake -S . -B build -DBUILD_BAAS_OCR=${{env.BUILD_BAAS_OCR}} -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}} -G Ninja      # Hard encode command with env var before exec
+          cmake -S . -B build -DBUILD_BAAS_OCR=${{env.BUILD_BAAS_OCR}} -DBAAS_FETCH_RESOURCES=ON -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}} -G Ninja      # Hard encode command with env var before exec
           Write-Output "::endgroup::"
           Write-Output "::group::Build"
           cmake --build build --config Release -j 4      # TODO: add number of threads
@@ -370,7 +370,7 @@ jobs:
         id: cmake_configure_and_build
         working-directory: ./baas_cpp
         run: |
-          cmake -G Ninja -B build -DCMAKE_TOOLCHAIN_FILE="$env:ANDROID_NDK_LATEST_HOME\build\cmake\android.toolchain.cmake" -DANDROID_NDK_PATH="$env:ANDROID_NDK_LATEST_HOME" -DANDROID_ABI=${{ matrix.target_arch }} -DANDROID_PLATFORM=android-26 -DBUILD_BAAS_OCR=ON -DBAAS_OCR_ANDROID_BUILD=ON -DCMAKE_BUILD_TYPE=Release
+          cmake -G Ninja -B build -DCMAKE_TOOLCHAIN_FILE="$env:ANDROID_NDK_LATEST_HOME\build\cmake\android.toolchain.cmake" -DANDROID_NDK_PATH="$env:ANDROID_NDK_LATEST_HOME" -DANDROID_ABI=${{ matrix.target_arch }} -DANDROID_PLATFORM=android-26 -DBUILD_BAAS_OCR=ON -DBAAS_OCR_ANDROID_BUILD=ON -DBAAS_FETCH_RESOURCES=ON -DCMAKE_BUILD_TYPE=Release
           cmake --build build --config Release --target BAAS_ocr_server -- -j 4
       
       - name: Upload Artifacts

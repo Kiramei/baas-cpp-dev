@@ -8,6 +8,7 @@
       "binaryDir": "${sourceDir}/build/conan-windows-msvc-release-baas",
       "cacheVariables": {
         "BUILD_APP_BAAS": "ON",
+        "BAAS_FETCH_RESOURCES": "ON",
         "BAAS_APP_USE_CUDA": "OFF",
         "CMAKE_BUILD_TYPE": "Release",
         "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/build/conan/windows-msvc-release-baas/generators/conan_toolchain.cmake"
@@ -20,6 +21,7 @@
       "binaryDir": "${sourceDir}/build/conan-windows-msvc-release-baas-cuda",
       "cacheVariables": {
         "BUILD_APP_BAAS": "ON",
+        "BAAS_FETCH_RESOURCES": "ON",
         "BAAS_APP_USE_CUDA": "ON",
         "CMAKE_BUILD_TYPE": "Release",
         "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/build/conan/windows-msvc-release-baas-cuda/generators/conan_toolchain.cmake"
@@ -32,6 +34,7 @@
       "binaryDir": "${sourceDir}/build/conan-windows-msvc-release-ocr",
       "cacheVariables": {
         "BUILD_BAAS_OCR": "ON",
+        "BAAS_FETCH_RESOURCES": "ON",
         "BAAS_OCR_SERVER_USE_CUDA": "OFF",
         "CMAKE_BUILD_TYPE": "Release",
         "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/build/conan/windows-msvc-release-ocr/generators/conan_toolchain.cmake"
@@ -43,6 +46,7 @@
       "binaryDir": "${sourceDir}/build/conan-linux-gcc-release-ocr",
       "cacheVariables": {
         "BUILD_BAAS_OCR": "ON",
+        "BAAS_FETCH_RESOURCES": "ON",
         "BAAS_OCR_SERVER_USE_CUDA": "OFF",
         "CMAKE_BUILD_TYPE": "Release",
         "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/build/conan/linux-gcc-release-ocr/generators/conan_toolchain.cmake"
@@ -54,6 +58,7 @@
       "binaryDir": "${sourceDir}/build/conan-macos-appleclang-release-ocr",
       "cacheVariables": {
         "BUILD_BAAS_OCR": "ON",
+        "BAAS_FETCH_RESOURCES": "ON",
         "BAAS_OCR_SERVER_USE_CUDA": "OFF",
         "CMAKE_BUILD_TYPE": "Release",
         "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/build/conan/macos-appleclang-release-ocr/generators/conan_toolchain.cmake"
@@ -66,6 +71,7 @@
       "binaryDir": "${sourceDir}/build/conan-android-clang-release-ocr-arm64-v8a",
       "cacheVariables": {
         "BUILD_BAAS_OCR": "ON",
+        "BAAS_FETCH_RESOURCES": "ON",
         "BAAS_OCR_ANDROID_BUILD": "ON",
         "BAAS_OCR_SERVER_USE_CUDA": "OFF",
         "ANDROID_ABI": "arm64-v8a",
@@ -82,6 +88,7 @@
       "binaryDir": "${sourceDir}/build/conan-android-clang-release-ocr-x86_64",
       "cacheVariables": {
         "BUILD_BAAS_OCR": "ON",
+        "BAAS_FETCH_RESOURCES": "ON",
         "BAAS_OCR_ANDROID_BUILD": "ON",
         "BAAS_OCR_SERVER_USE_CUDA": "OFF",
         "ANDROID_ABI": "x86_64",
@@ -98,6 +105,7 @@
       "binaryDir": "${sourceDir}/build/conan-windows-msvc-release-isa",
       "cacheVariables": {
         "BUILD_APP_ISA": "ON",
+        "BAAS_FETCH_RESOURCES": "ON",
         "CMAKE_BUILD_TYPE": "Release",
         "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/build/conan/windows-msvc-release-isa/generators/conan_toolchain.cmake"
       }

@@ -3,6 +3,21 @@
 Status: activation and transport-independent update publication are implemented.
 Git transport and application policy/provider integration remain separate.
 
+## Build and ownership boundary
+
+The service runtime and optional libgit2 backend consume application-owned
+repository state. Their CMake configurations do not download, copy, generate,
+or package a runtime resource tree, and neither `resources.lock.json` nor the
+legacy `apps/*/resource` trees are build inputs for those targets. A launcher or
+updater owns acquisition and publication of the external state before the
+service activates it.
+
+The configure-time resource helper in `cmake/BAASResources.cmake` is a legacy
+application exception. It is loaded only for `BUILD_APP_BAAS`, `BUILD_APP_ISA`,
+`BUILD_BAAS_OCR`, or `BUILD_BAAS_AW_CHECKER`; downloads are opt-in through
+`-DBAAS_FETCH_RESOURCES=ON`. New service, foundation, and runtime-repository
+targets must not use that helper.
+
 ## State layout
 
 The application-owned state directory contains one `runtime-repositories`
