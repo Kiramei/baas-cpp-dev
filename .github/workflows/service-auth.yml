@@ -25,6 +25,7 @@ on:
       - 'cmake/ServiceAdbTransport.cmake'
       - 'cmake/ServiceAdbSync.cmake'
       - 'cmake/ServiceAdbDiscoveryTrigger.cmake'
+      - 'cmake/ServiceConfigurationTriggers.cmake'
       - 'cmake/ServiceProtocol.cmake'
       - 'cmake/ServiceTriggerCatalog.cmake'
       - 'cmake/ServiceTriggerDispatch.cmake'
@@ -76,6 +77,8 @@ on:
       - 'src/service/adb/ServiceAdbSync.cpp'
       - 'include/service/app/AdbDiscoveryTriggerRegistration.h'
       - 'src/service/app/AdbDiscoveryTriggerRegistration.cpp'
+      - 'include/service/app/ConfigurationTriggerRegistration.h'
+      - 'src/service/app/ConfigurationTriggerRegistration.cpp'
       - 'tests/service/ProductionRemoteBackendTests.cpp'
       - 'tests/service/ProductionRemoteBackendLiveSmoke.cpp'
       - 'tests/service/ServiceRemoteHandlerTests.cpp'
@@ -108,6 +111,8 @@ on:
       - 'docs/script-runtime/SERVICE_WEBSOCKET_OWNER.md'
       - 'docs/script-runtime/SERVICE_PROTOCOL_V1.md'
       - 'docs/script-runtime/SERVICE_ADB_DISCOVERY_TRIGGER.md'
+      - 'docs/script-runtime/SERVICE_CONFIGURATION_TRIGGERS.md'
+      - 'docs/script-runtime/SERVICE_FILE_RESOURCE_STORE.md'
   pull_request:
     branches:
       - main
@@ -135,6 +140,7 @@ on:
       - 'cmake/ServiceAdbTransport.cmake'
       - 'cmake/ServiceAdbSync.cmake'
       - 'cmake/ServiceAdbDiscoveryTrigger.cmake'
+      - 'cmake/ServiceConfigurationTriggers.cmake'
       - 'cmake/ServiceProtocol.cmake'
       - 'cmake/ServiceTriggerCatalog.cmake'
       - 'cmake/ServiceTriggerDispatch.cmake'
@@ -186,6 +192,8 @@ on:
       - 'src/service/adb/ServiceAdbSync.cpp'
       - 'include/service/app/AdbDiscoveryTriggerRegistration.h'
       - 'src/service/app/AdbDiscoveryTriggerRegistration.cpp'
+      - 'include/service/app/ConfigurationTriggerRegistration.h'
+      - 'src/service/app/ConfigurationTriggerRegistration.cpp'
       - 'tests/service/ProductionRemoteBackendTests.cpp'
       - 'tests/service/ProductionRemoteBackendLiveSmoke.cpp'
       - 'tests/service/ServiceRemoteHandlerTests.cpp'
@@ -218,6 +226,8 @@ on:
       - 'docs/script-runtime/SERVICE_WEBSOCKET_OWNER.md'
       - 'docs/script-runtime/SERVICE_PROTOCOL_V1.md'
       - 'docs/script-runtime/SERVICE_ADB_DISCOVERY_TRIGGER.md'
+      - 'docs/script-runtime/SERVICE_CONFIGURATION_TRIGGERS.md'
+      - 'docs/script-runtime/SERVICE_FILE_RESOURCE_STORE.md'
 
 permissions:
   contents: read
@@ -433,11 +443,22 @@ jobs:
           --build=missing
           --no-remote
 
+      - name: Cross-build and verify pinned nlohmann-json recipe
+        shell: bash
+        run: >-
+          conan create deploy/conan/recipes/baas-nlohmann-json
+          -pr:h=deploy/conan/profiles/${{ matrix.profile }}
+          -pr:b=default
+          -c:h "tools.android:ndk_path=${ANDROID_NDK_HOME}"
+          --build=missing
+          --no-remote
+
       - name: Generate Android control-auth CMake dependencies
         shell: bash
         run: >-
           conan install --requires=baas-libsodium/1.0.22
           --requires=baas-cpp-httplib/0.50.1
+          --requires=baas-nlohmann-json/3.11.3
           -of build/conan/service-auth-android-${{ matrix.abi }}
           -pr:h=deploy/conan/profiles/${{ matrix.profile }}
           -pr:b=default
@@ -463,6 +484,8 @@ jobs:
           -DBUILD_SERVICE_BUSINESS_SESSION=ON
           -DBUILD_SERVICE_BUSINESS_SESSION_TESTS=OFF
           -DBUILD_SERVICE_ADB_DISCOVERY_TRIGGER=ON
+          -DBUILD_SERVICE_FILE_RESOURCE_STORE=ON
+          -DBUILD_SERVICE_CONFIGURATION_TRIGGERS=ON
           -DBUILD_APP_BAAS=OFF
           -DBUILD_APP_ISA=OFF
           -DBUILD_BAAS_OCR=OFF
@@ -480,3 +503,5 @@ jobs:
           BAAS_service_websocket BAAS_service_control_session
           BAAS_service_business_session
           BAAS_service_adb_discovery_trigger
+          BAAS_service_file_resource_store
+          BAAS_service_configuration_triggers
