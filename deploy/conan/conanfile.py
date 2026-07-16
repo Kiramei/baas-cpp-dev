@@ -41,6 +41,7 @@ class BAASDepsConan(ConanFile):
         "use_benchmark": [True, False],
         "use_opencv_dnn": [True, False],
         "use_libsodium": [True, False],
+        "use_libgit2": [True, False],
     }
 
     default_options = {
@@ -49,6 +50,7 @@ class BAASDepsConan(ConanFile):
         "use_benchmark": True,
         "use_opencv_dnn": False,
         "use_libsodium": False,
+        "use_libgit2": False,
         "baas-onnxruntime/*:provider": "cpu",
         "baas-opencv/*:with_dnn": False,
     }
@@ -65,6 +67,11 @@ class BAASDepsConan(ConanFile):
         if self.options.use_libsodium:
             self.requires(
                 f"baas-libsodium/{self._selected_dependency_version('baas-libsodium')}"
+            )
+
+        if self.options.use_libgit2:
+            self.requires(
+                f"baas-libgit2/{self._selected_dependency_version('baas-libgit2')}"
             )
 
         for dependency in DEPENDENCY_ORDER:
