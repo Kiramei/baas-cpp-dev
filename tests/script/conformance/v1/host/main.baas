@@ -1,0 +1,2 @@
+import "baas/log" as log;
+let result = log;

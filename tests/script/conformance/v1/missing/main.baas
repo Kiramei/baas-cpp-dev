@@ -1,0 +1,2 @@
+import "missing/dependency" as dependency;
+let result = dependency.value;

@@ -1,0 +1,28 @@
+import "happy/math" as math;
+import "happy/state" as first;
+import "happy/state" as second;
+
+let counter = first.make_counter(10);
+let first_value = counter();
+let second_value = counter(step = 4);
+let loop_total = 0;
+for (item in [1, 2, 3, 4, 5]) {
+    if (item == 2) { continue; }
+    if (item == 5) { break; }
+    loop_total += item;
+}
+let index = 0;
+while (index < 3) { index += 1; }
+
+let values = [1, 2, 3];
+values[1] = 5;
+let ordered = {"first": 1, "second": 2, "first": 3};
+ordered.second += 5;
+ordered["third"] = 11;
+
+let result = {
+    "total": math.factorial(6) + first_value + second_value + loop_total + index + math.defaults(),
+    "same_module": first is second,
+    "values": values,
+    "ordered": ordered
+};

@@ -1,0 +1,2 @@
+import "cycle/a" as dependency;
+let value = dependency.result;

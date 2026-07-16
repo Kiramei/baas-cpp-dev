@@ -1,0 +1,2 @@
+import "../outside" as outside;
+let result = outside.value;

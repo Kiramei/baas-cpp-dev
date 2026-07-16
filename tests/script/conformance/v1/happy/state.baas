@@ -1,0 +1,7 @@
+let initialized = 0;
+initialized += 1;
+
+fn make_counter(start = 0) {
+    let value = start;
+    return fn(step = 1) { value += step; return value; };
+}

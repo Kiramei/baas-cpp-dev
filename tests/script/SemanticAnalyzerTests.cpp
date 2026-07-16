@@ -257,6 +257,23 @@ void test_defer_cleanup_control_restrictions()
           "cleanup restriction must resume after leaving a nested function");
 }
 
+void test_import_inventory_covers_nested_statement_and_expression_bodies()
+{
+    const auto parsed = parse(
+        "fn declared() { import \"nested/declared\" as declared_dep; return declared_dep; }\n"
+        "let expression = fn() { import \"nested/expression\" as expression_dep; "
+        "return expression_dep; };\n"
+        "if (false) { import \"nested/block\" as block_dep; block_dep; }\n");
+    check(!parsed.has_errors(), "nested import inventory fixture must parse");
+    const auto result = analyze_semantics(parsed.program);
+    check(!result.has_errors(), "nested import inventory fixture must analyze");
+    check(result.imports.size() == 3
+              && result.imports[0]->module == "nested/declared"
+              && result.imports[1]->module == "nested/expression"
+              && result.imports[2]->module == "nested/block",
+          "semantic import inventory must preserve complete AST source order");
+}
+
 }  // namespace
 
 int main()
@@ -269,6 +286,7 @@ int main()
     test_node_and_depth_limits();
     test_malformed_ast_is_rejected_safely();
     test_defer_cleanup_control_restrictions();
+    test_import_inventory_covers_nested_statement_and_expression_bodies();
 
     if (failures != 0) {
         std::cerr << failures << " assertion(s) failed\n";

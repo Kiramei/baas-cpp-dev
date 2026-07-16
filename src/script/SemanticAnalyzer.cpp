@@ -246,6 +246,7 @@ private:
                 break;
             case NodeKind::ImportStatement: {
                 const auto& imported = static_cast<const ImportStatement&>(*statement);
+                result_.imports.push_back(&imported);
                 (void)declare(imported.alias, BindingKind::Import, imported.span, true);
                 break;
             }

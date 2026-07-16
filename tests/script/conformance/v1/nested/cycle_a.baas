@@ -1,0 +1,5 @@
+let hidden = fn() {
+    import "nested/cycle_b" as dependency;
+    return dependency.value;
+};
+let result = 1;

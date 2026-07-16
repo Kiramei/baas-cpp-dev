@@ -76,6 +76,8 @@ struct SemanticResult {
     std::vector<BindingInfo> bindings;
     std::vector<ReferenceResolution> references;
     std::vector<FunctionInfo> functions;
+    // Source-order borrowed pointers into the analyzed immutable AST.
+    std::vector<const ast::ImportStatement*> imports;
     std::size_t visited_ast_nodes{};
 
     [[nodiscard]] bool has_errors() const noexcept;
