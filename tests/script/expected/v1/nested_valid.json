@@ -1,0 +1,1 @@
+{"schema_version":1,"engine":"synchronous_ast_conformance","ok":true,"entry":"nested/valid","export":"result","value":42,"stats":{"steps":10,"peak_call_depth":1,"peak_value_stack":3,"collection_work":4,"initialized_modules":2,"created_functions":1}}

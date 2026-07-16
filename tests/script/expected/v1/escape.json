@@ -1,0 +1,1 @@
+{"schema_version":1,"engine":"synchronous_ast_conformance","ok":false,"error":{"phase":"load","code":"MS012_DOT_SEGMENT","message":"import specifier is not canonical"}}

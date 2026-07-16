@@ -1,0 +1,5 @@
+let hidden = fn() {
+    import "nested/not_found" as missing;
+    return missing.value;
+};
+let result = 1;

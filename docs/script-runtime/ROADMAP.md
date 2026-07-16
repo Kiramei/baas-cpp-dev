@@ -90,7 +90,9 @@ are recorded.
 - [x] Specify language/runtime/API version negotiation and deprecation policy.
 - [x] Specify script/resource manifests, integrity checks, atomic updates,
   rollback, and cache layout.
-- [ ] Publish conformance examples and a normative test corpus.
+- [~] Publish conformance examples and a normative test corpus. The version-1
+  executable corpus covers the semantics implemented by the synchronous AST
+  evaluator; it is not yet the complete normative language/Host/async corpus.
 - [ ] Resolve implementation ADRs (AST versus bytecode, ownership/GC strategy,
   module cache, sandbox boundary, and threading model).
 
@@ -126,8 +128,9 @@ implementation remains pending.
 ## Phase 2 — C++ runtime and developer tooling
 
 - [~] Add standalone `BAAS_script_runtime` and CLI/test targets. The library,
-  focused CTest targets, and non-executing `BAAS_script_check` CLI exist; the
-  script execution CLI remains pending.
+  focused CTest targets, non-executing `BAAS_script_check`, and bounded
+  `BAAS_script_run` synchronous conformance CLI exist. The production bytecode
+  VM execution CLI remains pending.
 - [x] Implement UTF-8 lexer with stable byte/line/column source diagnostics and
   malformed-input recovery.
 - [x] Implement the complete parser and source-spanned immutable AST.

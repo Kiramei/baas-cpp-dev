@@ -1,0 +1,6 @@
+fn load_answer() {
+    import "nested/value" as value;
+    return value.answer;
+}
+
+let result = load_answer();

@@ -1,0 +1,1 @@
+{"schema_version":1,"engine":"synchronous_ast_conformance","ok":false,"error":{"phase":"load","code":"RUN006_HOST_IMPORT_UNAVAILABLE","message":"Host modules are unavailable in the conformance runner","module":"baas/log","span":{"begin":{"byte":0,"line":1,"column":1},"end":{"byte":25,"line":1,"column":26}}}}
