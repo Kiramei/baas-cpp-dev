@@ -13,6 +13,7 @@ on:
       - 'src/service/**'
       - 'tests/service/ServiceApplicationTests.cpp'
       - 'tests/service/ConfigurationTriggerRegistrationTests.cpp'
+      - 'tests/service/ServiceRuntimeProviderBridgeTests.cpp'
       - 'deploy/conan/conanfile.py'
       - 'deploy/conan/profiles/**'
       - 'deploy/conan/scripts/**'
@@ -22,6 +23,7 @@ on:
       - 'docs/script-runtime/SERVICE_APPLICATION.md'
       - 'docs/script-runtime/SERVICE_COMMAND_LINE.md'
       - 'docs/script-runtime/SERVICE_CONFIGURATION_TRIGGERS.md'
+      - 'docs/script-runtime/SERVICE_RUNTIME_PROVIDER_BRIDGE.md'
   pull_request:
     branches: [main]
     types: [opened, synchronize, reopened]
@@ -34,6 +36,7 @@ on:
       - 'src/service/**'
       - 'tests/service/ServiceApplicationTests.cpp'
       - 'tests/service/ConfigurationTriggerRegistrationTests.cpp'
+      - 'tests/service/ServiceRuntimeProviderBridgeTests.cpp'
       - 'deploy/conan/conanfile.py'
       - 'deploy/conan/profiles/**'
       - 'deploy/conan/scripts/**'
@@ -43,6 +46,7 @@ on:
       - 'docs/script-runtime/SERVICE_APPLICATION.md'
       - 'docs/script-runtime/SERVICE_COMMAND_LINE.md'
       - 'docs/script-runtime/SERVICE_CONFIGURATION_TRIGGERS.md'
+      - 'docs/script-runtime/SERVICE_RUNTIME_PROVIDER_BRIDGE.md'
 
 permissions:
   contents: read
@@ -134,6 +138,7 @@ jobs:
           -DBUILD_TESTING=ON -DBUILD_SERVICE_APP_TESTS=ON
           -DBUILD_SERVICE_CONFIGURATION_TRIGGER_TESTS=ON
           -DBUILD_SERVICE_AUTH_OWNER_TESTS=ON
+          -DBUILD_SERVICE_RUNTIME_PROVIDER_BRIDGE_TESTS=ON
           -DBUILD_APP_BAAS=OFF -DBUILD_APP_ISA=OFF -DBUILD_BAAS_OCR=OFF
           -DBUILD_BAAS_AW_CHECKER=OFF -DBUILD_BAAS_NMS_BENCHMARK=OFF
           -DBAAS_FETCH_RESOURCES=OFF
@@ -144,9 +149,10 @@ jobs:
           --config ${{ matrix.build_type }} --parallel 4
           --target BAAS_service BAAS_service_application_tests
           BAAS_service_configuration_trigger_tests BAAS_service_auth_owner_tests
+          BAAS_service_runtime_provider_bridge_tests
 
       - name: Run real loopback and CLI tests
         run: >-
           ctest --test-dir build/service-application
           --build-config ${{ matrix.build_type }} --output-on-failure --timeout 90
-          -R "^BAAS_service_(application_tests|configuration_trigger_tests|auth_owner_tests|version_cli|help_cli)$"
+          -R "^BAAS_service_(application_tests|configuration_trigger_tests|auth_owner_tests|runtime_provider_bridge_tests|version_cli|help_cli)$"

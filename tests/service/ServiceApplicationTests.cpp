@@ -193,6 +193,21 @@ void test_real_loopback_lifecycle_trigger_and_persistence()
         event.close();
         if (!event) throw std::runtime_error("event fixture write failed");
     }
+    {
+        std::ofstream static_data(
+            root.path / "config" / "static.json",
+            std::ios::binary | std::ios::trunc);
+        static_data << R"({"version":1,"source":"application-test"})";
+        static_data.close();
+        if (!static_data) throw std::runtime_error("static fixture write failed");
+    }
+    {
+        std::ofstream setup(
+            root.path / "setup.toml", std::ios::binary | std::ios::trunc);
+        setup << "[general]\nchannel = 'stable'\n";
+        setup.close();
+        if (!setup) throw std::runtime_error("setup fixture write failed");
+    }
     const auto port = unused_loopback_port();
     auto opened = app::ServiceApplication::open(options(root.path, port));
     check(static_cast<bool>(opened),
@@ -391,6 +406,23 @@ void test_port_conflict_reports_nonzero_start_failure()
     blocker.stop();
 }
 
+void test_readiness_requires_real_runtime_resources()
+{
+    TemporaryRoot root{"missing-resources"};
+    auto opened = app::ServiceApplication::open(
+        options(root.path, unused_loopback_port()));
+    check(static_cast<bool>(opened),
+          "missing resources do not cause optimistic failure during composition");
+    if (!opened) return;
+    const auto started = opened.application->start_transport();
+    check(started.started, "missing-resource fixture starts transport");
+    if (!started.started) return;
+    check(!opened.application->publish_ready()
+              && opened.application->readiness_snapshot().state
+                  == router::HealthReadinessState::failed,
+          "application readiness fails closed without real static and setup data");
+}
+
 }  // namespace
 
 int main()
@@ -399,6 +431,7 @@ int main()
         test_information_and_pipe_fail_before_side_effect();
         test_real_loopback_lifecycle_trigger_and_persistence();
         test_port_conflict_reports_nonzero_start_failure();
+        test_readiness_requires_real_runtime_resources();
     } catch (const std::exception& error) {
         std::cerr << "UNEXPECTED: " << error.what() << '\n';
         return 2;
