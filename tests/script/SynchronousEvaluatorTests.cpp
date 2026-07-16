@@ -446,6 +446,41 @@ void test_input_order_independent_results_and_stats()
           "valid deterministic execution must publish input-order-independent stats");
 }
 
+void test_nested_imports_participate_in_the_complete_module_graph()
+{
+    runtime::SynchronousEvaluator nested({
+        {"main",
+         "fn load() { import \"value\" as value; return value.answer; }\n"
+         "let result = load();\n"},
+        {"value", "let answer = 42;\n"},
+    });
+    static_cast<void>(nested.execute("main"));
+    check(integer_export(nested, "main", "result") == 42
+              && nested.stats().initialized_modules == 2,
+          "function-body imports must load and initialize their dependency");
+
+    expect_error(
+        runtime::LanguageErrorCode::ModuleInitializationFailed,
+        [] {
+            runtime::SynchronousEvaluator missing({{
+                "main",
+                "let hidden = fn() { import \"missing\" as dependency; "
+                "return dependency.value; }; let result = 1;\n",
+            }});
+        },
+        "an uncalled function-expression import must still close the module snapshot");
+
+    expect_error(
+        runtime::LanguageErrorCode::ImportCycle,
+        [] {
+            runtime::SynchronousEvaluator cyclic({
+                {"a", "let hidden = fn() { import \"b\" as b; return b.value; }; let result = 1;\n"},
+                {"b", "fn hidden() { import \"a\" as a; return a.result; } let value = 2;\n"},
+            });
+        },
+        "nested imports must participate in deterministic cycle rejection");
+}
+
 }  // namespace
 
 int main()
@@ -461,6 +496,7 @@ int main()
     test_closure_side_table_survives_heap_collection();
     test_dynamic_failures_compile_gate_and_explicit_boundaries();
     test_input_order_independent_results_and_stats();
+    test_nested_imports_participate_in_the_complete_module_graph();
     } catch (const std::exception& error) {
         std::cerr << "UNCAUGHT: " << error.what() << '\n';
         return EXIT_FAILURE;

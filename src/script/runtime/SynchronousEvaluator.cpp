@@ -531,11 +531,8 @@ struct SynchronousEvaluator::Impl {
             }
 
             std::vector<std::string> imports;
-            for (const auto& statement : parsed->program.statements) {
-                if (const auto* imported = ast::as<ImportStatement>(statement)) {
-                    imports.push_back(imported->module);
-                }
-            }
+            for (const auto* imported : semantic.imports)
+                imports.push_back(imported->module);
             auto record = std::make_unique<ModuleRecord>();
             record->id = specifier.canonical_id;
             record->parsed = std::move(parsed);
