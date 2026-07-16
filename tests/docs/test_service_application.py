@@ -28,10 +28,13 @@ class ServiceApplicationContractTests(unittest.TestCase):
             ROOT / ".github/workflows/service-application.yml"
         ).read_text(encoding="utf-8")
 
-    def test_real_composition_is_explicit_and_remote_is_disabled(self) -> None:
+    def test_real_composition_is_explicit_and_remote_is_production(self) -> None:
         for anchor in (
             "ProductionProviderBackend",
             "FileResourceStore",
+            "ProductionRemoteBackend",
+            "ServiceAdbTransport",
+            "RemoteHandlerFactory",
             "make_status_trigger_registration",
             "TriggerDispatcher::create",
             "TriggerExecutor",
@@ -41,8 +44,8 @@ class ServiceApplicationContractTests(unittest.TestCase):
             "make_system_auth_random",
             "make_sodium_password_deriver",
             "open_production_http_host",
-            "RemoteChannelPolicy::disabled",
-            "dependencies.remote = nullptr",
+            "RemoteChannelPolicy::desktop_only",
+            "remote_server_jar",
         ):
             self.assertIn(anchor, self.source)
 
@@ -51,9 +54,11 @@ class ServiceApplicationContractTests(unittest.TestCase):
         self.assertIn("int main", self.main)
         self.assertIn("WideCharToMultiByte", self.main)
         self.assertIn("OUTPUT_NAME \"BAAS_service\"", self.cmake)
+        self.assertIn("BAAS_service_remote_backend", self.cmake)
         self.assertIn("pipe_transport_unavailable", self.source)
         self.assertIn("--project-root <directory>", self.docs)
-        self.assertIn("does not claim remote", self.docs)
+        self.assertIn("desktop remote transport is enabled", self.source)
+        self.assertIn("<project-root>/service/remote/scrcpy-server.jar", self.docs)
         for exit_code in ("command_line = 2", "pipe_unavailable = 3", "host_start = 6"):
             self.assertIn(exit_code, self.header)
 

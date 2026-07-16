@@ -66,6 +66,17 @@ public:
     std::filesystem::path path;
 };
 
+void add_remote_server_resource(const std::filesystem::path& root)
+{
+    const auto directory = root / "service" / "remote";
+    std::filesystem::create_directories(directory);
+    std::ofstream jar(
+        directory / "scrcpy-server.jar", std::ios::binary | std::ios::trunc);
+    jar << "deterministic application-test ws-scrcpy fixture";
+    jar.close();
+    if (!jar) throw std::runtime_error("remote server fixture write failed");
+}
+
 [[nodiscard]] std::uint16_t unused_loopback_port()
 {
     http::HttpHostRouterConfig router_config;
@@ -176,6 +187,7 @@ void test_information_and_pipe_fail_before_side_effect()
 void test_real_loopback_lifecycle_trigger_and_persistence()
 {
     TemporaryRoot root{"lifecycle"};
+    add_remote_server_resource(root.path);
     std::filesystem::create_directories(root.path / "config" / "source");
     {
         std::ofstream config(
@@ -257,7 +269,7 @@ void test_real_loopback_lifecycle_trigger_and_persistence()
     const auto ready = client.Get("/health");
     check(ready && ready->status == 200
               && ready->body.find(R"("phase":"ready")") != std::string::npos
-              && ready->body.find(R"("remote":"disabled")") != std::string::npos
+              && ready->body.find(R"("remote":"desktop_only")") != std::string::npos
               && ready->body.find(R"("server_sign_public_key":")")
                   != std::string::npos,
           "ready health must contain runtime policy and real auth public state");
@@ -377,6 +389,7 @@ void test_port_conflict_reports_nonzero_start_failure()
     if (!occupied.started) return;
 
     TemporaryRoot root{"conflict"};
+    add_remote_server_resource(root.path);
     auto opened = app::ServiceApplication::open(
         options(root.path, occupied.port));
     check(static_cast<bool>(opened),
@@ -409,6 +422,7 @@ void test_port_conflict_reports_nonzero_start_failure()
 void test_readiness_requires_real_runtime_resources()
 {
     TemporaryRoot root{"missing-resources"};
+    add_remote_server_resource(root.path);
     auto opened = app::ServiceApplication::open(
         options(root.path, unused_loopback_port()));
     check(static_cast<bool>(opened),
@@ -423,6 +437,17 @@ void test_readiness_requires_real_runtime_resources()
           "application readiness fails closed without real static and setup data");
 }
 
+void test_missing_remote_resource_fails_before_composition_side_effects()
+{
+    TemporaryRoot root{"missing-remote"};
+    const auto opened = app::ServiceApplication::open(
+        options(root.path, unused_loopback_port()));
+    check(opened.error == app::ServiceApplicationError::remote_resource_unavailable,
+          "desktop composition must fail closed without the ws-scrcpy jar");
+    check(!std::filesystem::exists(root.path / "config"),
+          "missing remote resource must fail before auth or resource-store effects");
+}
+
 }  // namespace
 
 int main()
@@ -432,6 +457,7 @@ int main()
         test_real_loopback_lifecycle_trigger_and_persistence();
         test_port_conflict_reports_nonzero_start_failure();
         test_readiness_requires_real_runtime_resources();
+        test_missing_remote_resource_fails_before_composition_side_effects();
     } catch (const std::exception& error) {
         std::cerr << "UNEXPECTED: " << error.what() << '\n';
         return 2;
