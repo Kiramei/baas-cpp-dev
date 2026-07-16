@@ -1,0 +1,72 @@
+let handled_trace = ["enter", "try"];
+fn handled() {
+    defer handled_trace = handled_trace + ["finally"];
+    try {
+        throw "marker";
+    } catch (error) {
+        handled_trace = handled_trace + ["catch:Marker"];
+        return "handled";
+    }
+}
+let handled_result = handled();
+handled_trace = handled_trace + ["caller:handled"];
+
+let rethrow_trace = ["enter", "try"];
+let retained = null;
+let same_identity = false;
+fn rethrow() {
+    defer rethrow_trace = rethrow_trace + ["finally"];
+    try {
+        throw "marker";
+    } catch (error) {
+        retained = error;
+        rethrow_trace = rethrow_trace + ["catch:Marker"];
+        throw error;
+    }
+}
+try {
+    rethrow();
+} catch (error) {
+    rethrow_trace = rethrow_trace + ["outer:Marker"];
+    same_identity = error is retained;
+}
+
+let lifo_trace = [];
+fn lifo() {
+    defer lifo_trace = lifo_trace + ["cleanup:outer"];
+    defer lifo_trace = lifo_trace + ["cleanup:inner"];
+    lifo_trace = lifo_trace + ["body"];
+    return "ok";
+}
+let lifo_result = lifo();
+lifo_trace = lifo_trace + ["caller:ok"];
+
+let cleanup_trace = [];
+let cleanup_primary = "";
+let cleanup_suppressed = "";
+fn cleanup_raises() {
+    defer {
+        cleanup_trace = cleanup_trace + ["cleanup"];
+        throw "cleanup";
+    }
+    cleanup_trace = cleanup_trace + ["body"];
+    throw "primary";
+}
+try {
+    cleanup_raises();
+} catch (error) {
+    cleanup_primary = error.code;
+    cleanup_suppressed = error.suppressed[0].code;
+}
+
+let result = {
+    "handled_return": handled_trace,
+    "handled_result": handled_result,
+    "rethrow_identity": rethrow_trace,
+    "same_identity": same_identity,
+    "lifo_return": lifo_trace,
+    "lifo_result": lifo_result,
+    "cleanup_raises_baas": cleanup_trace,
+    "cleanup_primary": cleanup_primary,
+    "cleanup_suppressed": cleanup_suppressed
+};

@@ -62,9 +62,10 @@ class SynchronousEvaluatorFoundationTest(unittest.TestCase):
         self.assertIn("authorize_host_member", SOURCE)
         self.assertIn("test_capability_adapter_and_syntax_gates_precede_arguments", HOST_TESTS)
         self.assertIn("test_cache_transaction_permission_preflight_and_failure_cache", HOST_TESTS)
-        for forbidden in ("ErrorEnvelope", "HttpHost"):
-            self.assertNotIn(forbidden, HEADER)
-            self.assertNotIn(forbidden, SOURCE)
+        self.assertNotIn("ErrorEnvelope", HEADER)
+        self.assertIn("ErrorEnvelope", SOURCE)
+        self.assertNotIn("HttpHost", HEADER)
+        self.assertNotIn("HttpHost", SOURCE)
 
 
 if __name__ == "__main__":

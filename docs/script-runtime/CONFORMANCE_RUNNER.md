@@ -4,8 +4,9 @@
 `SynchronousEvaluator`. It is a deterministic development and CI oracle for
 the currently implemented synchronous AST semantics. It is **not** the
 production bytecode VM, a package activation loader, or a security sandbox.
-Async/tasks, structured throw/catch/defer execution, and Host modules remain
-unsupported by this tool.
+Async/tasks and live Host modules remain unsupported by this tool. The
+synchronous oracle executes structured `throw`, `try`/`catch`, and per-function
+`defer` cleanup with bounded Error values.
 
 ## Invocation and package mapping
 
@@ -45,10 +46,17 @@ CLI usage or runner infrastructure failure.
 
 The registered corpus is `tests/script/conformance/v1`, with metadata in its
 `CORPUS.md`. CTest runs each process twice and requires byte-identical stdout.
-The positive cases cover package imports and module caching, nested imports, closures,
-recursion/defaults, loops and control transfer, ordered collections, values,
-and JSON result conversion. Negative cases cover missing modules, path escape,
-cycles, diagnostics, Host rejection, runtime errors, and deterministic bounds.
+The positive cases cover package imports and module caching, nested imports,
+closures, recursion/defaults, loops and control transfer, structured Error
+identity and cleanup, ordered collections, values, and JSON result conversion.
+Negative cases cover missing modules, path escape, cycles, diagnostics, Host
+rejection, runtime errors, and deterministic bounds.
+
+`BAAS_script_run_python_cleanup_parity` compares deterministic Python
+`try`/`except`/`finally` ordering with the equivalent synchronous script trace.
+It also fixes the intentional ERR-014 difference: Python replaces the active
+exception when `finally` raises, while BAAS keeps the existing primary Error and
+records cleanup failures in `suppressed` unless terminal priority applies.
 Nested function declarations, function expressions, and blocks are included so
 the executable graph evidence covers the complete semantic import inventory.
 Every captured stdout file is decoded as strict UTF-8, parsed by a standard JSON

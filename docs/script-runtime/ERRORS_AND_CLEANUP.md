@@ -326,7 +326,9 @@ Each frame/context MUST bound registered defer count, cleanup instructions,
 cleanup wall time, nested call depth, heap use, and host-close queue work. The
 default `max_defers_per_frame` is 1024. Exhaustion is terminal
 `CleanupLimitExceeded`; it follows ERR-014 and cannot skip the host teardown
-fallback. These validation and execution checks remain pending with the VM.
+fallback. The synchronous conformance evaluator implements independent cleanup
+step and nested-call allowances. Independent wall-time enforcement, production
+heap reservation, and host-close fallback remain production bytecode-VM work.
 
 ### ERR-016 — Native host boundary
 
@@ -486,17 +488,29 @@ from copying attacker-expanded containers. `BAAS_script_error_envelope_tests`
 fix stable bytes, nested ordering, every budget boundary, fallback privacy,
 invalid-detail markers, and rooted/stale GC behavior.
 
-The repository does not yet implement VM execution, script-visible Error member
-access, throw/catch unwinding, defer registration/execution, live VM stack
-capture, terminal-error propagation, host ABI guards/translators, domain
-mappings, cause-chain normalization, or wiring serialized envelopes into a
-service/public diagnostic transport. In particular, the heap snapshot is not
-an ERR-003 serialized envelope; only the bounded `serialize_error_envelope`
-boundary produces one. Those VM/translator/integration components MUST remain
-pending in Phase 2 until executable conformance evidence exists. This serializer
-foundation MUST NOT be described as implementing structured exceptions, VM
-unwinding, Host translation, module loading, cancellation/task semantics, the
-general conformance corpus, or Phase 1 as a whole.
+The bounded `SynchronousEvaluator` now implements the Draft 0.1 synchronous
+conformance slice: runtime and Host failures are materialized as immutable Error
+values, `throw Error` preserves identity, non-Error operands become
+`ThrownValue`, catchable and terminal failures are separated, and script-visible
+Error members are read-only projections. Each function activation owns a
+bounded `defer` stack; normal completion, return, Error propagation, and terminal
+failure drain every registered cleanup in LIFO order. Return values are rooted
+before cleanup, terminal failures cannot be swallowed, and ERR-014 derives a
+new primary only when suppressed cleanup failures must be recorded. Native
+Host failures carry `origin = host` plus an allowlisted Host frame. Uncaught
+Errors cross the evaluator boundary as a bounded `baas.script.error/v1` JSON
+snapshot retained by `EvaluationError` and emitted by `BAAS_script_run`. Native
+tests plus the versioned process corpus provide executable conformance evidence.
+
+This is not the production bytecode VM. Language-level Task/cancellation
+integration, production package activation, full asynchronous Host adapters,
+cause-chain normalization across task/service boundaries, and service diagnostic
+transport remain pending. The heap snapshot is not itself an ERR-003 serialized
+envelope; only the bounded `serialize_error_envelope`
+boundary produces one.
+Those production VM/async/service components MUST remain pending in Phase 2,
+and this synchronous slice MUST NOT be described as completing Phase 1 as a
+whole.
 
 ## Machine-checked evidence
 
@@ -505,6 +519,6 @@ and MUST verify ERR-001 through ERR-020, exact Error fields and stable language
 codes, source/diagnostic anchors, stack/cause/truncation rules, the complete
 RT001–RT023 translation table, parser/AST/semantic foundations, tagged static
 fixtures and CTest wiring, structured Error heap/API/test anchors, the
-implemented serialization boundary, explicit missing VM/translator/integration
-implementation, the single ROADMAP
-checkbox, and Foundation CI path wiring.
+implemented synchronous unwinder and serialization boundary, explicit pending
+production VM/async/service integration, the single ROADMAP checkbox, and
+Foundation CI path wiring.

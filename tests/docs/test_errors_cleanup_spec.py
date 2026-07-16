@@ -30,6 +30,10 @@ PARSER_TEST_PATH = ROOT / "tests" / "script" / "ParserTests.cpp"
 SEMANTIC_TEST_PATH = ROOT / "tests" / "script" / "SemanticAnalyzerTests.cpp"
 STRUCTURED_ERROR_TEST_PATH = ROOT / "tests" / "script" / "StructuredErrorHeapTests.cpp"
 ERROR_ENVELOPE_TEST_PATH = ROOT / "tests" / "script" / "ErrorEnvelopeTests.cpp"
+SYNC_EVALUATOR_HEADER_PATH = ROOT / "include" / "script" / "runtime" / "SynchronousEvaluator.h"
+SYNC_EVALUATOR_SOURCE_PATH = ROOT / "src" / "script" / "runtime" / "SynchronousEvaluator.cpp"
+SYNC_EVALUATOR_TEST_PATH = ROOT / "tests" / "script" / "SynchronousEvaluatorTests.cpp"
+RUNNER_SOURCE_PATH = ROOT / "apps" / "script_run" / "main.cpp"
 VALID_FIXTURE_PATH = ROOT / "tests" / "script" / "fixtures" / "errors_cleanup_valid.baas"
 INVALID_FIXTURE_PATH = ROOT / "tests" / "script" / "fixtures" / "errors_cleanup_invalid.baas"
 SEMANTIC_INVALID_FIXTURE_PATH = (
@@ -60,7 +64,12 @@ CLAUSE_TERMS = {
     "ERR-017": ("RT001_TYPE_MISMATCH", "RT023_JSON_DUPLICATE_KEY", "`runtime_code`", "`TaskCancelled`"),
     "ERR-018": ("deterministic", "non-throwing", "same twelve ERR-003 fields", "correlation id", "redact"),
     "ERR-019": ("conformance:error-cleanup-valid", "conformance:error-cleanup-invalid", "conformance:error-cleanup-semantic-invalid", "`SEM009`"),
-    "ERR-020": ("implemented foundations", "does not yet implement", "MUST remain pending", "Phase 1 as a whole"),
+    "ERR-020": (
+        "bounded `SynchronousEvaluator`",
+        "terminal failures cannot be swallowed",
+        "MUST remain pending",
+        "Phase 1 as a whole",
+    ),
 }
 
 EXPECTED_ERROR_FIELDS = (
@@ -189,6 +198,10 @@ class ErrorsAndCleanupSpecificationTests(unittest.TestCase):
         cls.semantic_tests = read(SEMANTIC_TEST_PATH)
         cls.structured_error_tests = read(STRUCTURED_ERROR_TEST_PATH)
         cls.error_envelope_tests = read(ERROR_ENVELOPE_TEST_PATH)
+        cls.sync_evaluator_header = read(SYNC_EVALUATOR_HEADER_PATH)
+        cls.sync_evaluator_source = read(SYNC_EVALUATOR_SOURCE_PATH)
+        cls.sync_evaluator_tests = read(SYNC_EVALUATOR_TEST_PATH)
+        cls.runner_source = read(RUNNER_SOURCE_PATH)
         cls.valid_fixture = read(VALID_FIXTURE_PATH)
         cls.invalid_fixture = read(INVALID_FIXTURE_PATH)
         cls.semantic_invalid_fixture = read(SEMANTIC_INVALID_FIXTURE_PATH)
@@ -411,18 +424,43 @@ class ErrorsAndCleanupSpecificationTests(unittest.TestCase):
             self.assertIn(test_name, self.error_envelope_tests)
         self.assertIn("BAAS_script_error_envelope_tests", self.cmake)
         self.assertIn("BAAS_script_error_envelope_tests", self.workflow)
+        for anchor in (
+            "max_defers_per_frame",
+            "max_cleanup_steps",
+            "registered_defers",
+            "executed_defers",
+            "cleanup_steps",
+        ):
+            self.assertIn(anchor, self.sync_evaluator_header)
+        for anchor in (
+            "struct ScriptUnwind",
+            "drain_activation",
+            "make_thrown_value_error",
+            "ErrorFramePhase::Cleanup",
+            "ErrorDerivation",
+            "case NodeKind::TryCatchStatement",
+            "case NodeKind::DeferStatement",
+        ):
+            self.assertIn(anchor, self.sync_evaluator_source)
+        for test_name in (
+            "test_structured_errors_and_defer_unwinding",
+            "test_terminal_failure_bypasses_catch_and_still_unwinds",
+        ):
+            self.assertIn(test_name, self.sync_evaluator_tests)
+        self.assertIn("registered_defers", self.runner_source)
+        self.assertIn("cleanup_steps", self.runner_source)
         for path in (
             ROOT / "include" / "script" / "runtime" / "Vm.h",
             ROOT / "include" / "script" / "runtime" / "StructuredError.h",
             ROOT / "include" / "script" / "runtime" / "HostErrorTranslator.h",
         ):
             self.assertFalse(path.exists(), f"update pending boundary for new implementation: {path}")
-        self.assertIn("does not yet implement VM execution", self.spec)
+        self.assertIn("This is not the production bytecode VM", self.spec)
         self.assertIn("- [~] Implement structured exceptions, stack traces, cancellation, and limits.", self.roadmap)
-        self.assertIn("VM stack capture/unwinding", self.roadmap)
+        self.assertIn("Production bytecode-VM unwinding", self.roadmap)
         self.assertIn("caller-buffer `ErrorEnvelope` boundary", self.roadmap)
         self.assertIn("service diagnostic integration", self.roadmap)
-        self.assertIn("the heap snapshot is not\nan ERR-003 serialized envelope", self.spec)
+        self.assertIn("The heap snapshot is not itself an ERR-003 serialized\nenvelope", self.spec)
         self.assertIn("only the bounded `serialize_error_envelope`\nboundary produces one", self.spec)
 
     def test_static_conformance_fixtures_and_ctest_wiring(self) -> None:

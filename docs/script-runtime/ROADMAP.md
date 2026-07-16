@@ -169,15 +169,16 @@ implementation remains pending.
   suppressed/detail/context edges and GC tests. The dependency-free,
   caller-buffer `ErrorEnvelope` boundary now emits deterministic ERR-003 JSON,
   including bounded recursive errors/details, explicit truncation, redacted
-  fallback, and stale/GC failure containment. VM stack capture/unwinding,
-  script-visible Error members, cause-chain normalization, production executor/host
-  translation, service diagnostic integration, cancellation propagation, and
-  production VM limits remain pending. The synchronous evaluator enforces
-  source, module, import, step, call, value-stack, collection, function, and
-  heap budgets with stable language errors. Its narrow synchronous Host bridge
-  additionally implements the HOST001-HOST016 mapping, discriminator checks,
-  safe exception redaction, and allocation-free callback `bad_alloc` mapping,
-  while ERR-003 Host Error materialization remains pending.
+  fallback, and stale/GC failure containment. The synchronous evaluator now
+  materializes runtime and Host failures as bounded Error values, captures live
+  script/Host frames, exposes read-only Error members, preserves rethrow
+  identity, separates catchable and terminal outcomes, and drains per-function
+  LIFO `defer` stacks with independent registration/cleanup budgets and
+  deterministic primary/suppressed precedence. It enforces source, module,
+  import, step, call, value-stack, collection, function, and heap budgets with
+  stable language errors. Production bytecode-VM unwinding, task/cancellation
+  propagation, cross-task cause normalization, asynchronous Host adapters, and
+  service diagnostic integration remain pending.
 - [x] Implement the bounded cooperative executor, queue backpressure, task
   handles, cancellation requests, and drain/cancel-pending shutdown.
 - [ ] Integrate language-level task/future primitives with the VM and executor.
@@ -214,16 +215,19 @@ pending.
 The Error-envelope foundation adds a specialized dependency-free JSON writer,
 allocation-free checked detail traversal, deterministic field/value ordering,
 independent depth/node/output/string/work budgets, ERR-008 truncation, and a
-non-throwing redacted fallback. It does not provide general JSON text I/O, VM
-unwinding, Host translation, or service transport integration.
+non-throwing redacted fallback. It does not provide general JSON text I/O,
+production bytecode-VM unwinding, async translation, or service transport
+integration.
 Commit `06c2378` adds the bounded synchronous AST evaluator, including lexical
 closures, recursion, collection/control-flow execution, lazy package modules,
 stable failure caching, and deterministic source/step/stack/call/collection/
 heap budgets. Commit `af4c7a2` records its explicit foundation boundary. After
 integration, the MSVC Debug and Release Foundation suites each passed 26/26,
 the normative documentation suite passed 61/61, and the Release evaluator
-passed 20 consecutive repetitions. Production bytecode/VM execution, Host
-imports, structured unwinding, and async execution remain pending.
+passed 20 consecutive repetitions. The bounded synchronous evaluator later
+adds structured unwinding and a narrow in-memory Host conformance bridge;
+production bytecode/VM execution, live Host adapters, and async execution remain
+pending.
 
 ## Phase 3 — Host bindings and Python behavior parity
 
