@@ -444,7 +444,7 @@
       ]
     },
     "baas-tauri": {
-      "commit": "c037120e687d3bd3def0a6f99935ad4b261a8e59",
+      "commit": "cea428a183f6ef19e2b39cd3000ecd1128541d98",
       "files": [
         {
           "path": "src/shared/SecureWebSocket.ts",
@@ -452,11 +452,11 @@
         },
         {
           "path": "src-tauri/src/pipe_commands.rs",
-          "sha256": "ce5b1f8976e6cb8a7f11fa3766049b784d14cb41132c6f27f90d11c82f6478ff"
+          "sha256": "577042d6ff8f995244e61eb15657639c5053ccbf0cc974745bbf58003d522cd6"
         },
         {
           "path": "src/transport/pipe/TauriPipeConnection.ts",
-          "sha256": "fb59d68cecf3b9f1cd4fba67b52e3b8aa18d9e31b67a5bbf3a71597e6cd02866"
+          "sha256": "5a4d3d3602d45779f22ee77641678a8fdb9fafc912c2a0b7f2ea90b07878c3c5"
         }
       ]
     }
