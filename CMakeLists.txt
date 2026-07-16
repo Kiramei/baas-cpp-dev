@@ -133,6 +133,8 @@ option(BUILD_SERVICE_FILE_RESOURCE_STORE "Build the durable JSON file resource s
 option(BUILD_SERVICE_FILE_RESOURCE_STORE_TESTS "Build file resource store tests" OFF)
 option(BUILD_SERVICE_RUNTIME_PROVIDER_BRIDGE "Build the file-watched runtime/provider bridge" OFF)
 option(BUILD_SERVICE_RUNTIME_PROVIDER_BRIDGE_TESTS "Build runtime/provider bridge tests" OFF)
+option(BUILD_SERVICE_RUNTIME_REPOSITORY_OWNER "Build the immutable service runtime repository owner" OFF)
+option(BUILD_SERVICE_RUNTIME_REPOSITORY_OWNER_TESTS "Build service runtime repository owner tests" OFF)
 option(BUILD_SERVICE_ADB_TRANSPORT "Build the standalone ADB smart-socket transport" OFF)
 option(BUILD_SERVICE_ADB_TRANSPORT_TESTS "Build deterministic ADB transport tests" OFF)
 option(BUILD_SERVICE_ADB_SYNC "Build the bounded production ADB SYNC client" OFF)
@@ -163,18 +165,33 @@ if(BUILD_SERVICE_APP_TESTS AND NOT BUILD_SERVICE_APP)
     set(BUILD_SERVICE_APP ON CACHE BOOL "Build the production BAAS_service executable" FORCE)
 endif()
 
+if(BUILD_SERVICE_APP_TESTS)
+    set(BUILD_SERVICE_RUNTIME_REPOSITORY_OWNER_TESTS ON CACHE BOOL "Build service runtime repository owner tests" FORCE)
+endif()
+
 if(BUILD_SERVICE_APP)
+    set(BUILD_RUNTIME_REPOSITORY ON CACHE BOOL "Build read-only runtime repository activation" FORCE)
     set(BUILD_SERVICE_COMMAND_LINE ON CACHE BOOL "Build the bounded service command-line contract" FORCE)
     set(BUILD_SERVICE_SHUTDOWN_COORDINATOR ON CACHE BOOL "Build the service main-thread shutdown coordinator" FORCE)
     set(BUILD_SERVICE_PRODUCTION_HTTP_HOST ON CACHE BOOL "Build the production HTTP host composition root" FORCE)
     set(BUILD_SERVICE_PROVIDER_BACKEND ON CACHE BOOL "Build the production provider state backend" FORCE)
     set(BUILD_SERVICE_FILE_RESOURCE_STORE ON CACHE BOOL "Build the durable JSON file resource store" FORCE)
     set(BUILD_SERVICE_RUNTIME_PROVIDER_BRIDGE ON CACHE BOOL "Build the file-watched runtime/provider bridge" FORCE)
+    set(BUILD_SERVICE_RUNTIME_REPOSITORY_OWNER ON CACHE BOOL "Build the immutable service runtime repository owner" FORCE)
     set(BUILD_SERVICE_REMOTE_BACKEND ON CACHE BOOL "Build the production ws-scrcpy remote backend" FORCE)
     set(BUILD_SERVICE_TRIGGER_HANDLER ON CACHE BOOL "Build the production trigger business handler" FORCE)
     set(BUILD_SERVICE_STATUS_TRIGGER ON CACHE BOOL "Build the production status trigger registration" FORCE)
     set(BUILD_SERVICE_ADB_DISCOVERY_TRIGGER ON CACHE BOOL "Build the production detect_adb trigger registration" FORCE)
     set(BUILD_SERVICE_CONFIGURATION_TRIGGERS ON CACHE BOOL "Build production configuration trigger registrations" FORCE)
+endif()
+
+if(BUILD_SERVICE_RUNTIME_REPOSITORY_OWNER_TESTS
+   AND NOT BUILD_SERVICE_RUNTIME_REPOSITORY_OWNER)
+    set(BUILD_SERVICE_RUNTIME_REPOSITORY_OWNER ON CACHE BOOL "Build the immutable service runtime repository owner" FORCE)
+endif()
+
+if(BUILD_SERVICE_RUNTIME_REPOSITORY_OWNER AND NOT BUILD_RUNTIME_REPOSITORY)
+    set(BUILD_RUNTIME_REPOSITORY ON CACHE BOOL "Build read-only runtime repository activation" FORCE)
 endif()
 
 # BAAS_APP owns the production script Host adapters. Standalone runtime builds
@@ -778,6 +795,10 @@ endif()
 
 if(BUILD_SERVICE_RUNTIME_PROVIDER_BRIDGE)
     include("${CMAKE_CURRENT_LIST_DIR}/cmake/ServiceRuntimeProviderBridge.cmake")
+endif()
+
+if(BUILD_SERVICE_RUNTIME_REPOSITORY_OWNER)
+    include("${CMAKE_CURRENT_LIST_DIR}/cmake/ServiceRuntimeRepositoryOwner.cmake")
 endif()
 
 if(BUILD_SERVICE_ADB_TRANSPORT)
