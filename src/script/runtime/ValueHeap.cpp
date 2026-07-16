@@ -8,6 +8,7 @@
 #include <memory>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 
 namespace baas::script::runtime {
 namespace {
@@ -420,6 +421,10 @@ std::optional<LanguageErrorCode> language_error_code_from_name(
     return found->code;
 }
 
+struct Heap::ExternalLedger {
+    std::atomic<std::size_t> external_bytes{};
+};
+
 struct Heap::Impl {
     struct Slot {
         std::unique_ptr<Cell> cell;
@@ -428,7 +433,8 @@ struct Heap::Impl {
 
     explicit Impl(const HeapLimits requested, const NfcPredicate requested_module_nfc)
         : limits(requested), module_nfc(requested_module_nfc),
-          heap_identity(allocate_heap_identity())
+          heap_identity(allocate_heap_identity()),
+          external_ledger(std::make_shared<ExternalLedger>())
     {
         if (limits.soft_collect_threshold > limits.max_live_bytes) {
             limits.soft_collect_threshold = limits.max_live_bytes;
@@ -647,7 +653,9 @@ struct Heap::Impl {
             throw RuntimeError(RuntimeErrorCode::StringLimitExceeded, "heap string byte limit exceeded");
         }
         std::size_t projected_external{};
-        if (!checked_add(stats.external_bytes, charge.external, projected_external) ||
+        if (!checked_add(
+                external_ledger->external_bytes.load(std::memory_order_acquire),
+                charge.external, projected_external) ||
             projected_external > limits.max_external_bytes) {
             throw RuntimeError(RuntimeErrorCode::ExternalMemoryLimitExceeded,
                                "heap external byte limit exceeded");
@@ -657,17 +665,21 @@ struct Heap::Impl {
         }
     }
 
-    [[nodiscard]] Value allocate(CellData data)
+    [[nodiscard]] Value allocate(CellData data, const bool external_reserved = false)
     {
         validate_edges(data);
         const auto charge = charge_for(data);
-        preflight(charge, charge.bytes, true);
+        const Charge incremental{
+            charge.bytes, charge.strings, external_reserved ? 0 : charge.external};
+        preflight(incremental, charge.bytes, true);
         if (free_slots.empty() && slots.size() > std::numeric_limits<std::uint32_t>::max()) {
             throw RuntimeError(RuntimeErrorCode::CellLimitExceeded, "heap slot index limit exceeded");
         }
         stats.live_bytes += charge.bytes;
         stats.string_bytes += charge.strings;
-        stats.external_bytes += charge.external;
+        if (!external_reserved)
+            external_ledger->external_bytes.fetch_add(
+                charge.external, std::memory_order_acq_rel);
         ++stats.live_cells;
         std::unique_ptr<Cell> cell;
         try {
@@ -675,7 +687,9 @@ struct Heap::Impl {
         } catch (const std::bad_alloc&) {
             stats.live_bytes -= charge.bytes;
             stats.string_bytes -= charge.strings;
-            stats.external_bytes -= charge.external;
+            if (!external_reserved)
+                external_ledger->external_bytes.fetch_sub(
+                    charge.external, std::memory_order_acq_rel);
             --stats.live_cells;
             throw RuntimeError(RuntimeErrorCode::MemoryLimitExceeded, "native allocation failed");
         }
@@ -692,7 +706,9 @@ struct Heap::Impl {
             } catch (const std::bad_alloc&) {
                 stats.live_bytes -= charge.bytes;
                 stats.string_bytes -= charge.strings;
-                stats.external_bytes -= charge.external;
+                if (!external_reserved)
+                    external_ledger->external_bytes.fetch_sub(
+                        charge.external, std::memory_order_acq_rel);
                 --stats.live_cells;
                 throw RuntimeError(RuntimeErrorCode::MemoryLimitExceeded, "native slot allocation failed");
             }
@@ -708,17 +724,28 @@ struct Heap::Impl {
             const auto* host = std::get_if<HostCell>(&slot.cell->data);
             if (host && !host->metadata.closed) ++releases;
         }
-        std::size_t release_capacity{};
-        if (!checked_add(release_queue.size(), releases, release_capacity)) {
+        std::size_t logical_capacity{};
+        if (!checked_add(pending_release_count(), releases, logical_capacity)) {
             throw RuntimeError(RuntimeErrorCode::MemoryLimitExceeded, "release queue size overflow");
         }
-        if (release_capacity > limits.max_pending_release_records) {
+        if (logical_capacity > limits.max_pending_release_records) {
             throw RuntimeError(RuntimeErrorCode::ReleaseQueueLimitExceeded,
                                "pending host release queue limit exceeded");
         }
+        const auto reused = std::min(release_head, releases);
+        std::size_t physical_capacity{};
+        if (!checked_add(release_queue.size(), releases - reused, physical_capacity)) {
+            throw RuntimeError(RuntimeErrorCode::MemoryLimitExceeded, "release queue size overflow");
+        }
         try {
-            free_slots.reserve(slots.size());
-            release_queue.reserve(release_capacity);
+            if (only_unmarked) free_slots.reserve(slots.size());
+            if (physical_capacity > release_queue.capacity()) {
+                const auto current = release_queue.capacity();
+                const auto geometric = current <= limits.max_pending_release_records / 2
+                    ? std::max<std::size_t>(1, current * 2)
+                    : limits.max_pending_release_records;
+                release_queue.reserve(std::max(physical_capacity, geometric));
+            }
         } catch (const std::bad_alloc&) {
             throw RuntimeError(RuntimeErrorCode::MemoryLimitExceeded, "sweep bookkeeping allocation failed");
         }
@@ -728,14 +755,49 @@ struct Heap::Impl {
     {
         auto& host = std::get<HostCell>(cell.data);
         if (host.metadata.closed) return;
-        release_queue.push_back({host.metadata.handle_id, host.metadata.adapter_id,
-                                 host.metadata.external_bytes});
+        const HostReleaseRecord record{
+            host.metadata.handle_id, host.metadata.adapter_id,
+            host.metadata.external_bytes, host.metadata.type_id,
+            host.metadata.generation, host.metadata.context_id,
+            host.metadata.snapshot_id, host.metadata.authentication};
+        if (release_head != 0) {
+            --release_head;
+            release_queue[release_head] = record;
+        } else {
+            release_queue.push_back(record);
+        }
         host.metadata.closed = true;
-        stats.external_bytes -= host.metadata.external_bytes;
+        // Ownership and the external-memory charge move to the reliable release
+        // queue. The charge is credited only after the adapter ACKs its lease.
         cell.accounted_external_bytes = 0;
     }
 
-    void retire_slot(const std::uint32_t index)
+    void compact_release_queue() noexcept
+    {
+        if (release_head == 0) return;
+        const auto removed = release_head;
+        if (release_head >= release_queue.size()) {
+            release_queue.clear();
+            release_cursor = 0;
+            active_release_index = 0;
+        } else {
+            release_queue.erase(
+                release_queue.begin(), release_queue.begin() +
+                    static_cast<std::ptrdiff_t>(release_head));
+            release_cursor = release_cursor >= removed
+                ? release_cursor - removed : 0;
+            active_release_index = active_release_index >= removed
+                ? active_release_index - removed : 0;
+        }
+        release_head = 0;
+    }
+
+    [[nodiscard]] std::size_t pending_release_count() const noexcept
+    {
+        return release_queue.size() - release_head;
+    }
+
+    void retire_slot(const std::uint32_t index, const bool reusable = true)
     {
         auto& slot = slots[index];
         auto& cell = *slot.cell;
@@ -749,7 +811,7 @@ struct Heap::Impl {
             stats.reclaimed_bytes = std::numeric_limits<std::size_t>::max();
         else stats.reclaimed_bytes += cell.accounted_bytes;
         slot.cell.reset();
-        if (slot.generation != std::numeric_limits<std::uint64_t>::max()) {
+        if (reusable && slot.generation != std::numeric_limits<std::uint64_t>::max()) {
             ++slot.generation;
             free_slots.push_back(index);
         }
@@ -803,11 +865,19 @@ struct Heap::Impl {
     NfcPredicate module_nfc{};
     HeapStats stats;
     std::uint64_t heap_identity;
+    std::shared_ptr<ExternalLedger> external_ledger;
     std::vector<Slot> slots;
     std::vector<std::uint32_t> free_slots;
     std::unordered_map<RootId, Value> explicit_roots;
     std::vector<Value> temporary_roots;
     std::vector<HostReleaseRecord> release_queue;
+    std::size_t release_head{};
+    std::size_t release_cursor{};
+    std::size_t active_release_index{};
+    std::uint64_t next_release_lease_id{1};
+    std::uint64_t active_release_lease_id{};
+    bool release_lease_active{};
+    bool release_detached{};
     RootId next_root_id{1};
     bool collecting{false};
     bool torn_down{false};
@@ -865,6 +935,29 @@ HeapRef Value::as_heap_ref() const { if (const auto* value = std::get_if<HeapRef
 Heap::RootScope::RootScope(Heap& heap) : heap_(&heap), marker_(heap.impl_->temporary_roots.size()) {}
 Heap::RootScope::~RootScope() { if (heap_) heap_->pop_temporary_roots(marker_); }
 void Heap::RootScope::add(const Value value) { heap_->add_temporary_root(value); }
+
+Heap::ExternalReservation::ExternalReservation(ExternalReservation&& other) noexcept
+    : ledger_(std::move(other.ledger_)),
+      bytes_(std::exchange(other.bytes_, 0))
+{
+}
+
+Heap::ExternalReservation& Heap::ExternalReservation::operator=(
+    ExternalReservation&& other) noexcept
+{
+    if (this == &other) return *this;
+    if (ledger_)
+        ledger_->external_bytes.fetch_sub(bytes_, std::memory_order_acq_rel);
+    ledger_ = std::move(other.ledger_);
+    bytes_ = std::exchange(other.bytes_, 0);
+    return *this;
+}
+
+Heap::ExternalReservation::~ExternalReservation()
+{
+    if (ledger_)
+        ledger_->external_bytes.fetch_sub(bytes_, std::memory_order_acq_rel);
+}
 
 Heap::Heap(const HeapLimits limits, const NfcPredicate module_nfc)
     : impl_(new Impl(limits, module_nfc))
@@ -1110,6 +1203,49 @@ Value Heap::allocate_task(TaskMetadata metadata)
 Value Heap::allocate_host_handle(HostHandleMetadata metadata)
 {
     return impl_->allocate(HostCell{std::move(metadata)});
+}
+
+Heap::ExternalReservation Heap::reserve_host_external(
+    const std::size_t external_bytes)
+{
+    impl_->preflight({0, 0, external_bytes}, external_bytes, false);
+    impl_->external_ledger->external_bytes.fetch_add(
+        external_bytes, std::memory_order_acq_rel);
+    return ExternalReservation(impl_->external_ledger, external_bytes);
+}
+
+Value Heap::allocate_host_handle(
+    HostHandleMetadata metadata, ExternalReservation&& reservation)
+{
+    if (reservation.ledger_ != impl_->external_ledger ||
+        reservation.bytes_ != metadata.external_bytes)
+        throw RuntimeError(RuntimeErrorCode::TypeMismatch,
+                           "Host external reservation does not match the handle");
+    const auto value = impl_->allocate(HostCell{std::move(metadata)}, true);
+    reservation.commit();
+    return value;
+}
+
+void Heap::ensure_host_release_capacity(const std::size_t total_records)
+{
+    if (impl_->torn_down)
+        throw RuntimeError(RuntimeErrorCode::HeapTornDown,
+                           "heap has been torn down");
+    if (total_records > impl_->limits.max_pending_release_records)
+        throw RuntimeError(RuntimeErrorCode::ReleaseQueueLimitExceeded,
+                           "typed Host handle release capacity is exhausted");
+    const auto required = std::max(impl_->release_queue.size(), total_records);
+    if (required <= impl_->release_queue.capacity()) return;
+    const auto current = impl_->release_queue.capacity();
+    const auto geometric = current <= impl_->limits.max_pending_release_records / 2
+        ? std::max<std::size_t>(1, current * 2)
+        : impl_->limits.max_pending_release_records;
+    try {
+        impl_->release_queue.reserve(std::max(required, geometric));
+    } catch (const std::bad_alloc&) {
+        throw RuntimeError(RuntimeErrorCode::MemoryLimitExceeded,
+                           "Host release capacity reservation failed");
+    }
 }
 
 ValueKind Heap::kind(const Value value) const
@@ -1412,42 +1548,228 @@ bool Heap::close_host_handle(const HeapRef reference)
     auto& host = std::get<HostCell>(cell.data);
     if (host.metadata.closed) return false;
     std::size_t capacity{};
-    if (!checked_add(impl_->release_queue.size(), 1, capacity))
+    if (!checked_add(impl_->pending_release_count(), 1, capacity))
         throw RuntimeError(RuntimeErrorCode::MemoryLimitExceeded, "release queue size overflow");
     if (capacity > impl_->limits.max_pending_release_records)
         throw RuntimeError(RuntimeErrorCode::ReleaseQueueLimitExceeded,
                            "pending host release queue limit exceeded");
-    try { impl_->release_queue.reserve(capacity); }
+    try { impl_->queue_host_release(cell); }
     catch (const std::bad_alloc&) {
         throw RuntimeError(RuntimeErrorCode::MemoryLimitExceeded, "release queue allocation failed");
     }
-    impl_->queue_host_release(cell);
     return true;
 }
 
-std::vector<HostReleaseRecord> Heap::drain_release_queue()
+std::optional<HostReleaseLease> Heap::lease_host_release()
 {
-    std::vector<HostReleaseRecord> result;
-    result.swap(impl_->release_queue);
-    return result;
+    if (impl_->release_lease_active ||
+        impl_->release_head >= impl_->release_queue.size())
+        return std::nullopt;
+    if (impl_->release_cursor < impl_->release_head ||
+        impl_->release_cursor >= impl_->release_queue.size())
+        impl_->release_cursor = impl_->release_head;
+    auto lease_id = impl_->next_release_lease_id++;
+    if (lease_id == 0) {
+        lease_id = impl_->next_release_lease_id++;
+    }
+    impl_->active_release_lease_id = lease_id;
+    impl_->active_release_index = impl_->release_cursor;
+    impl_->release_lease_active = true;
+    return HostReleaseLease{
+        lease_id, impl_->release_queue[impl_->active_release_index]};
+}
+
+bool Heap::acknowledge_host_release(const std::uint64_t lease_id) noexcept
+{
+    if (!impl_->release_lease_active || lease_id == 0 ||
+        lease_id != impl_->active_release_lease_id ||
+        impl_->active_release_index >= impl_->release_queue.size())
+        return false;
+    const auto external =
+        impl_->release_queue[impl_->active_release_index].external_bytes;
+    const auto charged = impl_->external_ledger->external_bytes.load(
+        std::memory_order_acquire);
+    if (external > charged) return false;
+    impl_->external_ledger->external_bytes.fetch_sub(
+        external, std::memory_order_acq_rel);
+    std::swap(
+        impl_->release_queue[impl_->active_release_index],
+        impl_->release_queue[impl_->release_head]);
+    ++impl_->release_head;
+    impl_->release_cursor = impl_->active_release_index;
+    if (impl_->release_cursor < impl_->release_head ||
+        impl_->release_cursor >= impl_->release_queue.size())
+        impl_->release_cursor = impl_->release_head;
+    impl_->release_lease_active = false;
+    impl_->active_release_lease_id = 0;
+    if (impl_->release_head == impl_->release_queue.size())
+        impl_->compact_release_queue();
+    return true;
+}
+
+bool Heap::retry_host_release(const std::uint64_t lease_id) noexcept
+{
+    if (!impl_->release_lease_active || lease_id == 0 ||
+        lease_id != impl_->active_release_lease_id)
+        return false;
+    impl_->release_lease_active = false;
+    impl_->active_release_lease_id = 0;
+    impl_->release_cursor = impl_->active_release_index;
+    return true;
+}
+
+bool Heap::defer_host_release(const std::uint64_t lease_id) noexcept
+{
+    if (!impl_->release_lease_active || lease_id == 0 ||
+        lease_id != impl_->active_release_lease_id ||
+        impl_->active_release_index >= impl_->release_queue.size())
+        return false;
+    impl_->release_cursor = impl_->active_release_index + 1;
+    if (impl_->release_cursor >= impl_->release_queue.size())
+        impl_->release_cursor = impl_->release_head;
+    impl_->release_lease_active = false;
+    impl_->active_release_lease_id = 0;
+    return true;
 }
 
 void Heap::collect() { impl_->collect(); }
 
-std::vector<HostReleaseRecord> Heap::teardown()
+void Heap::teardown_for_dispatcher()
 {
-    if (impl_->torn_down) return drain_release_queue();
+    if (impl_->torn_down) return;
     impl_->reserve_sweep_storage(false);
     for (std::size_t index = 0; index < impl_->slots.size(); ++index) {
-        if (impl_->slots[index].cell) impl_->retire_slot(static_cast<std::uint32_t>(index));
+        if (impl_->slots[index].cell)
+            impl_->retire_slot(static_cast<std::uint32_t>(index), false);
     }
     impl_->explicit_roots.clear();
     impl_->temporary_roots.clear();
     impl_->torn_down = true;
+}
+
+std::vector<HostReleaseRecord> Heap::drain_release_queue()
+{
+    impl_->release_lease_active = false;
+    impl_->active_release_lease_id = 0;
+    impl_->compact_release_queue();
+    auto result = std::move(impl_->release_queue);
+    impl_->release_queue.clear();
+    std::size_t bytes{};
+    for (const auto& record : result) {
+        if (record.external_bytes > std::numeric_limits<std::size_t>::max() - bytes)
+            throw RuntimeError(RuntimeErrorCode::MemoryLimitExceeded,
+                               "legacy release accounting overflow");
+        bytes += record.external_bytes;
+    }
+    const auto charged = impl_->external_ledger->external_bytes.load(
+        std::memory_order_acquire);
+    if (bytes > charged)
+        throw RuntimeError(RuntimeErrorCode::TypeMismatch,
+                           "legacy release accounting is corrupt");
+    impl_->external_ledger->external_bytes.fetch_sub(bytes, std::memory_order_acq_rel);
+    return result;
+}
+
+std::vector<HostReleaseRecord> Heap::teardown()
+{
+    teardown_for_dispatcher();
     return drain_release_queue();
 }
 
-HeapStats Heap::stats() const noexcept { return impl_->stats; }
+std::size_t Heap::pending_host_release_count() const noexcept
+{
+    return impl_->pending_release_count();
+}
+
+Heap::DetachedHostReleases Heap::detach_host_releases()
+{
+    if (!impl_->torn_down)
+        throw RuntimeError(RuntimeErrorCode::HeapTornDown,
+                           "Host releases may detach only after Heap teardown");
+    if (impl_->release_detached)
+        throw RuntimeError(RuntimeErrorCode::TypeMismatch,
+                           "Host releases were already detached");
+    impl_->release_lease_active = false;
+    impl_->active_release_lease_id = 0;
+    impl_->compact_release_queue();
+    DetachedHostReleases result;
+    result.records_ = std::move(impl_->release_queue);
+    result.cursor_ = impl_->release_cursor;
+    result.ledger_ = impl_->external_ledger;
+    impl_->release_head = 0;
+    impl_->release_cursor = 0;
+    impl_->release_detached = true;
+    return result;
+}
+
+std::optional<HostReleaseLease> Heap::DetachedHostReleases::lease()
+{
+    if (lease_active_ || empty()) return std::nullopt;
+    if (cursor_ < head_ || cursor_ >= records_.size()) cursor_ = head_;
+    auto id = next_lease_id_++;
+    if (id == 0) id = next_lease_id_++;
+    active_lease_id_ = id;
+    active_index_ = cursor_;
+    lease_active_ = true;
+    return HostReleaseLease{id, records_[active_index_]};
+}
+
+bool Heap::DetachedHostReleases::acknowledge(const std::uint64_t lease_id) noexcept
+{
+    if (!lease_active_ || lease_id == 0 || lease_id != active_lease_id_ ||
+        empty() || active_index_ >= records_.size() || !ledger_)
+        return false;
+    const auto bytes = records_[active_index_].external_bytes;
+    const auto charged = ledger_->external_bytes.load(std::memory_order_acquire);
+    if (bytes > charged) return false;
+    ledger_->external_bytes.fetch_sub(bytes, std::memory_order_acq_rel);
+    std::swap(records_[active_index_], records_[head_]);
+    ++head_;
+    cursor_ = active_index_;
+    if (cursor_ < head_ || cursor_ >= records_.size()) cursor_ = head_;
+    if (head_ == records_.size()) {
+        records_.clear();
+        head_ = 0;
+        cursor_ = 0;
+        active_index_ = 0;
+    }
+    lease_active_ = false;
+    active_lease_id_ = 0;
+    return true;
+}
+
+bool Heap::DetachedHostReleases::defer(const std::uint64_t lease_id) noexcept
+{
+    if (!lease_active_ || lease_id == 0 || lease_id != active_lease_id_ ||
+        empty() || active_index_ >= records_.size())
+        return false;
+    cursor_ = active_index_ + 1;
+    if (cursor_ >= records_.size()) cursor_ = head_;
+    lease_active_ = false;
+    active_lease_id_ = 0;
+    return true;
+}
+
+std::size_t Heap::DetachedHostReleases::external_bytes() const noexcept
+{
+    std::size_t result{};
+    for (auto iterator = records_.begin() + static_cast<std::ptrdiff_t>(head_);
+         iterator != records_.end(); ++iterator) {
+        const auto& record = *iterator;
+        if (record.external_bytes > std::numeric_limits<std::size_t>::max() - result)
+            return std::numeric_limits<std::size_t>::max();
+        result += record.external_bytes;
+    }
+    return result;
+}
+
+HeapStats Heap::stats() const noexcept
+{
+    auto result = impl_->stats;
+    result.external_bytes = impl_->external_ledger->external_bytes.load(
+        std::memory_order_acquire);
+    return result;
+}
 const HeapLimits& Heap::limits() const noexcept { return impl_->limits; }
 std::uint64_t Heap::identity() const noexcept { return impl_->heap_identity; }
 

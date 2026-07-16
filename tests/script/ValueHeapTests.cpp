@@ -337,23 +337,34 @@ void test_host_release_queue_and_teardown()
     check(heap.close_host_handle(explicit_handle.as_heap_ref()) &&
               !heap.close_host_handle(explicit_handle.as_heap_ref()),
           "host close should be explicit and idempotent");
-    auto releases = heap.drain_release_queue();
-    check(releases.size() == 1 && releases[0].handle_id == 1 && releases[0].adapter_id == 1 &&
+    auto release = heap.lease_host_release();
+    check(release && release->record.handle_id == 1 &&
+              release->record.adapter_id == 1 && heap.stats().external_bytes == 100,
+          "close should retain its external charge until release ACK");
+    check(heap.retry_host_release(release->lease_id) &&
+              heap.stats().external_bytes == 100,
+          "release retry must retain the record and charge");
+    release = heap.lease_host_release();
+    check(release && heap.acknowledge_host_release(release->lease_id) &&
               heap.stats().external_bytes == 0,
-          "close should queue release without running host I/O");
+          "release ACK should debit the transferred external charge once");
     heap.collect();
-    check(heap.drain_release_queue().empty(), "sweeping a closed wrapper must not queue duplicate release");
+    check(!heap.lease_host_release(),
+          "sweeping a closed wrapper must not queue duplicate release");
 
     (void)heap.allocate_host_handle({2, 1, 200, false});
     heap.collect();
-    releases = heap.drain_release_queue();
-    check(releases.size() == 1 && releases[0].handle_id == 2,
+    release = heap.lease_host_release();
+    check(release && release->record.handle_id == 2,
           "sweep should queue release for leaked open wrapper");
+    check(heap.acknowledge_host_release(release->lease_id),
+          "swept release should be acknowledged");
 
     (void)heap.allocate_host_handle({3, 2, 300, false});
-    releases = heap.teardown();
-    check(releases.size() == 1 && releases[0].handle_id == 3 && heap.stats().live_cells == 0,
-          "teardown should return every leaked handle release record");
+    const auto releases = heap.teardown();
+    check(releases.size() == 1 && releases[0].handle_id == 3 &&
+              heap.stats().live_cells == 0,
+          "legacy teardown should transfer every leaked handle release record");
     check_error(RuntimeErrorCode::HeapTornDown, [&] { (void)heap.allocate_list(); },
                 "teardown should permanently close the heap");
 
@@ -367,10 +378,15 @@ void test_host_release_queue_and_teardown()
     check(bounded.stats().live_cells == 2,
           "release queue limit failure must not partially sweep host wrappers");
     check(bounded.close_host_handle(first.as_heap_ref()), "queue can be drained explicitly after backpressure");
-    (void)bounded.drain_release_queue();
+    release = bounded.lease_host_release();
+    check(release && bounded.acknowledge_host_release(release->lease_id),
+          "owning adapter should ACK release backpressure");
     bounded.collect();
-    check(bounded.drain_release_queue().size() == 1,
+    release = bounded.lease_host_release();
+    check(release && release->record.handle_id == 11,
           "collection should resume after the owning adapter drains release backpressure");
+    check(bounded.acknowledge_host_release(release->lease_id),
+          "resumed release should be acknowledgeable");
 }
 
 void test_two_independent_heaps_concurrently()

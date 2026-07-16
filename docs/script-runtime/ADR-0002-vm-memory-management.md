@@ -138,6 +138,17 @@ concurrently because they share no cells.
   this is mandatory API discipline, not an optional optimization.
 - Explicit host-handle close remains part of script correctness even though
   context teardown provides a safety net.
+- Native handle creation uses reserve/adopt/publication transactions. External
+  bytes remain charged from reservation through wrapper lifetime, reliable
+  release retry, and final ACK; publication failure queues release rather than
+  waiting for final context destruction.
+- Collector and unwind paths never invoke adapters. The owner strand drains a
+  rotating lease/ACK queue, preserves native-released tombstones across ACK
+  faults, and owns detached teardown records independently of Heap lifetime.
+- A false evaluator `close()` result transfers a lifecycle obligation to the
+  embedder: it retains the release dispatcher and retries only on the owner
+  strand until `destruction_safe()` is true. Destruction of the final unsafe
+  dispatcher owner fails fast instead of silently losing native ownership.
 
 ## Rejected alternatives
 
@@ -172,6 +183,7 @@ network behavior. External lifetime is explicit and idempotent.
   repeated collect/retry behavior;
 - deterministic ordered-map iteration and cycle-aware equality;
 - concurrent independent heaps under separate strands and race instrumentation;
-- explicit close, duplicate close, sweep release queue, and context teardown;
+- explicit close, duplicate close, sweep release queue, ACK retry, poisoned
+  record retention, detached context teardown, and exactly-once native release;
 - JSON-safe transfer, cycle rejection, destination budget failure, and absence
   of source/destination mutable aliasing.

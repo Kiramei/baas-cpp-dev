@@ -373,6 +373,7 @@ struct SynchronousEvaluator::Impl {
     std::thread::id owner_thread{std::this_thread::get_id()};
     bool host_call_active{};
     bool execution_active{};
+    bool closed{};
     std::size_t cleanup_depth{};
     std::size_t cleanup_call_depth{};
 
@@ -389,6 +390,35 @@ struct SynchronousEvaluator::Impl {
         validate_limits();
         compile_modules(std::move(sources), semantic_options, is_nfc);
         configure_host();
+    }
+
+    ~Impl()
+    {
+        if (close()) return;
+        if (host_options && host_options->handles) {
+            if (!host_options->handles->detach_context_for_destruction(heap))
+                std::terminate();
+            return;
+        }
+        try { (void)heap.teardown(); } catch (...) { std::terminate(); }
+    }
+
+    [[nodiscard]] bool close() noexcept
+    {
+        if (std::this_thread::get_id() != owner_thread || execution_active ||
+            host_call_active)
+            return false;
+        closed = true;
+        if (host_options && host_options->handles)
+            return host_options->handles->teardown(heap);
+        try { (void)heap.teardown(); } catch (...) { return false; }
+        return true;
+    }
+
+    void drain_host_releases() noexcept
+    {
+        if (host_options && host_options->handles)
+            host_options->handles->dispatch_all(heap);
     }
 
     [[nodiscard]] SourceReference source_reference(
@@ -768,7 +798,10 @@ struct SynchronousEvaluator::Impl {
             module.id = id;
             host_modules.emplace(id, std::move(module));
         }
-        if (host_modules.empty()) return;
+        if (host_modules.empty()) {
+            if (options.handles) options.handles->attach_context(heap);
+            return;
+        }
 
         HostResolution resolution;
         try {
@@ -791,6 +824,8 @@ struct SynchronousEvaluator::Impl {
             module.namespace_value = heap.allocate_module({id, {}});
             module.namespace_root = heap.add_root(module.namespace_value);
         }
+        if (options.handles)
+            options.handles->attach_context(heap);
     }
 
     void charge_step(const SourceSpan span)
@@ -2309,6 +2344,33 @@ Value SynchronousEvaluator::Impl::evaluate_expression_impl(
             return read_slice(static_cast<const SliceExpression&>(expression), environment);
         case NodeKind::CallExpression: {
             const auto& call = static_cast<const CallExpression&>(expression);
+            if (call.callee && call.callee->kind == NodeKind::MemberExpression) {
+                const auto& member = static_cast<const MemberExpression&>(*call.callee);
+                if (member.member == "close") {
+                    auto roots = heap.root_scope();
+                    const auto object = evaluate_expression(member.object, environment);
+                    roots.add(object);
+                    if (heap.kind(object) == ValueKind::HostHandle) {
+                        if (!call.arguments.empty())
+                            fail(LanguageErrorCode::CallArityMismatch,
+                                 "host<T>.close accepts no arguments", call.span);
+                        try {
+                            (void)heap.close_host_handle(object.as_heap_ref());
+                            drain_host_releases();
+                            return Value::null();
+                        } catch (const RuntimeError& error) {
+                            const auto code = error.code() ==
+                                    RuntimeErrorCode::ReleaseQueueLimitExceeded
+                                ? LanguageErrorCode::TaskLimitExceeded
+                                : translate_runtime_error_code(error.code()).code;
+                            fail(code, "host<T>.close could not queue release", call.span);
+                        }
+                    }
+                    const auto callee = read_member(object, member.member, member.span);
+                    roots.add(callee);
+                    return invoke(callee, call.arguments, environment, call.span);
+                }
+            }
             const auto callee = evaluate_expression(call.callee, environment);
             return invoke(callee, call.arguments, environment, call.span);
         }
@@ -2463,7 +2525,8 @@ Value SynchronousEvaluator::Impl::invoke_native(
                 remaining_limits.max_work,
                 host_options->limits.max_conversion_work - aggregate.work);
             auto host_value = heap_to_host_value(
-                heap, value, parameters[parameter_index].type, remaining_limits);
+                heap, value, parameters[parameter_index].type, remaining_limits,
+                host_options->handles.get());
             add_metrics(measure_host_value(host_value, remaining_limits), false);
             converted[parameter_index] = std::move(host_value);
         } catch (const RuntimeError& error) {
@@ -2509,7 +2572,29 @@ Value SynchronousEvaluator::Impl::invoke_native(
         {function.module, function.export_name, function.binding->binding_id,
          function.selected_version, stats.host_calls},
         converted,
-        host_options->bindings->limits());
+        host_options->bindings->limits(),
+        host_options->handles.get());
+    struct ProducedResultGuard final {
+        HostReleaseDispatcher* handles{};
+        Heap* heap{};
+        HostResult* result{};
+        bool published{};
+        ~ProducedResultGuard()
+        {
+            if (published || !handles || !heap || !result || !result->ok() ||
+                !is_host_handle_type(result->value().type()))
+                return;
+            const auto& handle = std::get<HostHandleValue>(result->value().storage());
+            if (handle.transfer_kind() != HostHandleTransferKind::ProducedGrant) return;
+            handles->abandon(handle);
+            handles->dispatch_all(*heap);
+        }
+    } produced_result_guard{
+        host_options->handles.get(), &heap, &result, false};
+    // Borrowed host<T> arguments pin their native generations only through
+    // callback exit. Drop every borrow before processing queued releases.
+    converted.clear();
+    drain_host_releases();
     if (!result.ok()) {
         if (!result.has_error())
         {
@@ -2571,8 +2656,11 @@ Value SynchronousEvaluator::Impl::invoke_native(
                  "Host conversion statistics overflowed", span);
         stats.host_conversion_nodes += aggregate.nodes;
         stats.host_conversion_bytes += aggregate.total_bytes;
-        return host_to_heap_value(
-            heap, result.value(), contract.result, result_limits);
+        auto published = host_to_heap_value(
+            heap, result.value(), contract.result, result_limits,
+            host_options->handles.get());
+        produced_result_guard.published = true;
+        return published;
     } catch (const EvaluationError&) {
         throw;
     } catch (const RuntimeError& error) {
@@ -3077,6 +3165,14 @@ SynchronousEvaluator::~SynchronousEvaluator() { delete impl_; }
 
 EvaluationResult SynchronousEvaluator::execute(const std::string_view entry_module)
 {
+    if (impl_->closed)
+        throw EvaluationError(
+            LanguageErrorCode::HostUnavailable,
+            "evaluator is closed", {}, {}, impl_->stats.steps);
+    struct ReleaseDrain final {
+        Impl* impl;
+        ~ReleaseDrain() { impl->drain_host_releases(); }
+    } release_drain{impl_};
     try {
         return impl_->execute(entry_module);
     } catch (const EvaluationError&) {
@@ -3117,6 +3213,11 @@ EvaluationResult SynchronousEvaluator::execute(const std::string_view entry_modu
             {},
             impl_->stats.steps);
     }
+}
+
+bool SynchronousEvaluator::close() noexcept
+{
+    return impl_->close();
 }
 
 Value SynchronousEvaluator::module_export(

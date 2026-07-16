@@ -139,6 +139,11 @@ catchability MUST NOT change within language version 1.
 `catchable = no` identifies terminal errors. Terminal status is part of the
 code contract, not inferred from a prefix or message.
 
+`ErrorMetadata.details` is validated recursively as JSON-safe at construction.
+Identity-bearing values, including `host<T>` at any nested list/map depth, are
+rejected with `JsonUnsupported`; an error envelope can therefore never retain,
+serialize, or forge a native handle capability.
+
 ### ERR-005 — SourceReference identity and privacy
 
 A present `SourceReference` MUST contain immutable package snapshot identity,
@@ -291,6 +296,12 @@ idempotent host-handle close operations. It retains the original terminal state
 without letting general work resume. Process termination or unrecoverable host
 loss may prevent script cleanup; context teardown MUST still enqueue leaked
 host-handle release records under ADR-0002.
+
+If evaluator context close cannot finish those records, the embedder MUST
+retain the release dispatcher and retry on its owner strand. The final owner
+MUST reach `destruction_safe()` before destruction; an unsafe dispatcher
+destructor fails fast and MUST NOT convert pending native ownership into
+successful cleanup.
 
 ### ERR-014 — Cleanup failure precedence
 

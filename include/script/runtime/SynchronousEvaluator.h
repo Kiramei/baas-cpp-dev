@@ -65,6 +65,9 @@ struct SynchronousHostOptions {
     EvaluatorHostLimits limits{};
     // Missing scopes use max_host_calls. Duplicate scopes are rejected.
     std::vector<std::pair<std::string, std::size_t>> budget_limits;
+    // Appended for aggregate source compatibility. Required by any exact
+    // host<T> contract; one dispatcher owns only one evaluator/Heap context.
+    std::shared_ptr<HostReleaseDispatcher> handles;
 };
 
 struct ModuleDiagnostic {
@@ -176,6 +179,10 @@ public:
     SynchronousEvaluator& operator=(SynchronousEvaluator&&) = delete;
 
     [[nodiscard]] EvaluationResult execute(std::string_view entry_module);
+    // Permanently rejects new execution and transfers all pending host release
+    // ownership to the shared dispatcher. False means the caller must retain
+    // that dispatcher and retry its detached releases; no Heap lifetime is needed.
+    [[nodiscard]] bool close() noexcept;
     [[nodiscard]] Value module_export(
         std::string_view module, std::string_view export_name) const;
 
