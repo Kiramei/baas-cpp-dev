@@ -266,7 +266,72 @@ RemoteIoStatus map_send_failure() noexcept { return RemoteIoStatus::internal_err
 
 namespace {
 
-class ProductionRemoteSessionCore final {
+class ReapedReader {
+public:
+    virtual ~ReapedReader() = default;
+    virtual void reap_reader() noexcept = 0;
+private:
+    friend class ReaderThreadReaper;
+    ReapedReader* reaper_next_{};
+};
+
+class ReaderThreadReaper final {
+public:
+    static ReaderThreadReaper& instance()
+    {
+        static ReaderThreadReaper reaper;
+        return reaper;
+    }
+
+    void enqueue(ReapedReader* reader) noexcept
+    {
+        std::lock_guard lock{mutex_};
+        if (tail_) tail_->reaper_next_ = reader;
+        else head_ = reader;
+        tail_ = reader;
+        ready_.notify_one();
+    }
+
+private:
+    ReaderThreadReaper() : worker_([this] { run(); }) {}
+    ~ReaderThreadReaper()
+    {
+        {
+            std::lock_guard lock{mutex_};
+            stopping_ = true;
+        }
+        ready_.notify_one();
+        if (worker_.joinable()) worker_.join();
+    }
+
+    void run() noexcept
+    {
+        for (;;) {
+            ReapedReader* item{};
+            {
+                std::unique_lock lock{mutex_};
+                ready_.wait(lock, [this] { return stopping_ || head_; });
+                if (stopping_ && !head_) return;
+                item = head_;
+                head_ = head_->reaper_next_;
+                if (!head_) tail_ = nullptr;
+                item->reaper_next_ = nullptr;
+            }
+            item->reap_reader();
+        }
+    }
+
+    std::mutex mutex_;
+    std::condition_variable ready_;
+    ReapedReader* head_{};
+    ReapedReader* tail_{};
+    bool stopping_{};
+    std::thread worker_;
+};
+
+class ProductionRemoteSessionCore final
+    : public ReapedReader,
+      public std::enable_shared_from_this<ProductionRemoteSessionCore> {
 public:
     using Release = std::function<void(
         const std::string&, std::uint16_t, bool, std::optional<unsigned>)>;
@@ -286,11 +351,14 @@ public:
 
     void start()
     {
-        // The owning session/core joins this thread before destruction. Do not
-        // capture a shared_ptr here: a naturally-ended reader could otherwise
-        // become the last owner and destroy a still-joinable std::thread from
-        // inside that same thread.
-        reader_ = std::thread([this] { read_loop(); });
+        // Construct the allocation-free reaper before a reader exists. If its
+        // worker cannot be created, open fails while close still has no thread.
+        static_cast<void>(ReaderThreadReaper::instance());
+        const auto self = shared_from_this();
+        std::scoped_lock lock{gate_, reader_mutex_};
+        reader_ = std::thread([self] { self->read_loop(); });
+        reader_id_ = reader_.get_id();
+        reader_started_ = true;
     }
 
     RemoteIoStatus send(auth::SecretBuffer payload, const std::stop_token stop)
@@ -308,23 +376,62 @@ public:
 
     void close() noexcept
     {
-        std::lock_guard lifecycle{close_mutex_};
         bool first{};
+        bool reentrant{};
         {
             std::lock_guard lock{gate_};
+            reentrant = reader_started_
+                && reader_id_ == std::this_thread::get_id();
+            if (reentrant) reentrant_close_ = true;
             if (!closing_) { closing_ = true; first = true; }
         }
         if (first) {
             try { static_cast<void>(websocket_->request_close()); } catch (...) {}
             try { websocket_->interrupt(); } catch (...) {}
         }
-        if (reader_.joinable() && reader_.get_id() != std::this_thread::get_id())
-            reader_.join();
+        // A callback cannot wait for itself to return. Its reader transfers its
+        // join handle to ReaderThreadReaper on exit; every external close still
+        // waits for the join and complete cleanup barrier below.
+        if (reentrant) return;
+
+        std::unique_lock lifecycle{close_mutex_};
+        if (close_complete_) return;
+        std::thread reader;
+        bool started{};
         {
-            std::unique_lock lock{gate_};
-            drained_.wait(lock, [this] { return active_ == 0; });
+            std::lock_guard lock{reader_mutex_};
+            started = reader_started_;
+            if (reader_.joinable()) reader = std::move(reader_);
         }
-        cleanup_once();
+        if (reader.joinable()) {
+            reader.join();
+            finish_close_locked();
+        }
+        else if (!started) {
+            finish_close_locked();
+        }
+        else {
+            close_completed_.wait(lifecycle, [this] { return close_complete_; });
+        }
+    }
+
+    void reap_reader() noexcept override
+    {
+        std::thread reader;
+        {
+            std::lock_guard lock{reader_mutex_};
+            if (reader_.joinable()) reader = std::move(reader_);
+        }
+        if (reader.joinable()) reader.join();
+        {
+            std::lock_guard lifecycle{close_mutex_};
+            finish_close_locked();
+        }
+        std::shared_ptr<ProductionRemoteSessionCore> keepalive;
+        {
+            std::lock_guard lock{reader_mutex_};
+            keepalive = std::move(reaper_keepalive_);
+        }
     }
 
 private:
@@ -353,6 +460,10 @@ private:
 
     void read_loop() noexcept
     {
+        struct Exit final {
+            ProductionRemoteSessionCore* self;
+            ~Exit() { self->reader_exiting(); }
+        } exit{this};
         RemoteSessionEnd reason = RemoteSessionEnd::device_closed;
         for (;;) {
             RemoteWebSocketReadResult result;
@@ -396,6 +507,31 @@ private:
         }
     }
 
+    void reader_exiting() noexcept
+    {
+        {
+            std::lock_guard lock{gate_};
+            if (!reentrant_close_) return;
+        }
+        std::lock_guard lock{reader_mutex_};
+        if (!reader_.joinable()
+            || reader_.get_id() != std::this_thread::get_id()) return;
+        reaper_keepalive_ = shared_from_this();
+        ReaderThreadReaper::instance().enqueue(this);
+    }
+
+    void finish_close_locked() noexcept
+    {
+        if (close_complete_) return;
+        {
+            std::unique_lock lock{gate_};
+            drained_.wait(lock, [this] { return active_ == 0; });
+        }
+        cleanup_once();
+        close_complete_ = true;
+        close_completed_.notify_all();
+    }
+
     void cleanup_once() noexcept
     {
         if (cleaned_.exchange(true, std::memory_order_acq_rel)) return;
@@ -414,11 +550,18 @@ private:
     std::mutex gate_;
     std::mutex send_mutex_;
     std::mutex close_mutex_;
+    std::mutex reader_mutex_;
     std::condition_variable drained_;
+    std::condition_variable close_completed_;
     std::size_t active_{};
     bool closing_{};
     bool reader_ended_{};
+    bool reader_started_{};
+    bool reentrant_close_{};
+    bool close_complete_{};
+    std::thread::id reader_id_;
     std::thread reader_;
+    std::shared_ptr<ProductionRemoteSessionCore> reaper_keepalive_;
     std::atomic_bool cleaned_{};
 };
 
@@ -520,7 +663,14 @@ public:
                 "com.genymobile.scrcpy.Server 1.19-ws7 web ERROR 8886 true "
                 "> /data/local/tmp/ws_scrcpy.log 2>&1 & pid=$!; echo $pid > "
                 "/data/local/tmp/ws_scrcpy.pid; echo $pid)", stop);
-            if (!started) return fail(map_adb_error(started.error));
+            if (!started) {
+                // The device shell may have launched the process and written
+                // the marker even when its response is lost. Re-read both and
+                // only kill an exact ws-scrcpy identity; never infer ownership
+                // from an uncertain response alone.
+                cleanup_owned_marker(config->serial, std::nullopt);
+                return fail(map_adb_error(started.error));
+            }
             const auto launched_pid = parse_pid(*started.value);
             if (!launched_pid) {
                 cleanup_owned_marker(config->serial, std::nullopt);

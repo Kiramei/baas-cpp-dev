@@ -38,12 +38,17 @@ never killed. A newly launched PID is taken from the same shell command that
 writes the private marker, then revalidated before use and again before kill.
 Stale/reused PIDs fail closed. Startup failures reread the marker and only kill
 a candidate whose PID relationship and exact cmdline can establish ownership.
+This revalidation also runs when the launch shell response times out or is lost,
+because the device may already have written the marker before that transport
+failure.
 
 Existing exact-serial `tcp:* -> tcp:8886` forwards are reused without ownership.
 Otherwise the ADB server allocates a loopback port atomically with `tcp:0`.
 Only a forward created by this session is removed, and removal first revalidates
 the exact serial, local port, and remote endpoint. Partial opens unwind owned
-forward and process state in reverse order.
+forward and process state in reverse order. If the `tcp:0` response itself is
+lost, the allocated local port and therefore ownership are unknowable; the
+backend does not guess at or remove a possibly unrelated forward.
 
 ## WebSocket proxy and close barrier
 
@@ -60,6 +65,9 @@ WebSocket frames cannot interleave. Close admission is linearized: one caller
 owns graceful-close, interrupt, reader join, active-send/callback drain, and ADB
 cleanup while concurrent close callers wait for that sequence to complete.
 After `close()` returns no send or callback can enter or remain active.
+Callbacks may reenter `close()`: the reader initiates shutdown without waiting
+for itself, transfers its join handle to an allocation-free reaper on exit, and
+external callers still wait for the complete join and cleanup barrier.
 
 ## Verification
 

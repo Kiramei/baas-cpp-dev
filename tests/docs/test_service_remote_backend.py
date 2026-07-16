@@ -49,7 +49,7 @@ class ProductionRemoteBackendContractTests(unittest.TestCase):
             "close_mutex_",
             "opens_drained_",
             "if (stopped_)",
-            "reader_.join()",
+            "reader.join()",
             "drained_.wait",
         ):
             self.assertIn(anchor, self.source)
@@ -62,6 +62,8 @@ class ProductionRemoteBackendContractTests(unittest.TestCase):
         self.assertIn("BUILD_SERVICE_REMOTE_BACKEND_TESTS", self.root_cmake)
         self.assertIn("BAAS_service_remote_backend_tests", self.workflow)
         self.assertIn("ServiceRemoteBackend.cmake", self.workflow)
+        self.assertIn("test_ws_scrcpy_resource_lock.py", self.workflow)
+        self.assertIn("Verify ws-scrcpy resource lock", self.workflow)
 
 
 if __name__ == "__main__":

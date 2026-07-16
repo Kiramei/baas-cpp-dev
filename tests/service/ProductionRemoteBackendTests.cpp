@@ -92,6 +92,8 @@ public:
     bool stopped{};
     bool fail_push{};
     bool fail_forward{};
+    adb::AdbTransportError start_error{adb::AdbTransportError::none};
+    bool matching_start_identity{true};
     std::string start_output{"202\n"};
     bool block_state{};
     bool state_entered{};
@@ -134,7 +136,10 @@ public:
         if (command.find("CLASSPATH=/data/local/tmp/baas-ws-scrcpy-server.jar")
             != std::string_view::npos) {
             pid_marker = 202;
-            cmdlines[202] = expected_cmdline();
+            cmdlines[202] = matching_start_identity
+                ? expected_cmdline() : std::string{"/system/bin/unrelated\0", 22};
+            if (start_error != adb::AdbTransportError::none)
+                return fail<std::string>(start_error);
             return ok(start_output);
         }
         if (command.starts_with("kill ")) {
@@ -443,6 +448,88 @@ void serial_lease_and_close_barrier()
     reopened.session->close();
 }
 
+void device_callback_can_reenter_close()
+{
+    Fixture fixture;
+    configure_existing(fixture);
+    auto backend = fixture.backend();
+    channels::RemoteSession* session{};
+    std::mutex mutex;
+    std::condition_variable cv;
+    bool callback_returned{};
+    channels::RemoteSessionCallbacks callbacks{
+        [&](std::string) {
+            session->close();
+            {
+                std::lock_guard lock{mutex};
+                callback_returned = true;
+            }
+            cv.notify_all();
+            return channels::RemoteIoStatus::accepted;
+        },
+        [](channels::RemoteSessionEnd) {}};
+    auto opened = backend->open(std::string{"alpha"}, std::move(callbacks), {});
+    CHECK(opened);
+    session = opened.session.get();
+    {
+        std::lock_guard lock{fixture.sockets[0]->mutex};
+        fixture.sockets[0]->reads.push_back(
+            {app::RemoteWebSocketReadKind::binary, "close-from-device"});
+        fixture.sockets[0]->cv.notify_all();
+    }
+    {
+        std::unique_lock lock{mutex};
+        CHECK(cv.wait_for(lock, 2s, [&] { return callback_returned; }));
+    }
+    auto external = std::async(
+        std::launch::async, [&] { opened.session->close(); });
+    CHECK(external.wait_for(2s) == std::future_status::ready);
+    external.get();
+    CallbackLog reopened_log;
+    auto reopened = backend->open(
+        std::string{"alpha"}, reopened_log.callbacks(), {});
+    CHECK(reopened);
+    reopened.session->close();
+}
+
+void ended_callback_can_reenter_close()
+{
+    Fixture fixture;
+    configure_existing(fixture);
+    auto backend = fixture.backend();
+    channels::RemoteSession* session{};
+    std::mutex mutex;
+    std::condition_variable cv;
+    bool callback_returned{};
+    channels::RemoteSessionCallbacks callbacks{
+        [](std::string) { return channels::RemoteIoStatus::accepted; },
+        [&](channels::RemoteSessionEnd) {
+            session->close();
+            {
+                std::lock_guard lock{mutex};
+                callback_returned = true;
+            }
+            cv.notify_all();
+        }};
+    auto opened = backend->open(std::string{"alpha"}, std::move(callbacks), {});
+    CHECK(opened);
+    session = opened.session.get();
+    {
+        std::lock_guard lock{fixture.sockets[0]->mutex};
+        fixture.sockets[0]->reads.push_back(
+            {app::RemoteWebSocketReadKind::closed, {}});
+        fixture.sockets[0]->cv.notify_all();
+    }
+    {
+        std::unique_lock lock{mutex};
+        CHECK(cv.wait_for(lock, 2s, [&] { return callback_returned; }));
+    }
+    auto external = std::async(
+        std::launch::async, [&] { opened.session->close(); });
+    CHECK(external.wait_for(2s) == std::future_status::ready);
+    external.get();
+}
+
 void serializes_concurrent_websocket_sends()
 {
     Fixture fixture;
@@ -553,6 +640,31 @@ void startup_deadline_and_forward_failure_unwind_owned_process()
     std::lock_guard lock{forward.adb->mutex};
     CHECK(forward.adb->killed == std::vector<unsigned>{202});
     CHECK(forward.adb->removed.empty());
+}
+
+void lost_start_response_cleans_only_exact_owned_marker()
+{
+    CallbackLog log;
+    Fixture matching;
+    matching.adb->start_error = adb::AdbTransportError::timeout;
+    auto matching_backend = matching.backend();
+    CHECK(matching_backend->open(std::string{"alpha"}, log.callbacks(), {}).error
+          == channels::RemoteBackendError::internal_error);
+    {
+        std::lock_guard lock{matching.adb->mutex};
+        CHECK(matching.adb->killed == std::vector<unsigned>{202});
+        CHECK(!matching.adb->pid_marker);
+    }
+
+    Fixture unrelated;
+    unrelated.adb->start_error = adb::AdbTransportError::timeout;
+    unrelated.adb->matching_start_identity = false;
+    auto unrelated_backend = unrelated.backend();
+    CHECK(unrelated_backend->open(std::string{"alpha"}, log.callbacks(), {}).error
+          == channels::RemoteBackendError::internal_error);
+    std::lock_guard lock{unrelated.adb->mutex};
+    CHECK(unrelated.adb->killed.empty());
+    CHECK(unrelated.adb->pid_marker == 202);
 }
 
 void oversize_and_failed_open_cleanup()
@@ -702,9 +814,12 @@ int main()
         {"owns_and_revalidates_cleanup", owns_and_revalidates_cleanup},
         {"never_kills_reused_pid_identity", never_kills_reused_pid_identity},
         {"serial_lease_and_close_barrier", serial_lease_and_close_barrier},
+        {"device_callback_can_reenter_close", device_callback_can_reenter_close},
+        {"ended_callback_can_reenter_close", ended_callback_can_reenter_close},
         {"serializes_concurrent_websocket_sends", serializes_concurrent_websocket_sends},
         {"retries_listener_and_cleans_invalid_start_marker", retries_listener_and_cleans_invalid_start_marker},
         {"startup_deadline_and_forward_failure_unwind_owned_process", startup_deadline_and_forward_failure_unwind_owned_process},
+        {"lost_start_response_cleans_only_exact_owned_marker", lost_start_response_cleans_only_exact_owned_marker},
         {"oversize_and_failed_open_cleanup", oversize_and_failed_open_cleanup},
         {"stop_closes_sessions_and_transport", stop_closes_sessions_and_transport},
         {"stop_linearizes_with_inflight_open", stop_linearizes_with_inflight_open},
