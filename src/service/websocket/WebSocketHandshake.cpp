@@ -84,6 +84,90 @@ constexpr bool valid_header_value(const std::string_view value) noexcept
     return true;
 }
 
+constexpr void skip_ows(const std::string_view value, std::size_t& offset) noexcept
+{
+    while (offset < value.size() && is_ows(value[offset])) ++offset;
+}
+
+constexpr bool consume_token(
+    const std::string_view value,
+    std::size_t& offset
+) noexcept
+{
+    const auto begin = offset;
+    while (offset < value.size()
+           && is_tchar(static_cast<unsigned char>(value[offset]))) {
+        ++offset;
+    }
+    return offset != begin;
+}
+
+constexpr bool consume_quoted_string(
+    const std::string_view value,
+    std::size_t& offset
+) noexcept
+{
+    if (offset >= value.size() || value[offset] != '"') return false;
+    ++offset;
+    bool has_decoded_token = false;
+    while (offset < value.size()) {
+        const auto byte = static_cast<unsigned char>(value[offset++]);
+        if (byte == '"') return has_decoded_token;
+        if (byte == '\\') {
+            if (offset >= value.size()) return false;
+            const auto escaped = static_cast<unsigned char>(value[offset++]);
+            if (!is_tchar(escaped)) return false;
+            has_decoded_token = true;
+            continue;
+        }
+        // RFC 6455 section 9.1 additionally requires the value after
+        // quoted-string unescaping to conform to token ABNF.
+        if (!is_tchar(byte)) return false;
+        has_decoded_token = true;
+    }
+    return false;
+}
+
+// Validate the client's RFC 6455 extension-list without selecting anything.
+// Browsers routinely offer permessage-deflate even when a server does not
+// implement it. Ignoring a well-formed offer is interoperable; accepting an
+// ambiguous or malformed field is not.
+constexpr bool valid_extension_offer(const std::string_view value) noexcept
+{
+    std::size_t offset = 0;
+    skip_ows(value, offset);
+    if (offset == value.size()) return false;
+
+    while (true) {
+        if (!consume_token(value, offset)) return false;
+        skip_ows(value, offset);
+
+        while (offset < value.size() && value[offset] == ';') {
+            ++offset;
+            skip_ows(value, offset);
+            if (!consume_token(value, offset)) return false;
+            skip_ows(value, offset);
+            if (offset < value.size() && value[offset] == '=') {
+                ++offset;
+                skip_ows(value, offset);
+                if (offset == value.size()) return false;
+                if (value[offset] == '"') {
+                    if (!consume_quoted_string(value, offset)) return false;
+                } else if (!consume_token(value, offset)) {
+                    return false;
+                }
+                skip_ows(value, offset);
+            }
+        }
+
+        if (offset == value.size()) return true;
+        if (value[offset] != ',') return false;
+        ++offset;
+        skip_ows(value, offset);
+        if (offset == value.size()) return false;
+    }
+}
+
 struct Occurrence {
     std::size_t count{};
     std::string_view first;
@@ -410,6 +494,7 @@ HandshakeResult validate_handshake(
     Occurrence transfer_encoding;
     Occurrence subprotocol;
     Occurrence extensions;
+    bool extension_offers_valid = true;
     Occurrence origin;
     Occurrence cookie;
 
@@ -438,7 +523,11 @@ HandshakeResult validate_handshake(
         else if (ascii_iequals(header.name, "Content-Length")) content_length.add(header.value);
         else if (ascii_iequals(header.name, "Transfer-Encoding")) transfer_encoding.add(header.value);
         else if (ascii_iequals(header.name, "Sec-WebSocket-Protocol")) subprotocol.add(header.value);
-        else if (ascii_iequals(header.name, "Sec-WebSocket-Extensions")) extensions.add(header.value);
+        else if (ascii_iequals(header.name, "Sec-WebSocket-Extensions")) {
+            extensions.add(header.value);
+            extension_offers_valid = extension_offers_valid
+                && valid_extension_offer(header.value);
+        }
         else if (ascii_iequals(header.name, "Origin")) origin.add(header.value);
         else if (ascii_iequals(header.name, "Cookie")) cookie.add(header.value);
     }
@@ -517,7 +606,7 @@ HandshakeResult validate_handshake(
     if (subprotocol.count != 0) {
         return reject(route.channel, HandshakeError::subprotocol_unsupported, origin, cookie);
     }
-    if (extensions.count != 0) {
+    if (!extension_offers_valid) {
         return reject(route.channel, HandshakeError::extensions_unsupported, origin, cookie);
     }
 
