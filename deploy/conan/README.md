@@ -35,6 +35,12 @@ come from `profiles/dependency-versions-default`, which records the recommended
 pinned versions. Only versions backed by `recipes/<dependency>/versions/*.yml`
 can be selected.
 
+ZIP archive support uses the pinned `baas-miniz/3.1.2` private recipe. It
+verifies the immutable official `richgel999/miniz` tag archive with SHA-256
+`98468f8924934b723276680f85238b6c78bf1f8b49b4459cc9b7214a20e2e9fb`,
+builds a static library on Windows, Linux, and Android, and publishes only the
+stable `BAAS::miniz` CMake target to consumers.
+
 The authentication and key-management layer uses the private
 `baas-libsodium/1.0.22` source recipe and links only its `BAAS::sodium` CMake
 target. The recipe verifies the official release tarball with SHA-256

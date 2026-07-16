@@ -11,6 +11,7 @@ DEPENDENCY_ORDER = [
     "baas-opencv",
     "baas-onnxruntime",
     "baas-lz4",
+    "baas-miniz",
     "baas-nlohmann-json",
     "baas-cpp-httplib",
     "baas-spdlog",
