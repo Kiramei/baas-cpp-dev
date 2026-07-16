@@ -21,6 +21,8 @@
 #define NOMINMAX
 #include <windows.h>
 #include <winioctl.h>
+#else
+#include <unistd.h>
 #endif
 
 namespace repository = baas::runtime::repository;
@@ -41,10 +43,25 @@ public:
     TempDirectory()
     {
         static std::atomic<unsigned long long> next{};
-        path_ = std::filesystem::temp_directory_path() /
-            ("baas-runtime-repository-" + std::to_string(++next));
-        std::filesystem::remove_all(path_);
-        std::filesystem::create_directories(path_);
+        const auto process =
+#ifdef _WIN32
+            static_cast<unsigned long long>(GetCurrentProcessId());
+#else
+            static_cast<unsigned long long>(getpid());
+#endif
+        for (unsigned int attempt = 0; attempt != 128; ++attempt) {
+            const auto tick = static_cast<unsigned long long>(
+                std::chrono::steady_clock::now().time_since_epoch().count());
+            path_ = std::filesystem::temp_directory_path() /
+                ("baas-runtime-repository-" + std::to_string(process) + "-" +
+                 std::to_string(tick) + "-" + std::to_string(++next));
+            std::error_code error;
+            if (std::filesystem::create_directory(path_, error)) return;
+            if (error && error != std::errc::file_exists)
+                throw std::filesystem::filesystem_error(
+                    "test temporary directory creation failed", path_, error);
+        }
+        throw std::runtime_error("test temporary directory name retries exhausted");
     }
     ~TempDirectory() { std::error_code ignored; std::filesystem::remove_all(path_, ignored); }
     [[nodiscard]] const std::filesystem::path& path() const noexcept { return path_; }
@@ -65,6 +82,10 @@ std::filesystem::path swap_target;
 std::atomic<bool> swap_performed{};
 std::filesystem::path counted_target;
 std::atomic<unsigned int> counted_reads{};
+std::filesystem::path view_swap_target;
+std::filesystem::path view_swap_archive;
+std::atomic<bool> view_swap_attempted{};
+std::stop_source* view_stop_source{};
 
 void count_validated_reads(const std::filesystem::path& path)
 {
@@ -78,6 +99,29 @@ void swap_after_handle_validation(const std::filesystem::path& path)
     pinned += ".pinned";
     std::filesystem::rename(path, pinned);
     write(path, "{}");
+}
+
+void swap_after_view_handle_open(
+    const repository::RuntimeRepositoryReadHookPoint point,
+    const std::string_view,
+    const std::string_view logical_path)
+{
+    if ((point != repository::RuntimeRepositoryReadHookPoint::manifest_handle_opened &&
+         point != repository::RuntimeRepositoryReadHookPoint::payload_handle_opened) ||
+        !view_swap_target.generic_string().ends_with(std::string(logical_path)) ||
+        view_swap_attempted.exchange(true)) return;
+    std::error_code error;
+    std::filesystem::rename(view_swap_target, view_swap_archive, error);
+    if (!error) write(view_swap_target, "tampered");
+}
+
+void cancel_after_payload_handle_open(
+    const repository::RuntimeRepositoryReadHookPoint point,
+    const std::string_view,
+    const std::string_view)
+{
+    if (point == repository::RuntimeRepositoryReadHookPoint::payload_handle_opened &&
+        view_stop_source) view_stop_source->request_stop();
 }
 
 std::filesystem::path blocking_target;
@@ -212,6 +256,54 @@ void block_after_current_handle_validation(const std::filesystem::path& path)
     write(root / "snapshots" / (generation + ".json"), snapshot_json(values, generation));
     if (publish) write(root / "current.json", current_json(generation));
     return generation;
+}
+
+[[nodiscard]] std::array<repository::RuntimeRepository, 2> readable_records(
+    const char seed = '1')
+{
+    constexpr std::string_view manifest_hash =
+        "737a1b1bcb0b033b9d8a969ac87271ee6dc4ad2f1659a49488413b5a2986b270";
+    const std::string resource_commit(40, seed);
+    const std::string script_commit(64, static_cast<char>(seed + 2));
+    return {{
+        {"resources", resource_commit, "objects/resources/" + resource_commit,
+         "manifest.json", std::string(manifest_hash)},
+        {"scripts", script_commit, "objects/scripts/" + script_commit,
+         "scripts.json", std::string(manifest_hash)},
+    }};
+}
+
+constexpr std::string_view readable_manifest =
+    "{\"schema\":\"baas.runtime-repository.tree-manifest/v1\",\"entries\":[{\"path\":\"nested/payload.bin\",\"size\":\"7\",\"sha256\":\"239f59ed55e737c77147cf55ad0c1b030b6d7ee748a7426952f9b852d5a935e5\",\"mode\":\"file\"}]}";
+
+[[nodiscard]] std::string install_readable(
+    const std::filesystem::path& root,
+    const std::array<repository::RuntimeRepository, 2>& values,
+    const bool publish = true)
+{
+    for (const auto& item : values) {
+        const auto object = root / item.root;
+        write(object / item.manifest, readable_manifest);
+        write(object / "nested" / "payload.bin", "payload");
+    }
+    return install(root, values, publish);
+}
+
+template <typename Callback>
+void expect_read(const repository::RuntimeRepositoryReadErrorCode code,
+                 Callback&& callback, const std::string_view message)
+{
+    try {
+        callback();
+        check(false, message);
+    } catch (const repository::RuntimeRepositoryReadError& error) {
+        check(error.code() == code, message);
+    }
+}
+
+[[nodiscard]] std::string bytes_as_string(const std::vector<std::byte>& bytes)
+{
+    return {reinterpret_cast<const char*>(bytes.data()), bytes.size()};
 }
 
 template <typename Callback>
@@ -497,6 +589,242 @@ void test_old_snapshot_pin_and_concurrent_current()
           "barrier-overlapped current replacement must expose only complete old/new generations");
 }
 
+void test_read_bundle_contract_and_sealing()
+{
+    TempDirectory temporary;
+    const auto root = temporary.path() / "runtime-repositories";
+    const auto values = readable_records();
+    const auto generation = install_readable(root, values);
+    const auto snapshot = repository::RuntimeRepositorySnapshot::activate(root);
+    const auto bundle = snapshot->open_read_bundle();
+    check(bundle->generation() == generation &&
+              bundle->resources().generation() == generation &&
+              bundle->scripts().generation() == generation &&
+              bundle->resources().repository_id() == "resources" &&
+              bundle->resources().entries().size() == 1,
+          "a bundle must expose two views from one selected generation");
+    check(bytes_as_string(bundle->resources().read("nested/payload.bin", 7)) == "payload",
+          "manifested payload reads must return owned verified bytes");
+    expect_read(repository::RuntimeRepositoryReadErrorCode::entry_not_found,
+                [&] { (void)bundle->resources().read("manifest.json", 1024); },
+                "the manifest itself must not be exposed as a payload");
+    expect_read(repository::RuntimeRepositoryReadErrorCode::file_limit_exceeded,
+                [&] { (void)bundle->resources().read("nested/payload.bin", 6); },
+                "each payload read must enforce its caller byte budget");
+    std::stop_source stopped;
+    stopped.request_stop();
+    expect_read(repository::RuntimeRepositoryReadErrorCode::cancelled,
+                [&] { (void)bundle->resources().read(
+                    "nested/payload.bin", 7, stopped.get_token()); },
+                "payload reads must observe pre-requested cancellation");
+    expect_read(repository::RuntimeRepositoryReadErrorCode::cancelled,
+                [&] { (void)snapshot->open_read_bundle({}, stopped.get_token()); },
+                "full-tree sealing must observe pre-requested cancellation");
+    repository::RuntimeRepositoryReadLimits small_file_limit;
+    small_file_limit.max_file_bytes = 6;
+    expect_read(repository::RuntimeRepositoryReadErrorCode::invalid_manifest,
+                [&] { (void)snapshot->open_read_bundle(small_file_limit); },
+                "manifested files must remain within the configured per-file budget");
+    repository::RuntimeRepositoryReadLimits small_manifest_limit;
+    small_manifest_limit.max_manifest_bytes = 32;
+    expect_read(repository::RuntimeRepositoryReadErrorCode::file_limit_exceeded,
+                [&] { (void)snapshot->open_read_bundle(small_manifest_limit); },
+                "manifest bytes must be bounded before JSON parsing");
+    repository::RuntimeRepositoryReadLimits inconsistent_limits;
+    inconsistent_limits.max_files = 2;
+    inconsistent_limits.max_entries = 1;
+    expect_read(repository::RuntimeRepositoryReadErrorCode::file_limit_exceeded,
+                [&] { (void)snapshot->open_read_bundle(inconsistent_limits); },
+                "tree entry limits must be large enough to account for every file");
+    std::stop_source during_hash;
+    view_stop_source = &during_hash;
+    repository::set_runtime_repository_read_view_hook(cancel_after_payload_handle_open);
+    expect_read(repository::RuntimeRepositoryReadErrorCode::cancelled,
+                [&] { (void)snapshot->open_read_bundle({}, during_hash.get_token()); },
+                "streaming payload sealing must observe cancellation after opening a file");
+    repository::set_runtime_repository_read_view_hook(nullptr);
+    view_stop_source = nullptr;
+
+    write(root / values[0].root / "nested" / "payload.bin", "tamper!");
+    expect_read(repository::RuntimeRepositoryReadErrorCode::payload_mismatch,
+                [&] { (void)snapshot->open_read_bundle(); },
+                "open must fail closed when any payload digest is damaged");
+    expect_read(repository::RuntimeRepositoryReadErrorCode::payload_mismatch,
+                [&] { (void)bundle->resources().read("nested/payload.bin", 7); },
+                "an existing view must revalidate payload bytes on every read");
+}
+
+void test_exact_tree_and_link_rejection()
+{
+    {
+        TempDirectory temporary;
+        const auto root = temporary.path() / "runtime-repositories";
+        const auto values = readable_records();
+        (void)install_readable(root, values);
+        write(root / values[0].root / "not-manifested.bin", "x");
+        const auto snapshot = repository::RuntimeRepositorySnapshot::activate(root);
+        expect_read(repository::RuntimeRepositoryReadErrorCode::invalid_manifest,
+                    [&] { (void)snapshot->open_read_bundle(); },
+                    "unmanifested payloads must reject the complete bundle");
+    }
+    {
+        TempDirectory temporary;
+        const auto root = temporary.path() / "runtime-repositories";
+        const auto values = readable_records();
+        (void)install_readable(root, values);
+        std::filesystem::create_directories(root / values[0].root / "empty");
+        const auto snapshot = repository::RuntimeRepositorySnapshot::activate(root);
+        expect_read(repository::RuntimeRepositoryReadErrorCode::invalid_manifest,
+                    [&] { (void)snapshot->open_read_bundle(); },
+                    "empty directories must reject the exact immutable tree");
+    }
+    {
+        TempDirectory temporary;
+        const auto root = temporary.path() / "runtime-repositories";
+        const auto values = readable_records();
+        (void)install_readable(root, values);
+        std::filesystem::create_hard_link(
+            root / values[0].root / "nested" / "payload.bin",
+            root / values[0].root / "nested" / "payload-hardlink.bin");
+        const auto snapshot = repository::RuntimeRepositorySnapshot::activate(root);
+        expect_read(repository::RuntimeRepositoryReadErrorCode::path_violation,
+                    [&] { (void)snapshot->open_read_bundle(); },
+                    "multi-link payload identities must be rejected");
+    }
+    {
+        TempDirectory temporary;
+        const auto root = temporary.path() / "runtime-repositories";
+        const auto values = readable_records();
+        (void)install_readable(root, values);
+        const auto repository_root = root / values[0].root;
+        const auto outside = temporary.path() / "outside-repository";
+        std::filesystem::rename(repository_root, outside);
+        const auto linked = create_directory_reparse(outside, repository_root);
+        check(linked, "the platform test must link a repository object root");
+        if (linked) {
+            const auto snapshot = repository::RuntimeRepositorySnapshot::activate(root);
+            expect_read(repository::RuntimeRepositoryReadErrorCode::path_violation,
+                        [&] { (void)snapshot->open_read_bundle(); },
+                        "repository object roots must be opened without following links");
+        }
+    }
+}
+
+void test_read_bundle_retains_generation_and_open_handles()
+{
+    TempDirectory temporary;
+    const auto root = temporary.path() / "runtime-repositories";
+    const auto old_values = readable_records('1');
+    const auto old_generation = install_readable(root, old_values);
+    const auto pinned = repository::RuntimeRepositorySnapshot::activate(root);
+    const auto new_values = readable_records('5');
+    const auto new_generation = install_readable(root, new_values);
+    const auto old_bundle = pinned->open_read_bundle();
+    const auto latest = repository::RuntimeRepositorySnapshot::activate(root)->open_read_bundle();
+    check(old_bundle->generation() == old_generation &&
+              latest->generation() == new_generation &&
+              bytes_as_string(old_bundle->scripts().read("nested/payload.bin", 7)) == "payload",
+          "a pinned snapshot must open only its retained old generation after current advances");
+
+    view_swap_target = root / old_values[0].root / "nested" / "payload.bin";
+    view_swap_archive = temporary.path() / "payload.pinned";
+    view_swap_attempted.store(false);
+    repository::set_runtime_repository_read_view_hook(swap_after_view_handle_open);
+    const auto swapped_read = old_bundle->resources().read("nested/payload.bin", 7);
+    repository::set_runtime_repository_read_view_hook(nullptr);
+    check(view_swap_attempted.load() && bytes_as_string(swapped_read) == "payload",
+          "payload reads must hash and return the already validated native file handle");
+    expect_read(repository::RuntimeRepositoryReadErrorCode::payload_mismatch,
+                [&] { (void)old_bundle->resources().read("nested/payload.bin", 32); },
+                "later reads must reject a payload path replaced after view sealing");
+    write(view_swap_target, "payload");
+
+    view_swap_target = root / old_values[0].root / old_values[0].manifest;
+    view_swap_archive = temporary.path() / "manifest.pinned";
+    view_swap_attempted.store(false);
+    repository::set_runtime_repository_read_view_hook(swap_after_view_handle_open);
+    const auto replaced_manifest_bundle = pinned->open_read_bundle();
+    repository::set_runtime_repository_read_view_hook(nullptr);
+    check(view_swap_attempted.load() &&
+              replaced_manifest_bundle->resources().entries().size() == 1,
+          "manifest verification must consume the already validated native handle");
+}
+
+void test_utf8_paths_and_portable_aliases()
+{
+    constexpr std::string_view cjk_manifest =
+        "{\"schema\":\"baas.runtime-repository.tree-manifest/v1\",\"entries\":[{\"path\":\"nested/日本.bin\",\"size\":\"7\",\"sha256\":\"239f59ed55e737c77147cf55ad0c1b030b6d7ee748a7426952f9b852d5a935e5\",\"mode\":\"file\"}]}";
+    constexpr std::string_view alias_manifest =
+        "{\"schema\":\"baas.runtime-repository.tree-manifest/v1\",\"entries\":[{\"path\":\"A.bin\",\"size\":\"7\",\"sha256\":\"239f59ed55e737c77147cf55ad0c1b030b6d7ee748a7426952f9b852d5a935e5\",\"mode\":\"file\"},{\"path\":\"a.bin\",\"size\":\"7\",\"sha256\":\"239f59ed55e737c77147cf55ad0c1b030b6d7ee748a7426952f9b852d5a935e5\",\"mode\":\"file\"}]}";
+    {
+        TempDirectory temporary;
+        const auto root = temporary.path() / "runtime-repositories";
+        auto values = readable_records();
+        for (auto& item : values)
+            item.manifest_sha256 =
+                "6215916b50d80ec23d7a2e149a8df0875afb039de48dca940a5d78005f2e2e80";
+        for (const auto& item : values) {
+            write(root / item.root / item.manifest, cjk_manifest);
+            write(root / item.root / "nested" / std::filesystem::u8path(u8"日本.bin"),
+                  "payload");
+        }
+        (void)install(root, values);
+        const auto bundle = repository::RuntimeRepositorySnapshot::activate(root)->open_read_bundle();
+        check(bytes_as_string(bundle->resources().read("nested/日本.bin", 7)) == "payload",
+              "canonical UTF-8 logical paths must round-trip through the read capability");
+    }
+    {
+        TempDirectory temporary;
+        const auto root = temporary.path() / "runtime-repositories";
+        auto values = readable_records();
+        for (auto& item : values)
+            item.manifest_sha256 =
+                "a404ffc94f3e51e2d2b4309fe48ca24a6f4a5c920095548716e01b1fd37db279";
+        for (const auto& item : values)
+            write(root / item.root / item.manifest, alias_manifest);
+        (void)install(root, values);
+        const auto snapshot = repository::RuntimeRepositorySnapshot::activate(root);
+        expect_read(repository::RuntimeRepositoryReadErrorCode::invalid_manifest,
+                    [&] { (void)snapshot->open_read_bundle(); },
+                    "case-folded UTF-8 portable aliases must be rejected before publication");
+    }
+}
+
+void test_tree_manifest_parser_budgets()
+{
+    const auto rejected = [](const std::string_view manifest,
+                             const std::string_view manifest_hash,
+                             repository::RuntimeRepositoryReadLimits limits,
+                             const std::string_view message) {
+        TempDirectory temporary;
+        const auto root = temporary.path() / "runtime-repositories";
+        auto values = readable_records();
+        for (auto& item : values) item.manifest_sha256 = manifest_hash;
+        for (const auto& item : values) write(root / item.root / item.manifest, manifest);
+        (void)install(root, values);
+        const auto snapshot = repository::RuntimeRepositorySnapshot::activate(root);
+        expect_read(repository::RuntimeRepositoryReadErrorCode::invalid_manifest,
+                    [&] { (void)snapshot->open_read_bundle(limits); }, message);
+    };
+    repository::RuntimeRepositoryReadLimits node_limits;
+    node_limits.max_files = 1;
+    node_limits.max_entries = 1;
+    rejected(
+        "{\"schema\":\"baas.runtime-repository.tree-manifest/v1\",\"entries\":[\"\",\"\",\"\",\"\",\"\",\"\",\"\",\"\",\"\",\"\",\"\",\"\",\"\",\"\",\"\",\"\",\"\",\"\",\"\",\"\"]}",
+        "3b42163713c0ec50e1c6336d085643c135360ee61a5b8b2b7cb67e468d08ea70",
+        node_limits, "manifest JSON nodes must be bounded during parsing");
+    repository::RuntimeRepositoryReadLimits string_limits;
+    string_limits.max_relative_path_bytes = 16;
+    rejected(
+        "{\"schema\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"entries\":[]}",
+        "1e04af9d771af0c8b4a79875e214e668d0b955b511cd98bc0e60587970b9fb2c",
+        string_limits, "decoded manifest JSON strings must be bounded during parsing");
+    rejected(
+        "{\"schema\":\"baas.runtime-repository.tree-manifest/v1\",\"entries\":[[[[[[[[]]]]]]]]}",
+        "8dd01ed15a6beb24bd437fdb46c888fce488cfb277cbe931de5db5ef0075eea5",
+        {}, "manifest JSON nesting must be bounded during parsing");
+}
+
 }  // namespace
 
 int main()
@@ -508,6 +836,11 @@ int main()
         test_reparse_component_rejection();
         test_validated_handle_is_the_read_object();
         test_old_snapshot_pin_and_concurrent_current();
+        test_read_bundle_contract_and_sealing();
+        test_exact_tree_and_link_rejection();
+        test_read_bundle_retains_generation_and_open_handles();
+        test_utf8_paths_and_portable_aliases();
+        test_tree_manifest_parser_budgets();
     } catch (const std::exception& error) {
         std::cerr << "UNCAUGHT: " << error.what() << '\n';
         return EXIT_FAILURE;

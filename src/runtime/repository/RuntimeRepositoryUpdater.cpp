@@ -1,5 +1,7 @@
 #include "runtime/repository/RuntimeRepositoryUpdater.h"
 
+#include "RuntimeRepositoryTreeFormat.h"
+
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -68,7 +70,6 @@ std::string_view runtime_repository_update_error_message(
 namespace {
 
 constexpr std::string_view journal_schema = "baas.runtime-repositories.publish-journal/v1";
-constexpr std::string_view tree_manifest_schema = "baas.runtime-repository.tree-manifest/v1";
 constexpr std::size_t max_state_json_bytes = 64U * 1024U;
 using Digest = std::array<std::byte, 32>;
 
@@ -479,178 +480,15 @@ void exact_members(const Json::Object& value, const std::array<std::string_view,
         fail(RuntimeRepositoryUpdateErrorCode::RecoveryFailed, "unknown or missing JSON member");
 }
 
-[[nodiscard]] std::uintmax_t parse_decimal_size(const std::string_view value) {
-    if (value.empty() || (value.size() > 1 && value.front() == '0'))
-        fail(RuntimeRepositoryUpdateErrorCode::ValidationFailed,
-             "manifest entry size is not canonical");
-    std::uintmax_t result{};
-    for (const auto character : value) {
-        if (character < '0' || character > '9' ||
-            result > (std::numeric_limits<std::uintmax_t>::max() -
-                      static_cast<unsigned int>(character - '0')) /
-                         10U)
-            fail(RuntimeRepositoryUpdateErrorCode::ValidationFailed,
-                 "manifest entry size is invalid");
-        result = result * 10U + static_cast<unsigned int>(character - '0');
-    }
-    return result;
-}
-
-[[nodiscard]] std::string portable_path_key(const std::string_view value) {
-    if (value.empty() || value.size() > 1'024 || value.front() == '/' || value.back() == '/' ||
-        value.find('\\') != std::string_view::npos || value.find(':') != std::string_view::npos)
-        fail(RuntimeRepositoryUpdateErrorCode::ValidationFailed,
-             "manifest entry path is not portable");
-    std::string key;
-    key.reserve(value.size());
-    std::size_t begin{};
-    while (begin < value.size()) {
-        const auto end = value.find('/', begin);
-        const auto component =
-            value.substr(begin, end == std::string_view::npos ? value.size() - begin : end - begin);
-        if (component.empty() || component == "." || component == ".." ||
-            component.front() == ' ' || component.back() == '.' || component.back() == ' ')
-            fail(RuntimeRepositoryUpdateErrorCode::ValidationFailed,
-                 "manifest entry path is not canonical");
-        std::string folded;
-        folded.reserve(component.size());
-        for (std::size_t offset = 0; offset < component.size();) {
-            const auto first = static_cast<unsigned char>(component[offset]);
-            std::uint32_t codepoint{};
-            std::size_t width{};
-            if (first < 0x80U) {
-                codepoint = first;
-                width = 1;
-            } else if (first >= 0xc2U && first <= 0xdfU) {
-                codepoint = first & 0x1fU;
-                width = 2;
-            } else if (first >= 0xe0U && first <= 0xefU) {
-                codepoint = first & 0x0fU;
-                width = 3;
-            } else if (first >= 0xf0U && first <= 0xf4U) {
-                codepoint = first & 0x07U;
-                width = 4;
-            } else {
-                fail(RuntimeRepositoryUpdateErrorCode::ValidationFailed,
-                     "manifest entry path is not valid UTF-8");
-            }
-            if (offset + width > component.size())
-                fail(RuntimeRepositoryUpdateErrorCode::ValidationFailed,
-                     "manifest entry path is not valid UTF-8");
-            for (std::size_t index = 1; index < width; ++index) {
-                const auto continuation = static_cast<unsigned char>(component[offset + index]);
-                if ((continuation & 0xc0U) != 0x80U)
-                    fail(RuntimeRepositoryUpdateErrorCode::ValidationFailed,
-                         "manifest entry path is not valid UTF-8");
-                codepoint = (codepoint << 6U) | (continuation & 0x3fU);
-            }
-            const auto overlong = (width == 2 && codepoint < 0x80U) ||
-                                  (width == 3 && codepoint < 0x800U) ||
-                                  (width == 4 && codepoint < 0x10000U);
-            const auto combining = (codepoint >= 0x0300U && codepoint <= 0x036fU) ||
-                                   (codepoint >= 0x1ab0U && codepoint <= 0x1affU) ||
-                                   (codepoint >= 0x1dc0U && codepoint <= 0x1dffU) ||
-                                   (codepoint >= 0x20d0U && codepoint <= 0x20ffU) ||
-                                   (codepoint >= 0xfe20U && codepoint <= 0xfe2fU) ||
-                                   codepoint == 0x3099U || codepoint == 0x309aU ||
-                                   (codepoint >= 0x1100U && codepoint <= 0x11ffU) ||
-                                   (codepoint >= 0xa960U && codepoint <= 0xa97fU) ||
-                                   (codepoint >= 0xd7b0U && codepoint <= 0xd7ffU);
-            if (overlong || codepoint > 0x10ffffU ||
-                (codepoint >= 0xd800U && codepoint <= 0xdfffU) || codepoint == 0x85U ||
-                codepoint == 0x2028U || codepoint == 0x2029U ||
-                (codepoint >= 0x7fU && codepoint <= 0x9fU) ||
-                (codepoint >= 0xfdd0U && codepoint <= 0xfdefU) ||
-                (codepoint & 0xffffU) == 0xfffeU || (codepoint & 0xffffU) == 0xffffU || combining)
-                fail(RuntimeRepositoryUpdateErrorCode::ValidationFailed,
-                     "manifest entry path is not portable normalized UTF-8");
-            if (width == 1) {
-                const auto character = static_cast<char>(first);
-                if (first < 0x20U || character == '<' || character == '>' || character == '"' ||
-                    character == '|' || character == '?' || character == '*')
-                    fail(RuntimeRepositoryUpdateErrorCode::ValidationFailed,
-                         "manifest entry path contains a non-portable character");
-                folded.push_back(character >= 'A' && character <= 'Z'
-                                     ? static_cast<char>(character + ('a' - 'A'))
-                                     : character);
-            } else {
-                folded.append(component.substr(offset, width));
-            }
-            offset += width;
-        }
-        const auto dot = folded.find('.');
-        const auto stem = folded.substr(0, dot);
-        const auto reserved =
-            stem == "con" || stem == "prn" || stem == "aux" || stem == "nul" ||
-            (stem.size() == 4 && (stem.starts_with("com") || stem.starts_with("lpt")) &&
-             stem.back() >= '1' && stem.back() <= '9') ||
-            (stem.size() == 5 && (stem.starts_with("com") || stem.starts_with("lpt")) &&
-             (stem.ends_with("\xc2\xb9") || stem.ends_with("\xc2\xb2") ||
-              stem.ends_with("\xc2\xb3")));
-        if (reserved)
-            fail(RuntimeRepositoryUpdateErrorCode::ValidationFailed,
-                 "manifest entry path uses a reserved portable name");
-        if (!key.empty())
-            key.push_back('/');
-        key += folded;
-        if (end == std::string_view::npos)
-            break;
-        begin = end + 1;
-    }
-    return key;
-}
-
-struct TreeManifestEntry final {
-    std::string path;
-    std::uintmax_t size{};
-    std::string sha256;
-};
-
-[[nodiscard]] std::vector<TreeManifestEntry>
+[[nodiscard]] std::vector<detail::TreeManifestEntry>
 parse_tree_manifest(const std::string_view bytes, const std::string_view manifest_name,
-                    const std::size_t maximum_entries) {
+                    const RepositoryValidationLimits& limits) {
     try {
-        const auto document = JsonParser(bytes).parse();
-        const auto& root = object(document);
-        constexpr std::array root_names{std::string_view{"schema"}, std::string_view{"entries"}};
-        exact_members(root, root_names);
-        if (string_member(root, "schema") != tree_manifest_schema)
-            fail(RuntimeRepositoryUpdateErrorCode::ValidationFailed,
-                 "repository tree manifest schema is invalid");
-        std::vector<TreeManifestEntry> result;
-        std::map<std::string, std::string, std::less<>> portable_paths;
-        for (const auto& item : array(member(root, "entries"))) {
-            if (result.size() == maximum_entries)
-                fail(RuntimeRepositoryUpdateErrorCode::ValidationFailed,
-                     "repository tree manifest entry limit exceeded");
-            const auto& entry = object(item);
-            constexpr std::array entry_names{std::string_view{"path"}, std::string_view{"size"},
-                                             std::string_view{"sha256"}, std::string_view{"mode"}};
-            exact_members(entry, entry_names);
-            TreeManifestEntry parsed{string_member(entry, "path"),
-                                     parse_decimal_size(string_member(entry, "size")),
-                                     string_member(entry, "sha256")};
-            if (string_member(entry, "mode") != "file" || !lower_hex(parsed.sha256, 64) ||
-                parsed.path == manifest_name)
-                fail(RuntimeRepositoryUpdateErrorCode::ValidationFailed,
-                     "repository tree manifest entry is invalid");
-            const auto key = portable_path_key(parsed.path);
-            if (!portable_paths.emplace(key, parsed.path).second)
-                fail(RuntimeRepositoryUpdateErrorCode::ValidationFailed,
-                     "repository tree manifest contains a duplicate portable path");
-            result.push_back(std::move(parsed));
-        }
-        std::ranges::sort(result, {}, &TreeManifestEntry::path);
-        if (std::adjacent_find(result.begin(), result.end(),
-                               [](const auto& left, const auto& right) {
-                                   return left.path == right.path;
-                               }) != result.end())
-            fail(RuntimeRepositoryUpdateErrorCode::ValidationFailed,
-                 "repository tree manifest contains duplicate entries");
-        return result;
-    } catch (const UpdateFailure& error) {
-        if (error.code() != RuntimeRepositoryUpdateErrorCode::RecoveryFailed)
-            throw;
+        return detail::parse_tree_manifest(bytes, manifest_name,
+            detail::TreeFormatLimits{limits.max_files - 1, limits.max_file_bytes,
+                limits.max_total_bytes, limits.max_relative_path_bytes,
+                limits.max_relative_path_depth});
+    } catch (const detail::TreeFormatError& error) {
         fail(RuntimeRepositoryUpdateErrorCode::ValidationFailed,
              std::string("repository tree manifest is invalid: ") + error.what());
     }
@@ -1835,7 +1673,7 @@ RepositoryTreeSeal StrictRuntimeRepositoryTreeValidator::validate_and_seal(
                  ", got " + result.manifest_sha256);
     const auto manifest = parse_tree_manifest(
         read_anchored_file(canonical_root, spec.manifest, limits_.max_manifest_bytes),
-        spec.manifest, limits_.max_files - 1);
+        spec.manifest, limits_);
     std::vector<const FileRecord*> payload_files;
     payload_files.reserve(files.size());
     for (const auto& file : files)

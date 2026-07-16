@@ -45,6 +45,26 @@ descriptors and remains unchanged if `current.json` later advances. Activation
 does not probe `objects`, open manifests, or turn external repository data into
 build inputs.
 
+Repository payloads are exposed only through `RuntimeRepositoryReadBundle`.
+`RuntimeRepositorySnapshot::open_read_bundle()` opens resources and scripts
+from the same snapshot generation and returns pathless read capabilities. A
+view exposes logical manifest entries, never a native root path. It opens every
+root and entry component relative to retained native directory handles with
+link and reparse traversal disabled.
+
+Opening a view reads the manifest from one validated handle, bounds it, verifies
+its SHA-256 against the snapshot descriptor, and parses the canonical tree
+manifest rules below. Before publishing the view it exactly enumerates and
+stream-hashes every listed payload through fixed-size buffers; extra files,
+empty directories, aliases, linked files, or any hash mismatch fail the whole
+bundle. Opening and hashing accept a cancellation token and enforce entry,
+file, and total-byte budgets.
+
+`read(logical_path, max_bytes, stop_token)` accepts only an exact listed path
+and returns owned bytes after checking that the same anchored file handle is
+regular, non-reparse, has link count one, has the declared size, and hashes to
+the declared SHA-256. Validation never reopens a pathname for content use.
+
 Path validation and file reading operate on the same opened object. Windows
 opens every state component with reparse-point inspection, pins directory
 handles, validates the final handle path within the root, bounds size from that

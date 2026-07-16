@@ -1,5 +1,7 @@
 #include "runtime/repository/RuntimeRepositorySnapshot.h"
 
+#include "RuntimeRepositoryReadViewInternal.h"
+
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -669,6 +671,7 @@ void set_runtime_repository_read_hook(const RuntimeRepositoryReadHook hook) noex
 struct RuntimeRepositorySnapshot::Impl {
     std::string generation;
     std::array<RuntimeRepository, 2> repositories;
+    std::shared_ptr<RuntimeRepositoryStateRootAnchor> state_root;
 };
 
 RuntimeRepositoryError::RuntimeRepositoryError(
@@ -702,6 +705,17 @@ std::shared_ptr<const RuntimeRepositorySnapshot> RuntimeRepositorySnapshot::acti
         limits.max_json_string_bytes == 0 || limits.max_json_nodes < 4 ||
         limits.max_json_depth < 3)
         throw RuntimeRepositoryError(RuntimeRepositoryErrorCode::FileLimitExceeded, "repository limits are invalid");
+
+    std::shared_ptr<RuntimeRepositoryStateRootAnchor> state_root_anchor;
+    try {
+        state_root_anchor = open_runtime_repository_state_root_anchor(state_root);
+    } catch (const RuntimeRepositoryReadError& error) {
+        throw RuntimeRepositoryError(
+            error.code() == RuntimeRepositoryReadErrorCode::path_violation
+                ? RuntimeRepositoryErrorCode::PathViolation
+                : RuntimeRepositoryErrorCode::Io,
+            error.what());
+    }
 
     // Windows replacement can briefly reject opening current.json. Retry only
     // that narrow I/O class; malformed content and policy failures remain
@@ -766,6 +780,7 @@ std::shared_ptr<const RuntimeRepositorySnapshot> RuntimeRepositorySnapshot::acti
     auto impl = std::make_unique<Impl>();
     impl->generation = generation;
     impl->repositories = std::move(repositories);
+    impl->state_root = std::move(state_root_anchor);
     return std::shared_ptr<const RuntimeRepositorySnapshot>(
         new RuntimeRepositorySnapshot(std::move(impl)));
 }
@@ -785,6 +800,13 @@ const RuntimeRepository& RuntimeRepositorySnapshot::resources() const noexcept
 const RuntimeRepository& RuntimeRepositorySnapshot::scripts() const noexcept
 {
     return impl_->repositories[1];
+}
+
+std::shared_ptr<const RuntimeRepositoryReadBundle> RuntimeRepositorySnapshot::open_read_bundle(
+    const RuntimeRepositoryReadLimits limits, const std::stop_token stop_token) const
+{
+    return RuntimeRepositoryReadViewFactory::open_bundle(
+        impl_->state_root, impl_->generation, impl_->repositories, limits, stop_token);
 }
 
 }  // namespace baas::runtime::repository

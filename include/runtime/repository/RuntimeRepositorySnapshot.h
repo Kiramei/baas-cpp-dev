@@ -1,5 +1,7 @@
 #pragma once
 
+#include "runtime/repository/RuntimeRepositoryReadView.h"
+
 #include <array>
 #include <cstddef>
 #include <filesystem>
@@ -69,6 +71,12 @@ public:
     [[nodiscard]] const std::array<RuntimeRepository, 2>& repositories() const noexcept;
     [[nodiscard]] const RuntimeRepository& resources() const noexcept;
     [[nodiscard]] const RuntimeRepository& scripts() const noexcept;
+
+    // Opens both repository roots as one generation-bound, pathless read
+    // capability. Manifest and payload validation happens on anchored handles.
+    [[nodiscard]] std::shared_ptr<const RuntimeRepositoryReadBundle> open_read_bundle(
+        RuntimeRepositoryReadLimits limits = {},
+        std::stop_token stop_token = {}) const;
 
 private:
     struct Impl;

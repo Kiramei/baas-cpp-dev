@@ -25,9 +25,10 @@ During `ServiceApplication::open`, the owner examines
 
 Activation pins pointer and snapshot metadata only. `activate()` deliberately
 does not open repository object directories or manifests, so `phase=pinned`
-does not claim that payload bytes have been revalidated or that a future
-resource/script consumer is ready. Such consumers must use anchored opens and
-validate the selected tree manifest before admitting payload bytes.
+does not itself claim payload readiness. Consumers call the owner's
+`open_read_bundle()` to obtain resources and scripts capabilities bound to the
+same retained generation. Those capabilities expose no native path and admit
+only manifest-listed bytes verified from anchored native handles.
 
 The absence check happens once. If a publisher creates or advances
 `current.json` later, a successfully started service remains pinned to its

@@ -4,6 +4,8 @@ add_library(
         BAAS_runtime_repository
         STATIC
         "${BAAS_PROJECT_PATH}/src/runtime/repository/RuntimeRepositorySnapshot.cpp"
+        "${BAAS_PROJECT_PATH}/src/runtime/repository/RuntimeRepositoryReadView.cpp"
+        "${BAAS_PROJECT_PATH}/src/runtime/repository/RuntimeRepositoryTreeFormat.cpp"
 )
 target_compile_features(BAAS_runtime_repository PUBLIC cxx_std_20)
 target_include_directories(
