@@ -131,6 +131,7 @@ using namespace ast;
         case ValueKind::Error: return "error";
         case ValueKind::Task: return "task";
         case ValueKind::HostHandle: return "host_handle";
+        case ValueKind::Bytes: return "bytes";
         case ValueKind::HeapReference: return "heap_reference";
     }
     return "unknown";
@@ -2570,7 +2571,7 @@ Value SynchronousEvaluator::Impl::invoke_native(
     auto result = invoke_host_callback(
         *function.binding,
         {function.module, function.export_name, function.binding->binding_id,
-         function.selected_version, stats.host_calls},
+         function.selected_version, stats.host_calls, host_options->cancellation},
         converted,
         host_options->bindings->limits(),
         host_options->handles.get());

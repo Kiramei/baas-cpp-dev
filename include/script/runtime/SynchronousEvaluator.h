@@ -68,6 +68,9 @@ struct SynchronousHostOptions {
     // Appended for aggregate source compatibility. Required by any exact
     // host<T> contract; one dispatcher owns only one evaluator/Heap context.
     std::shared_ptr<HostReleaseDispatcher> handles;
+    // Appended for aggregate source compatibility. The same immutable probe is
+    // observed at every Host call entry and by cooperative native callbacks.
+    std::shared_ptr<const HostCancellationProbe> cancellation;
 };
 
 struct ModuleDiagnostic {

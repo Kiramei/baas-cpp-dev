@@ -241,6 +241,7 @@ std::string_view detail_kind_name(const ValueKind kind) noexcept
         case ValueKind::Error: return "error";
         case ValueKind::Task: return "task";
         case ValueKind::HostHandle: return "host_handle";
+        case ValueKind::Bytes: return "bytes";
     }
     return "invalid";
 }

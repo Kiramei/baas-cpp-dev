@@ -34,8 +34,9 @@ An implementation MUST expose exactly these language-visible value kinds:
 | `error` | `Error` | identity-bearing code, message, optional span, and details |
 | `task` | `Task` | identity-bearing task id, state, and retained values |
 | `host-handle` | `HostHandle` | identity-bearing adapter handle with explicit release state |
+| `bytes` | `Bytes` | immutable, arbitrary binary byte sequence in a heap cell |
 
-`HeapReference` is an internal representation tag, not a thirteenth language
+`HeapReference` is an internal representation tag, not a fourteenth language
 kind. A heap reference consists of heap identity, slot, and generation; scripts
 MUST NOT forge or inspect those components.
 
@@ -50,6 +51,10 @@ Strings and keys MUST preserve their exact UTF-8 bytes. The runtime MUST NOT
 normalize, case-fold, or locale-transform them. String equality and map-key
 matching are therefore byte-exact. A source BOM remains a lexer error under
 `LANGUAGE_GRAMMAR.md`; it is not part of a decoded source string.
+
+Byte values are distinct from strings: they permit every octet, perform no
+UTF-8 validation, and have no mutable buffer API. Host conversion copies their
+payload so neither side can mutate storage owned by the other side.
 
 String length, indexing, slicing, and substring membership MUST operate on
 Unicode scalar values, not storage bytes or grapheme clusters. Concatenation
@@ -116,6 +121,7 @@ Every value MUST have the following deterministic truthiness:
 | `int` | the value is zero |
 | `float` | the value compares equal to `0.0` |
 | `string` | it has zero UTF-8 bytes |
+| `bytes` | it has zero bytes |
 | `list` | it has zero elements |
 | `ordered-map` | it has zero entries |
 | `function`, `module`, `error`, `task`, `host-handle` | never |
@@ -131,6 +137,7 @@ for cyclic collections.
 - ints compare exactly, floats use binary64 `==`, and mixed int/float equality
   uses the promotion rule in VAL-004;
 - strings compare exact UTF-8 bytes;
+- bytes compare exact binary payload bytes;
 - lists compare structurally by length and corresponding element order;
 - ordered maps compare structurally by unique key/value membership, independent
   of insertion order;
@@ -222,10 +229,10 @@ table MUST NOT be treated as ADR-0002's final traced closure representation.
 
 ### VAL-010 — Mutability, aliasing, and lifetime
 
-Null, Boolean, integer, and float values are inline and immutable. Strings are
-heap-backed but immutable. Lists and ordered maps are mutable. The remaining
-heap kinds expose identity-bearing runtime state and MUST be mutated only by
-their designated runtime/host operations.
+Null, Boolean, integer, and float values are inline and immutable. Strings and
+bytes are heap-backed but immutable. Lists and ordered maps are mutable. The
+remaining heap kinds expose identity-bearing runtime state and MUST be mutated
+only by their designated runtime/host operations.
 
 Each execution context MUST own a separate non-moving tracing heap. Heap-backed
 aliases remain valid while reachable from an explicit root, a temporary root,
@@ -329,7 +336,8 @@ Every heap MUST enforce its configured limits. The current defaults are:
 | `max_pending_release_records` | 1,000,000 | `RT017_RELEASE_QUEUE_LIMIT_EXCEEDED` |
 
 Live-byte and string-byte accounting MUST use owned capacities, including cell,
-vector, and string capacities, rather than only logical payload lengths. The
+vector, string, and byte-buffer capacities, rather than only logical payload
+lengths. Byte buffers count toward live bytes but not string bytes. The
 soft threshold is clamped to `max_live_bytes`; exceeding it attempts collection
 before a hard-limit decision. Accounting overflow is a memory-limit failure.
 Limit checking and native allocation failure MUST leave accounting and the
@@ -408,7 +416,7 @@ checked-in parser, `ValueHeap`, `JsonBridge`, and `SynchronousEvaluator` provide
 evidence for the clauses they implement. The evaluator covers synchronous
 lookup/arithmetic, collections, functions, package imports, and the bounded
 scalar/JSON side of the synchronous `baas/log.emit` conformance bridge. Bytecode,
-production VM/loader execution, bytes, typed Host handles, real Host adapters,
+production VM/loader execution, real Host adapters,
 structured unwinding, async, and JSON text I/O remain separately pending ROADMAP
 work. Those pending components
 MUST conform to these clauses rather than infer Python or JavaScript coercion
