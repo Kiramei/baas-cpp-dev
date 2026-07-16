@@ -615,6 +615,32 @@ void test_handshake_rejections_are_visible_on_the_wire()
     check(unsupported && unsupported->header("sec-websocket-version")
               == std::optional<std::string_view>{"13"},
           "426 response must advertise Sec-WebSocket-Version 13");
+
+    {
+        RawConnection malformed{running.port()};
+        const auto response = transact_head(
+            malformed,
+            websocket_request(
+                running.port(), "/ws/control", "13", std::nullopt,
+                "Sec-WebSocket-Extensions: permessage-deflate; =broken\r\n")
+        );
+        check(response && response->status == 400,
+              "a malformed extension offer must fail before 101");
+    }
+    {
+        RawConnection repeated{running.port()};
+        const auto response = transact_head(
+            repeated,
+            websocket_request(
+                running.port(), "/ws/control", "13", std::nullopt,
+                "Sec-WebSocket-Extensions: permessage-deflate\r\n"
+                "Sec-WebSocket-Extensions: x-example\r\n")
+        );
+        check(response && response->status == 101,
+              "multiple valid extension fields must preserve list semantics");
+        check(response && !response->header("sec-websocket-extensions"),
+              "the server must not select an offered extension");
+    }
 }
 
 void test_rejected_body_cannot_become_a_pipelined_request()
@@ -716,6 +742,49 @@ void test_client_read_timeout_is_not_overridden_by_server_polling()
           "an idle WebSocketClient read must report its configured timeout");
     check(elapsed < 2s,
           "server interrupt polling must not replace the client's read timeout");
+}
+
+void test_extension_offer_is_ignored_and_rsv_frames_remain_forbidden()
+{
+    auto received = std::make_shared<ReceivedFrame>();
+    auto factory = std::make_shared<RecordingFactory>(received);
+    RunningHost running{factory};
+    if (!running.started()) return;
+
+    RawConnection connection{running.port()};
+    const auto response = transact_head(
+        connection,
+        websocket_request(
+            running.port(), "/ws/control", "13", std::nullopt,
+            "Sec-WebSocket-Extensions: permessage-deflate; "
+            "client_max_window_bits\r\n")
+    );
+    check(response && response->status == 101,
+          "a browser permessage-deflate offer must complete the upgrade");
+    check(response && !response->header("sec-websocket-extensions"),
+          "the server must not select or echo an unsupported extension");
+    if (!response || response->status != 101) return;
+
+    // FIN + RSV1 + text, masked with an empty payload. RSV1 is the bit a
+    // negotiated permessage-deflate frame would use; it remains forbidden
+    // because the 101 response selected no extension.
+    constexpr std::array<unsigned char, 6> compressed_empty_frame{
+        0xc1U, 0x80U, 0x11U, 0x22U, 0x33U, 0x44U,
+    };
+    std::string frame;
+    frame.reserve(compressed_empty_frame.size());
+    for (const auto byte : compressed_empty_frame) {
+        frame.push_back(static_cast<char>(byte));
+    }
+    check(connection.send_all(frame),
+          "an RSV1 frame must reach the upgraded socket");
+    const auto [state, remainder] = connection.read_until_end();
+    static_cast<void>(remainder);
+    check(state == ReadState::closed,
+          "an RSV1/compressed frame must be rejected by closing the connection");
+    std::lock_guard<std::mutex> lock{received->mutex};
+    check(!received->value,
+          "an RSV1/compressed frame must never reach the session driver");
 }
 
 void test_interrupt_polling_preserves_a_slow_partial_frame()
@@ -868,6 +937,7 @@ int main()
     test_rejected_body_cannot_become_a_pipelined_request();
     test_post_upgrade_terminal_codes();
     test_client_read_timeout_is_not_overridden_by_server_polling();
+    test_extension_offer_is_ignored_and_rsv_frames_remain_forbidden();
     test_interrupt_polling_preserves_a_slow_partial_frame();
     test_capacity_keeps_health_reserve_and_idle_stop_is_bounded();
     if (failures != 0) {

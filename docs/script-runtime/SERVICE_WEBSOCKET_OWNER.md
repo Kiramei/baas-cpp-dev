@@ -40,9 +40,18 @@ percent-encoded alias), and satisfy the following header contract:
   the `upgrade` token;
 - exactly one canonical 16-byte base64 `Sec-WebSocket-Key` and one
   `Sec-WebSocket-Version: 13`;
-- no `Transfer-Encoding`, `Sec-WebSocket-Protocol`, or
-  `Sec-WebSocket-Extensions`;
+- no `Transfer-Encoding` or `Sec-WebSocket-Protocol`;
+- zero or more syntactically valid `Sec-WebSocket-Extensions` client offer
+  fields; repeated fields preserve the RFC list semantics.
+  The server does not implement extension negotiation, so it ignores a valid
+  offer (including the browser-default `permessage-deflate`) and never returns
+  `Sec-WebSocket-Extensions` in the 101 response. Empty, malformed, or
+  over-budget extension fields fail closed before upgrade;
 - absent or unique, valid, zero `Content-Length`.
+
+Ignoring an offer does not enable its wire semantics. The pinned frame parser
+continues to require RSV1, RSV2, and RSV3 to be zero, so compressed or otherwise
+extension-coded frames are rejected before reaching a session driver.
 
 Malformed upgrades return a stable JSON 400 response. An unsupported
 WebSocket version returns 426 and advertises `Sec-WebSocket-Version: 13`.
@@ -174,10 +183,11 @@ are:
   limits, backpressure, exact-once batch completion, partial-write failure,
   callback re-entry, close codes, capacity, deadlines, heartbeats, interrupt,
   shutdown, and restart behavior through a fake transport;
-- `BAAS_service_websocket_wire_tests` for real 101/426 responses, strict target
-  rejection, rejected-body connection closure, post-upgrade close codes, slow
-  partial masked frames, full-capacity `/health` reserve, and bounded idle stop
-  over an in-process IPv4 loopback server.
+- `BAAS_service_websocket_wire_tests` for real 101/426 responses, ignored
+  browser extension offers with no negotiated response header, RSV rejection,
+  strict target rejection, rejected-body connection closure, post-upgrade
+  close codes, slow partial masked frames, full-capacity `/health` reserve, and
+  bounded idle stop over an in-process IPv4 loopback server.
 
 The `httplib-http.yml` workflow builds and runs all three targets together with the
 HTTP compatibility suite on Windows, Linux, and macOS in Debug and Release. It

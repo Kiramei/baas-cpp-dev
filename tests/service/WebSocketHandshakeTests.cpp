@@ -350,11 +350,48 @@ void test_body_framing_and_unsupported_negotiation()
         expect_error(headers, Error::subprotocol_unsupported,
                      "unimplemented subprotocol negotiation must be explicit");
     }
+    for (const auto value : {
+             "permessage-deflate",
+             "permessage-deflate; client_max_window_bits",
+             "permessage-deflate; server_max_window_bits=15; "
+             "client_max_window_bits, x-example; mode=\"safe_value\"",
+         }) {
+        auto headers = valid_headers();
+        headers.push_back({"Sec-WebSocket-Extensions", value});
+        check(evaluate(headers).accepted(),
+              "a valid client extension offer must not require server negotiation");
+    }
+    for (const auto value : {
+             "",
+             "   ",
+             ",permessage-deflate",
+             "permessage-deflate,",
+             "permessage-deflate,,x-example",
+             "; client_max_window_bits",
+             "permessage-deflate;",
+             "permessage-deflate; =15",
+             "permessage-deflate; client_max_window_bits=",
+             "permessage-deflate; mode=\"\"",
+             "permessage-deflate; mode=\"two words\"",
+             "permessage-deflate; mode=\"semi;colon\"",
+             "permessage-deflate; mode=\"comma,value\"",
+             "permessage-deflate; mode=\"safe\\\"value\"",
+             "permessage-deflate; mode=\"slash\\\\value\"",
+             "permessage-deflate; mode=\"\x80\"",
+             "permessage-deflate; mode=\"unterminated",
+             "permessage-deflate; mode=\"safe\"trailing",
+         }) {
+        auto headers = valid_headers();
+        headers.push_back({"Sec-WebSocket-Extensions", value});
+        expect_error(headers, Error::extensions_unsupported,
+                     "a malformed client extension offer must fail closed");
+    }
     {
         auto headers = valid_headers();
         headers.push_back({"Sec-WebSocket-Extensions", "permessage-deflate"});
-        expect_error(headers, Error::extensions_unsupported,
-                     "unimplemented extension negotiation must be explicit");
+        headers.push_back({"sec-websocket-extensions", "x-example"});
+        check(evaluate(headers).accepted(),
+              "multiple valid extension fields must retain list semantics");
     }
 }
 
