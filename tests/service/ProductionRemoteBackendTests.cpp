@@ -50,6 +50,24 @@ std::string expected_cmdline()
     return value;
 }
 
+constexpr std::string_view owner_token =
+    "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+constexpr std::string_view other_owner_token =
+    "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210";
+
+std::string marker_path(const std::string_view token)
+{ return "/data/local/tmp/baas-ws-scrcpy." + std::string{token} + ".pid"; }
+
+std::string owner_environ(const std::string_view token)
+{
+    std::string value{"PATH=/system/bin"};
+    value.push_back('\0');
+    value += "BAAS_WS_SCRCPY_OWNER=";
+    value += token;
+    value.push_back('\0');
+    return value;
+}
+
 class Store final : public channels::ResourceStore {
 public:
     std::unordered_map<std::string, std::string> configs;
@@ -82,7 +100,8 @@ public:
     std::string device_state{"device"};
     std::string ps;
     std::unordered_map<unsigned, std::string> cmdlines;
-    std::optional<unsigned> pid_marker;
+    std::unordered_map<unsigned, std::string> environments;
+    std::unordered_map<std::string, std::string> markers;
     std::vector<adb::AdbForwardItem> forwards;
     std::vector<std::string> commands;
     std::vector<unsigned> killed;
@@ -93,8 +112,8 @@ public:
     bool fail_push{};
     bool fail_forward{};
     adb::AdbTransportError start_error{adb::AdbTransportError::none};
-    bool matching_start_identity{true};
-    std::string start_output{"202\n"};
+    bool matching_start_environment{true};
+    std::optional<std::string> start_output_override;
     bool block_state{};
     bool state_entered{};
     std::condition_variable cv;
@@ -118,29 +137,47 @@ public:
         commands.emplace_back(std::string{serial} + ':' + std::string{command});
         if (command == "ps -A -o PID,ARGS") return ok(ps);
         constexpr std::string_view proc_prefix = "cat /proc/";
-        constexpr std::string_view proc_suffix = "/cmdline";
-        if (command.starts_with(proc_prefix) && command.ends_with(proc_suffix)) {
+        constexpr std::string_view cmdline_suffix = "/cmdline";
+        constexpr std::string_view environ_suffix = "/environ";
+        if (command.starts_with(proc_prefix)
+            && (command.ends_with(cmdline_suffix)
+                || command.ends_with(environ_suffix))) {
+            const auto suffix = command.ends_with(cmdline_suffix)
+                ? cmdline_suffix : environ_suffix;
             const auto token = command.substr(
-                proc_prefix.size(), command.size() - proc_prefix.size() - proc_suffix.size());
+                proc_prefix.size(), command.size() - proc_prefix.size() - suffix.size());
             unsigned pid{};
             std::from_chars(token.data(), token.data() + token.size(), pid);
-            const auto found = cmdlines.find(pid);
-            return found == cmdlines.end()
+            const auto& values = suffix == cmdline_suffix ? cmdlines : environments;
+            const auto found = values.find(pid);
+            return found == values.end()
                 ? fail<std::string>(adb::AdbTransportError::adb_fail)
                 : ok(found->second);
         }
-        if (command == "cat /data/local/tmp/ws_scrcpy.pid") {
-            return pid_marker ? ok(std::to_string(*pid_marker))
-                              : fail<std::string>(adb::AdbTransportError::adb_fail);
+        constexpr std::string_view cat_prefix = "cat /data/local/tmp/baas-ws-scrcpy.";
+        if (command.starts_with(cat_prefix) && command.ends_with(".pid")) {
+            const auto found = markers.find(std::string{command.substr(4)});
+            return found == markers.end()
+                ? fail<std::string>(adb::AdbTransportError::adb_fail)
+                : ok(found->second);
         }
         if (command.find("CLASSPATH=/data/local/tmp/baas-ws-scrcpy-server.jar")
             != std::string_view::npos) {
-            pid_marker = 202;
-            cmdlines[202] = matching_start_identity
-                ? expected_cmdline() : std::string{"/system/bin/unrelated\0", 22};
+            constexpr std::string_view owner_prefix = "BAAS_WS_SCRCPY_OWNER=";
+            const auto begin = command.find(owner_prefix);
+            CHECK(begin != std::string_view::npos);
+            const auto token_begin = begin + owner_prefix.size();
+            const auto token_end = command.find(' ', token_begin);
+            CHECK(token_end != std::string_view::npos);
+            const auto token = command.substr(token_begin, token_end - token_begin);
+            markers[marker_path(token)] = "202 " + std::string{token};
+            cmdlines[202] = expected_cmdline();
+            environments[202] = owner_environ(
+                matching_start_environment ? token : other_owner_token);
             if (start_error != adb::AdbTransportError::none)
                 return fail<std::string>(start_error);
-            return ok(start_output);
+            return ok(start_output_override.value_or(
+                "202 " + std::string{token} + "\n"));
         }
         if (command.starts_with("kill ")) {
             unsigned pid{};
@@ -148,10 +185,12 @@ public:
             std::from_chars(token.data(), token.data() + token.size(), pid);
             killed.emplace_back(pid);
             cmdlines.erase(pid);
+            environments.erase(pid);
             return ok(std::string{});
         }
-        if (command == "rm -f /data/local/tmp/ws_scrcpy.pid") {
-            pid_marker.reset();
+        constexpr std::string_view rm_prefix = "rm -f ";
+        if (command.starts_with(rm_prefix)) {
+            markers.erase(std::string{command.substr(rm_prefix.size())});
             return ok(std::string{});
         }
         return ok(std::string{});
@@ -255,6 +294,7 @@ struct Fixture {
     std::shared_ptr<FakeAdb> adb{std::make_shared<FakeAdb>()};
     std::vector<std::shared_ptr<WsState>> sockets;
     app::ProductionRemoteBackendLimits limits;
+    std::optional<std::string> generated_owner_token{std::string{owner_token}};
 
     Fixture()
     {
@@ -277,6 +317,9 @@ struct Fixture {
         };
         dependencies.clock = [] { return std::chrono::steady_clock::now(); };
         dependencies.sleep = [](auto) { std::this_thread::yield(); };
+        dependencies.owner_token_factory = [this] {
+            return generated_owner_token;
+        };
         return std::make_unique<app::ProductionRemoteBackend>(
             std::move(dependencies), limits);
     }
@@ -385,7 +428,7 @@ void owns_and_revalidates_cleanup()
         std::lock_guard lock{fixture.adb->mutex};
         CHECK(fixture.adb->removed == std::vector<std::uint16_t>{32123});
         CHECK(fixture.adb->killed == std::vector<unsigned>{202});
-        CHECK(!fixture.adb->pid_marker);
+        CHECK(!fixture.adb->markers.contains(marker_path(owner_token)));
     }
     // The per-serial lease is released only after cleanup finishes.
     configure_existing(fixture);
@@ -408,7 +451,68 @@ void never_kills_reused_pid_identity()
     opened.session->close();
     std::lock_guard lock{fixture.adb->mutex};
     CHECK(fixture.adb->killed.empty());
-    CHECK(fixture.adb->pid_marker == 202);
+    CHECK(fixture.adb->markers.contains(marker_path(owner_token)));
+}
+
+void never_kills_pid_reused_with_a_different_owner_token()
+{
+    Fixture fixture;
+    auto backend = fixture.backend();
+    CallbackLog log;
+    auto opened = backend->open(std::string{"alpha"}, log.callbacks(), {});
+    CHECK(opened);
+    {
+        std::lock_guard lock{fixture.adb->mutex};
+        CHECK(fixture.adb->cmdlines[202] == expected_cmdline());
+        fixture.adb->environments[202] = owner_environ(other_owner_token);
+    }
+    opened.session->close();
+    std::lock_guard lock{fixture.adb->mutex};
+    CHECK(fixture.adb->killed.empty());
+    CHECK(fixture.adb->markers.contains(marker_path(owner_token)));
+}
+
+void unique_owner_markers_do_not_interfere()
+{
+    Fixture fixture;
+    {
+        std::lock_guard lock{fixture.adb->mutex};
+        fixture.adb->markers[marker_path(other_owner_token)] =
+            "303 " + std::string{other_owner_token};
+        fixture.adb->cmdlines[303] = expected_cmdline();
+        fixture.adb->environments[303] = owner_environ(other_owner_token);
+    }
+    auto backend = fixture.backend();
+    CallbackLog log;
+    auto opened = backend->open(std::string{"alpha"}, log.callbacks(), {});
+    CHECK(opened);
+    opened.session->close();
+    std::lock_guard lock{fixture.adb->mutex};
+    CHECK(fixture.adb->killed == std::vector<unsigned>{202});
+    CHECK(!fixture.adb->markers.contains(marker_path(owner_token)));
+    CHECK(fixture.adb->markers.at(marker_path(other_owner_token))
+          == "303 " + std::string{other_owner_token});
+    CHECK(fixture.adb->cmdlines.contains(303));
+    CHECK(fixture.adb->environments.contains(303));
+}
+
+void owner_token_failure_prevents_launch()
+{
+    Fixture fixture;
+    fixture.generated_owner_token.reset();
+    auto backend = fixture.backend();
+    CallbackLog log;
+    CHECK(backend->open(std::string{"alpha"}, log.callbacks(), {}).error
+          == channels::RemoteBackendError::internal_error);
+    std::lock_guard lock{fixture.adb->mutex};
+    CHECK(!fixture.adb->pushed);
+    CHECK(fixture.adb->markers.empty());
+    CHECK(std::none_of(
+        fixture.adb->commands.begin(), fixture.adb->commands.end(),
+        [](const std::string& command) {
+            return command.find("CLASSPATH=/data/local/tmp/baas-ws-scrcpy-server.jar")
+                != std::string::npos;
+        }));
 }
 
 void serial_lease_and_close_barrier()
@@ -596,13 +700,13 @@ void retries_listener_and_cleans_invalid_start_marker()
     opened.session->close();
 
     Fixture invalid;
-    invalid.adb->start_output.clear();
+    invalid.adb->start_output_override = std::string{};
     auto invalid_backend = invalid.backend();
     CHECK(invalid_backend->open(std::string{"alpha"}, log.callbacks(), {}).error
           == channels::RemoteBackendError::internal_error);
     std::lock_guard lock{invalid.adb->mutex};
     CHECK(invalid.adb->killed == std::vector<unsigned>{202});
-    CHECK(!invalid.adb->pid_marker);
+    CHECK(invalid.adb->markers.empty());
 }
 
 void startup_deadline_and_forward_failure_unwind_owned_process()
@@ -629,7 +733,7 @@ void startup_deadline_and_forward_failure_unwind_owned_process()
     {
         std::lock_guard lock{timeout.adb->mutex};
         CHECK(timeout.adb->killed == std::vector<unsigned>{202});
-        CHECK(!timeout.adb->pid_marker);
+        CHECK(timeout.adb->markers.empty());
     }
 
     Fixture forward;
@@ -653,18 +757,18 @@ void lost_start_response_cleans_only_exact_owned_marker()
     {
         std::lock_guard lock{matching.adb->mutex};
         CHECK(matching.adb->killed == std::vector<unsigned>{202});
-        CHECK(!matching.adb->pid_marker);
+        CHECK(!matching.adb->markers.contains(marker_path(owner_token)));
     }
 
     Fixture unrelated;
     unrelated.adb->start_error = adb::AdbTransportError::timeout;
-    unrelated.adb->matching_start_identity = false;
+    unrelated.adb->matching_start_environment = false;
     auto unrelated_backend = unrelated.backend();
     CHECK(unrelated_backend->open(std::string{"alpha"}, log.callbacks(), {}).error
           == channels::RemoteBackendError::internal_error);
     std::lock_guard lock{unrelated.adb->mutex};
     CHECK(unrelated.adb->killed.empty());
-    CHECK(unrelated.adb->pid_marker == 202);
+    CHECK(unrelated.adb->markers.contains(marker_path(owner_token)));
 }
 
 void oversize_and_failed_open_cleanup()
@@ -813,6 +917,9 @@ int main()
         {"reuses_exact_server_and_forward_with_ordered_duplex", reuses_exact_server_and_forward_with_ordered_duplex},
         {"owns_and_revalidates_cleanup", owns_and_revalidates_cleanup},
         {"never_kills_reused_pid_identity", never_kills_reused_pid_identity},
+        {"never_kills_pid_reused_with_a_different_owner_token", never_kills_pid_reused_with_a_different_owner_token},
+        {"unique_owner_markers_do_not_interfere", unique_owner_markers_do_not_interfere},
+        {"owner_token_failure_prevents_launch", owner_token_failure_prevents_launch},
         {"serial_lease_and_close_barrier", serial_lease_and_close_barrier},
         {"device_callback_can_reenter_close", device_callback_can_reenter_close},
         {"ended_callback_can_reenter_close", ended_callback_can_reenter_close},

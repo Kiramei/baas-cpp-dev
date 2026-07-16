@@ -5,6 +5,7 @@
 
 #include <httplib.h>
 #include <nlohmann/json.hpp>
+#include <sodium.h>
 
 #include <algorithm>
 #include <array>
@@ -38,6 +39,44 @@ constexpr std::string_view version = "1.19-ws7";
 constexpr std::string_view server_type = "web";
 constexpr std::string_view log_level = "ERROR";
 constexpr std::string_view all_interfaces = "true";
+constexpr std::string_view owner_environment = "BAAS_WS_SCRCPY_OWNER=";
+constexpr std::size_t owner_token_bytes = 32;
+
+struct ServerOwnership final {
+    std::string token;
+    std::optional<unsigned> pid;
+};
+
+std::optional<std::string> make_owner_token()
+{
+    if (sodium_init() < 0) return std::nullopt;
+    std::array<unsigned char, owner_token_bytes> bytes{};
+    randombytes_buf(bytes.data(), bytes.size());
+    constexpr std::array<char, 16> hex{
+        '0', '1', '2', '3', '4', '5', '6', '7',
+        '8', '9', 'a', 'b', 'c', 'd', 'e', 'f'};
+    std::string token(bytes.size() * 2, '0');
+    for (std::size_t index = 0; index < bytes.size(); ++index) {
+        token[index * 2] = hex[bytes[index] >> 4U];
+        token[index * 2 + 1] = hex[bytes[index] & 0x0fU];
+    }
+    sodium_memzero(bytes.data(), bytes.size());
+    return token;
+}
+
+bool valid_owner_token(const std::string_view token) noexcept
+{
+    return token.size() == owner_token_bytes * 2
+        && std::all_of(token.begin(), token.end(), [](const char value) {
+            return (value >= '0' && value <= '9')
+                || (value >= 'a' && value <= 'f');
+        });
+}
+
+std::string owner_marker_path(const std::string_view token)
+{
+    return "/data/local/tmp/baas-ws-scrcpy." + std::string{token} + ".pid";
+}
 
 class ConcreteAdbClient final : public RemoteAdbClient {
 public:
@@ -228,6 +267,42 @@ std::optional<unsigned> parse_pid(const std::string_view text)
     return pid;
 }
 
+std::optional<unsigned> parse_owner_marker(
+    const std::string_view text, const std::string_view token)
+{
+    const auto pid = parse_pid(text);
+    if (!pid) return std::nullopt;
+    const auto begin = text.find_first_not_of(" \t\r\n");
+    const auto pid_end = text.find_first_of(" \t\r\n", begin);
+    if (pid_end == std::string_view::npos) return std::nullopt;
+    const auto token_begin = text.find_first_not_of(" \t\r\n", pid_end);
+    if (token_begin == std::string_view::npos) return std::nullopt;
+    const auto token_end = text.find_first_of(" \t\r\n", token_begin);
+    if (text.substr(token_begin, token_end == std::string_view::npos
+            ? text.size() - token_begin : token_end - token_begin) != token) {
+        return std::nullopt;
+    }
+    if (token_end != std::string_view::npos
+        && text.find_first_not_of(" \t\r\n", token_end) != std::string_view::npos) {
+        return std::nullopt;
+    }
+    return pid;
+}
+
+bool expected_owner_environment(
+    const std::string_view bytes, const std::string_view token)
+{
+    const auto expected = std::string{owner_environment} + std::string{token};
+    std::size_t offset{};
+    while (offset < bytes.size()) {
+        auto end = bytes.find('\0', offset);
+        if (end == std::string_view::npos) end = bytes.size();
+        if (bytes.substr(offset, end - offset) == expected) return true;
+        offset = end + 1;
+    }
+    return false;
+}
+
 bool expected_cmdline(const std::string_view bytes)
 {
     std::vector<std::string_view> fields;
@@ -334,17 +409,18 @@ class ProductionRemoteSessionCore final
       public std::enable_shared_from_this<ProductionRemoteSessionCore> {
 public:
     using Release = std::function<void(
-        const std::string&, std::uint16_t, bool, std::optional<unsigned>)>;
+        const std::string&, std::uint16_t, bool,
+        std::optional<ServerOwnership>)>;
 
     ProductionRemoteSessionCore(
         std::string serial, std::unique_ptr<RemoteWebSocketClient> websocket,
         RemoteSessionCallbacks callbacks, const std::size_t max_frame,
         const std::uint16_t local_port, const bool owns_forward,
-        std::optional<unsigned> owned_pid, Release release)
+        std::optional<ServerOwnership> ownership, Release release)
         : serial_(std::move(serial)), websocket_(std::move(websocket)),
           callbacks_(std::move(callbacks)), max_frame_(max_frame),
           local_port_(local_port), owns_forward_(owns_forward),
-          owned_pid_(owned_pid), release_(std::move(release))
+          ownership_(std::move(ownership)), release_(std::move(release))
     {}
 
     ~ProductionRemoteSessionCore() { close(); }
@@ -535,7 +611,7 @@ private:
     void cleanup_once() noexcept
     {
         if (cleaned_.exchange(true, std::memory_order_acq_rel)) return;
-        try { release_(serial_, local_port_, owns_forward_, owned_pid_); }
+        try { release_(serial_, local_port_, owns_forward_, ownership_); }
         catch (...) {}
     }
 
@@ -545,7 +621,7 @@ private:
     std::size_t max_frame_{};
     std::uint16_t local_port_{};
     bool owns_forward_{};
-    std::optional<unsigned> owned_pid_;
+    std::optional<ServerOwnership> ownership_;
     Release release_;
     std::mutex gate_;
     std::mutex send_mutex_;
@@ -588,12 +664,12 @@ public:
         const std::string* serial;
         std::uint16_t local_port{};
         bool owns_forward{};
-        std::optional<unsigned> owned_pid;
+        std::optional<ServerOwnership> ownership;
         bool active{true};
         ~PendingOpen()
         {
             if (!active) return;
-            owner->cleanup(*serial, local_port, owns_forward, owned_pid);
+            owner->cleanup(*serial, local_port, owns_forward, ownership);
             owner->unreserve(*serial);
         }
     };
@@ -620,6 +696,8 @@ public:
         if (!dependencies_.sleep) dependencies_.sleep = [](const auto duration) {
             std::this_thread::sleep_for(duration);
         };
+        if (!dependencies_.owner_token_factory)
+            dependencies_.owner_token_factory = make_owner_token;
     }
 
     RemoteOpenResult open(
@@ -648,43 +726,53 @@ public:
         if (!state) return fail(map_adb_error(state.error));
         if (*state.value != "device") return fail(RemoteBackendError::not_found);
 
-        std::optional<unsigned> owned_pid;
+        std::optional<ServerOwnership> ownership;
         auto server = find_server(config->serial, stop);
         if (server.error != RemoteBackendError::none)
             return fail(server.error);
         if (!server.pid) {
+            std::optional<std::string> token;
+            try { token = dependencies_.owner_token_factory(); }
+            catch (...) { return fail(RemoteBackendError::internal_error); }
+            if (!token || !valid_owner_token(*token))
+                return fail(RemoteBackendError::internal_error);
+            ServerOwnership launched{std::move(*token), std::nullopt};
+            const auto marker = owner_marker_path(launched.token);
             const auto pushed = dependencies_.adb->push_file(
                 config->serial, remote_jar, dependencies_.server_jar, stop);
             if (!pushed) return fail(map_adb_error(pushed.error));
             const auto started = dependencies_.adb->shell(
                 config->serial,
-                "rm -f /data/local/tmp/ws_scrcpy.pid; "
-                "(CLASSPATH=/data/local/tmp/baas-ws-scrcpy-server.jar app_process / "
+                "rm -f " + marker + "; "
+                "(" + std::string{owner_environment} + launched.token + " "
+                "CLASSPATH=/data/local/tmp/baas-ws-scrcpy-server.jar app_process / "
                 "com.genymobile.scrcpy.Server 1.19-ws7 web ERROR 8886 true "
-                "> /data/local/tmp/ws_scrcpy.log 2>&1 & pid=$!; echo $pid > "
-                "/data/local/tmp/ws_scrcpy.pid; echo $pid)", stop);
+                "> /data/local/tmp/ws_scrcpy.log 2>&1 & pid=$!; "
+                "echo \"$pid " + launched.token + "\" > " + marker
+                + "; echo \"$pid " + launched.token + "\")", stop);
             if (!started) {
                 // The device shell may have launched the process and written
                 // the marker even when its response is lost. Re-read both and
                 // only kill an exact ws-scrcpy identity; never infer ownership
                 // from an uncertain response alone.
-                cleanup_owned_marker(config->serial, std::nullopt);
+                cleanup_owned(config->serial, launched);
                 return fail(map_adb_error(started.error));
             }
-            const auto launched_pid = parse_pid(*started.value);
+            const auto launched_pid = parse_owner_marker(
+                *started.value, launched.token);
             if (!launched_pid) {
-                cleanup_owned_marker(config->serial, std::nullopt);
+                cleanup_owned(config->serial, launched);
                 return fail(RemoteBackendError::internal_error);
             }
+            launched.pid = launched_pid;
             const auto ready = wait_for_owned_server(
-                config->serial, *launched_pid, stop);
+                config->serial, launched, stop);
             if (!ready) {
-                cleanup(config->serial, 0, false, launched_pid);
-                cleanup_owned_marker(config->serial, launched_pid);
+                cleanup(config->serial, 0, false, launched);
                 return fail(RemoteBackendError::internal_error);
             }
-            owned_pid = ready;
-            pending.owned_pid = ready;
+            ownership = launched;
+            pending.ownership = launched;
         }
 
         std::uint16_t local_port{};
@@ -717,11 +805,12 @@ public:
             const auto weak = weak_from_this();
             core = std::make_shared<ProductionRemoteSessionCore>(
                 config->serial, std::move(websocket), std::move(callbacks),
-                limits_.max_device_frame_bytes, local_port, owns_forward, owned_pid,
+                limits_.max_device_frame_bytes, local_port, owns_forward, ownership,
                 [weak](const std::string& serial, const std::uint16_t port,
-                       const bool own_forward, const std::optional<unsigned> pid) {
+                       const bool own_forward,
+                       const std::optional<ServerOwnership> owned) {
                     if (const auto self = weak.lock())
-                        self->release(serial, port, own_forward, pid);
+                        self->release(serial, port, own_forward, owned);
                 });
             pending.active = false;
             {
@@ -818,6 +907,17 @@ private:
         return result && expected_cmdline(*result.value);
     }
 
+    bool is_owned_process(
+        const std::string& serial, const ServerOwnership& ownership,
+        const unsigned pid, const std::stop_token stop)
+    {
+        if (!is_expected_pid(serial, pid, stop)) return false;
+        const auto result = dependencies_.adb->shell(
+            serial, "cat /proc/" + std::to_string(pid) + "/environ", stop);
+        return result && expected_owner_environment(
+            *result.value, ownership.token);
+    }
+
     ServerSearch find_server(const std::string& serial, const std::stop_token stop)
     {
         const auto result = dependencies_.adb->shell(serial, "ps -A -o PID,ARGS", stop);
@@ -839,22 +939,24 @@ private:
         return {};
     }
 
-    std::optional<unsigned> wait_for_owned_server(
-        const std::string& serial, const unsigned launched_pid,
+    bool wait_for_owned_server(
+        const std::string& serial, const ServerOwnership& ownership,
         const std::stop_token stop)
     {
+        if (!ownership.pid) return false;
         const auto deadline = dependencies_.clock() + limits_.startup_timeout;
         while (!stop.stop_requested() && dependencies_.clock() < deadline) {
             const auto result = dependencies_.adb->shell(
-                serial, "cat /data/local/tmp/ws_scrcpy.pid", stop);
+                serial, "cat " + owner_marker_path(ownership.token), stop);
             if (result) {
-                const auto pid = parse_pid(*result.value);
-                if (pid && *pid == launched_pid
-                    && is_expected_pid(serial, *pid, stop)) return pid;
+                const auto pid = parse_owner_marker(
+                    *result.value, ownership.token);
+                if (pid && pid == ownership.pid
+                    && is_owned_process(serial, ownership, *pid, stop)) return true;
             }
             dependencies_.sleep(limits_.startup_poll_interval);
         }
-        return std::nullopt;
+        return false;
     }
 
     std::unique_ptr<RemoteWebSocketClient> connect_websocket(
@@ -886,7 +988,7 @@ private:
 
     void cleanup(const std::string& serial, const std::uint16_t local_port,
                  const bool owns_forward,
-                 const std::optional<unsigned> owned_pid) noexcept
+                 const std::optional<ServerOwnership> ownership) noexcept
     {
         try {
             if (owns_forward && local_port != 0) {
@@ -901,40 +1003,30 @@ private:
                         serial, local_port, {}));
                 }
             }
-            if (owned_pid && is_expected_pid(serial, *owned_pid, {})) {
-                static_cast<void>(dependencies_.adb->shell(
-                    serial, "kill " + std::to_string(*owned_pid), {}));
-                const auto marker = dependencies_.adb->shell(
-                    serial, "cat /data/local/tmp/ws_scrcpy.pid", {});
-                if (marker && parse_pid(*marker.value) == owned_pid
-                    && !is_expected_pid(serial, *owned_pid, {})) {
-                    static_cast<void>(dependencies_.adb->shell(
-                        serial, "rm -f /data/local/tmp/ws_scrcpy.pid", {}));
-                }
-            }
+            if (ownership) cleanup_owned(serial, *ownership);
         }
         catch (...) {}
     }
 
-    void cleanup_owned_marker(
-        const std::string& serial,
-        const std::optional<unsigned> expected_pid) noexcept
+    void cleanup_owned(
+        const std::string& serial, const ServerOwnership& ownership) noexcept
     {
         try {
+            const auto path = owner_marker_path(ownership.token);
             const auto marker = dependencies_.adb->shell(
-                serial, "cat /data/local/tmp/ws_scrcpy.pid", {});
+                serial, "cat " + path, {});
             if (!marker) return;
-            const auto pid = parse_pid(*marker.value);
-            if (!pid || (expected_pid && *pid != *expected_pid)
-                || !is_expected_pid(serial, *pid, {})) return;
+            const auto pid = parse_owner_marker(*marker.value, ownership.token);
+            if (!pid || (ownership.pid && pid != ownership.pid)
+                || !is_owned_process(serial, ownership, *pid, {})) return;
             static_cast<void>(dependencies_.adb->shell(
                 serial, "kill " + std::to_string(*pid), {}));
             const auto after = dependencies_.adb->shell(
-                serial, "cat /data/local/tmp/ws_scrcpy.pid", {});
-            if (after && parse_pid(*after.value) == pid
-                && !is_expected_pid(serial, *pid, {})) {
+                serial, "cat " + path, {});
+            if (after && parse_owner_marker(*after.value, ownership.token) == pid
+                && !is_owned_process(serial, ownership, *pid, {})) {
                 static_cast<void>(dependencies_.adb->shell(
-                    serial, "rm -f /data/local/tmp/ws_scrcpy.pid", {}));
+                    serial, "rm -f " + path, {}));
             }
         }
         catch (...) {}
@@ -942,9 +1034,9 @@ private:
 
     void release(const std::string& serial, const std::uint16_t local_port,
                  const bool owns_forward,
-                 const std::optional<unsigned> owned_pid) noexcept
+                 const std::optional<ServerOwnership> ownership) noexcept
     {
-        cleanup(serial, local_port, owns_forward, owned_pid);
+        cleanup(serial, local_port, owns_forward, ownership);
         unreserve(serial);
         std::lock_guard lock{mutex_};
         for (auto it = sessions_.begin(); it != sessions_.end();) {

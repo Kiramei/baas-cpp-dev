@@ -86,6 +86,7 @@ struct ProductionRemoteBackendDependencies {
         std::chrono::milliseconds write_timeout)>;
     using Clock = std::function<std::chrono::steady_clock::time_point()>;
     using Sleep = std::function<void(std::chrono::milliseconds)>;
+    using OwnerTokenFactory = std::function<std::optional<std::string>()>;
 
     std::shared_ptr<channels::ResourceStore> resources;
     // Tests inject this boundary. Production may leave it empty and supply the
@@ -96,6 +97,9 @@ struct ProductionRemoteBackendDependencies {
     WebSocketFactory websocket_factory;
     Clock clock;
     Sleep sleep;
+    // Tests inject deterministic tokens. Production generates a fresh
+    // 256-bit lowercase hexadecimal token with libsodium before every launch.
+    OwnerTokenFactory owner_token_factory;
 };
 
 class ProductionRemoteBackend final : public channels::RemoteBackend {

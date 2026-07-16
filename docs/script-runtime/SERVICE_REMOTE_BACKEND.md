@@ -34,13 +34,22 @@ bounded `ps` candidate list, then validates the exact NUL-separated
 `com.genymobile.scrcpy.Server 1.19-ws7 web ERROR 8886 true`
 
 An existing matching server can be reused but is never considered owned and is
-never killed. A newly launched PID is taken from the same shell command that
-writes the private marker, then revalidated before use and again before kill.
-Stale/reused PIDs fail closed. Startup failures reread the marker and only kill
-a candidate whose PID relationship and exact cmdline can establish ownership.
-This revalidation also runs when the launch shell response times out or is lost,
-because the device may already have written the marker before that transport
-failure.
+never killed. Before each launch, libsodium generates a fresh 256-bit lowercase
+hexadecimal owner token; token generation or validation failure stops before
+the upload or launch. The token is carried in a unique marker pathname, in the
+marker's exact `PID TOKEN` content, and in the launched process environment as
+`BAAS_WS_SCRCPY_OWNER=TOKEN`. Ownership is a single structure containing that
+token and, once known, the PID. It follows the pending open into the live
+session and its final release cleanup.
+
+A process can be killed only when the unique marker content, expected PID (when
+known), exact NUL-separated cmdline, and exact token field read from
+`/proc/<pid>/environ` all agree. This same proof is used for a successful launch,
+startup/readiness failure, session close, and a launch response that times out
+or is lost after the device acted. PID reuse and a matching ws-scrcpy process
+owned by another token both fail closed. Cleanup removes only this token's
+unique marker after the proven process is no longer that owner; markers and
+processes belonging to other opens are untouched.
 
 Existing exact-serial `tcp:* -> tcp:8886` forwards are reused without ownership.
 Otherwise the ADB server allocates a loopback port atomically with `tcp:0`.

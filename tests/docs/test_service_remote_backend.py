@@ -44,7 +44,11 @@ class ProductionRemoteBackendContractTests(unittest.TestCase):
         for anchor in (
             "forward_tcp_zero",
             "remove_tcp_forward",
-            "cleanup_owned_marker",
+            "cleanup_owned",
+            "owner_token_factory",
+            "BAAS_WS_SCRCPY_OWNER=",
+            "/environ",
+            "parse_owner_marker",
             "send_mutex_",
             "close_mutex_",
             "opens_drained_",
@@ -55,6 +59,8 @@ class ProductionRemoteBackendContractTests(unittest.TestCase):
             self.assertIn(anchor, self.source)
         self.assertIn("Only a forward created by this session", self.docs)
         self.assertIn("concurrent close callers wait", self.docs)
+        self.assertIn("256-bit", self.docs)
+        self.assertIn("PID reuse", self.docs)
 
     def test_build_ci_and_test_gates_are_closed(self) -> None:
         self.assertIn("BAAS_service_remote_backend", self.cmake)

@@ -18,6 +18,7 @@ target_link_libraries(
         PRIVATE
             BAAS::httplib
             BAAS::nlohmann_json
+            BAAS::sodium
 )
 
 if(MSVC)
