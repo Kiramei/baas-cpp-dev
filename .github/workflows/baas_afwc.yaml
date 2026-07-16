@@ -21,6 +21,7 @@ on:
       - 'tests/docs/test_external_resource_boundary.py'
       - 'tests/build/external_resource_boundary/**'
       - 'apps/BAAS_auto_fight_workflow_checker/**'
+      - 'apps/BAAS/resource/image/CN/zh-cn/image_info/skill_active.json'
   pull_request:
     branches: 
       - main

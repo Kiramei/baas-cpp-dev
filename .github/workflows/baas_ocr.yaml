@@ -21,6 +21,7 @@ on:
       - 'tests/docs/test_external_resource_boundary.py'
       - 'tests/build/external_resource_boundary/**'
       - 'apps/ocr_server/**'
+      - 'resource/**'
   pull_request:
     branches: 
       - main

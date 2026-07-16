@@ -42,6 +42,37 @@ def _extract_configure_commands(path: pathlib.Path) -> list[str]:
     return commands
 
 
+def _extract_push_paths(path: pathlib.Path) -> set[str]:
+    paths: set[str] = set()
+    in_on = False
+    in_push = False
+    in_paths = False
+    for line in path.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        indentation = len(line) - len(line.lstrip())
+        if indentation == 0:
+            if not stripped or stripped.startswith("#"):
+                continue
+            if in_on:
+                break
+            in_on = stripped.split("#", 1)[0].strip() == "on:"
+            continue
+        if not in_on:
+            continue
+        if indentation == 2:
+            in_push = stripped.split("#", 1)[0].strip() == "push:"
+            in_paths = False
+            continue
+        if not in_push:
+            continue
+        if indentation == 4:
+            in_paths = stripped.split("#", 1)[0].strip() == "paths:"
+            continue
+        if in_paths and indentation > 4 and stripped.startswith("- "):
+            paths.add(stripped.removeprefix("- ").strip("'\""))
+    return paths
+
+
 class ExternalResourceBoundaryTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -144,17 +175,25 @@ class ExternalResourceBoundaryTests(unittest.TestCase):
             "tests/build/external_resource_boundary/**",
         )
         workflows = {
-            ROOT / ".github/workflows/baas_app.yaml": ("apps/BAAS/**", "apps/ISA/**"),
-            ROOT / ".github/workflows/baas_ocr.yaml": ("apps/ocr_server/**",),
+            ROOT / ".github/workflows/baas_app.yaml": (
+                "apps/BAAS/**",
+                "apps/ISA/**",
+                "resource/**",
+            ),
+            ROOT / ".github/workflows/baas_ocr.yaml": (
+                "apps/ocr_server/**",
+                "resource/**",
+            ),
             ROOT / ".github/workflows/baas_afwc.yaml": (
                 "apps/BAAS_auto_fight_workflow_checker/**",
+                "apps/BAAS/resource/image/CN/zh-cn/image_info/skill_active.json",
             ),
         }
         for path, app_paths in workflows.items():
-            workflow = path.read_text(encoding="utf-8")
-            self.assertIn(f"- '.github/workflows/{path.name}'", workflow)
+            push_paths = _extract_push_paths(path)
+            self.assertIn(f".github/workflows/{path.name}", push_paths)
             for changed_path in (*common_paths, *app_paths):
-                self.assertIn(f"- '{changed_path}'", workflow, path.name)
+                self.assertIn(changed_path, push_paths, path.name)
 
         app_workflow = (ROOT / ".github/workflows/baas_app.yaml").read_text(
             encoding="utf-8"
@@ -462,6 +501,25 @@ class ExternalResourceDeclarationHarnessTests(unittest.TestCase):
                 )
             return values
 
+    @staticmethod
+    def _local_directory_outputs(
+        base: pathlib.Path, items: tuple[str, ...]
+    ) -> set[str]:
+        outputs: set[str] = set()
+        for item in items:
+            source = base / item
+            if item == "config":
+                outputs.update(
+                    f"resource/{path.name}" for path in source.glob("*.json")
+                )
+                continue
+            outputs.update(
+                f"resource/{item}/{path.relative_to(source).as_posix()}"
+                for path in source.rglob("*")
+                if path.is_file()
+            )
+        return outputs
+
     def test_real_declaration_modules_record_exact_resource_sets(self) -> None:
         expected = {
             "baas": {
@@ -534,26 +592,43 @@ class ExternalResourceDeclarationHarnessTests(unittest.TestCase):
             "resource/global_setting.json",
             "resource/static.json",
         }
-        adb_installed = {
+        platform_tools = {
             adb_name,
             f"resource/bin/{platform_name}/platform-tools/{adb_name}",
         }
-        expected_subsets = {
+        if os.name == "nt":
+            for library in ("AdbWinApi.dll", "AdbWinUsbApi.dll"):
+                platform_tools.update(
+                    {
+                        library,
+                        f"resource/bin/{platform_name}/platform-tools/{library}",
+                    }
+                )
+
+        baas_local = self._local_directory_outputs(
+            ROOT / "apps/BAAS/resource",
+            ("config", "image", "feature", "procedure", "auto_fight_workflow"),
+        )
+        isa_local = self._local_directory_outputs(
+            ROOT / "apps/ISA/resource",
+            ("config", "image", "feature", "procedure"),
+        )
+        expected_files = {
             "baas": common_installed
-            | adb_installed
+            | platform_tools
+            | baas_local
             | {
                 "resource/bin/scrcpy/server.bin",
                 "resource/ocr_models/model.bin",
                 "resource/yolo_models/model.bin",
-                "resource/default_config.json",
-                "resource/image/CN/zh-cn/image_info/skill_active.json",
+                "resource/yolo_models/data.yaml",
             },
             "isa": common_installed
-            | adb_installed
+            | platform_tools
+            | isa_local
             | {
                 "resource/bin/scrcpy/server.bin",
                 "resource/ocr_models/model.bin",
-                "resource/default_config.json",
             },
             "ocr": common_installed | {"resource/ocr_models/model.bin"},
             "afwc": {"skill_active.json", "data.yaml"},
@@ -564,11 +639,18 @@ class ExternalResourceDeclarationHarnessTests(unittest.TestCase):
         )
         self.assertIn("set(BAAS_FETCH_RESOURCES OFF)", harness_source)
 
-        for profile, expected_files in expected_subsets.items():
+        for profile, expected_profile_files in expected_files.items():
             with self.subTest(profile=profile):
                 values = self._run_harness(profile, "execute")
                 installed = set(filter(None, values["files"].split(",")))
-                self.assertTrue(expected_files.issubset(installed), installed)
+                self.assertEqual(
+                    installed,
+                    expected_profile_files,
+                    {
+                        "unexpected": sorted(installed - expected_profile_files),
+                        "missing": sorted(expected_profile_files - installed),
+                    },
+                )
                 self.assertEqual(values["fetch_sentinel"], "unchanged")
 
 
