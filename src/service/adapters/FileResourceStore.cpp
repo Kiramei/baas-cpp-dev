@@ -4,6 +4,7 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -151,6 +152,677 @@ std::optional<Json> parse_json(const std::string_view text, const JsonBounds bou
     } catch (...) {
         return std::nullopt;
     }
+}
+
+std::string_view trim_ascii(std::string_view value) noexcept
+{
+    while (!value.empty() && (value.front() == ' ' || value.front() == '\t'
+                              || value.front() == '\r' || value.front() == '\n')) {
+        value.remove_prefix(1);
+    }
+    while (!value.empty() && (value.back() == ' ' || value.back() == '\t'
+                              || value.back() == '\r' || value.back() == '\n')) {
+        value.remove_suffix(1);
+    }
+    return value;
+}
+
+enum class TomlQuote {
+    none,
+    basic,
+    literal,
+    multiline_basic,
+    multiline_literal,
+};
+
+struct TomlStatement {
+    std::size_t begin{};
+    std::size_t code_end{};
+};
+
+std::optional<std::vector<TomlStatement>> scan_toml_statements(
+    const std::string_view bytes)
+{
+    std::vector<TomlStatement> statements;
+    TomlQuote quote{TomlQuote::none};
+    bool escaped{};
+    bool comment{};
+    std::size_t square_depth{};
+    std::size_t curly_depth{};
+    std::size_t begin{};
+    std::optional<std::size_t> first_comment;
+
+    const auto finish = [&](const std::size_t end, const std::size_t next) {
+        statements.push_back({begin, first_comment.value_or(end)});
+        begin = next;
+        first_comment.reset();
+    };
+
+    for (std::size_t index = 0; index < bytes.size(); ++index) {
+        const char value = bytes[index];
+        if (comment) {
+            if (value != '\n') continue;
+            comment = false;
+            if (quote == TomlQuote::none && square_depth == 0 && curly_depth == 0) {
+                finish(index, index + 1);
+            }
+            continue;
+        }
+
+        if (quote == TomlQuote::basic) {
+            if (value == '\n' || value == '\r') return std::nullopt;
+            if (escaped) escaped = false;
+            else if (value == '\\') escaped = true;
+            else if (value == '"') quote = TomlQuote::none;
+            continue;
+        }
+        if (quote == TomlQuote::literal) {
+            if (value == '\n' || value == '\r') return std::nullopt;
+            if (value == '\'') quote = TomlQuote::none;
+            continue;
+        }
+        if (quote == TomlQuote::multiline_basic
+            || quote == TomlQuote::multiline_literal) {
+            if (quote == TomlQuote::multiline_basic) {
+                if (escaped) {
+                    escaped = false;
+                    continue;
+                }
+                if (value == '\\') {
+                    escaped = true;
+                    continue;
+                }
+            }
+            const char delimiter = quote == TomlQuote::multiline_basic ? '"' : '\'';
+            if (value != delimiter) continue;
+            std::size_t run = 1;
+            while (index + run < bytes.size() && bytes[index + run] == delimiter) {
+                ++run;
+            }
+            if (run >= 3) quote = TomlQuote::none;
+            index += run - 1;
+            continue;
+        }
+
+        if (value == '#') {
+            comment = true;
+            if (!first_comment) first_comment = index;
+        } else if (value == '"' || value == '\'') {
+            const bool triple = index + 2 < bytes.size()
+                && bytes[index + 1] == value && bytes[index + 2] == value;
+            if (triple) {
+                quote = value == '"' ? TomlQuote::multiline_basic
+                                     : TomlQuote::multiline_literal;
+                index += 2;
+            } else {
+                quote = value == '"' ? TomlQuote::basic : TomlQuote::literal;
+            }
+        } else if (value == '[') {
+            ++square_depth;
+        } else if (value == ']') {
+            if (square_depth == 0) return std::nullopt;
+            --square_depth;
+        } else if (value == '{') {
+            ++curly_depth;
+        } else if (value == '}') {
+            if (curly_depth == 0) return std::nullopt;
+            --curly_depth;
+        } else if (value == '\n' && square_depth == 0 && curly_depth == 0) {
+            finish(index, index + 1);
+        }
+    }
+    if (quote != TomlQuote::none || square_depth != 0 || curly_depth != 0) {
+        return std::nullopt;
+    }
+    if (begin < bytes.size() || bytes.empty()) finish(bytes.size(), bytes.size());
+    return statements;
+}
+
+std::optional<std::size_t> toml_assignment_separator(
+    const std::string_view line) noexcept
+{
+    bool basic{};
+    bool literal{};
+    bool escaped{};
+    for (std::size_t index = 0; index < line.size(); ++index) {
+        const char value = line[index];
+        if (basic) {
+            if (escaped) escaped = false;
+            else if (value == '\\') escaped = true;
+            else if (value == '"') basic = false;
+            continue;
+        }
+        if (literal) {
+            if (value == '\'') literal = false;
+            continue;
+        }
+        if (value == '"') basic = true;
+        else if (value == '\'') literal = true;
+        else if (value == '=') return index;
+    }
+    return std::nullopt;
+}
+
+bool append_utf8(std::string& output, const std::uint32_t code_point)
+{
+    if (code_point > 0x10ffffU
+        || (code_point >= 0xd800U && code_point <= 0xdfffU)) {
+        return false;
+    }
+    if (code_point <= 0x7fU) {
+        output.push_back(static_cast<char>(code_point));
+    } else if (code_point <= 0x7ffU) {
+        output.push_back(static_cast<char>(0xc0U | (code_point >> 6U)));
+        output.push_back(static_cast<char>(0x80U | (code_point & 0x3fU)));
+    } else if (code_point <= 0xffffU) {
+        output.push_back(static_cast<char>(0xe0U | (code_point >> 12U)));
+        output.push_back(static_cast<char>(0x80U | ((code_point >> 6U) & 0x3fU)));
+        output.push_back(static_cast<char>(0x80U | (code_point & 0x3fU)));
+    } else {
+        output.push_back(static_cast<char>(0xf0U | (code_point >> 18U)));
+        output.push_back(static_cast<char>(0x80U | ((code_point >> 12U) & 0x3fU)));
+        output.push_back(static_cast<char>(0x80U | ((code_point >> 6U) & 0x3fU)));
+        output.push_back(static_cast<char>(0x80U | (code_point & 0x3fU)));
+    }
+    return true;
+}
+
+std::optional<std::string> parse_toml_basic_string(
+    const std::string_view value)
+{
+    if (value.size() < 2 || value.front() != '"' || value.back() != '"') {
+        return std::nullopt;
+    }
+    std::string result;
+    result.reserve(value.size() - 2);
+    for (std::size_t index = 1; index + 1 < value.size(); ++index) {
+        const auto character = static_cast<unsigned char>(value[index]);
+        if (character < 0x20U || character == 0x7fU) return std::nullopt;
+        if (character != '\\') {
+            if (character == '"') return std::nullopt;
+            result.push_back(static_cast<char>(character));
+            continue;
+        }
+        if (++index + 1 >= value.size()) return std::nullopt;
+        switch (value[index]) {
+            case 'b': result.push_back('\b'); break;
+            case 't': result.push_back('\t'); break;
+            case 'n': result.push_back('\n'); break;
+            case 'f': result.push_back('\f'); break;
+            case 'r': result.push_back('\r'); break;
+            case '"': result.push_back('"'); break;
+            case '\\': result.push_back('\\'); break;
+            case 'u':
+            case 'U': {
+                const std::size_t digits = value[index] == 'u' ? 4 : 8;
+                if (index + digits + 1 >= value.size()) return std::nullopt;
+                std::uint32_t code_point{};
+                for (std::size_t digit = 0; digit < digits; ++digit) {
+                    const char hex = value[++index];
+                    code_point <<= 4U;
+                    if (hex >= '0' && hex <= '9') code_point |= hex - '0';
+                    else if (hex >= 'a' && hex <= 'f') code_point |= hex - 'a' + 10U;
+                    else if (hex >= 'A' && hex <= 'F') code_point |= hex - 'A' + 10U;
+                    else return std::nullopt;
+                }
+                if (!append_utf8(result, code_point)) return std::nullopt;
+                break;
+            }
+            default: return std::nullopt;
+        }
+    }
+    return result;
+}
+
+std::optional<std::string> parse_toml_string(const std::string_view supplied)
+{
+    const auto value = trim_ascii(supplied);
+    if (value.size() >= 2 && value.front() == '\'' && value.back() == '\'') {
+        const auto literal = value.substr(1, value.size() - 2);
+        if (literal.find('\'') != std::string_view::npos
+            || literal.find('\n') != std::string_view::npos
+            || literal.find('\r') != std::string_view::npos) {
+            return std::nullopt;
+        }
+        return std::string{literal};
+    }
+    return parse_toml_basic_string(value);
+}
+
+std::optional<std::vector<std::string>> parse_toml_key_path(
+    const std::string_view supplied)
+{
+    const auto value = trim_ascii(supplied);
+    std::vector<std::string> result;
+    std::size_t index{};
+    while (index < value.size()) {
+        while (index < value.size() && (value[index] == ' ' || value[index] == '\t')) {
+            ++index;
+        }
+        if (index == value.size()) return std::nullopt;
+        std::size_t end = index;
+        if (value[index] == '"') {
+            bool escaped{};
+            for (++end; end < value.size(); ++end) {
+                if (escaped) escaped = false;
+                else if (value[end] == '\\') escaped = true;
+                else if (value[end] == '"') { ++end; break; }
+            }
+            if (end > value.size() || value[end - 1] != '"') return std::nullopt;
+            auto decoded = parse_toml_basic_string(value.substr(index, end - index));
+            if (!decoded) return std::nullopt;
+            result.push_back(std::move(*decoded));
+        } else if (value[index] == '\'') {
+            end = value.find('\'', index + 1);
+            if (end == std::string_view::npos) return std::nullopt;
+            ++end;
+            auto decoded = parse_toml_string(value.substr(index, end - index));
+            if (!decoded) return std::nullopt;
+            result.push_back(std::move(*decoded));
+        } else {
+            while (end < value.size()) {
+                const auto character = static_cast<unsigned char>(value[end]);
+                if (std::isalnum(character) == 0 && value[end] != '_'
+                    && value[end] != '-') break;
+                ++end;
+            }
+            if (end == index) return std::nullopt;
+            result.emplace_back(value.substr(index, end - index));
+        }
+        index = end;
+        while (index < value.size() && (value[index] == ' ' || value[index] == '\t')) {
+            ++index;
+        }
+        if (index == value.size()) break;
+        if (value[index++] != '.') return std::nullopt;
+    }
+    return result.empty() ? std::nullopt : std::optional{std::move(result)};
+}
+
+struct TomlTableHeader {
+    bool array{};
+    std::vector<std::string> path;
+};
+
+std::optional<TomlTableHeader> parse_toml_table_header(
+    const std::string_view supplied)
+{
+    const auto value = trim_ascii(supplied);
+    const bool array = value.size() >= 4 && value.starts_with("[[")
+        && value.ends_with("]]");
+    const bool regular = value.size() >= 2 && value.front() == '['
+        && value.back() == ']' && !value.starts_with("[[")
+        && !value.ends_with("]]");
+    if (!array && !regular) return std::nullopt;
+    const auto inner = array ? value.substr(2, value.size() - 4)
+                             : value.substr(1, value.size() - 2);
+    auto path = parse_toml_key_path(inner);
+    if (!path) return std::nullopt;
+    return TomlTableHeader{array, std::move(*path)};
+}
+
+struct SetupTomlValues {
+    std::unordered_map<std::string, std::string> strings;
+    std::unordered_map<std::string, bool> booleans;
+};
+
+struct ParsedSetupToml {
+    SetupTomlValues general;
+    SetupTomlValues legacy_general;
+    SetupTomlValues legacy_urls;
+};
+
+bool setup_string_key(const std::string_view table, const std::string_view key) noexcept
+{
+    if (table == "general") {
+        constexpr std::array keys{
+            "transport", "mirrorc_cdk", "mirrorcCdk", "channel",
+            "get_remote_sha_method", "getRemoteShaMethod", "git_backend",
+            "gitBackend"};
+        return std::ranges::find(keys, key) != keys.end();
+    }
+    if (table == "General") {
+        constexpr std::array keys{
+            "mirrorc_cdk", "channel", "get_remote_sha_method", "git_backend",
+            "gitBackend"};
+        return std::ranges::find(keys, key) != keys.end();
+    }
+    return table == "URLs" && key == "REPO_URL_HTTP";
+}
+
+bool setup_bool_key(const std::string_view table, const std::string_view key) noexcept
+{
+    return table == "General" && key == "dev";
+}
+
+std::optional<ParsedSetupToml> parse_setup_toml_projection_source(
+    const std::string_view bytes)
+{
+    if (!is_valid_utf8(bytes) || bytes.find('\0') != std::string_view::npos) {
+        return std::nullopt;
+    }
+    const auto statements = scan_toml_statements(bytes);
+    if (!statements) return std::nullopt;
+    ParsedSetupToml parsed;
+    std::string table;
+    for (const auto& statement : *statements) {
+        const auto content = trim_ascii(bytes.substr(
+            statement.begin, statement.code_end - statement.begin));
+        if (content.empty()) continue;
+        if (content.front() == '[') {
+            const auto header = parse_toml_table_header(content);
+            if (!header) return std::nullopt;
+            table = !header->array && header->path.size() == 1
+                ? header->path.front() : std::string{};
+            continue;
+        }
+        const auto separator = toml_assignment_separator(content);
+        if (!separator) continue;
+        const auto path = parse_toml_key_path(content.substr(0, *separator));
+        if (!path) return std::nullopt;
+        if (path->size() != 1) continue;
+        const auto& key = path->front();
+        const auto value = trim_ascii(content.substr(*separator + 1));
+        SetupTomlValues* destination{};
+        if (table == "general") destination = &parsed.general;
+        else if (table == "General") destination = &parsed.legacy_general;
+        else if (table == "URLs") destination = &parsed.legacy_urls;
+        if (destination && setup_string_key(table, key)) {
+            auto decoded = parse_toml_string(value);
+            if (!decoded || destination->strings.contains(key)) return std::nullopt;
+            destination->strings.emplace(key, std::move(*decoded));
+        } else if (destination && setup_bool_key(table, key)) {
+            if ((value != "true" && value != "false")
+                || destination->booleans.contains(key)) return std::nullopt;
+            destination->booleans.emplace(key, value == "true");
+        }
+    }
+    return parsed;
+}
+
+const std::string* setup_string(
+    const SetupTomlValues& values, const std::string_view key) noexcept
+{
+    const auto found = values.strings.find(std::string{key});
+    return found == values.strings.end() ? nullptr : &found->second;
+}
+
+std::string first_nonempty(std::initializer_list<const std::string*> values)
+{
+    for (const auto* value : values) {
+        if (value && !value->empty()) return *value;
+    }
+    return {};
+}
+
+std::string normalize_setup_channel(std::string value)
+{
+    value = std::string{trim_ascii(value)};
+    std::ranges::transform(value, value.begin(), [](const unsigned char character) {
+        return static_cast<char>(std::tolower(character));
+    });
+    return value == "dev" ? "dev" : "stable";
+}
+
+std::string setup_repo_url(std::string_view channel, std::string_view method);
+
+std::string method_for_legacy_repo(const std::string_view url)
+{
+    constexpr std::array methods{
+        "github", "gitee", "gitcode", "github_proxy_v4", "github_proxy_v6",
+        "github_proxy_cdn", "gh_proxy", "sevencdn", "githubfast", "baas_cdn"};
+    constexpr std::array channels{"stable", "dev"};
+    for (const auto channel : channels) {
+        for (const auto method : methods) {
+            const auto candidate = setup_repo_url(channel, method);
+            if (!candidate.empty() && url == candidate) return method;
+        }
+    }
+    return {};
+}
+
+std::string setup_repo_url(const std::string_view channel, const std::string_view method)
+{
+    if (channel == "dev") {
+        if (method == "github") return "https://github.com/Kiramei/baas-dev.git";
+        if (method == "gitee") return "https://gitee.com/kiramei/baas-dev.git";
+        const std::string suffix{"https://github.com/Kiramei/baas-dev.git"};
+        if (method == "github_proxy_v4") return "https://v4.gh-proxy.org/" + suffix;
+        if (method == "github_proxy_v6") return "https://v6.gh-proxy.org/" + suffix;
+        if (method == "github_proxy_cdn") return "https://cdn.gh-proxy.org/" + suffix;
+        if (method == "gh_proxy") return "https://gh-proxy.org/" + suffix;
+        if (method == "sevencdn") return "https://gh.sevencdn.com/" + suffix;
+        if (method == "githubfast") return "https://githubfast.com/Kiramei/baas-dev.git";
+        if (method == "baas_cdn") return "https://baas-cdn.kiramei.workers.dev/" + suffix;
+        return {};
+    }
+    if (method == "github") {
+        return "https://github.com/pur1fying/blue_archive_auto_script.git";
+    }
+    if (method == "gitee") {
+        return "https://gitee.com/pur1fy/blue_archive_auto_script.git";
+    }
+    if (method == "gitcode") {
+        return "https://gitcode.com/m0_74686738/blue_archive_auto_script.git";
+    }
+    const std::string suffix{
+        "https://github.com/pur1fying/blue_archive_auto_script.git"};
+    if (method == "github_proxy_v4") return "https://v4.gh-proxy.org/" + suffix;
+    if (method == "github_proxy_v6") return "https://v6.gh-proxy.org/" + suffix;
+    if (method == "github_proxy_cdn") return "https://cdn.gh-proxy.org/" + suffix;
+    if (method == "gh_proxy") return "https://gh-proxy.org/" + suffix;
+    if (method == "sevencdn") return "https://gh.sevencdn.com/" + suffix;
+    if (method == "githubfast") {
+        return "https://githubfast.com/pur1fying/blue_archive_auto_script.git";
+    }
+    if (method == "baas_cdn") return "https://baas-cdn.kiramei.workers.dev/" + suffix;
+    return {};
+}
+
+std::optional<Json> project_setup_toml(
+    const std::string_view bytes, const JsonBounds bounds)
+{
+    if (bytes.size() > bounds.bytes) return std::nullopt;
+    const auto parsed = parse_setup_toml_projection_source(bytes);
+    if (!parsed) return std::nullopt;
+    const auto transport_value = setup_string(parsed->general, "transport");
+    const std::string transport = transport_value
+            && (*transport_value == "websocket" || *transport_value == "pipe")
+        ? *transport_value : "websocket";
+    auto channel = first_nonempty({
+        setup_string(parsed->general, "channel"),
+        setup_string(parsed->legacy_general, "channel")});
+    if (channel.empty()) {
+        const auto legacy_dev = parsed->legacy_general.booleans.find("dev");
+        channel = legacy_dev != parsed->legacy_general.booleans.end()
+                && legacy_dev->second ? "dev" : "stable";
+    }
+    channel = normalize_setup_channel(std::move(channel));
+    const auto legacy_url = setup_string(parsed->legacy_urls, "REPO_URL_HTTP");
+    auto method = first_nonempty({
+        setup_string(parsed->general, "get_remote_sha_method"),
+        setup_string(parsed->general, "getRemoteShaMethod"),
+        setup_string(parsed->legacy_general, "get_remote_sha_method")});
+    if (method.empty() && legacy_url) method = method_for_legacy_repo(*legacy_url);
+    auto git_backend = first_nonempty({
+        setup_string(parsed->general, "git_backend"),
+        setup_string(parsed->general, "gitBackend")});
+    const auto legacy_git = first_nonempty({
+        setup_string(parsed->legacy_general, "git_backend"),
+        setup_string(parsed->legacy_general, "gitBackend")});
+    if ((git_backend.empty() || git_backend == "auto") && !legacy_git.empty()) {
+        git_backend = legacy_git;
+    }
+    if (git_backend.empty()) git_backend = "auto";
+    const auto mirrorc = first_nonempty({
+        setup_string(parsed->general, "mirrorc_cdk"),
+        setup_string(parsed->general, "mirrorcCdk"),
+        setup_string(parsed->legacy_general, "mirrorc_cdk")});
+    Json result{
+        {"transport", transport},
+        {"channel", channel},
+        {"updateMethod", method.empty() ? "github" : method},
+        {"repoUrl", setup_repo_url(channel, method.empty() ? "github" : method)},
+        {"shaMethod", method},
+        {"mirrorcCdk", mirrorc},
+        {"gitBackend", git_backend}};
+    std::size_t nodes{};
+    if (!bounded_tree(result, bounds.depth, bounds.nodes, 0, nodes)
+        || result.dump().size() > bounds.bytes) {
+        return std::nullopt;
+    }
+    return result;
+}
+
+std::string toml_string(const std::string& value)
+{
+    return Json(value).dump();
+}
+
+std::optional<std::string> merge_setup_toml(
+    const std::string_view original, const Json& projection,
+    const std::size_t maximum_bytes)
+{
+    if (!projection.is_object()) return std::nullopt;
+    bool invalid_field{};
+    auto optional_string = [&projection, &invalid_field](const std::string_view key)
+        -> std::optional<std::string> {
+        const auto found = projection.find(key);
+        if (found == projection.end() || found->is_null()) return std::nullopt;
+        if (!found->is_string()) {
+            invalid_field = true;
+            return std::nullopt;
+        }
+        return found->get<std::string>();
+    };
+    auto transport = optional_string("transport");
+    auto channel = optional_string("channel");
+    auto sha_method = optional_string("shaMethod");
+    auto update_method = optional_string("updateMethod");
+    auto mirrorc = optional_string("mirrorcCdk");
+    auto git_backend = optional_string("gitBackend");
+    if (invalid_field
+        || (transport && *transport != "websocket" && *transport != "pipe")) {
+        return std::nullopt;
+    }
+    if (channel) *channel = normalize_setup_channel(std::move(*channel));
+    const auto method = update_method ? update_method : sha_method;
+    std::vector<std::pair<std::string, std::string>> replacements;
+    if (transport) replacements.emplace_back("transport", toml_string(*transport));
+    if (channel) replacements.emplace_back("channel", toml_string(*channel));
+    if (method) {
+        replacements.emplace_back(
+            "get_remote_sha_method", toml_string(*method));
+    }
+    if (mirrorc) replacements.emplace_back("mirrorc_cdk", toml_string(*mirrorc));
+    if (git_backend) {
+        replacements.emplace_back("git_backend", toml_string(*git_backend));
+    }
+    if (replacements.empty()) return std::string{original};
+
+    const auto statements = scan_toml_statements(original);
+    if (!statements) return std::nullopt;
+    const std::string newline = original.find("\r\n") != std::string_view::npos
+        ? "\r\n" : "\n";
+    std::optional<std::size_t> general_statement;
+    std::size_t general_end = original.size();
+    for (std::size_t index = 0; index < statements->size(); ++index) {
+        const auto& statement = (*statements)[index];
+        const auto content = trim_ascii(original.substr(
+            statement.begin, statement.code_end - statement.begin));
+        if (content.empty() || content.front() != '[') continue;
+        const auto header = parse_toml_table_header(content);
+        if (!header) return std::nullopt;
+        if (!header->array && header->path.size() == 1
+            && header->path.front() == "general") {
+            if (general_statement) return std::nullopt;
+            general_statement = index;
+        } else if (general_statement && general_end == original.size()) {
+            general_end = statement.begin;
+        }
+    }
+    struct Edit {
+        std::size_t begin{};
+        std::size_t end{};
+        std::string replacement;
+    };
+    std::vector<Edit> edits;
+    std::vector<bool> found(replacements.size());
+    if (general_statement) {
+        for (std::size_t index = *general_statement + 1;
+             index < statements->size(); ++index) {
+            const auto& statement = (*statements)[index];
+            if (statement.begin >= general_end) break;
+            const auto code = original.substr(
+                statement.begin, statement.code_end - statement.begin);
+            const auto content = trim_ascii(code);
+            if (content.empty()) continue;
+            if (content.front() == '[') break;
+            const auto separator = toml_assignment_separator(code);
+            if (!separator) continue;
+            const auto path = parse_toml_key_path(code.substr(0, *separator));
+            if (!path) return std::nullopt;
+            if (path->size() != 1) continue;
+            for (std::size_t replacement = 0;
+                 replacement < replacements.size(); ++replacement) {
+                if (path->front() != replacements[replacement].first) continue;
+                if (found[replacement]) return std::nullopt;
+                found[replacement] = true;
+                std::size_t value_begin = statement.begin + *separator + 1;
+                while (value_begin < statement.code_end
+                       && (original[value_begin] == ' '
+                           || original[value_begin] == '\t')) {
+                    ++value_begin;
+                }
+                std::size_t value_end = statement.code_end;
+                while (value_end > value_begin
+                       && (original[value_end - 1] == ' '
+                           || original[value_end - 1] == '\t'
+                           || original[value_end - 1] == '\r'
+                           || original[value_end - 1] == '\n')) {
+                    --value_end;
+                }
+                if (value_begin == value_end) return std::nullopt;
+                edits.push_back({value_begin, value_end,
+                                 replacements[replacement].second});
+                break;
+            }
+        }
+    }
+    std::string additions;
+    for (std::size_t index = 0; index < replacements.size(); ++index) {
+        if (!found[index]) {
+            additions += replacements[index].first + " = "
+                + replacements[index].second + newline;
+        }
+    }
+    if (general_statement) {
+        if (!additions.empty()) {
+            if (general_end != 0 && original[general_end - 1] != '\n') {
+                additions.insert(0, newline);
+            }
+            edits.push_back({general_end, general_end, additions});
+        }
+    } else {
+        std::string block;
+        if (!original.empty()) {
+            if (!original.ends_with("\n")) block += newline;
+            block += newline;
+        }
+        block += "[general]" + newline + additions;
+        edits.push_back({original.size(), original.size(), std::move(block)});
+    }
+    std::ranges::sort(edits, [](const Edit& left, const Edit& right) {
+        return left.begin > right.begin;
+    });
+    std::string result{original};
+    for (const auto& edit : edits) {
+        if (edit.begin > edit.end || edit.end > result.size()) return std::nullopt;
+        result.replace(edit.begin, edit.end - edit.begin, edit.replacement);
+        if (result.size() > maximum_bytes) return std::nullopt;
+    }
+    if (result.size() > maximum_bytes || !is_valid_utf8(result)) return std::nullopt;
+    return result;
 }
 
 std::optional<double> timestamp_value(const Json& value)
@@ -598,9 +1270,19 @@ WindowsDirectoryChain open_windows_resource_parent(
             if (value.empty() || value == L"." || value == L"..") return {};
             components.push_back(value);
         }
-        HANDLE current = anchor.handle.get();
-        WindowsDirectoryChain chain;
-        chain.handles.reserve(components.size());
+    HANDLE current = anchor.handle.get();
+    WindowsDirectoryChain chain;
+    chain.handles.reserve(components.size());
+    if (components.empty()) {
+        HANDLE duplicate{INVALID_HANDLE_VALUE};
+        if (!DuplicateHandle(
+                GetCurrentProcess(), anchor.handle.get(), GetCurrentProcess(),
+                &duplicate, 0, FALSE, DUPLICATE_SAME_ACCESS)) {
+            return {};
+        }
+        chain.handles.emplace_back(duplicate);
+        return chain;
+    }
         for (std::size_t index = 0; index < components.size(); ++index) {
             const auto& component = components[index];
             auto next = open_relative_windows(
@@ -766,6 +1448,9 @@ PosixFd open_posix_resource_parent(
     const PosixRootAnchor& anchor, const std::filesystem::path& target)
 {
     const auto relative = target.lexically_relative(anchor.path);
+    if (relative.parent_path().empty()) {
+        return PosixFd(::fcntl(anchor.fd.get(), F_DUPFD_CLOEXEC, 0));
+    }
     int current = anchor.fd.get();
     PosixFd owned;
     for (const auto& component : relative.parent_path()) {
@@ -1452,6 +2137,9 @@ public:
         ResourceSnapshot snapshot;
         Json document;
         std::filesystem::path path;
+        // setup.toml is projected to JSON for Sync, but patches merge back
+        // into this anchored source so unrelated TOML fields remain intact.
+        std::string source_bytes;
     };
 
     struct LoadResult {
@@ -1551,13 +2239,22 @@ public:
                 || !valid_resource_id(*key.resource_id, limits.max_resource_id_bytes)) {
                 return ResourceStoreError::invalid_data;
             }
+        } else if (key.resource == SyncResource::setup_toml) {
+            if (key.resource_id && *key.resource_id != "global") {
+                return ResourceStoreError::invalid_data;
+            }
         } else if (key.resource_id) {
             return ResourceStoreError::invalid_data;
         }
-        if (key.resource == SyncResource::setup_toml) {
-            return ResourceStoreError::not_found;
-        }
         return std::nullopt;
+    }
+
+    ResourceKey canonical_key(ResourceKey key) const
+    {
+        if (key.resource == SyncResource::setup_toml) {
+            key.resource_id = "global";
+        }
+        return key;
     }
 
     std::filesystem::path unchecked_path(const ResourceKey& key) const
@@ -1579,7 +2276,7 @@ public:
                 return config_root / id_path / "event.json";
             case SyncResource::gui: return config_root / "gui.json";
             case SyncResource::static_data: return config_root / "static.json";
-            case SyncResource::setup_toml: break;
+            case SyncResource::setup_toml: return root / "setup.toml";
         }
         return {};
     }
@@ -1587,6 +2284,15 @@ public:
     ResourceStoreError validate_existing_path(
         const ResourceKey& key, const std::filesystem::path& path) const
     {
+        if (key.resource == SyncResource::setup_toml) {
+            if (!path_is_within(root, path) || path.parent_path() != root) {
+                return ResourceStoreError::invalid_data;
+            }
+            const auto target_kind = path_kind(path);
+            if (target_kind == PathKind::missing) return ResourceStoreError::not_found;
+            return target_kind == PathKind::regular_file
+                ? ResourceStoreError::none : ResourceStoreError::invalid_data;
+        }
         const auto config_kind = path_kind(config_root);
         if (config_kind == PathKind::missing) return ResourceStoreError::not_found;
         if (config_kind != PathKind::directory) return ResourceStoreError::invalid_data;
@@ -1627,14 +2333,17 @@ public:
         bytes = std::move(anchored.bytes);
         modified_value = anchored.modified_ms;
 #endif
-        const auto document = parse_json(bytes, bounds());
+        const auto document = key.resource == SyncResource::setup_toml
+            ? project_setup_toml(bytes, bounds()) : parse_json(bytes, bounds());
         if (!document) return {std::nullopt, ResourceStoreError::invalid_data};
         try {
             ResourceSnapshot snapshot{timestamp_json(modified_value), document->dump()};
             if (snapshot.data_json.size() > limits.max_json_bytes) {
                 return {std::nullopt, ResourceStoreError::capacity};
             }
-            return {LoadedResource{std::move(snapshot), *document, path},
+            return {LoadedResource{std::move(snapshot), *document, path,
+                                   key.resource == SyncResource::setup_toml
+                                       ? std::move(bytes) : std::string{}},
                     ResourceStoreError::none};
         } catch (...) {
             return {std::nullopt, ResourceStoreError::internal_error};
@@ -1843,17 +2552,21 @@ channels::ResourceStoreResult<ResourceSnapshot> FileResourceStore::pull(
 {
     const auto impl = impl_;
     if (stop.stop_requested()) return {std::nullopt, ResourceStoreError::internal_error};
+    if (const auto invalid = impl->validate_key(key)) {
+        return {std::nullopt, *invalid};
+    }
+    const auto canonical_key = impl->canonical_key(key);
     std::lock_guard lock(impl->state_mutex);
-    const auto found = impl->resources.find(key);
+    const auto found = impl->resources.find(canonical_key);
     if (found != impl->resources.end()) return {found->second, ResourceStoreError::none};
-    auto loaded = impl->load(key);
+    auto loaded = impl->load(canonical_key);
     if (!loaded.value) return {std::nullopt, loaded.error};
     if (impl->resources.size() >= impl->limits.max_resources) {
         return {std::nullopt, ResourceStoreError::capacity};
     }
     ResourceSnapshot result = loaded.value->snapshot;
     try {
-        impl->resources.emplace(key, std::move(loaded.value->snapshot));
+        impl->resources.emplace(canonical_key, std::move(loaded.value->snapshot));
     } catch (...) {
         return {std::nullopt, ResourceStoreError::internal_error};
     }
@@ -1878,6 +2591,7 @@ FileResourceStore::apply_patch(channels::ResourcePatchRequest request,
     if (const auto invalid = impl->validate_key(request.key)) {
         return {std::nullopt, *invalid};
     }
+    request.key = impl->canonical_key(std::move(request.key));
     if (request.key.resource == SyncResource::static_data) {
         return {std::nullopt, ResourceStoreError::invalid_data};
     }
@@ -1966,6 +2680,12 @@ FileResourceStore::apply_patch(channels::ResourcePatchRequest request,
                 return {std::move(result), ResourceStoreError::none};
             }
         }
+        if (request.key.resource == SyncResource::setup_toml
+            && !document->is_object()) {
+            result = {ResourcePatchDisposition::conflict, found->second,
+                      "Setup patch must result in an object"};
+            return {std::move(result), ResourceStoreError::none};
+        }
         std::size_t nodes{};
         if (!bounded_tree(
                 *document, bounds.depth, bounds.nodes, 0, nodes)) {
@@ -1982,12 +2702,39 @@ FileResourceStore::apply_patch(channels::ResourcePatchRequest request,
 
         std::string bytes;
         try {
-            bytes = document->dump(2);
+            if (request.key.resource == SyncResource::setup_toml) {
+                auto merged = merge_setup_toml(
+                    disk.value->source_bytes, *document,
+                    impl->limits.max_json_bytes);
+                if (!merged) {
+                    return {std::nullopt, ResourceStoreError::invalid_data};
+                }
+                bytes = std::move(*merged);
+            } else {
+                bytes = document->dump(2);
+            }
         } catch (...) {
             return {std::nullopt, ResourceStoreError::internal_error};
         }
         if (bytes.size() > impl->limits.max_json_bytes) {
             return {std::nullopt, ResourceStoreError::capacity};
+        }
+        if (request.key.resource == SyncResource::setup_toml) {
+            auto committed_projection = project_setup_toml(bytes, bounds);
+            if (!committed_projection) {
+                return {std::nullopt, ResourceStoreError::internal_error};
+            }
+            *document = std::move(*committed_projection);
+            try {
+                serialized_operations = Json::array({
+                    Json{{"op", "replace"}, {"path", ""},
+                         {"value", *document}}}).dump();
+            } catch (...) {
+                return {std::nullopt, ResourceStoreError::internal_error};
+            }
+            if (serialized_operations.size() > impl->limits.max_json_bytes) {
+                return {std::nullopt, ResourceStoreError::capacity};
+            }
         }
         const auto path = impl->unchecked_path(request.key);
         const auto path_error = impl->validate_existing_path(request.key, path);
@@ -2073,6 +2820,7 @@ bool FileResourceStore::refresh_and_publish(ResourceKey key, std::string origin)
         return false;
     }
     if (const auto invalid = impl->validate_key(key)) return false;
+    key = impl->canonical_key(std::move(key));
 
     channels::ResourceUpdate update;
     std::shared_ptr<Impl::PublicationJob> publication;

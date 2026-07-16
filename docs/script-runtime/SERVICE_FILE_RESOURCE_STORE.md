@@ -1,8 +1,8 @@
 # Service file resource store
 
 `FileResourceStore` is the production, project-root-backed implementation of
-the sync `ResourceStore` contract. It exposes only JSON resources whose
-ownership and projection are unambiguous.
+the sync `ResourceStore` contract. JSON resources retain their complete data;
+`setup.toml` uses an explicit Python/Tauri-compatible projection.
 
 ## Resource projection
 
@@ -12,7 +12,7 @@ ownership and projection are unambiguous.
 | `event(id)` | `<project-root>/config/<id>/event.json` |
 | `gui` | `<project-root>/config/gui.json` |
 | `static_data` | `<project-root>/config/static.json` |
-| `setup_toml` | unsupported; returns `not_found` |
+| `setup_toml(global)` | `<project-root>/setup.toml` |
 
 The config list is a sorted JSON array. An identifier is listed only when it is
 a safe direct child directory of `config` and both `config.json` and
@@ -22,19 +22,40 @@ over the configured byte limit are rejected. Windows also rejects trailing-dot,
 trailing-space, reserved-device, case, and 8.3 aliases that would address an
 existing resource with a second cache key.
 
-`setup.toml` is deliberately not parsed as JSON or reduced to ad-hoc key/value
-pairs. Its migration, projection, defaulting, and merge rules are application
-owned. A dedicated TOML projection adapter can be composed later without
-silently changing this JSON store's contract.
+`setup_toml` accepts no id or the exact compatibility id `global`; every public
+entry point canonicalizes both spellings to the single cache/publication key
+`global`. Pull returns
+the seven-field Python `ConfigManager._project_setup_toml` view:
+`transport`, `channel`, `updateMethod`, `repoUrl`, `shaMethod`, `mirrorcCdk`,
+and `gitBackend`. Current snake-case, Tauri camel-case, and the relevant legacy
+`[General]`/`[URLs]` aliases follow Python precedence. Invalid transport falls
+back to `websocket`, channels normalize to `stable|dev`, and repository URLs
+are channel-aware. Legacy direct, proxy, and CDN repository URLs reverse-map to
+the same update methods that generate them for both stable and dev channels.
+
+Setup patches still use the normal JSON Patch contract, but commit is not a
+JSON serialization. The store updates only canonical keys in `[general]` and
+preserves unrelated TOML tables, arrays-of-tables, comments, unknown fields,
+quoted table/key spellings, multiline basic/literal strings, inline comments,
+and the source newline convention. A cross-line lexer locates complete TOML
+statements; an existing projected assignment changes only its value span, so
+formatting and trailing comments remain byte-for-byte stable. Unsupported
+syntax in a projected value, duplicate projected keys, invalid value types, or
+a transport outside `websocket|pipe` fails closed before the atomic writer.
+This deliberately retains more unknown TOML data than Python's whole-schema
+rewrite.
 
 ## Validation and capacity
 
-Every pull and external refresh reads the file as bytes, validates UTF-8, parses
-strict JSON with duplicate-key rejection, and enforces `ResourceStoreLimits` for
-input bytes, JSON depth, JSON nodes, resource count, resource-id bytes, origin
-bytes, subscribers, and patch operations. Malformed, over-depth, over-node, or
+Every pull and external refresh reads the file as bytes and validates UTF-8.
+JSON resources use strict duplicate-key-rejecting JSON; setup TOML uses the
+bounded projection parser above. Both enforce `ResourceStoreLimits` for input
+bytes, JSON depth, JSON nodes, resource count, resource-id bytes, origin bytes,
+subscribers, and patch operations. Malformed, over-depth, over-node, or
 over-size documents never enter the visible cache. Cancellation is checked
-before filesystem or mutation work.
+before filesystem or mutation work. `setup.toml` must already exist as an
+anchored regular file; creation remains the launcher/installer's responsibility
+so a racing pull can never replace a newly created user file with defaults.
 
 Configuration-tree copy additionally limits the actual traversal to 4,096
 entries across regular files and directories, 64 MiB of file data, and 32
@@ -50,7 +71,12 @@ use JSON Pointer paths, including root replacement; a stale timestamp returns a
 conflict snapshot; invalid operations are isolated; and `static_data` is
 immutable. Validation, patching, serialization, and update construction finish
 before the writer is invoked while the per-store state lock serializes competing
-patches.
+patches. For `setup_toml`, the visible/cache document is the JSON projection
+while the writer receives a merge against the freshly anchored TOML bytes.
+Because a merge may reproject removed/defaulted fields, a successful setup
+commit publishes one root `replace` containing the committed projection rather
+than forwarding the caller's pre-merge operations. Replaying that publication
+therefore produces exactly the returned and subsequently pulled snapshot.
 
 All default reads and writes start from a persistent non-reparse/no-follow
 project-root handle. Windows opens every component relative to that handle with
@@ -79,10 +105,10 @@ can enter it. Callbacks run without the main state lock, may re-enter the store,
 and exceptions from one callback do not stop other subscribers.
 
 `refresh_and_publish(key, origin)` is the watcher integration point. It applies
-the same path and JSON validation, updates the cache only for a changed valid
-document, and publishes one root `replace` operation with the supplied bounded
-origin. No filesystem watcher is embedded in this adapter; a host watcher calls
-this method after observing an external change.
+the same path and resource-specific validation, updates the cache only for a
+changed valid document, and publishes one root `replace` operation with the
+supplied bounded origin. No filesystem watcher is embedded in this adapter; a
+host watcher calls this method after observing an external change.
 
 ## Configuration command operations
 
@@ -111,7 +137,9 @@ Enable `BUILD_SERVICE_FILE_RESOURCE_STORE` for the static adapter target or
 `BUILD_SERVICE_FILE_RESOURCE_STORE_TESTS` for the adapter plus
 `BAAS_service_file_resource_store_tests`. The native suite covers safe listing
 and pulls, traversal/reparse-point rejection, malformed and capacity-bounded
-JSON, patch conflicts, pre-commit writer failure, post-commit durability
+JSON, setup alias/proxy projection, canonical null/global identity, replayable
+committed publications, quoted-key/comment/multiline-preserving TOML commits, patch
+conflicts, pre-commit writer failure, post-commit durability
 uncertainty, concurrent patches, subscription barriers and self-unsubscription,
 callback exception isolation, external refresh, Windows physical aliases,
 anchored-handle rename blocking, and Windows/POSIX ancestor-swap fail-closed
