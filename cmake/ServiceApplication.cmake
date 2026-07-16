@@ -25,6 +25,7 @@ target_link_libraries(
         BAAS_service_runtime_provider_bridge
         BAAS_service_remote_backend
         BAAS_service_status_trigger
+        BAAS_service_adb_discovery_trigger
         BAAS_service_configuration_triggers
         BAAS_service_trigger_handler
 )
