@@ -110,14 +110,18 @@ and exceptions from one callback do not stop other subscribers.
 `refresh(key, origin)` is the exact watcher integration point. It applies the
 same path and resource-specific validation and classifies unchanged, updated,
 missing, invalid, capacity, and internal outcomes. A changed valid document
-publishes one root `replace` operation with the supplied bounded origin. A disk
-failure invalidates the cache without publishing invalid data, so later pulls
-cannot return a stale document after an external delete or corrupt replacement.
-When a previously cached file is cleanly removed, subscribers receive one root
-`remove`; malformed data invalidates locally but is never published.
+publishes one root `replace` operation with the supplied bounded origin. Any
+load failure for a previously cached document invalidates the cache and
+publishes one root `remove`, so later pulls and subscriber replay both expose
+the resource as absent after a delete, malformed replacement, capacity overflow,
+or internal read failure. Invalid bytes are never published.
+`invalidate_and_publish(key, origin)` applies the same root-remove barrier
+without consulting the current path. The config-list watcher uses it to retire
+both config/event keys when their pair disappears, even if one sibling remains.
 `refresh_and_publish` remains the compatibility convenience for callers that
-only need to know whether a replacement was published. Filesystem lifecycle is
-owned by the separate `FileResourceWatcher` rather than this durable adapter.
+only need to know whether a replacement or invalidation was published.
+Filesystem lifecycle is owned by the separate `FileResourceWatcher` rather
+than this durable adapter.
 
 ## Configuration command operations
 

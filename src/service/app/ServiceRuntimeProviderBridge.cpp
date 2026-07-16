@@ -180,7 +180,7 @@ ServiceRuntimeProviderBridge::ServiceRuntimeProviderBridge(
     std::shared_ptr<ProductionProviderBackend> provider,
     ServiceRuntimeProviderBridgeDependencies dependencies,
     ServiceRuntimeProviderBridgeLimits limits)
-    : impl_(std::make_unique<Impl>(
+    : impl_(std::make_shared<Impl>(
           std::move(resources), std::move(provider),
           std::move(dependencies), limits))
 {}
@@ -192,22 +192,23 @@ ServiceRuntimeProviderBridge::~ServiceRuntimeProviderBridge()
 
 ServiceRuntimeProviderBridgeError ServiceRuntimeProviderBridge::start() noexcept
 {
-    std::lock_guard lock(impl_->lifecycle_mutex);
-    if (impl_->started || impl_->stopped) {
+    const auto impl = impl_;
+    std::lock_guard lock(impl->lifecycle_mutex);
+    if (impl->started || impl->stopped) {
         return ServiceRuntimeProviderBridgeError::already_started;
     }
-    impl_->started = true;
-    impl_->core->accepting.store(true, std::memory_order_release);
-    static_cast<void>(impl_->core->provider->set_initialized(false));
-    if (impl_->stopped) {
-        impl_->core->accepting.store(false, std::memory_order_release);
+    impl->started = true;
+    impl->core->accepting.store(true, std::memory_order_release);
+    static_cast<void>(impl->core->provider->set_initialized(false));
+    if (impl->stopped) {
+        impl->core->accepting.store(false, std::memory_order_release);
         return ServiceRuntimeProviderBridgeError::internal_error;
     }
-    const auto result = impl_->watcher->start();
+    const auto result = impl->watcher->start();
     if (!result.started) {
-        impl_->core->ready.store(false, std::memory_order_release);
-        static_cast<void>(impl_->core->provider->set_initialized(false));
-        impl_->core->accepting.store(false, std::memory_order_release);
+        impl->core->ready.store(false, std::memory_order_release);
+        static_cast<void>(impl->core->provider->set_initialized(false));
+        impl->core->accepting.store(false, std::memory_order_release);
         return ServiceRuntimeProviderBridgeError::watcher_start_failed;
     }
     return result.initial_scan_ready
@@ -217,24 +218,25 @@ ServiceRuntimeProviderBridgeError ServiceRuntimeProviderBridge::start() noexcept
 
 void ServiceRuntimeProviderBridge::stop() noexcept
 {
+    const auto impl = impl_;
     {
-        std::lock_guard lock(impl_->lifecycle_mutex);
-        if (!impl_->stopped) {
-            impl_->stopped = true;
+        std::lock_guard lock(impl->lifecycle_mutex);
+        if (!impl->stopped) {
+            impl->stopped = true;
             // Linearize admission before cancellation. A callback that has not
             // entered its Core gate can no longer publish logs or initialized=true.
-            impl_->core->accepting.store(false, std::memory_order_release);
+            impl->core->accepting.store(false, std::memory_order_release);
         }
     }
     // Never hold the bridge lifecycle gate while joining: downstream Provider
     // callbacks run synchronously and are allowed to re-enter stop().
-    impl_->watcher->stop();
+    impl->watcher->stop();
     {
-        std::lock_guard callback_lock(impl_->core->callback_mutex);
+        std::lock_guard callback_lock(impl->core->callback_mutex);
         const bool was_ready =
-            impl_->core->ready.exchange(false, std::memory_order_acq_rel);
+            impl->core->ready.exchange(false, std::memory_order_acq_rel);
         if (was_ready) {
-            static_cast<void>(impl_->core->provider->set_initialized(false));
+            static_cast<void>(impl->core->provider->set_initialized(false));
         }
     }
 }
@@ -242,18 +244,21 @@ void ServiceRuntimeProviderBridge::stop() noexcept
 channels::ProviderBackendError ServiceRuntimeProviderBridge::publish_log(
     ServiceRuntimeLogEntry entry) noexcept
 {
-    const auto core = impl_->core;
+    const auto impl = impl_;
+    const auto core = impl->core;
     return core->log(std::move(entry));
 }
 
 bool ServiceRuntimeProviderBridge::running() const noexcept
 {
-    return impl_->watcher->running();
+    const auto impl = impl_;
+    return impl->watcher->running();
 }
 
 bool ServiceRuntimeProviderBridge::initialized() const noexcept
 {
-    return impl_->core->ready.load(std::memory_order_acquire);
+    const auto impl = impl_;
+    return impl->core->ready.load(std::memory_order_acquire);
 }
 
 }  // namespace baas::service::app

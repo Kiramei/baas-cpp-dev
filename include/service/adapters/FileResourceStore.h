@@ -61,6 +61,7 @@ enum class ResourceRefreshDisposition {
 struct ResourceRefreshResult {
     std::optional<channels::ResourceSnapshot> snapshot;
     ResourceRefreshDisposition disposition{ResourceRefreshDisposition::internal_error};
+    bool published{};
 
     [[nodiscard]] explicit operator bool() const noexcept
     {
@@ -120,14 +121,21 @@ public:
 
     // Reloads a resource changed by an external writer. An updated resource
     // publishes one root replacement through the normal subscription barrier.
-    // Disk failures invalidate any cached snapshot so later pulls cannot serve
-    // stale data after a delete or corrupt external replacement.
+    // Disk failures invalidate any cached snapshot and publish one root remove
+    // so pulls and subscriber replay fail closed together.
     [[nodiscard]] ResourceRefreshResult refresh(
         channels::ResourceKey key,
         std::string origin = "filesystem");
 
-    // Compatibility convenience for callers that only care whether a new
-    // replacement was published.
+    // Invalidates one cached key without consulting its current filesystem
+    // path. A cached key publishes one root remove. This is used when the
+    // config-list pair contract removes an id even if one sibling file remains.
+    [[nodiscard]] ResourceRefreshResult invalidate_and_publish(
+        channels::ResourceKey key,
+        std::string origin = "filesystem");
+
+    // Compatibility convenience for callers that only care whether a
+    // replacement or invalidation was published.
     [[nodiscard]] bool refresh_and_publish(
         channels::ResourceKey key,
         std::string origin = "filesystem");

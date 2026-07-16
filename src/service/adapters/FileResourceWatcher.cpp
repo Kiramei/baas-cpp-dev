@@ -79,6 +79,20 @@ public:
                 prior = config_ids;
             }
 
+            // Retire removed pairs before admitting current ids. Besides
+            // preserving the config-list pair contract when one sibling still
+            // exists, this lets a capacity-full A -> B replacement advance.
+            for (const auto& identifier : prior) {
+                if (std::binary_search(
+                        identifiers->begin(), identifiers->end(), identifier)) {
+                    continue;
+                }
+                static_cast<void>(store->invalidate_and_publish(
+                    ResourceKey{SyncResource::config, identifier}, config.origin));
+                static_cast<void>(store->invalidate_and_publish(
+                    ResourceKey{SyncResource::event, identifier}, config.origin));
+            }
+
             for (const auto& identifier : *identifiers) {
                 if (stop.stop_requested()) {
                     return {std::nullopt, FileResourceScanError::cancelled};
@@ -88,19 +102,6 @@ public:
                         return {std::nullopt, FileResourceScanError::config_resource};
                     }
                 }
-            }
-
-            // Removed identifiers must invalidate both cached snapshots. A
-            // successful not_found result is the expected removal outcome.
-            for (const auto& identifier : prior) {
-                if (std::binary_search(
-                        identifiers->begin(), identifiers->end(), identifier)) {
-                    continue;
-                }
-                static_cast<void>(store->refresh(
-                    ResourceKey{SyncResource::config, identifier}, config.origin));
-                static_cast<void>(store->refresh(
-                    ResourceKey{SyncResource::event, identifier}, config.origin));
             }
 
             // Retain the successfully validated structure even if a required
@@ -207,90 +208,94 @@ FileResourceWatcher::~FileResourceWatcher()
 
 FileResourceWatcherStartResult FileResourceWatcher::start() noexcept
 {
-    std::lock_guard lock(impl_->lifecycle_mutex);
-    if (impl_->started) {
+    const auto impl = impl_;
+    std::lock_guard lock(impl->lifecycle_mutex);
+    if (impl->started) {
         return {false, false, FileResourceScanError::internal_error};
     }
-    impl_->started = true;
-    impl_->completed = false;
-    impl_->starting_id = std::this_thread::get_id();
-    const auto initial = impl_->scan({});
-    impl_->publish(initial);
-    if (impl_->stopping) {
-        impl_->completed = true;
-        impl_->starting_id = {};
-        impl_->lifecycle_condition.notify_all();
+    impl->started = true;
+    impl->completed = false;
+    impl->starting_id = std::this_thread::get_id();
+    const auto initial = impl->scan({});
+    impl->publish(initial);
+    if (impl->stopping) {
+        impl->completed = true;
+        impl->starting_id = {};
+        impl->lifecycle_condition.notify_all();
         return {false, static_cast<bool>(initial), FileResourceScanError::cancelled};
     }
     try {
-        impl_->running.store(true, std::memory_order_release);
-        impl_->worker = std::jthread(
-            [impl = impl_](const std::stop_token stop) { impl->run(stop); });
-        impl_->worker_id = impl_->worker.get_id();
-        impl_->starting_id = {};
+        impl->running.store(true, std::memory_order_release);
+        impl->worker = std::jthread(
+            [impl](const std::stop_token stop) { impl->run(stop); });
+        impl->worker_id = impl->worker.get_id();
+        impl->starting_id = {};
         return {true, static_cast<bool>(initial), initial.error};
     } catch (...) {
-        impl_->running.store(false, std::memory_order_release);
-        impl_->completed = true;
-        impl_->starting_id = {};
-        impl_->lifecycle_condition.notify_all();
+        impl->running.store(false, std::memory_order_release);
+        impl->completed = true;
+        impl->starting_id = {};
+        impl->lifecycle_condition.notify_all();
         return {false, static_cast<bool>(initial), FileResourceScanError::internal_error};
     }
 }
 
 void FileResourceWatcher::stop() noexcept
 {
+    const auto impl = impl_;
     std::jthread joining;
     {
-        std::unique_lock lock(impl_->lifecycle_mutex);
-        impl_->stopping = true;
+        std::unique_lock lock(impl->lifecycle_mutex);
+        impl->stopping = true;
         const auto caller = std::this_thread::get_id();
-        if (impl_->starting_id == caller) return;
-        if (impl_->join_in_progress) {
-            if (impl_->worker_id == caller) return;
-            impl_->lifecycle_condition.wait(
-                lock, [impl = impl_] { return !impl->join_in_progress; });
+        if (impl->starting_id == caller) return;
+        if (impl->join_in_progress) {
+            if (impl->worker_id == caller) return;
+            impl->lifecycle_condition.wait(
+                lock, [impl] { return !impl->join_in_progress; });
             return;
         }
-        if (!impl_->worker.joinable()) {
-            if (impl_->started && !impl_->completed
-                && impl_->worker_id != caller) {
-                impl_->lifecycle_condition.wait(
-                    lock, [impl = impl_] { return impl->completed; });
+        if (!impl->worker.joinable()) {
+            if (impl->started && !impl->completed
+                && impl->worker_id != caller) {
+                impl->lifecycle_condition.wait(
+                    lock, [impl] { return impl->completed; });
             }
             return;
         }
-        impl_->worker.request_stop();
-        impl_->wait_condition.notify_all();
-        if (impl_->worker_id == caller) {
+        impl->worker.request_stop();
+        impl->wait_condition.notify_all();
+        if (impl->worker_id == caller) {
             // A downstream synchronous Provider callback may stop or destroy
             // the bridge from this worker. The shared Impl capture keeps state
             // alive until run() exits after this detached self-stop.
-            impl_->worker.detach();
+            impl->worker.detach();
             return;
         }
-        impl_->join_in_progress = true;
-        joining = std::move(impl_->worker);
+        impl->join_in_progress = true;
+        joining = std::move(impl->worker);
     }
     joining.join();
     {
-        std::lock_guard lock(impl_->lifecycle_mutex);
-        impl_->running.store(false, std::memory_order_release);
-        impl_->join_in_progress = false;
-        impl_->worker_id = {};
-        impl_->lifecycle_condition.notify_all();
+        std::lock_guard lock(impl->lifecycle_mutex);
+        impl->running.store(false, std::memory_order_release);
+        impl->join_in_progress = false;
+        impl->worker_id = {};
+        impl->lifecycle_condition.notify_all();
     }
 }
 
 FileResourceScanResult FileResourceWatcher::scan_once(
     const std::stop_token stop) noexcept
 {
-    return impl_->scan(stop);
+    const auto impl = impl_;
+    return impl->scan(stop);
 }
 
 bool FileResourceWatcher::running() const noexcept
 {
-    return impl_->running.load(std::memory_order_acquire);
+    const auto impl = impl_;
+    return impl->running.load(std::memory_order_acquire);
 }
 
 }  // namespace baas::service::adapters

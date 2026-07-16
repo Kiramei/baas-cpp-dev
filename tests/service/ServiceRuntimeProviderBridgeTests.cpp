@@ -7,13 +7,17 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <memory>
+#include <mutex>
 #include <string>
 #include <thread>
+#include <vector>
 
 namespace {
 
 using namespace std::chrono_literals;
 using baas::service::adapters::FileResourceStore;
+using baas::service::adapters::FileResourceWatcher;
 using baas::service::app::ProductionProviderBackend;
 using baas::service::app::ServiceRuntimeLogEntry;
 using baas::service::app::ServiceRuntimeProviderBridge;
@@ -195,6 +199,66 @@ void test_config_rescan_invalidates_removed_cache()
     bridge.stop();
 }
 
+void test_config_pair_replacement_advances_at_capacity()
+{
+    TempProject project;
+    project.add_config("alpha");
+    write_bytes(project.root / "config" / "static.json", R"({"version":1})");
+    write_bytes(project.root / "setup.toml", "[general]\nchannel = 'stable'\n");
+    baas::service::channels::ResourceStoreLimits limits;
+    limits.max_resources = 4;
+    auto store = std::make_shared<FileResourceStore>(project.root,
+                                                      baas::service::adapters::FileResourceStoreDependencies{},
+                                                      limits);
+    auto provider = std::make_shared<ProductionProviderBackend>();
+    std::mutex updates_mutex;
+    std::vector<baas::service::channels::ResourceUpdate> updates;
+    auto subscription = store->subscribe_updates(
+        [&updates_mutex, &updates](baas::service::channels::ResourceUpdate update) {
+            std::lock_guard lock(updates_mutex);
+            updates.push_back(std::move(update));
+        });
+    check(static_cast<bool>(subscription),
+          "capacity replacement observer subscribes");
+    ServiceRuntimeProviderBridge bridge(store, provider, dependencies());
+    check(bridge.start() == ServiceRuntimeProviderBridgeError::none,
+          "capacity replacement fixture fills all four cache slots");
+    {
+        std::lock_guard lock(updates_mutex);
+        updates.clear();
+    }
+
+    // Keep alpha/config.json physically present while breaking its pair, then
+    // add beta. Both retired keys must be invalidated before beta admission.
+    std::filesystem::remove(project.root / "config" / "alpha" / "event.json");
+    project.add_config("beta");
+    check(eventually([&] {
+        auto beta = store->pull({SyncResource::config, std::string{"beta"}}, {});
+        return beta && initialized(provider) == true;
+    }), "A-to-B config replacement advances at exact cache capacity");
+
+    bool removed_config{};
+    bool removed_event{};
+    {
+        std::lock_guard lock(updates_mutex);
+        for (const auto& update : updates) {
+            const auto operations = Json::parse(update.operations_json);
+            if (!update.key.resource_id || *update.key.resource_id != "alpha"
+                || operations[0]["op"] != "remove") continue;
+            removed_config = removed_config
+                || update.key.resource == SyncResource::config;
+            removed_event = removed_event
+                || update.key.resource == SyncResource::event;
+        }
+    }
+    auto stale_alpha = store->pull(
+        {SyncResource::config, std::string{"alpha"}}, {});
+    check(removed_config && removed_event && !stale_alpha
+              && stale_alpha.error == ResourceStoreError::capacity,
+          "removed id publishes both root removes even when one sibling remains");
+    bridge.stop();
+}
+
 void test_failure_recovery_bounded_logs_and_stop_race()
 {
     TempProject project;
@@ -267,6 +331,84 @@ void test_reentrant_provider_callback_can_stop_watcher()
           "synchronous Provider callback may stop its watcher thread safely");
     check(initialized(provider) == false,
           "reentrant watcher stop leaves final initialized state false");
+}
+
+void test_start_callbacks_can_destroy_last_owner()
+{
+    {
+        TempProject project;
+        project.add_config("alpha");
+        project.add_globals();
+        auto store = std::make_shared<FileResourceStore>(project.root);
+        auto provider = std::make_shared<ProductionProviderBackend>();
+        std::unique_ptr<ServiceRuntimeProviderBridge> bridge;
+        auto subscription = provider->subscribe_status(
+            [&bridge](std::string payload) {
+                if (payload.find(R"("is_all_data_initialized":false)")
+                        != std::string::npos
+                    && bridge) {
+                    bridge.reset();
+                }
+            });
+        check(static_cast<bool>(subscription),
+              "start-false destroy observer subscribes");
+        bridge = std::make_unique<ServiceRuntimeProviderBridge>(
+            store, provider, dependencies());
+        auto* const raw = bridge.get();
+        const auto result = raw->start();
+        check(!bridge && result == ServiceRuntimeProviderBridgeError::internal_error,
+              "start false publication may destroy the last bridge owner");
+    }
+
+    {
+        TempProject project;
+        project.add_config("alpha");
+        project.add_globals();
+        auto store = std::make_shared<FileResourceStore>(project.root);
+        auto provider = std::make_shared<ProductionProviderBackend>();
+        std::unique_ptr<ServiceRuntimeProviderBridge> bridge;
+        auto subscription = provider->subscribe_status(
+            [&bridge](std::string payload) {
+                if (payload.find(R"("is_all_data_initialized":true)")
+                        != std::string::npos
+                    && bridge) {
+                    bridge.reset();
+                }
+            });
+        check(static_cast<bool>(subscription),
+              "start-true destroy observer subscribes");
+        bridge = std::make_unique<ServiceRuntimeProviderBridge>(
+            store, provider, dependencies());
+        auto* const raw = bridge.get();
+        const auto result = raw->start();
+        check(!bridge
+                  && result
+                      == ServiceRuntimeProviderBridgeError::watcher_start_failed
+                  && initialized(provider) == false,
+              "initial true publication may destroy the last bridge owner");
+    }
+
+    {
+        TempProject project;
+        project.add_config("alpha");
+        project.add_globals();
+        auto store = std::make_shared<FileResourceStore>(project.root);
+        std::unique_ptr<FileResourceWatcher> watcher;
+        baas::service::adapters::FileResourceWatcherConfig config;
+        config.poll_interval = 20ms;
+        watcher = std::make_unique<FileResourceWatcher>(
+            store,
+            [&watcher](const baas::service::adapters::FileResourceScanResult&) {
+                watcher.reset();
+            },
+            config);
+        auto* const raw = watcher.get();
+        const auto result = raw->start();
+        check(!watcher && !result.started
+                  && result.error
+                      == baas::service::adapters::FileResourceScanError::cancelled,
+              "direct watcher initial callback may destroy its last owner");
+    }
 }
 
 void test_reentrant_provider_callback_can_destroy_last_bridge()
@@ -353,8 +495,10 @@ int main()
 {
     test_real_initialization_and_external_refresh();
     test_config_rescan_invalidates_removed_cache();
+    test_config_pair_replacement_advances_at_capacity();
     test_failure_recovery_bounded_logs_and_stop_race();
     test_reentrant_provider_callback_can_stop_watcher();
+    test_start_callbacks_can_destroy_last_owner();
     test_reentrant_provider_callback_can_destroy_last_bridge();
     test_external_stop_waits_for_detached_reentrant_callback();
     if (failures == 0) {

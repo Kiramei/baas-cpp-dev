@@ -2881,6 +2881,7 @@ ResourceRefreshResult FileResourceStore::refresh(
     std::shared_ptr<Impl::PublicationJob> publication;
     ResourceSnapshot result;
     auto disposition = ResourceRefreshDisposition::updated;
+    bool published{};
     std::unique_lock mutation_lock(impl->mutation_mutex);
     {
         std::lock_guard lock(impl->state_mutex);
@@ -2901,16 +2902,14 @@ ResourceRefreshResult FileResourceStore::refresh(
                 return ResourceRefreshDisposition::internal_error;
             }();
             const auto found = impl->resources.find(key);
-            if (failure != ResourceRefreshDisposition::not_found
-                || found == impl->resources.end()) {
-                impl->resources.erase(key);
-                return {std::nullopt, failure};
+            if (found == impl->resources.end()) {
+                return {std::nullopt, failure, false};
             }
             try {
                 const auto now = impl->clock();
                 if (!std::isfinite(now)) {
                     impl->resources.erase(found);
-                    return {std::nullopt, ResourceRefreshDisposition::internal_error};
+                    return {std::nullopt, failure, false};
                 }
                 Json operations = Json::array({
                     Json{{"op", "remove"}, {"path", ""}}});
@@ -2919,14 +2918,16 @@ ResourceRefreshResult FileResourceStore::refresh(
                 publication = impl->prepare_publication(update);
                 if (!publication) {
                     impl->resources.erase(found);
-                    return {std::nullopt, ResourceRefreshDisposition::internal_error};
+                    return {std::nullopt, failure, false};
                 }
                 impl->resources.erase(found);
                 impl->finalize_publication(publication);
-                disposition = ResourceRefreshDisposition::removed;
+                disposition = failure == ResourceRefreshDisposition::not_found
+                    ? ResourceRefreshDisposition::removed : failure;
+                published = true;
             } catch (...) {
                 impl->resources.erase(key);
-                return {std::nullopt, ResourceRefreshDisposition::internal_error};
+                return {std::nullopt, failure, false};
             }
         } else {
             auto found = impl->resources.find(key);
@@ -2956,6 +2957,7 @@ ResourceRefreshResult FileResourceStore::refresh(
                     found->second = std::move(loaded.value->snapshot);
                 }
                 impl->finalize_publication(publication);
+                published = true;
             } catch (...) {
                 return {std::nullopt, ResourceRefreshDisposition::internal_error};
             }
@@ -2967,17 +2969,69 @@ ResourceRefreshResult FileResourceStore::refresh(
     return {disposition == ResourceRefreshDisposition::updated
                 ? std::optional<ResourceSnapshot>{std::move(result)}
                 : std::nullopt,
-            disposition};
+            disposition, published};
 } catch (...) {
     return {std::nullopt, ResourceRefreshDisposition::internal_error};
+}
+
+ResourceRefreshResult FileResourceStore::invalidate_and_publish(
+    ResourceKey key, std::string origin) try
+{
+    const auto impl = impl_;
+    if (origin.size() > impl->limits.max_origin_bytes || !is_valid_utf8(origin)) {
+        return {std::nullopt, ResourceRefreshDisposition::invalid_data, false};
+    }
+    if (const auto invalid = impl->validate_key(key)) {
+        static_cast<void>(invalid);
+        return {std::nullopt, ResourceRefreshDisposition::invalid_data, false};
+    }
+    key = impl->canonical_key(std::move(key));
+
+    std::shared_ptr<Impl::PublicationJob> publication;
+    std::unique_lock mutation_lock(impl->mutation_mutex);
+    {
+        std::lock_guard lock(impl->state_mutex);
+        const auto found = impl->resources.find(key);
+        if (found == impl->resources.end()) {
+            return {std::nullopt, ResourceRefreshDisposition::not_found, false};
+        }
+        try {
+            const auto now = impl->clock();
+            if (!std::isfinite(now)) {
+                impl->resources.erase(found);
+                return {std::nullopt, ResourceRefreshDisposition::internal_error,
+                        false};
+            }
+            Json operations = Json::array({
+                Json{{"op", "remove"}, {"path", ""}}});
+            channels::ResourceUpdate update{
+                key, timestamp_json(now), operations.dump(), std::move(origin)};
+            publication = impl->prepare_publication(update);
+            if (!publication) {
+                impl->resources.erase(found);
+                return {std::nullopt, ResourceRefreshDisposition::internal_error,
+                        false};
+            }
+            impl->resources.erase(found);
+            impl->finalize_publication(publication);
+        } catch (...) {
+            impl->resources.erase(key);
+            return {std::nullopt, ResourceRefreshDisposition::internal_error,
+                    false};
+        }
+    }
+    const bool publication_leader = impl->enqueue_publication(publication);
+    mutation_lock.unlock();
+    impl->drain_or_wait(publication, publication_leader);
+    return {std::nullopt, ResourceRefreshDisposition::removed, true};
+} catch (...) {
+    return {std::nullopt, ResourceRefreshDisposition::internal_error, false};
 }
 
 bool FileResourceStore::refresh_and_publish(
     ResourceKey key, std::string origin) try
 {
-    const auto disposition = refresh(std::move(key), std::move(origin)).disposition;
-    return disposition == ResourceRefreshDisposition::updated
-        || disposition == ResourceRefreshDisposition::removed;
+    return refresh(std::move(key), std::move(origin)).published;
 } catch (...) {
     return false;
 }

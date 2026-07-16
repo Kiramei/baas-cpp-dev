@@ -25,9 +25,10 @@ recover without restarting the service.
 
 The watcher polls through anchored `FileResourceStore` APIs. The interval is
 bounded to 10 ms through one minute (250 ms by default), and each pass is
-bounded by `ResourceStoreLimits`. Config-list changes cause every current
-config/event pair to be refreshed; removed identifiers invalidate their cached
-pair. Global GUI, static, and setup resources are rescanned on the same pass.
+bounded by `ResourceStoreLimits`. Removed identifiers publish root removes for
+both cached keys before any current id is admitted, so an exact-capacity A-to-B
+replacement progresses even when one retired sibling remains on disk. Current
+config/event pairs and global GUI, static, and setup resources are then rescanned.
 
 Any runtime scan failure immediately resets Provider initialization to false.
 A valid later scan replaces static data and restores true. Changed valid files
@@ -41,6 +42,9 @@ may re-enter stop or destroy the last bridge owner from the watcher thread; that
 self-stop detaches only the thread handle while a shared implementation keeps
 the worker state alive through return. A later external stop still waits on the
 explicit worker-completed barrier, including while such a callback is blocked.
+All public bridge and watcher entries first retain a local shared implementation,
+so a synchronous startup callback may destroy the last public owner without
+leaving the active entry on freed state.
 
 ## Logs
 

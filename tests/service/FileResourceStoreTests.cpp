@@ -1031,14 +1031,25 @@ void test_refresh_and_publish()
           "unchanged external document is not republished");
 
     write_bytes(project.root / "config" / "gui.json", "{");
-    check(!store.refresh_and_publish(
-              {channels::SyncResource::gui, std::nullopt}, "filesystem"),
-          "invalid external JSON is rejected");
+    const auto malformed = store.refresh(
+        {channels::SyncResource::gui, std::nullopt}, "filesystem");
+    check(malformed.disposition
+                  == adapters::ResourceRefreshDisposition::invalid_data
+              && malformed.published && updates.size() == 2
+              && Json::parse(updates.back().operations_json)
+                     == Json::array({Json{{"op", "remove"}, {"path", ""}}}),
+          "malformed external JSON invalidates and publishes root remove");
     auto invalidated = store.pull({channels::SyncResource::gui, std::nullopt}, {});
+    bool replay_visible{};
+    for (const auto& update : updates) {
+        const auto operations = Json::parse(update.operations_json);
+        if (operations[0]["op"] == "replace") replay_visible = true;
+        if (operations[0]["op"] == "remove") replay_visible = false;
+    }
     check(!invalidated
               && invalidated.error == channels::ResourceStoreError::invalid_data
-              && updates.size() == 1,
-          "invalid refresh removes stale cache without publishing invalid data");
+              && updates.size() == 2 && !replay_visible,
+          "malformed pull and subscriber replay both expose no resource");
     write_bytes(project.root / "setup.toml",
                 "[general]\nchannel = 'dev'\nfuture = 'preserved'\n");
     check(store.refresh_and_publish(
@@ -1049,7 +1060,7 @@ void test_refresh_and_publish()
         {channels::SyncResource::setup_toml, std::string{"global"}}, {});
     check(refreshed_setup
               && Json::parse(refreshed_setup->data_json)["channel"] == "dev"
-              && updates.size() == 2
+              && updates.size() == 3
               && updates.back().key
                      == channels::ResourceKey{
                          channels::SyncResource::setup_toml,
@@ -1060,11 +1071,28 @@ void test_refresh_and_publish()
         {channels::SyncResource::gui, std::nullopt}, "filesystem");
     check(restored.disposition == adapters::ResourceRefreshDisposition::updated,
           "exact refresh reports a restored document");
+    write_bytes(project.root / "config" / "gui.json",
+                std::string(1U * 1'024U * 1'024U + 1U, 'x'));
+    const auto oversized = store.refresh(
+        {channels::SyncResource::gui, std::nullopt}, "filesystem");
+    auto oversized_pull = store.pull(
+        {channels::SyncResource::gui, std::nullopt}, {});
+    check(oversized.disposition == adapters::ResourceRefreshDisposition::capacity
+              && oversized.published && !oversized_pull
+              && oversized_pull.error == channels::ResourceStoreError::capacity
+              && updates.size() == 5
+              && Json::parse(updates.back().operations_json)
+                     == Json::array({Json{{"op", "remove"}, {"path", ""}}}),
+          "oversized replacement removes cached and replayed resource");
+    write_bytes(project.root / "config" / "gui.json", R"({"theme":"again"})");
+    check(store.refresh_and_publish(
+              {channels::SyncResource::gui, std::nullopt}, "filesystem"),
+          "resource can recover after capacity failure");
     std::filesystem::remove(project.root / "config" / "gui.json");
     const auto removed = store.refresh(
         {channels::SyncResource::gui, std::nullopt}, "filesystem");
     check(removed.disposition == adapters::ResourceRefreshDisposition::removed
-              && updates.size() == 4
+              && updates.size() == 7
               && Json::parse(updates.back().operations_json)
                      == Json::array({Json{{"op", "remove"}, {"path", ""}}}),
           "external deletion invalidates cache and publishes one root remove");
