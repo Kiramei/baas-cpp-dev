@@ -22,6 +22,7 @@
 #include <windows.h>
 #include <winioctl.h>
 #else
+#include <sys/stat.h>
 #include <unistd.h>
 #endif
 
@@ -121,6 +122,24 @@ void cancel_after_payload_handle_open(
     const std::string_view)
 {
     if (point == repository::RuntimeRepositoryReadHookPoint::payload_handle_opened &&
+        view_stop_source) view_stop_source->request_stop();
+}
+
+void cancel_before_manifest_digest(
+    const repository::RuntimeRepositoryReadHookPoint point,
+    const std::string_view,
+    const std::string_view)
+{
+    if (point == repository::RuntimeRepositoryReadHookPoint::manifest_digest_finalizing &&
+        view_stop_source) view_stop_source->request_stop();
+}
+
+void cancel_before_payload_digest(
+    const repository::RuntimeRepositoryReadHookPoint point,
+    const std::string_view,
+    const std::string_view)
+{
+    if (point == repository::RuntimeRepositoryReadHookPoint::payload_digest_finalizing &&
         view_stop_source) view_stop_source->request_stop();
 }
 
@@ -645,6 +664,31 @@ void test_read_bundle_contract_and_sealing()
     repository::set_runtime_repository_read_view_hook(nullptr);
     view_stop_source = nullptr;
 
+    std::stop_source manifest_digest_stop;
+    view_stop_source = &manifest_digest_stop;
+    repository::set_runtime_repository_read_view_hook(cancel_before_manifest_digest);
+    expect_read(repository::RuntimeRepositoryReadErrorCode::cancelled,
+                [&] { (void)snapshot->open_read_bundle({}, manifest_digest_stop.get_token()); },
+                "manifest reads must observe cancellation before digest finalization");
+    repository::set_runtime_repository_read_view_hook(nullptr);
+    view_stop_source = nullptr;
+
+    std::stop_source payload_digest_stop;
+    view_stop_source = &payload_digest_stop;
+    repository::set_runtime_repository_read_view_hook(cancel_before_payload_digest);
+    bool payload_bytes_returned{};
+    expect_read(repository::RuntimeRepositoryReadErrorCode::cancelled,
+                [&] {
+                    (void)bundle->resources().read(
+                        "nested/payload.bin", 7, payload_digest_stop.get_token());
+                    payload_bytes_returned = true;
+                },
+                "payload reads must observe cancellation before digest finalization");
+    repository::set_runtime_repository_read_view_hook(nullptr);
+    view_stop_source = nullptr;
+    check(!payload_bytes_returned,
+          "owned payload bytes must not be returned before digest success");
+
     write(root / values[0].root / "nested" / "payload.bin", "tamper!");
     expect_read(repository::RuntimeRepositoryReadErrorCode::payload_mismatch,
                 [&] { (void)snapshot->open_read_bundle(); },
@@ -653,6 +697,42 @@ void test_read_bundle_contract_and_sealing()
                 [&] { (void)bundle->resources().read("nested/payload.bin", 7); },
                 "an existing view must revalidate payload bytes on every read");
 }
+
+#ifndef _WIN32
+void replace_with_fifo(const std::filesystem::path& path)
+{
+    std::filesystem::remove(path);
+    if (mkfifo(path.c_str(), 0600) != 0)
+        throw std::runtime_error("test FIFO creation failed");
+}
+
+void test_fifo_manifest_and_payload_rejection()
+{
+    {
+        TempDirectory temporary;
+        const auto root = temporary.path() / "runtime-repositories";
+        const auto values = readable_records();
+        (void)install_readable(root, values);
+        const auto snapshot = repository::RuntimeRepositorySnapshot::activate(root);
+        replace_with_fifo(root / values[0].root / values[0].manifest);
+        expect_read(repository::RuntimeRepositoryReadErrorCode::path_violation,
+                    [&] { (void)snapshot->open_read_bundle(); },
+                    "a manifest FIFO without a writer must be rejected without blocking");
+    }
+    {
+        TempDirectory temporary;
+        const auto root = temporary.path() / "runtime-repositories";
+        const auto values = readable_records();
+        (void)install_readable(root, values);
+        const auto bundle =
+            repository::RuntimeRepositorySnapshot::activate(root)->open_read_bundle();
+        replace_with_fifo(root / values[0].root / "nested" / "payload.bin");
+        expect_read(repository::RuntimeRepositoryReadErrorCode::path_violation,
+                    [&] { (void)bundle->resources().read("nested/payload.bin", 7); },
+                    "a payload FIFO without a writer must be rejected without blocking");
+    }
+}
+#endif
 
 void test_exact_tree_and_link_rejection()
 {
@@ -837,6 +917,9 @@ int main()
         test_validated_handle_is_the_read_object();
         test_old_snapshot_pin_and_concurrent_current();
         test_read_bundle_contract_and_sealing();
+#ifndef _WIN32
+        test_fifo_manifest_and_payload_rejection();
+#endif
         test_exact_tree_and_link_rejection();
         test_read_bundle_retains_generation_and_open_handles();
         test_utf8_paths_and_portable_aliases();

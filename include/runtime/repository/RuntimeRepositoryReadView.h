@@ -105,8 +105,10 @@ private:
 enum class RuntimeRepositoryReadHookPoint : std::uint8_t {
     repository_root_opened,
     manifest_handle_opened,
+    manifest_digest_finalizing,
     manifest_verified,
     payload_handle_opened,
+    payload_digest_finalizing,
 };
 using RuntimeRepositoryReadViewHook = void (*)(RuntimeRepositoryReadHookPoint point,
                                                std::string_view repository_id,

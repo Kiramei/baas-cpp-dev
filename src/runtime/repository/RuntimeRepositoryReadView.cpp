@@ -42,8 +42,10 @@ void invoke_hook(const ReadHookPoint point,
 enum class ReadHookPoint : std::uint8_t {
     repository_root_opened,
     manifest_handle_opened,
+    manifest_digest_finalizing,
     manifest_verified,
     payload_handle_opened,
+    payload_digest_finalizing,
 };
 void invoke_hook(ReadHookPoint, std::string_view, std::string_view) {}
 #endif
@@ -394,7 +396,14 @@ namespace {
     for (std::size_t index = 0; index + 1 < parts.size(); ++index)
         parent = open_unix_directory_at(parent.get(), parts[index]);
     const std::string final(parts.back());
-    const auto fd = openat(parent.get(), final.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+    auto flags = O_RDONLY | O_CLOEXEC | O_NOFOLLOW;
+#ifdef O_NONBLOCK
+    flags |= O_NONBLOCK;
+#endif
+#ifdef O_NOCTTY
+    flags |= O_NOCTTY;
+#endif
+    const auto fd = openat(parent.get(), final.c_str(), flags);
     if (fd < 0) fail(errno == ELOOP ? RuntimeRepositoryReadErrorCode::path_violation
                                     : RuntimeRepositoryReadErrorCode::io,
                      "repository payload open failed");
@@ -410,7 +419,8 @@ namespace {
 [[nodiscard]] std::vector<std::byte> read_handle(
     const RuntimeRepositoryReadView::Impl& impl, const std::string_view path,
     const std::uintmax_t expected_size, const std::uintmax_t max_bytes,
-    const std::stop_token stop_token, const bool manifest) {
+    const std::stop_token stop_token, const bool manifest,
+    const std::string_view expected_sha256) {
     if (stop_token.stop_requested()) fail(RuntimeRepositoryReadErrorCode::cancelled, "read cancelled");
 #ifdef _WIN32
     BY_HANDLE_FILE_INFORMATION before{};
@@ -437,6 +447,7 @@ namespace {
                                          "repository read allocation failed"); }
     catch (const std::length_error&) { fail(RuntimeRepositoryReadErrorCode::resource_exhausted,
                                             "repository read size is not representable"); }
+    detail::Sha256 hash;
     std::size_t offset{};
     while (offset < result.size()) {
         if (stop_token.stop_requested()) fail(RuntimeRepositoryReadErrorCode::cancelled, "read cancelled");
@@ -445,14 +456,16 @@ namespace {
         const auto chunk = static_cast<DWORD>(std::min<std::size_t>(result.size() - offset, 64U*1024U));
         if (!ReadFile(file.get(), result.data() + offset, chunk, &count, nullptr) || count == 0)
             fail(RuntimeRepositoryReadErrorCode::io, "repository payload read failed");
-        offset += count;
+        const auto consumed = static_cast<std::size_t>(count);
 #else
         const auto count = ::read(file.get(), result.data() + offset,
                                   std::min<std::size_t>(result.size() - offset, 64U*1024U));
         if (count < 0 && errno == EINTR) continue;
         if (count <= 0) fail(RuntimeRepositoryReadErrorCode::io, "repository payload read failed");
-        offset += static_cast<std::size_t>(count);
+        const auto consumed = static_cast<std::size_t>(count);
 #endif
+        hash.update(std::span<const std::byte>(result.data() + offset, consumed));
+        offset += consumed;
     }
     if (stop_token.stop_requested())
         fail(RuntimeRepositoryReadErrorCode::cancelled, "read cancelled");
@@ -469,6 +482,15 @@ namespace {
         before.st_ino != after.st_ino || before.st_size != after.st_size)
         fail(RuntimeRepositoryReadErrorCode::path_violation, "repository payload identity changed");
 #endif
+    invoke_hook(manifest ? ReadHookPoint::manifest_digest_finalizing
+                         : ReadHookPoint::payload_digest_finalizing,
+                impl.repository_id, path);
+    if (stop_token.stop_requested())
+        fail(RuntimeRepositoryReadErrorCode::cancelled, "read cancelled");
+    if (detail::sha256_hex(hash.finish()) != expected_sha256)
+        fail(manifest ? RuntimeRepositoryReadErrorCode::manifest_mismatch
+                      : RuntimeRepositoryReadErrorCode::payload_mismatch,
+             manifest ? "manifest digest mismatch" : "payload digest mismatch");
     return result;
 }
 
@@ -578,10 +600,9 @@ std::unique_ptr<RuntimeRepositoryReadView> RuntimeRepositoryReadViewFactory::ope
     invoke_hook(ReadHookPoint::repository_root_opened,
                 impl->repository_id, {});
 
-    const auto manifest_bytes = read_handle(*impl, repository.manifest, 0,
-                                             limits.max_manifest_bytes, stop_token, true);
-    if (detail::sha256_hex(manifest_bytes) != repository.manifest_sha256)
-        fail(RuntimeRepositoryReadErrorCode::manifest_mismatch, "manifest digest mismatch");
+    const auto manifest_bytes = read_handle(
+        *impl, repository.manifest, 0, limits.max_manifest_bytes, stop_token,
+        true, repository.manifest_sha256);
     invoke_hook(ReadHookPoint::manifest_verified,
                 impl->repository_id, repository.manifest);
 
@@ -656,11 +677,8 @@ std::vector<std::byte> RuntimeRepositoryReadView::read(
                                                      &RuntimeRepositoryReadEntry::path);
         if (found == impl_->entries.end() || found->path != logical_path)
             fail(RuntimeRepositoryReadErrorCode::entry_not_found, "logical path is not manifested");
-        const auto bytes = read_handle(*impl_, logical_path, found->size, max_bytes,
-                                       stop_token, false);
-        if (detail::sha256_hex(bytes) != found->sha256)
-            fail(RuntimeRepositoryReadErrorCode::payload_mismatch, "payload digest mismatch");
-        return bytes;
+        return read_handle(*impl_, logical_path, found->size, max_bytes,
+                           stop_token, false, found->sha256);
     } catch (const detail::TreeFormatError& error) {
         fail(RuntimeRepositoryReadErrorCode::entry_not_found, error.what());
     } catch (const std::bad_alloc&) {
