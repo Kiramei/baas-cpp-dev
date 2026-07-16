@@ -1,0 +1,721 @@
+#include "service/app/ProductionRemoteBackend.h"
+
+#include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <charconv>
+#include <condition_variable>
+#include <cstdlib>
+#include <deque>
+#include <future>
+#include <iostream>
+#include <mutex>
+#include <span>
+#include <stdexcept>
+#include <string>
+#include <thread>
+#include <unordered_map>
+#include <utility>
+#include <vector>
+
+namespace {
+
+using namespace std::chrono_literals;
+namespace app = baas::service::app;
+namespace adb = baas::service::adb;
+namespace channels = baas::service::channels;
+namespace auth = baas::service::auth;
+
+struct Failure final : std::runtime_error { using std::runtime_error::runtime_error; };
+#define CHECK(expr) do { if (!(expr)) throw Failure{std::string{"check failed: "} + #expr}; } while (false)
+
+template <typename T>
+adb::AdbTransportResult<T> ok(T value)
+{ return {std::move(value), adb::AdbTransportError::none, {}}; }
+
+template <typename T>
+adb::AdbTransportResult<T> fail(adb::AdbTransportError error)
+{ return {std::nullopt, error, "fake failure"}; }
+
+auth::SecretBuffer secret(const std::string_view value)
+{ return auth::SecretBuffer{std::as_bytes(std::span{value.data(), value.size()})}; }
+
+std::string expected_cmdline()
+{
+    const std::vector<std::string> fields{
+        "/system/bin/app_process", "/", "com.genymobile.scrcpy.Server",
+        "1.19-ws7", "web", "ERROR", "8886", "true"};
+    std::string value;
+    for (const auto& field : fields) { value += field; value.push_back('\0'); }
+    return value;
+}
+
+class Store final : public channels::ResourceStore {
+public:
+    std::unordered_map<std::string, std::string> configs;
+
+    channels::ResourceStoreResult<channels::ResourceSnapshot> config_list(
+        std::stop_token) override
+    { return {{channels::ResourceSnapshot{"0", "[]"}}, {}}; }
+
+    channels::ResourceStoreResult<channels::ResourceSnapshot> pull(
+        const channels::ResourceKey& key, std::stop_token) override
+    {
+        if (key.resource != channels::SyncResource::config || !key.resource_id)
+            return {std::nullopt, channels::ResourceStoreError::not_found};
+        const auto found = configs.find(*key.resource_id);
+        if (found == configs.end())
+            return {std::nullopt, channels::ResourceStoreError::not_found};
+        return {{channels::ResourceSnapshot{"1", found->second}}, {}};
+    }
+
+    channels::ResourceStoreResult<channels::ResourcePatchResult> apply_patch(
+        channels::ResourcePatchRequest, std::stop_token) override
+    { return {std::nullopt, channels::ResourceStoreError::internal_error}; }
+
+    channels::ResourceSubscribeResult subscribe_updates(UpdateCallback) override
+    { return {nullptr, channels::ResourceStoreError::internal_error}; }
+};
+
+class FakeAdb final : public app::RemoteAdbClient {
+public:
+    std::string device_state{"device"};
+    std::string ps;
+    std::unordered_map<unsigned, std::string> cmdlines;
+    std::optional<unsigned> pid_marker;
+    std::vector<adb::AdbForwardItem> forwards;
+    std::vector<std::string> commands;
+    std::vector<unsigned> killed;
+    std::vector<std::uint16_t> removed;
+    std::uint16_t allocated_port{32123};
+    bool pushed{};
+    bool stopped{};
+    bool fail_push{};
+    bool fail_forward{};
+    std::string start_output{"202\n"};
+    bool block_state{};
+    bool state_entered{};
+    std::condition_variable cv;
+    mutable std::mutex mutex;
+
+    adb::AdbTransportResult<std::string> get_state(
+        std::string_view serial, std::stop_token) override
+    {
+        std::unique_lock lock{mutex};
+        commands.emplace_back("state:" + std::string{serial});
+        state_entered = true;
+        cv.notify_all();
+        cv.wait(lock, [&] { return !block_state; });
+        return ok(device_state);
+    }
+
+    adb::AdbTransportResult<std::string> shell(
+        std::string_view serial, std::string_view command, std::stop_token) override
+    {
+        std::lock_guard lock{mutex};
+        commands.emplace_back(std::string{serial} + ':' + std::string{command});
+        if (command == "ps -A -o PID,ARGS") return ok(ps);
+        constexpr std::string_view proc_prefix = "cat /proc/";
+        constexpr std::string_view proc_suffix = "/cmdline";
+        if (command.starts_with(proc_prefix) && command.ends_with(proc_suffix)) {
+            const auto token = command.substr(
+                proc_prefix.size(), command.size() - proc_prefix.size() - proc_suffix.size());
+            unsigned pid{};
+            std::from_chars(token.data(), token.data() + token.size(), pid);
+            const auto found = cmdlines.find(pid);
+            return found == cmdlines.end()
+                ? fail<std::string>(adb::AdbTransportError::adb_fail)
+                : ok(found->second);
+        }
+        if (command == "cat /data/local/tmp/ws_scrcpy.pid") {
+            return pid_marker ? ok(std::to_string(*pid_marker))
+                              : fail<std::string>(adb::AdbTransportError::adb_fail);
+        }
+        if (command.find("CLASSPATH=/data/local/tmp/baas-ws-scrcpy-server.jar")
+            != std::string_view::npos) {
+            pid_marker = 202;
+            cmdlines[202] = expected_cmdline();
+            return ok(start_output);
+        }
+        if (command.starts_with("kill ")) {
+            unsigned pid{};
+            const auto token = command.substr(5);
+            std::from_chars(token.data(), token.data() + token.size(), pid);
+            killed.emplace_back(pid);
+            cmdlines.erase(pid);
+            return ok(std::string{});
+        }
+        if (command == "rm -f /data/local/tmp/ws_scrcpy.pid") {
+            pid_marker.reset();
+            return ok(std::string{});
+        }
+        return ok(std::string{});
+    }
+
+    adb::AdbTransportResult<std::uint64_t> push_file(
+        std::string_view, std::string_view path,
+        const std::filesystem::path& local, std::stop_token) override
+    {
+        std::lock_guard lock{mutex};
+        CHECK(path == "/data/local/tmp/baas-ws-scrcpy-server.jar");
+        CHECK(local.filename() == "scrcpy-server.jar");
+        pushed = true;
+        return fail_push ? fail<std::uint64_t>(adb::AdbTransportError::local_io_error)
+                         : ok<std::uint64_t>(114470);
+    }
+
+    adb::AdbTransportResult<std::vector<adb::AdbForwardItem>> list_forwards(
+        std::stop_token) override
+    { std::lock_guard lock{mutex}; return ok(forwards); }
+
+    adb::AdbTransportResult<std::uint16_t> forward_tcp_zero(
+        std::string_view serial, std::uint16_t port, std::stop_token) override
+    {
+        std::lock_guard lock{mutex};
+        if (fail_forward) return fail<std::uint16_t>(adb::AdbTransportError::adb_fail);
+        CHECK(port == 8886);
+        forwards.push_back({std::string{serial}, "tcp:" + std::to_string(allocated_port), "tcp:8886"});
+        return ok(allocated_port);
+    }
+
+    adb::AdbTransportResult<bool> remove_tcp_forward(
+        std::string_view serial, std::uint16_t port, std::stop_token) override
+    {
+        std::lock_guard lock{mutex};
+        removed.emplace_back(port);
+        std::erase_if(forwards, [&](const auto& item) {
+            return item.serial == serial && item.local == "tcp:" + std::to_string(port);
+        });
+        return ok(true);
+    }
+
+    void stop() noexcept override { std::lock_guard lock{mutex}; stopped = true; }
+};
+
+struct WsState {
+    std::mutex mutex;
+    std::condition_variable cv;
+    std::deque<app::RemoteWebSocketReadResult> reads;
+    std::vector<std::string> sent;
+    std::string url;
+    bool connect_ok{true};
+    bool interrupted{};
+    bool send_block{};
+    bool send_entered{};
+    unsigned active_sends{};
+    unsigned maximum_active_sends{};
+    unsigned close_requests{};
+};
+
+class FakeWebSocket final : public app::RemoteWebSocketClient {
+public:
+    explicit FakeWebSocket(std::shared_ptr<WsState> state) : state_(std::move(state)) {}
+    bool connect() override { std::lock_guard lock{state_->mutex}; return state_->connect_ok; }
+    app::RemoteWebSocketReadResult read() override
+    {
+        std::unique_lock lock{state_->mutex};
+        state_->cv.wait(lock, [&] { return state_->interrupted || !state_->reads.empty(); });
+        if (state_->interrupted) return {app::RemoteWebSocketReadKind::closed, {}};
+        auto result = std::move(state_->reads.front());
+        state_->reads.pop_front();
+        return result;
+    }
+    bool send_binary(std::span<const std::byte> bytes) override
+    {
+        std::unique_lock lock{state_->mutex};
+        ++state_->active_sends;
+        state_->maximum_active_sends = (std::max)(
+            state_->maximum_active_sends, state_->active_sends);
+        struct Exit final {
+            WsState* state;
+            ~Exit() { --state->active_sends; state->cv.notify_all(); }
+        } exit{state_.get()};
+        state_->send_entered = true;
+        state_->cv.notify_all();
+        state_->cv.wait(lock, [&] { return !state_->send_block || state_->interrupted; });
+        if (state_->interrupted) return false;
+        state_->sent.emplace_back(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+        return true;
+    }
+    bool request_close() noexcept override
+    { std::lock_guard lock{state_->mutex}; ++state_->close_requests; return true; }
+    void interrupt() noexcept override
+    { std::lock_guard lock{state_->mutex}; state_->interrupted = true; state_->cv.notify_all(); }
+private:
+    std::shared_ptr<WsState> state_;
+};
+
+struct Fixture {
+    std::shared_ptr<Store> store{std::make_shared<Store>()};
+    std::shared_ptr<FakeAdb> adb{std::make_shared<FakeAdb>()};
+    std::vector<std::shared_ptr<WsState>> sockets;
+    app::ProductionRemoteBackendLimits limits;
+
+    Fixture()
+    {
+        store->configs["alpha"] = R"({"adbIP":"127.0.0.1","adbPort":"5557"})";
+        limits.startup_timeout = 100ms;
+        limits.startup_poll_interval = 1ms;
+    }
+
+    std::unique_ptr<app::ProductionRemoteBackend> backend()
+    {
+        app::ProductionRemoteBackendDependencies dependencies;
+        dependencies.resources = store;
+        dependencies.adb = adb;
+        dependencies.server_jar = "resource/ws-scrcpy/scrcpy-server.jar";
+        dependencies.websocket_factory = [this](std::string url, auto, auto) {
+            auto state = std::make_shared<WsState>();
+            state->url = std::move(url);
+            sockets.emplace_back(state);
+            return std::make_unique<FakeWebSocket>(state);
+        };
+        dependencies.clock = [] { return std::chrono::steady_clock::now(); };
+        dependencies.sleep = [](auto) { std::this_thread::yield(); };
+        return std::make_unique<app::ProductionRemoteBackend>(
+            std::move(dependencies), limits);
+    }
+};
+
+struct CallbackLog {
+    std::mutex mutex;
+    std::condition_variable cv;
+    std::vector<std::string> frames;
+    std::vector<channels::RemoteSessionEnd> ends;
+    channels::RemoteIoStatus delivery{channels::RemoteIoStatus::accepted};
+    channels::RemoteSessionCallbacks callbacks()
+    {
+        return {
+            [this](std::string payload) {
+                std::lock_guard lock{mutex};
+                frames.emplace_back(std::move(payload));
+                cv.notify_all();
+                return delivery;
+            },
+            [this](channels::RemoteSessionEnd end) {
+                std::lock_guard lock{mutex};
+                ends.emplace_back(end);
+                cv.notify_all();
+            }};
+    }
+    bool wait(std::size_t frame_count, std::size_t end_count)
+    {
+        std::unique_lock lock{mutex};
+        return cv.wait_for(lock, 2s, [&] {
+            return frames.size() >= frame_count && ends.size() >= end_count;
+        });
+    }
+};
+
+void configure_existing(Fixture& fixture)
+{
+    fixture.adb->ps = "101 com.genymobile.scrcpy.Server 1.19-ws7 web ERROR 8886 true\n";
+    fixture.adb->cmdlines[101] = expected_cmdline();
+    fixture.adb->forwards.push_back({"127.0.0.1:5557", "tcp:31000", "tcp:8886"});
+}
+
+void exact_configuration_and_no_fallback()
+{
+    Fixture fixture;
+    auto backend = fixture.backend();
+    CallbackLog log;
+    CHECK(backend->open(std::nullopt, log.callbacks(), {}).error
+          == channels::RemoteBackendError::invalid_config);
+    CHECK(backend->open(std::string{"missing"}, log.callbacks(), {}).error
+          == channels::RemoteBackendError::not_found);
+    fixture.store->configs["bad"] = R"({"adbIP":"127.0.0.1","adbPort":"auto"})";
+    CHECK(backend->open(std::string{"bad"}, log.callbacks(), {}).error
+          == channels::RemoteBackendError::invalid_config);
+    fixture.store->configs["nul"] = R"({"adbIP":"evil\u0000serial","adbPort":"5555"})";
+    CHECK(backend->open(std::string{"nul"}, log.callbacks(), {}).error
+          == channels::RemoteBackendError::invalid_config);
+    std::lock_guard lock{fixture.adb->mutex};
+    CHECK(fixture.adb->commands.empty());
+}
+
+void reuses_exact_server_and_forward_with_ordered_duplex()
+{
+    Fixture fixture;
+    configure_existing(fixture);
+    auto backend = fixture.backend();
+    CallbackLog log;
+    auto opened = backend->open(std::string{"alpha"}, log.callbacks(), {});
+    CHECK(opened);
+    CHECK(fixture.sockets.size() == 1);
+    CHECK(fixture.sockets[0]->url == "ws://127.0.0.1:31000/");
+    CHECK(opened.session->send_to_device(secret(std::string{"x\0y", 3}), {})
+          == channels::RemoteIoStatus::accepted);
+    {
+        std::lock_guard lock{fixture.sockets[0]->mutex};
+        fixture.sockets[0]->reads.push_back({app::RemoteWebSocketReadKind::text, "first"});
+        fixture.sockets[0]->reads.push_back({app::RemoteWebSocketReadKind::binary, std::string{"b\0", 2}});
+        fixture.sockets[0]->reads.push_back({app::RemoteWebSocketReadKind::closed, {}});
+        fixture.sockets[0]->cv.notify_all();
+    }
+    CHECK(log.wait(2, 1));
+    {
+        std::lock_guard lock{log.mutex};
+        CHECK(log.frames == std::vector<std::string>({"first", std::string{"b\0", 2}}));
+        CHECK(log.ends == std::vector{channels::RemoteSessionEnd::device_closed});
+    }
+    CHECK(opened.session->send_to_device(secret("late"), {})
+          == channels::RemoteIoStatus::closed);
+    opened.session->close();
+    std::lock_guard lock{fixture.adb->mutex};
+    CHECK(!fixture.adb->pushed);
+    CHECK(fixture.adb->removed.empty());
+    CHECK(fixture.adb->killed.empty());
+}
+
+void owns_and_revalidates_cleanup()
+{
+    Fixture fixture;
+    auto backend = fixture.backend();
+    CallbackLog log;
+    auto opened = backend->open(std::string{"alpha"}, log.callbacks(), {});
+    CHECK(opened);
+    CHECK(fixture.adb->pushed);
+    opened.session->close();
+    {
+        std::lock_guard lock{fixture.adb->mutex};
+        CHECK(fixture.adb->removed == std::vector<std::uint16_t>{32123});
+        CHECK(fixture.adb->killed == std::vector<unsigned>{202});
+        CHECK(!fixture.adb->pid_marker);
+    }
+    // The per-serial lease is released only after cleanup finishes.
+    configure_existing(fixture);
+    auto reopened = backend->open(std::string{"alpha"}, log.callbacks(), {});
+    CHECK(reopened);
+    reopened.session->close();
+}
+
+void never_kills_reused_pid_identity()
+{
+    Fixture fixture;
+    auto backend = fixture.backend();
+    CallbackLog log;
+    auto opened = backend->open(std::string{"alpha"}, log.callbacks(), {});
+    CHECK(opened);
+    {
+        std::lock_guard lock{fixture.adb->mutex};
+        fixture.adb->cmdlines[202] = std::string{"/system/bin/unrelated\0", 22};
+    }
+    opened.session->close();
+    std::lock_guard lock{fixture.adb->mutex};
+    CHECK(fixture.adb->killed.empty());
+    CHECK(fixture.adb->pid_marker == 202);
+}
+
+void serial_lease_and_close_barrier()
+{
+    Fixture fixture;
+    configure_existing(fixture);
+    auto backend = fixture.backend();
+    CallbackLog log;
+    auto opened = backend->open(std::string{"alpha"}, log.callbacks(), {});
+    CHECK(opened);
+    CHECK(backend->open(std::string{"alpha"}, log.callbacks(), {}).error
+          == channels::RemoteBackendError::capacity);
+    {
+        std::lock_guard lock{fixture.sockets[0]->mutex};
+        fixture.sockets[0]->send_block = true;
+    }
+    auto send = std::async(std::launch::async, [&] {
+        return opened.session->send_to_device(secret("blocked"), {});
+    });
+    {
+        std::unique_lock lock{fixture.sockets[0]->mutex};
+        CHECK(fixture.sockets[0]->cv.wait_for(lock, 2s, [&] {
+            return fixture.sockets[0]->send_entered;
+        }));
+    }
+    auto close = std::async(std::launch::async, [&] { opened.session->close(); });
+    auto concurrent_close = std::async(
+        std::launch::async, [&] { opened.session->close(); });
+    CHECK(close.wait_for(2s) == std::future_status::ready);
+    CHECK(concurrent_close.wait_for(2s) == std::future_status::ready);
+    close.get();
+    concurrent_close.get();
+    CHECK(send.wait_for(0s) == std::future_status::ready);
+    CHECK(send.get() != channels::RemoteIoStatus::accepted);
+    auto reopened = backend->open(std::string{"alpha"}, log.callbacks(), {});
+    CHECK(reopened);
+    reopened.session->close();
+}
+
+void serializes_concurrent_websocket_sends()
+{
+    Fixture fixture;
+    configure_existing(fixture);
+    auto backend = fixture.backend();
+    CallbackLog log;
+    auto opened = backend->open(std::string{"alpha"}, log.callbacks(), {});
+    CHECK(opened);
+    {
+        std::lock_guard lock{fixture.sockets[0]->mutex};
+        fixture.sockets[0]->send_block = true;
+    }
+    auto first = std::async(std::launch::async, [&] {
+        return opened.session->send_to_device(secret("one"), {});
+    });
+    {
+        std::unique_lock lock{fixture.sockets[0]->mutex};
+        CHECK(fixture.sockets[0]->cv.wait_for(lock, 2s, [&] {
+            return fixture.sockets[0]->send_entered;
+        }));
+        fixture.sockets[0]->send_entered = false;
+    }
+    auto second = std::async(std::launch::async, [&] {
+        return opened.session->send_to_device(secret("two"), {});
+    });
+    std::this_thread::sleep_for(20ms);
+    {
+        std::lock_guard lock{fixture.sockets[0]->mutex};
+        CHECK(fixture.sockets[0]->active_sends == 1);
+        fixture.sockets[0]->send_block = false;
+        fixture.sockets[0]->cv.notify_all();
+    }
+    CHECK(first.get() == channels::RemoteIoStatus::accepted);
+    CHECK(second.get() == channels::RemoteIoStatus::accepted);
+    {
+        std::lock_guard lock{fixture.sockets[0]->mutex};
+        CHECK(fixture.sockets[0]->maximum_active_sends == 1);
+        CHECK(fixture.sockets[0]->sent.size() == 2);
+    }
+    opened.session->close();
+}
+
+void retries_listener_and_cleans_invalid_start_marker()
+{
+    Fixture fixture;
+    configure_existing(fixture);
+    std::atomic_uint attempts{};
+    app::ProductionRemoteBackendDependencies dependencies;
+    dependencies.resources = fixture.store;
+    dependencies.adb = fixture.adb;
+    dependencies.server_jar = "resource/ws-scrcpy/scrcpy-server.jar";
+    dependencies.websocket_factory = [&attempts](std::string, auto, auto) {
+        auto state = std::make_shared<WsState>();
+        state->connect_ok = ++attempts >= 3;
+        return std::make_unique<FakeWebSocket>(state);
+    };
+    dependencies.clock = [] { return std::chrono::steady_clock::now(); };
+    dependencies.sleep = [](auto) { std::this_thread::yield(); };
+    app::ProductionRemoteBackend backend{std::move(dependencies), fixture.limits};
+    CallbackLog log;
+    auto opened = backend.open(std::string{"alpha"}, log.callbacks(), {});
+    CHECK(opened);
+    CHECK(attempts == 3);
+    opened.session->close();
+
+    Fixture invalid;
+    invalid.adb->start_output.clear();
+    auto invalid_backend = invalid.backend();
+    CHECK(invalid_backend->open(std::string{"alpha"}, log.callbacks(), {}).error
+          == channels::RemoteBackendError::internal_error);
+    std::lock_guard lock{invalid.adb->mutex};
+    CHECK(invalid.adb->killed == std::vector<unsigned>{202});
+    CHECK(!invalid.adb->pid_marker);
+}
+
+void startup_deadline_and_forward_failure_unwind_owned_process()
+{
+    Fixture timeout;
+    app::ProductionRemoteBackendDependencies dependencies;
+    dependencies.resources = timeout.store;
+    dependencies.adb = timeout.adb;
+    dependencies.server_jar = "resource/ws-scrcpy/scrcpy-server.jar";
+    dependencies.websocket_factory = [](std::string, auto, auto) {
+        return std::make_unique<FakeWebSocket>(std::make_shared<WsState>());
+    };
+    const auto epoch = std::chrono::steady_clock::time_point{};
+    std::atomic_uint clock_calls{};
+    dependencies.clock = [epoch, &clock_calls] {
+        return ++clock_calls == 1 ? epoch : epoch + 1s;
+    };
+    dependencies.sleep = [](auto) {};
+    app::ProductionRemoteBackend timeout_backend{
+        std::move(dependencies), timeout.limits};
+    CallbackLog log;
+    CHECK(timeout_backend.open(std::string{"alpha"}, log.callbacks(), {}).error
+          == channels::RemoteBackendError::internal_error);
+    {
+        std::lock_guard lock{timeout.adb->mutex};
+        CHECK(timeout.adb->killed == std::vector<unsigned>{202});
+        CHECK(!timeout.adb->pid_marker);
+    }
+
+    Fixture forward;
+    forward.adb->fail_forward = true;
+    auto forward_backend = forward.backend();
+    CHECK(forward_backend->open(std::string{"alpha"}, log.callbacks(), {}).error
+          == channels::RemoteBackendError::internal_error);
+    std::lock_guard lock{forward.adb->mutex};
+    CHECK(forward.adb->killed == std::vector<unsigned>{202});
+    CHECK(forward.adb->removed.empty());
+}
+
+void oversize_and_failed_open_cleanup()
+{
+    Fixture fixture;
+    fixture.limits.max_device_frame_bytes = 4;
+    auto backend = fixture.backend();
+    CallbackLog log;
+    auto opened = backend->open(std::string{"alpha"}, log.callbacks(), {});
+    CHECK(opened);
+    {
+        std::lock_guard lock{fixture.sockets[0]->mutex};
+        fixture.sockets[0]->reads.push_back({app::RemoteWebSocketReadKind::binary, "12345"});
+        fixture.sockets[0]->cv.notify_all();
+    }
+    CHECK(log.wait(0, 1));
+    {
+        std::lock_guard lock{log.mutex};
+        CHECK(log.frames.empty());
+        CHECK(log.ends == std::vector{channels::RemoteSessionEnd::capacity});
+    }
+    opened.session->close();
+
+    Fixture failed;
+    // Factory state is created during open; force failure by replacing factory
+    // after constructing a dedicated backend.
+    app::ProductionRemoteBackendDependencies dependencies;
+    dependencies.resources = failed.store;
+    dependencies.adb = failed.adb;
+    dependencies.server_jar = "resource/ws-scrcpy/scrcpy-server.jar";
+    auto ws = std::make_shared<WsState>();
+    ws->connect_ok = false;
+    dependencies.websocket_factory = [ws](std::string, auto, auto) {
+        return std::make_unique<FakeWebSocket>(ws);
+    };
+    dependencies.clock = [] { return std::chrono::steady_clock::now(); };
+    dependencies.sleep = [](auto) { std::this_thread::yield(); };
+    app::ProductionRemoteBackend failed_backend{std::move(dependencies), failed.limits};
+    CHECK(failed_backend.open(std::string{"alpha"}, log.callbacks(), {}).error
+          == channels::RemoteBackendError::internal_error);
+    std::lock_guard lock{failed.adb->mutex};
+    CHECK(failed.adb->removed == std::vector<std::uint16_t>{32123});
+    CHECK(failed.adb->killed == std::vector<unsigned>{202});
+}
+
+void stop_closes_sessions_and_transport()
+{
+    Fixture fixture;
+    configure_existing(fixture);
+    auto backend = fixture.backend();
+    CallbackLog log;
+    auto opened = backend->open(std::string{"alpha"}, log.callbacks(), {});
+    CHECK(opened);
+    backend->stop();
+    {
+        std::lock_guard lock{fixture.adb->mutex};
+        CHECK(fixture.adb->stopped);
+    }
+    CHECK(opened.session->send_to_device(secret("late"), {})
+          == channels::RemoteIoStatus::closed);
+    CHECK(backend->open(std::string{"alpha"}, log.callbacks(), {}).error
+          == channels::RemoteBackendError::capacity);
+}
+
+void stop_linearizes_with_inflight_open()
+{
+    Fixture fixture;
+    {
+        std::lock_guard lock{fixture.adb->mutex};
+        fixture.adb->block_state = true;
+    }
+    auto backend = fixture.backend();
+    CallbackLog log;
+    auto opening = std::async(std::launch::async, [&] {
+        return backend->open(std::string{"alpha"}, log.callbacks(), {});
+    });
+    {
+        std::unique_lock lock{fixture.adb->mutex};
+        CHECK(fixture.adb->cv.wait_for(lock, 2s, [&] {
+            return fixture.adb->state_entered;
+        }));
+    }
+    auto stopping = std::async(std::launch::async, [&] { backend->stop(); });
+    auto concurrent_stopping = std::async(
+        std::launch::async, [&] { backend->stop(); });
+    CHECK(stopping.wait_for(50ms) == std::future_status::timeout);
+    CHECK(concurrent_stopping.wait_for(50ms) == std::future_status::timeout);
+    {
+        std::lock_guard lock{fixture.adb->mutex};
+        fixture.adb->block_state = false;
+        fixture.adb->cv.notify_all();
+    }
+    CHECK(opening.wait_for(2s) == std::future_status::ready);
+    auto opened = opening.get();
+    CHECK(!opened);
+    CHECK(opened.error == channels::RemoteBackendError::internal_error);
+    CHECK(stopping.wait_for(2s) == std::future_status::ready);
+    CHECK(concurrent_stopping.wait_for(2s) == std::future_status::ready);
+    stopping.get();
+    concurrent_stopping.get();
+    std::lock_guard lock{fixture.adb->mutex};
+    CHECK(fixture.adb->stopped);
+    CHECK(fixture.adb->removed == std::vector<std::uint16_t>{32123});
+    CHECK(fixture.adb->killed == std::vector<unsigned>{202});
+}
+
+void concurrent_stop_waits_for_blocked_send()
+{
+    Fixture fixture;
+    configure_existing(fixture);
+    auto backend = fixture.backend();
+    CallbackLog log;
+    auto opened = backend->open(std::string{"alpha"}, log.callbacks(), {});
+    CHECK(opened);
+    {
+        std::lock_guard lock{fixture.sockets[0]->mutex};
+        fixture.sockets[0]->send_block = true;
+    }
+    auto send = std::async(std::launch::async, [&] {
+        return opened.session->send_to_device(secret("blocked"), {});
+    });
+    {
+        std::unique_lock lock{fixture.sockets[0]->mutex};
+        CHECK(fixture.sockets[0]->cv.wait_for(lock, 2s, [&] {
+            return fixture.sockets[0]->send_entered;
+        }));
+    }
+    auto first = std::async(std::launch::async, [&] { backend->stop(); });
+    auto second = std::async(std::launch::async, [&] { backend->stop(); });
+    CHECK(first.wait_for(2s) == std::future_status::ready);
+    CHECK(second.wait_for(2s) == std::future_status::ready);
+    first.get();
+    second.get();
+    CHECK(send.wait_for(0s) == std::future_status::ready);
+    CHECK(send.get() != channels::RemoteIoStatus::accepted);
+    std::lock_guard lock{fixture.adb->mutex};
+    CHECK(fixture.adb->stopped);
+}
+
+}  // namespace
+
+int main()
+{
+    const std::vector<std::pair<const char*, void (*)()>> tests{
+        {"exact_configuration_and_no_fallback", exact_configuration_and_no_fallback},
+        {"reuses_exact_server_and_forward_with_ordered_duplex", reuses_exact_server_and_forward_with_ordered_duplex},
+        {"owns_and_revalidates_cleanup", owns_and_revalidates_cleanup},
+        {"never_kills_reused_pid_identity", never_kills_reused_pid_identity},
+        {"serial_lease_and_close_barrier", serial_lease_and_close_barrier},
+        {"serializes_concurrent_websocket_sends", serializes_concurrent_websocket_sends},
+        {"retries_listener_and_cleans_invalid_start_marker", retries_listener_and_cleans_invalid_start_marker},
+        {"startup_deadline_and_forward_failure_unwind_owned_process", startup_deadline_and_forward_failure_unwind_owned_process},
+        {"oversize_and_failed_open_cleanup", oversize_and_failed_open_cleanup},
+        {"stop_closes_sessions_and_transport", stop_closes_sessions_and_transport},
+        {"stop_linearizes_with_inflight_open", stop_linearizes_with_inflight_open},
+        {"concurrent_stop_waits_for_blocked_send", concurrent_stop_waits_for_blocked_send},
+    };
+    for (const auto& [name, test] : tests) {
+        try { test(); }
+        catch (const std::exception& error) {
+            std::cerr << name << ": " << error.what() << '\n';
+            return EXIT_FAILURE;
+        }
+    }
+    return EXIT_SUCCESS;
+}

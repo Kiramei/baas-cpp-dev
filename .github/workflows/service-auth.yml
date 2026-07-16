@@ -14,6 +14,10 @@ on:
       - 'cmake/ServiceBusinessSession.cmake'
       - 'cmake/ServiceTriggerHandler.cmake'
       - 'cmake/ServiceProviderBackend.cmake'
+      - 'cmake/ServiceRemoteBackend.cmake'
+      - 'cmake/ServiceRemoteHandler.cmake'
+      - 'cmake/ServiceAdbTransport.cmake'
+      - 'cmake/ServiceAdbSync.cmake'
       - 'cmake/ServiceProtocol.cmake'
       - 'cmake/ServiceTriggerCatalog.cmake'
       - 'cmake/ServiceTriggerDispatch.cmake'
@@ -24,6 +28,7 @@ on:
       - 'deploy/conan/profiles/dependency-versions-default'
       - 'deploy/conan/recipes/baas-libsodium/**'
       - 'deploy/conan/recipes/baas-cpp-httplib/**'
+      - 'deploy/conan/recipes/baas-nlohmann-json/**'
       - 'deploy/conan/scripts/manage_recipes.py'
       - 'include/service/auth/**'
       - 'src/service/auth/**'
@@ -40,6 +45,24 @@ on:
       - 'src/service/app/ProductionProviderBackend.cpp'
       - 'tests/service/ProductionProviderBackendTests.cpp'
       - 'tests/docs/test_service_provider_backend.py'
+      - 'include/service/app/ProductionRemoteBackend.h'
+      - 'src/service/app/ProductionRemoteBackend.cpp'
+      - 'include/service/channels/RemoteHandler.h'
+      - 'src/service/channels/RemoteHandler.cpp'
+      - 'include/service/channels/SyncHandler.h'
+      - 'include/service/adb/ServiceAdbTransport.h'
+      - 'src/service/adb/ServiceAdbTransport.cpp'
+      - 'include/service/adb/ServiceAdbSync.h'
+      - 'src/service/adb/ServiceAdbSync.cpp'
+      - 'tests/service/ProductionRemoteBackendTests.cpp'
+      - 'tests/service/ServiceRemoteHandlerTests.cpp'
+      - 'tests/service/ServiceAdbTransportTests.cpp'
+      - 'tests/service/ServiceAdbSyncTests.cpp'
+      - 'tests/docs/test_service_remote_backend.py'
+      - 'resource/ws-scrcpy/**'
+      - 'resources.lock.json'
+      - 'scripts/fetch_resources.py'
+      - 'cmake/BAASResources.cmake'
       - 'include/service/protocol/Trigger*.h'
       - 'src/service/protocol/Trigger*.cpp'
       - 'include/service/trigger/**'
@@ -55,6 +78,7 @@ on:
       - 'docs/script-runtime/SERVICE_BUSINESS_SESSION.md'
       - 'docs/script-runtime/SERVICE_TRIGGER_HANDLER.md'
       - 'docs/script-runtime/SERVICE_PROVIDER_BACKEND.md'
+      - 'docs/script-runtime/SERVICE_REMOTE_BACKEND.md'
       - 'docs/script-runtime/SERVICE_WEBSOCKET_OWNER.md'
       - 'docs/script-runtime/SERVICE_PROTOCOL_V1.md'
   pull_request:
@@ -73,6 +97,10 @@ on:
       - 'cmake/ServiceBusinessSession.cmake'
       - 'cmake/ServiceTriggerHandler.cmake'
       - 'cmake/ServiceProviderBackend.cmake'
+      - 'cmake/ServiceRemoteBackend.cmake'
+      - 'cmake/ServiceRemoteHandler.cmake'
+      - 'cmake/ServiceAdbTransport.cmake'
+      - 'cmake/ServiceAdbSync.cmake'
       - 'cmake/ServiceProtocol.cmake'
       - 'cmake/ServiceTriggerCatalog.cmake'
       - 'cmake/ServiceTriggerDispatch.cmake'
@@ -83,6 +111,7 @@ on:
       - 'deploy/conan/profiles/dependency-versions-default'
       - 'deploy/conan/recipes/baas-libsodium/**'
       - 'deploy/conan/recipes/baas-cpp-httplib/**'
+      - 'deploy/conan/recipes/baas-nlohmann-json/**'
       - 'deploy/conan/scripts/manage_recipes.py'
       - 'include/service/auth/**'
       - 'src/service/auth/**'
@@ -99,6 +128,24 @@ on:
       - 'src/service/app/ProductionProviderBackend.cpp'
       - 'tests/service/ProductionProviderBackendTests.cpp'
       - 'tests/docs/test_service_provider_backend.py'
+      - 'include/service/app/ProductionRemoteBackend.h'
+      - 'src/service/app/ProductionRemoteBackend.cpp'
+      - 'include/service/channels/RemoteHandler.h'
+      - 'src/service/channels/RemoteHandler.cpp'
+      - 'include/service/channels/SyncHandler.h'
+      - 'include/service/adb/ServiceAdbTransport.h'
+      - 'src/service/adb/ServiceAdbTransport.cpp'
+      - 'include/service/adb/ServiceAdbSync.h'
+      - 'src/service/adb/ServiceAdbSync.cpp'
+      - 'tests/service/ProductionRemoteBackendTests.cpp'
+      - 'tests/service/ServiceRemoteHandlerTests.cpp'
+      - 'tests/service/ServiceAdbTransportTests.cpp'
+      - 'tests/service/ServiceAdbSyncTests.cpp'
+      - 'tests/docs/test_service_remote_backend.py'
+      - 'resource/ws-scrcpy/**'
+      - 'resources.lock.json'
+      - 'scripts/fetch_resources.py'
+      - 'cmake/BAASResources.cmake'
       - 'include/service/protocol/Trigger*.h'
       - 'src/service/protocol/Trigger*.cpp'
       - 'include/service/trigger/**'
@@ -114,6 +161,7 @@ on:
       - 'docs/script-runtime/SERVICE_BUSINESS_SESSION.md'
       - 'docs/script-runtime/SERVICE_TRIGGER_HANDLER.md'
       - 'docs/script-runtime/SERVICE_PROVIDER_BACKEND.md'
+      - 'docs/script-runtime/SERVICE_REMOTE_BACKEND.md'
       - 'docs/script-runtime/SERVICE_WEBSOCKET_OWNER.md'
       - 'docs/script-runtime/SERVICE_PROTOCOL_V1.md'
 
@@ -189,10 +237,20 @@ jobs:
           --build=missing
           --no-remote
 
+      - name: Build and verify pinned nlohmann-json recipe
+        run: >-
+          conan create deploy/conan/recipes/baas-nlohmann-json
+          -s:h build_type=${{ matrix.build_type }}
+          -s:b build_type=Release
+          ${{ matrix.conan_settings }}
+          --build=missing
+          --no-remote
+
       - name: Generate control-auth CMake dependencies
         run: >-
           conan install --requires=baas-libsodium/1.0.22
           --requires=baas-cpp-httplib/0.50.1
+          --requires=baas-nlohmann-json/3.11.3
           -of build/conan/service-auth
           -s:h build_type=${{ matrix.build_type }}
           -s:b build_type=Release
@@ -215,6 +273,10 @@ jobs:
           -DBUILD_SERVICE_BUSINESS_SESSION_TESTS=ON
           -DBUILD_SERVICE_TRIGGER_HANDLER_TESTS=ON
           -DBUILD_SERVICE_PROVIDER_BACKEND_TESTS=ON
+          -DBUILD_SERVICE_REMOTE_BACKEND_TESTS=ON
+          -DBUILD_SERVICE_REMOTE_HANDLER_TESTS=ON
+          -DBUILD_SERVICE_ADB_TRANSPORT_TESTS=ON
+          -DBUILD_SERVICE_ADB_SYNC_TESTS=ON
           -DBUILD_APP_BAAS=OFF
           -DBUILD_APP_ISA=OFF
           -DBUILD_BAAS_OCR=OFF
@@ -233,6 +295,10 @@ jobs:
           BAAS_service_business_session_tests
           BAAS_service_trigger_handler_tests
           BAAS_service_provider_backend_tests
+          BAAS_service_remote_backend_tests
+          BAAS_service_remote_handler_tests
+          BAAS_service_adb_transport_tests
+          BAAS_service_adb_sync_tests
 
       - name: Run service authentication tests
         run: >-
@@ -240,7 +306,7 @@ jobs:
           --build-config ${{ matrix.build_type }}
           --output-on-failure
           --timeout 60
-          -R "^BAAS_service_(auth_(crypto|owner)|websocket_(handshake|owner)|control_session|business_session|trigger_handler|provider_backend)_tests$"
+          -R "^BAAS_service_(auth_(crypto|owner)|websocket_(handshake|owner)|control_session|business_session|trigger_handler|provider_backend|remote_(handler|backend)|adb_(transport|sync))_tests$"
 
   android-auth:
     name: Android ${{ matrix.abi }} / Release

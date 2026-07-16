@@ -1,0 +1,5 @@
+# Conan's CMakeToolchain generator writes machine-local user preset links next
+# to the source tree and recipe test packages. Build trees are kept under
+# build/, while these source-adjacent links must never become branch changes.
+CMakeUserPresets.json
+deploy/conan/recipes/*/test_package/CMakeUserPresets.json
