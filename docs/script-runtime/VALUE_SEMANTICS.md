@@ -203,11 +203,15 @@ and MUST remain outside structural JSON. Their traced child edges are:
 - structured-error detail values;
 - task retained values.
 
-A host handle contains opaque handle and adapter ids, an external-byte charge,
-and closed state. Closing MUST be idempotent, MUST queue host release work only
-once, and MUST NOT perform host I/O from the collector. Collection or teardown
-of an open handle also queues a release record. The owning adapter strand MUST
-drain that bounded queue.
+A host handle contains an opaque authenticated native key: handle and adapter
+ids, fixed exact type, generation, context and snapshot ids, external-byte
+charge, and closed state. Closing MUST be idempotent, MUST queue host release
+work only once, and MUST NOT perform host I/O from the collector. Collection or
+teardown of an open handle also queues a release record. Charges move with
+reliable release ownership and remain live through retry and
+native-released/awaiting-ACK. Teardown may detach records and their shared
+ledger to the owning dispatcher; poisoned records remain visible and cannot
+produce a false completed state.
 
 The synchronous AST evaluator currently uses a bounded side table whose
 `FunctionRecord` entries own rooted lexical `Environment` objects. Its heap

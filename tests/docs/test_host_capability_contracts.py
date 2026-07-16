@@ -18,6 +18,7 @@ ROADMAP_PATH = ROOT / "docs" / "script-runtime" / "ROADMAP.md"
 PACKAGE_PATH = ROOT / "docs" / "script-runtime" / "PACKAGE_VERSIONING.md"
 LANGUAGE_PATH = ROOT / "docs" / "script-runtime" / "LANGUAGE_SPEC_DRAFT.md"
 ADR_PATH = ROOT / "docs" / "script-runtime" / "ADR-0001-runtime-architecture.md"
+MEMORY_ADR_PATH = ROOT / "docs" / "script-runtime" / "ADR-0002-vm-memory-management.md"
 PRIVILEGED_ADR_PATH = ROOT / "docs" / "script-runtime" / "ADR-0003-privileged-operation-boundaries.md"
 CORE_BOUNDARY_ADR_PATH = ROOT / "docs" / "script-runtime" / "ADR-0004-core-runtime-boundary.md"
 ASYNC_PATH = ROOT / "docs" / "script-runtime" / "ASYNC_TASKS.md"
@@ -33,7 +34,14 @@ CLAUSE_TERMS = {
     "HST-005": ("execution-context deadline", "stop token", "HOST003_CANCELLED", "effect_state: unknown"),
     "HST-006": ("reserved transactionally", "incrementally", "HOST005_BUDGET_EXCEEDED", "HOST016_BACKPRESSURE"),
     "HST-007": ("bounded_cpu_pool", "bounded_io_pool", "device_id", "socket handle", "MUST NOT re-enter"),
-    "HST-008": ("generational", "HOST015_HANDLE_CLOSED", "MUST NOT cross execution contexts", "ADR-0002"),
+    "HST-008": (
+        "generational",
+        "HOST015_HANDLE_CLOSED",
+        "MUST NOT cross execution contexts",
+        "ADR-0002",
+        "destruction_safe()",
+        "fail-fast",
+    ),
     "HST-009": ("baas/vision", "baas/ocr", "baas/device", "HOST008_DEVICE_DISCONNECTED"),
     "HST-010": ("baas/config.snapshot", "expected revision", "baas/log.emit", "baas/notify.prompt", "NotificationAction"),
     "HST-011": ("baas/task", "baas/scheduler", "cancel(Task) -> bool", "cancel(host<ScheduledTask>) -> null", "MUST NOT be overloaded"),
@@ -104,6 +112,7 @@ class HostCapabilityContractTests(unittest.TestCase):
         cls.package = read(PACKAGE_PATH)
         cls.language = read(LANGUAGE_PATH)
         cls.adr = read(ADR_PATH)
+        cls.memory_adr = read(MEMORY_ADR_PATH)
         cls.privileged_adr = read(PRIVILEGED_ADR_PATH)
         cls.core_boundary_adr = read(CORE_BOUNDARY_ADR_PATH)
         cls.async_spec = read(ASYNC_PATH)
@@ -120,6 +129,14 @@ class HostCapabilityContractTests(unittest.TestCase):
                 self.assertIn("MUST", normalized)
                 for term in terms:
                     self.assertIn(term, normalized)
+
+    def test_host_handle_release_owner_lifecycle_is_fail_closed(self) -> None:
+        for document in (self.spec, self.memory_adr, self.errors_spec):
+            normalized = re.sub(r"\s+", " ", document)
+            self.assertIn("destruction_safe()", normalized)
+            self.assertIn("owner strand", normalized)
+            self.assertRegex(normalized, r"fail(?:s)?[- ]fast")
+            self.assertIn("native ownership", normalized)
 
     def test_machine_catalog_has_stable_complete_binding_contracts(self) -> None:
         self.assertEqual(self.catalog["schema_version"], 1)

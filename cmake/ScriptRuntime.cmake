@@ -460,6 +460,18 @@ if(BUILD_SCRIPT_TESTS)
     set_tests_properties(BAAS_script_sync_host_evaluator_tests PROPERTIES TIMEOUT 30)
 
     add_executable(
+            BAAS_script_typed_host_handle_tests
+            "${BAAS_PROJECT_PATH}/tests/script/TypedHostHandleTests.cpp"
+    )
+    target_compile_features(BAAS_script_typed_host_handle_tests PRIVATE cxx_std_20)
+    target_link_libraries(BAAS_script_typed_host_handle_tests PRIVATE BAAS_script_runtime)
+    add_test(
+            NAME BAAS_script_typed_host_handle_tests
+            COMMAND BAAS_script_typed_host_handle_tests
+    )
+    set_tests_properties(BAAS_script_typed_host_handle_tests PROPERTIES TIMEOUT 30)
+
+    add_executable(
             BAAS_script_log_host_tests
             "${BAAS_PROJECT_PATH}/tests/script/LogHostTests.cpp"
     )

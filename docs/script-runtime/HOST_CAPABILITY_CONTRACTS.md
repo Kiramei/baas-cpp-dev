@@ -180,6 +180,27 @@ NOT cross execution contexts, outlive their immutable package/config/resource
 snapshot, expose native addresses, or rely on script garbage-collection timing
 for security or external cleanup. Release records follow ADR-0002 bounds.
 
+The checked synchronous ABI fixes v1 type ids to `Resource=1`, `Image=2`,
+`OcrModel=3`, and `Device=4`; earlier scalar `HostValueType` ordinals are not
+renumbered. Adapter id, exact type, generation, context, immutable snapshot,
+external-byte charge, and authentication token are validated before callback
+entry. Producer grants and callback borrows are distinct transfer roles: a
+borrow cannot be returned as a result, copied borrows are revoked together at
+callback return, and a grant is consumed exactly once by publication.
+
+Native creation reserves external memory and a generation slot before adapter
+allocation. Open wrappers, queued releases, native-released/awaiting-ACK
+tombstones, and detached teardown records retain that charge until reliable
+ACK. Failed or unknown records rotate without starving later releases and are
+never silently ACKed. Collection only enqueues; adapter I/O runs on the owning
+context strand. Evaluator `close()` rejects further execution and transfers
+remaining records plus their shared accounting ledger to the dispatcher so
+retry does not depend on Heap lifetime. If `close()` returns false, the
+embedder MUST retain the `HostReleaseDispatcher` and retry on its owner strand
+until `destruction_safe()` is true. Destroying the final dispatcher owner while
+`destruction_safe()` is false MUST fail-fast; it MUST NOT silently discard
+queued, native-released/awaiting-ACK, or detached native ownership.
+
 ### HST-009 — Vision, OCR, and device contracts
 
 `baas/vision` MUST expose deterministic `match`, `detect`, and `color` over
@@ -426,8 +447,8 @@ normative in `host-capabilities.v1.json`.
 The production adapter set and metadata registry do not define or invoke
 `ProcessHost`, `HttpHost`, `SocketHost`, `ServiceHost`, or the other real named
 adapters. `QueuedLogHost` and `BAASLoggerLogSink` are implemented foundations,
-but live package/task composition is not. Bytes,
-typed generational `host<T>`, async completion, cooperative cancellation,
+but live package/task composition is not. Bytes, real adapter integrations for
+the checked `host<T>` foundation, async completion, cooperative cancellation,
 bounded pools, keyed strands, production VM registration, full manifest
 activation, ERR-003 unwinding, and Python-versus-C++ parity remain pending until
 their production code and tests exist.
