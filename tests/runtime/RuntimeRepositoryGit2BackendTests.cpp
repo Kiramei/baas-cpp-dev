@@ -5,9 +5,12 @@
 #include <miniz.h>
 
 #include <atomic>
+#include <array>
+#include <cstdlib>
 #include <filesystem>
 #include <iostream>
 #include <random>
+#include <optional>
 #include <stdexcept>
 #include <stop_token>
 #include <string>
@@ -115,10 +118,12 @@ constexpr std::string_view manifest_sha256 =
 
 class RepositoryFixture final {
   public:
-    explicit RepositoryFixture(const git_filemode_t payload_mode = GIT_FILEMODE_BLOB) {
+    explicit RepositoryFixture(const git_filemode_t payload_mode = GIT_FILEMODE_BLOB,
+                               const std::string_view extra_name = {}) {
         repository_path_ = temporary_.path() / "remote.git";
         git_repository* raw_repository{};
-        require_git(git_repository_init(&raw_repository, repository_path_.string().c_str(), 1),
+        const auto repository_path_utf8 = repository::testing::git_path_bytes(repository_path_);
+        require_git(git_repository_init(&raw_repository, repository_path_utf8.c_str(), 1),
                     "fixture repository initialization failed");
         GitOwner<git_repository, git_repository_free> repository(raw_repository,
                                                                  &git_repository_free);
@@ -143,6 +148,10 @@ class RepositoryFixture final {
         require_git(git_treebuilder_insert(nullptr, builder.get(), "payload.bin", &payload_oid,
                                            payload_mode),
                     "fixture payload insertion failed");
+        if (!extra_name.empty())
+            require_git(git_treebuilder_insert(nullptr, builder.get(), std::string(extra_name).c_str(),
+                                               &payload_oid, GIT_FILEMODE_BLOB),
+                        "fixture special-path insertion failed");
         git_oid tree_oid{};
         require_git(git_treebuilder_write(&tree_oid, builder.get()),
                     "fixture tree write failed");
@@ -209,6 +218,12 @@ void test_policy_rejections() {
     check_throws([&] { static_cast<void>(production.stage_exact(spec, staging.path(), {})); },
                  "production backend must reject file transport");
 
+    repository::Libgit2RuntimeRepositoryFetchOptions invalid_ca;
+    invalid_ca.trusted_ca_bundle = "relative-ca.pem";
+    check_throws(
+        [&] { repository::Libgit2RuntimeRepositoryFetchBackend rejected(invalid_ca); },
+        "relative trusted CA bundle paths must be rejected");
+
     auto local = backend();
     for (const std::string invalid_url : {"http://example.invalid/repo.git",
                                           "https://user@example.invalid/repo.git",
@@ -247,6 +262,21 @@ void test_policy_rejections() {
                  "pack limit must not exceed its implementation hard maximum");
 }
 
+void test_non_ascii_staging_path_uses_utf8_for_libgit2() {
+    RepositoryFixture fixture;
+    TempDirectory owner;
+    const auto staging = owner.path() / std::filesystem::path(u8"运行时资源");
+    std::filesystem::create_directory(staging);
+    const auto encoded = repository::testing::git_path_bytes(staging);
+    check(encoded.find("\xE8\xBF\x90\xE8\xA1\x8C\xE6\x97\xB6\xE8\xB5\x84\xE6\xBA\x90") !=
+              std::string::npos,
+          "libgit2 filesystem paths must use UTF-8 bytes");
+    auto fetcher = backend();
+    static_cast<void>(fetcher.stage_exact(spec_for(fixture), staging, {}));
+    check(std::filesystem::is_regular_file(staging / "payload.bin"),
+          "non-ASCII staging paths must support a complete local fetch");
+}
+
 void test_real_local_fetch_and_tag_peel() {
     RepositoryFixture fixture;
     for (const std::string reference : {"refs/heads/main", "refs/tags/release"}) {
@@ -275,6 +305,16 @@ void test_fail_closed_limits_modes_and_cleanup() {
             "ODB object limit must fail closed");
         check(!std::filesystem::exists(staging.path() / ".baas-git-transport"),
               "failure must remove private transport ODB");
+    }
+    {
+        RepositoryFixture special(GIT_FILEMODE_BLOB, "payload.bin:unmanifested");
+        auto fetcher = backend();
+        TempDirectory staging;
+        check_throws(
+            [&] { static_cast<void>(fetcher.stage_exact(spec_for(special), staging.path(), {})); },
+            "portable path contract must reject an NTFS ADS name before materialization");
+        check(std::filesystem::is_empty(staging.path()),
+              "rejected special Git paths must leave no materialized filesystem side effect");
     }
     {
         auto limits = repository::Libgit2RuntimeRepositoryFetchLimits{};
@@ -351,30 +391,228 @@ void append_delta_varint(std::vector<unsigned char>& bytes, std::uintmax_t value
     } while (value != 0);
 }
 
+void append_pkt_length(std::vector<char>& response, std::size_t size);
+[[nodiscard]] std::vector<unsigned char>
+ref_delta_pack(const std::vector<unsigned char>& delta);
+
+[[nodiscard]] std::vector<unsigned char> compressed(const std::vector<unsigned char>& input) {
+    mz_ulong compressed_size = mz_compressBound(static_cast<mz_ulong>(input.size()));
+    std::vector<unsigned char> output(compressed_size);
+    if (mz_compress2(output.data(), &compressed_size, input.data(),
+                     static_cast<mz_ulong>(input.size()), MZ_BEST_COMPRESSION) != MZ_OK)
+        throw std::runtime_error("pack fixture compression failed");
+    output.resize(compressed_size);
+    return output;
+}
+
+void append_ofs_distance(std::vector<unsigned char>& bytes, std::uintmax_t distance) {
+    std::array<unsigned char, 16> encoded{};
+    std::size_t count{1};
+    encoded[0] = static_cast<unsigned char>(distance & 0x7fU);
+    while ((distance >>= 7U) != 0) {
+        --distance;
+        encoded[count++] = static_cast<unsigned char>(0x80U | (distance & 0x7fU));
+    }
+    while (count != 0)
+        bytes.push_back(encoded[--count]);
+}
+
+[[nodiscard]] std::vector<unsigned char> ofs_delta_chain_pack(
+    const std::size_t delta_count, const std::optional<std::uintmax_t> first_distance = {}) {
+    std::vector<unsigned char> pack{'P', 'A', 'C', 'K'};
+    append_big_endian_u32(pack, 2);
+    append_big_endian_u32(pack, static_cast<std::uint32_t>(delta_count + 1));
+    std::vector<std::size_t> starts;
+    starts.push_back(pack.size());
+    append_pack_header(pack, 3, 1);
+    const auto base = compressed(std::vector<unsigned char>{'a'});
+    pack.insert(pack.end(), base.begin(), base.end());
+    const std::vector<unsigned char> delta{1, 1, 0x90U, 1};
+    const auto compressed_delta = compressed(delta);
+    for (std::size_t index = 0; index < delta_count; ++index) {
+        const auto start = pack.size();
+        append_pack_header(pack, 6, delta.size());
+        const auto distance = index == 0 && first_distance
+                                  ? *first_distance
+                                  : static_cast<std::uintmax_t>(start - starts.back());
+        append_ofs_distance(pack, distance);
+        pack.insert(pack.end(), compressed_delta.begin(), compressed_delta.end());
+        starts.push_back(start);
+    }
+    pack.insert(pack.end(), GIT_OID_SHA1_SIZE, 0);
+    return pack;
+}
+
 void test_delta_result_bomb_is_rejected_before_libgit2() {
     repository::Libgit2RuntimeRepositoryFetchLimits limits;
     std::vector<unsigned char> delta;
     append_delta_varint(delta, 1);
     append_delta_varint(delta, limits.max_odb_object_bytes + 1);
-    delta.push_back(0);
-
-    mz_ulong compressed_size = mz_compressBound(static_cast<mz_ulong>(delta.size()));
-    std::vector<unsigned char> compressed(compressed_size);
-    check(mz_compress2(compressed.data(), &compressed_size, delta.data(),
-                       static_cast<mz_ulong>(delta.size()), MZ_BEST_COMPRESSION) == MZ_OK,
-          "delta-bomb fixture compression must succeed");
-    compressed.resize(compressed_size);
+    delta.push_back(1);
+    delta.push_back('x');
+    const auto compressed_delta = compressed(delta);
 
     std::vector<unsigned char> pack{'P', 'A', 'C', 'K'};
     append_big_endian_u32(pack, 2);
-    append_big_endian_u32(pack, 1);
-    append_pack_header(pack, 7, delta.size());
-    pack.insert(pack.end(), GIT_OID_SHA1_SIZE, 0);
-    pack.insert(pack.end(), compressed.begin(), compressed.end());
+    append_big_endian_u32(pack, 2);
+    const auto base_start = pack.size();
+    append_pack_header(pack, 3, 1);
+    const auto compressed_base = compressed(std::vector<unsigned char>{'a'});
+    pack.insert(pack.end(), compressed_base.begin(), compressed_base.end());
+    const auto delta_start = pack.size();
+    append_pack_header(pack, 6, delta.size());
+    append_ofs_distance(pack, delta_start - base_start);
+    pack.insert(pack.end(), compressed_delta.begin(), compressed_delta.end());
     pack.insert(pack.end(), GIT_OID_SHA1_SIZE, 0);
 
     check(!repository::testing::pack_is_safe(pack, limits),
           "delta result-size bomb must be rejected by transport preflight");
+}
+
+void test_advertisement_protocol_state_is_strict() {
+    const auto packet = [](const std::string_view packet_payload) {
+        std::vector<char> result;
+        append_pkt_length(result, packet_payload.size() + 4);
+        result.insert(result.end(), packet_payload.begin(), packet_payload.end());
+        return result;
+    };
+    auto valid = packet("# service=git-upload-pack\n");
+    valid.insert(valid.end(), {'0', '0', '0', '0'});
+    const auto reference = packet("0123456789012345678901234567890123456789 refs/heads/main\n");
+    valid.insert(valid.end(), reference.begin(), reference.end());
+    valid.insert(valid.end(), {'0', '0', '0', '0'});
+    check(repository::testing::advertisement_is_safe(valid, 1),
+          "canonical v0 advertisement must be accepted");
+    check(!repository::testing::advertisement_is_safe(valid, 0),
+          "every v0 record must consume the reference budget");
+
+    auto duplicate_service = valid;
+    const auto service = packet("# service=git-upload-pack\n");
+    duplicate_service.insert(duplicate_service.end() - 4, service.begin(), service.end());
+    check(!repository::testing::advertisement_is_safe(duplicate_service, 8),
+          "service markers outside the first packet must be rejected");
+
+    auto v2 = packet("version 2\n");
+    const auto capability = packet("ls-refs=unborn\n");
+    v2.insert(v2.end(), capability.begin(), capability.end());
+    v2.insert(v2.end(), {'0', '0', '0', '0'});
+    check(repository::testing::advertisement_is_safe(v2, 1),
+          "canonical v2 capability advertisement must be accepted");
+    check(!repository::testing::advertisement_is_safe(v2, 0),
+          "v2 records must not bypass the record budget");
+}
+
+void test_https_endpoint_parsing_is_exact() {
+    check(repository::testing::https_endpoint_is_valid("https://example.com/repository.git"),
+          "default HTTPS port must be accepted");
+    check(repository::testing::https_endpoint_is_valid(
+              "https://example.com:8443/repository.git"),
+          "explicit HTTPS port must be accepted");
+    check(repository::testing::https_endpoint_is_valid("https://[::1]:443/repository.git"),
+          "bracketed IPv6 HTTPS authority must be accepted");
+    check(!repository::testing::https_endpoint_is_valid(
+              "https://example.com:443junk/repository.git"),
+          "HTTPS port parsing must consume every character");
+    check(!repository::testing::https_endpoint_is_valid(
+              "https://example.com:0/repository.git"),
+          "zero HTTPS port must be rejected");
+    check(!repository::testing::https_endpoint_is_valid(
+              "https://example.com:65536/repository.git"),
+          "out-of-range HTTPS port must be rejected");
+    check(!repository::testing::https_endpoint_is_valid("https://::1/repository.git"),
+          "unbracketed IPv6 authority must be rejected");
+}
+
+void test_upload_pack_negotiation_and_operation_budgets() {
+    std::vector<char> negotiation;
+    append_pkt_length(negotiation, 8);
+    negotiation.insert(negotiation.end(), {'N', 'A', 'K', '\n'});
+    check(!repository::testing::negotiation_response_is_safe(negotiation),
+          "negotiation-only response must not end at arbitrary EOF");
+    negotiation.insert(negotiation.end(), {'0', '0', '0', '0'});
+    check(repository::testing::negotiation_response_is_safe(negotiation),
+          "canonical NAK plus flush negotiation response must be accepted");
+
+    const std::string shallow =
+        "shallow 338e6fb681369ff0537719095e22ce9dc602dbf0";
+    std::vector<char> shallow_negotiation;
+    append_pkt_length(shallow_negotiation, shallow.size() + 4);
+    shallow_negotiation.insert(shallow_negotiation.end(), shallow.begin(), shallow.end());
+    shallow_negotiation.insert(shallow_negotiation.end(), {'0', '0', '0', '0'});
+    check(repository::testing::negotiation_response_is_safe(shallow_negotiation),
+          "a terminated shallow-info-only response must be accepted for another request round");
+    append_pkt_length(shallow_negotiation, 8);
+    shallow_negotiation.insert(shallow_negotiation.end(), {'N', 'A', 'K', '\n'});
+    shallow_negotiation.insert(shallow_negotiation.end(), {'0', '0', '0', '0'});
+    check(repository::testing::negotiation_response_is_safe(shallow_negotiation),
+          "shallow-info flush must not terminate the following ACK/NAK negotiation section");
+
+    auto record_after_flush = negotiation;
+    const std::string ack =
+        "ACK 338e6fb681369ff0537719095e22ce9dc602dbf0 ready\n";
+    append_pkt_length(record_after_flush, ack.size() + 4);
+    record_after_flush.insert(record_after_flush.end(), ack.begin(), ack.end());
+    check(!repository::testing::negotiation_response_is_safe(record_after_flush),
+          "negotiation records after response termination must be rejected");
+
+    check(repository::testing::upload_pack_budget_accepts({8, 12, 80}, 100, 3),
+          "all upload-pack rounds must share one exact byte budget");
+    check(!repository::testing::upload_pack_budget_accepts({8, 12, 81}, 100, 3),
+          "cumulative upload-pack responses beyond the byte budget must fail closed");
+    check(!repository::testing::upload_pack_budget_accepts({1, 1, 1, 1}, 100, 3),
+          "upload-pack negotiations beyond the round limit must fail closed");
+}
+
+void test_delta_dependency_depth_and_base_validation() {
+    auto limits = repository::Libgit2RuntimeRepositoryFetchLimits{};
+    limits.max_delta_depth = 2;
+    check(repository::testing::pack_is_safe(ofs_delta_chain_pack(2), limits),
+          "delta chain exactly at the configured depth must be accepted");
+    check(!repository::testing::pack_is_safe(ofs_delta_chain_pack(3), limits),
+          "delta chain beyond the configured depth must be rejected before libgit2");
+    check(!repository::testing::pack_is_safe(ofs_delta_chain_pack(1, 1), limits),
+          "OFS_DELTA base must identify an earlier object start");
+    check(!repository::testing::pack_is_safe(ofs_delta_chain_pack(1, 0), limits),
+          "OFS_DELTA must not form a self-cycle");
+    check(!repository::testing::pack_is_safe(ref_delta_pack({1, 1, 0x90U, 1}), limits),
+          "unprovable REF_DELTA dependencies must be rejected before libgit2");
+
+    limits.max_delta_depth = 1'024;
+    limits.max_received_objects = 2'000;
+    check(repository::testing::pack_is_safe(ofs_delta_chain_pack(1'000), limits),
+          "large delta dependency graphs must remain bounded and accepted");
+}
+
+void test_trusted_https_when_requested() {
+    std::string url;
+#ifdef _WIN32
+    char* raw_url{};
+    std::size_t raw_url_size{};
+    if (_dupenv_s(&raw_url, &raw_url_size, "BAAS_TEST_TRUSTED_HTTPS_URL") == 0 &&
+        raw_url != nullptr) {
+        url.assign(raw_url);
+        std::free(raw_url);
+    }
+#else
+    if (const auto* raw_url = std::getenv("BAAS_TEST_TRUSTED_HTTPS_URL"); raw_url != nullptr)
+        url.assign(raw_url);
+#endif
+    if (url.empty())
+        return;
+    auto limits = repository::Libgit2RuntimeRepositoryFetchLimits{};
+    limits.connect_timeout = std::chrono::seconds(15);
+    limits.stall_timeout = std::chrono::seconds(15);
+    limits.absolute_timeout = std::chrono::seconds(60);
+    limits.max_advertisement_bytes = 8U * 1024U * 1024U;
+    limits.max_advertised_refs = 100'000;
+    check(repository::testing::trusted_https_advertisement_is_reachable(url, limits),
+          "trusted HTTPS Git advertisement must validate the platform certificate chain");
+
+    TempDirectory staging;
+    check(repository::testing::trusted_https_roundtrip_resolves(
+              url, "refs/tags/v1.9.0", "338e6fb681369ff0537719095e22ce9dc602dbf0",
+              staging.path(), limits),
+          "trusted HTTPS roundtrip must GET, POST, preflight, replay, and resolve the exact tag");
 }
 
 int collect_pack(void* bytes, const std::size_t size, void* context) {
@@ -387,7 +625,8 @@ int collect_pack(void* bytes, const std::size_t size, void* context) {
 void test_libgit2_generated_pack_is_accepted() {
     RepositoryFixture fixture;
     git_repository* raw_repository{};
-    require_git(git_repository_open_bare(&raw_repository, fixture.path().string().c_str()),
+    const auto fixture_path_utf8 = repository::testing::git_path_bytes(fixture.path());
+    require_git(git_repository_open_bare(&raw_repository, fixture_path_utf8.c_str()),
                 "pack fixture repository open failed");
     GitOwner<git_repository, git_repository_free> repo(raw_repository, &git_repository_free);
     git_packbuilder* raw_builder{};
@@ -503,10 +742,16 @@ int main() {
     }
     try {
         test_policy_rejections();
+        test_non_ascii_staging_path_uses_utf8_for_libgit2();
         test_real_local_fetch_and_tag_peel();
         test_fail_closed_limits_modes_and_cleanup();
         test_typed_cancellation();
         test_delta_result_bomb_is_rejected_before_libgit2();
+        test_advertisement_protocol_state_is_strict();
+        test_https_endpoint_parsing_is_exact();
+        test_upload_pack_negotiation_and_operation_budgets();
+        test_delta_dependency_depth_and_base_validation();
+        test_trusted_https_when_requested();
         test_libgit2_generated_pack_is_accepted();
         test_sideband_and_raw_pack_responses_are_supported();
         test_pack_preflight_observes_cancel_and_deadline();

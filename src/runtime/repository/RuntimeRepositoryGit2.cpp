@@ -2,19 +2,21 @@
 
 #include <git2.h>
 #include <git2/sys/transport.h>
+#include <httplib.h>
 #include <miniz.h>
 
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <charconv>
 #include <climits>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
 #include <limits>
-#include <mutex>
 #include <new>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -36,6 +38,7 @@ namespace {
 
 constexpr std::string_view transport_directory_name = ".baas-git-transport";
 constexpr std::string_view candidate_reference = "refs/baas-runtime/candidate";
+constexpr std::size_t maximum_upload_pack_request_bytes = 1U * 1024U * 1024U;
 
 template <typename Type, void (*Free)(Type*)>
 using GitOwner = std::unique_ptr<Type, decltype(Free)>;
@@ -128,11 +131,12 @@ void validate_limits(const Libgit2RuntimeRepositoryFetchLimits& limits) {
     if (limits.absolute_timeout.count() <= 0 ||
         limits.absolute_timeout > maximum_absolute_timeout || limits.max_advertised_refs == 0 ||
         limits.max_advertisement_bytes == 0 || limits.max_pack_bytes == 0 ||
+        limits.max_upload_pack_rounds == 0 ||
         limits.max_received_objects == 0 || limits.max_odb_objects == 0 ||
         limits.max_odb_bytes == 0 || limits.max_odb_object_bytes == 0 ||
         limits.max_commit_bytes == 0 || limits.max_tag_bytes == 0 ||
         limits.max_tree_bytes == 0 || limits.max_fallback_blob_bytes == 0 ||
-        limits.max_delta_instruction_bytes == 0 ||
+        limits.max_delta_instruction_bytes == 0 || limits.max_delta_depth == 0 ||
         limits.max_peel_depth == 0)
         throw std::invalid_argument("libgit2 runtime repository limits must be positive");
     if (limits.connect_timeout > limits.absolute_timeout ||
@@ -149,6 +153,8 @@ void validate_limits(const Libgit2RuntimeRepositoryFetchLimits& limits) {
         limits.max_odb_bytes > 16ULL * 1024ULL * 1024ULL * 1024ULL ||
         limits.max_fallback_blob_bytes > 64U * 1024U * 1024U ||
         limits.max_delta_instruction_bytes > 64U * 1024U * 1024U ||
+        limits.max_delta_depth > 1'024U ||
+        limits.max_upload_pack_rounds > 16U ||
         limits.tree.max_files > 1'000'000U || limits.tree.max_entries > 2'000'000U ||
         limits.tree.max_total_bytes > 16ULL * 1024ULL * 1024ULL * 1024ULL ||
         limits.tree.max_file_bytes > 512ULL * 1024ULL * 1024ULL ||
@@ -156,6 +162,24 @@ void validate_limits(const Libgit2RuntimeRepositoryFetchLimits& limits) {
         limits.tree.max_relative_path_bytes > 4'096U ||
         limits.tree.max_relative_path_depth > 128U)
         throw std::invalid_argument("repository limits exceed implementation hard maxima");
+}
+
+void validate_trusted_ca_bundle(const std::filesystem::path& bundle) {
+#ifdef __ANDROID__
+    if (bundle.empty())
+        throw std::invalid_argument(
+            "Android HTTPS fetches require an external trusted CA bundle");
+#endif
+    if (bundle.empty())
+        return;
+    std::error_code error;
+    if (!bundle.is_absolute() || !std::filesystem::is_regular_file(bundle, error) || error)
+        throw std::invalid_argument("trusted CA bundle must be an absolute regular file");
+}
+
+[[nodiscard]] std::string git_path_utf8(const std::filesystem::path& path) {
+    const auto utf8 = path.u8string();
+    return {reinterpret_cast<const char*>(utf8.data()), utf8.size()};
 }
 
 class GitLifetime final {
@@ -166,57 +190,6 @@ class GitLifetime final {
     GitLifetime& operator=(const GitLifetime&) = delete;
 };
 
-std::timed_mutex timeout_mutex;
-
-class GlobalTimeoutGuard final {
-  public:
-    GlobalTimeoutGuard(const Libgit2RuntimeRepositoryFetchLimits& limits,
-                       const std::stop_token stop_token,
-                       const std::chrono::steady_clock::time_point deadline)
-        : lock_(timeout_mutex, std::defer_lock) {
-        while (!lock_.try_lock_for(std::chrono::milliseconds(50))) {
-            if (stop_token.stop_requested())
-                throw RuntimeRepositoryFetchCancelled{};
-            if (std::chrono::steady_clock::now() >= deadline)
-                throw std::runtime_error("libgit2 repository operation deadline exceeded");
-        }
-        if (stop_token.stop_requested())
-            throw RuntimeRepositoryFetchCancelled{};
-        if (std::chrono::steady_clock::now() >= deadline)
-            throw std::runtime_error("libgit2 repository operation deadline exceeded");
-        require_git(git_libgit2_opts(GIT_OPT_GET_SERVER_CONNECT_TIMEOUT, &old_connect_),
-                    "reading libgit2 connect timeout failed");
-        require_git(git_libgit2_opts(GIT_OPT_GET_SERVER_TIMEOUT, &old_stall_),
-                    "reading libgit2 server timeout failed");
-        require_git(git_libgit2_opts(GIT_OPT_SET_SERVER_CONNECT_TIMEOUT,
-                                    bounded_timeout(limits.connect_timeout, "connect_timeout")),
-                    "setting libgit2 connect timeout failed");
-        try {
-            require_git(git_libgit2_opts(GIT_OPT_SET_SERVER_TIMEOUT,
-                                        bounded_timeout(limits.stall_timeout, "stall_timeout")),
-                        "setting libgit2 server timeout failed");
-            armed_ = true;
-        } catch (...) {
-            static_cast<void>(
-                git_libgit2_opts(GIT_OPT_SET_SERVER_CONNECT_TIMEOUT, old_connect_));
-            throw;
-        }
-    }
-
-    ~GlobalTimeoutGuard() {
-        if (!armed_)
-            return;
-        static_cast<void>(git_libgit2_opts(GIT_OPT_SET_SERVER_TIMEOUT, old_stall_));
-        static_cast<void>(git_libgit2_opts(GIT_OPT_SET_SERVER_CONNECT_TIMEOUT, old_connect_));
-    }
-
-  private:
-    std::unique_lock<std::timed_mutex> lock_;
-    int old_connect_{};
-    int old_stall_{};
-    bool armed_{};
-};
-
 enum class AbortReason {
     None,
     Cancelled,
@@ -225,6 +198,9 @@ enum class AbortReason {
     AdvertisementRefs,
     PackBytes,
     PackPreflight,
+    PackRefDelta,
+    UploadPackRounds,
+    Http,
     Allocation,
     ReceivedObjects,
     OdbLimit
@@ -234,9 +210,14 @@ struct CallbackContext final {
     std::stop_token stop_token;
     std::chrono::steady_clock::time_point deadline;
     const Libgit2RuntimeRepositoryFetchLimits* limits{};
+    const std::filesystem::path* trusted_ca_bundle{};
     AbortReason reason{AbortReason::None};
     std::size_t advertisement_bytes{};
     std::size_t upload_pack_bytes{};
+    std::size_t upload_pack_rounds{};
+    const char* pack_failure{};
+    std::array<unsigned char, 256> pack_response_preview{};
+    std::size_t pack_response_preview_size{};
 
     [[nodiscard]] bool interrupted() noexcept {
         if (reason != AbortReason::None)
@@ -253,9 +234,12 @@ struct BoundedHttpSubtransport;
 
 struct BoundedHttpStream final {
     git_smart_subtransport_stream parent{};
-    git_smart_subtransport_stream* inner{};
     CallbackContext* context{};
     git_smart_service_t action{};
+    std::string host;
+    int port{443};
+    std::string repository_path;
+    std::vector<char> upload_pack_request;
     std::vector<char> advertisement;
     std::size_t advertisement_cursor{};
     bool advertisement_buffered{};
@@ -266,9 +250,67 @@ struct BoundedHttpStream final {
 
 struct BoundedHttpSubtransport final {
     git_smart_subtransport parent{};
-    git_smart_subtransport* inner{};
     CallbackContext* context{};
 };
+
+struct HttpsEndpoint final {
+    std::string host;
+    int port{443};
+    std::string path;
+};
+
+[[nodiscard]] int parse_https_port(const std::string_view value) {
+    int port{};
+    const auto [end, error] = std::from_chars(value.data(), value.data() + value.size(), port);
+    if (value.empty() || error != std::errc{} || end != value.data() + value.size() ||
+        port <= 0 || port > 65'535)
+        throw std::invalid_argument("HTTPS endpoint port is invalid");
+    return port;
+}
+
+[[nodiscard]] HttpsEndpoint parse_https_endpoint(const std::string_view url) {
+    constexpr std::string_view prefix = "https://";
+    if (!url.starts_with(prefix))
+        throw std::invalid_argument("bounded transport requires HTTPS");
+    const auto path_begin = url.find('/', prefix.size());
+    const auto authority = url.substr(prefix.size(), path_begin == std::string_view::npos
+                                                         ? url.size() - prefix.size()
+                                                         : path_begin - prefix.size());
+    HttpsEndpoint endpoint;
+    endpoint.path = path_begin == std::string_view::npos ? "/" : std::string(url.substr(path_begin));
+    if (authority.starts_with('[')) {
+        const auto close = authority.find(']');
+        if (close == std::string_view::npos)
+            throw std::invalid_argument("HTTPS endpoint IPv6 authority is invalid");
+        endpoint.host = std::string(authority.substr(1, close - 1));
+        if (close + 1 != authority.size()) {
+            if (authority[close + 1] != ':')
+                throw std::invalid_argument("HTTPS endpoint authority is invalid");
+            endpoint.port = parse_https_port(authority.substr(close + 2));
+        }
+    } else {
+        const auto colon = authority.rfind(':');
+        if (colon != std::string_view::npos) {
+            endpoint.host = std::string(authority.substr(0, colon));
+            if (endpoint.host.find(':') != std::string::npos)
+                throw std::invalid_argument("HTTPS endpoint IPv6 authority must be bracketed");
+            endpoint.port = parse_https_port(authority.substr(colon + 1));
+        } else {
+            endpoint.host = std::string(authority);
+        }
+    }
+    if (endpoint.host.empty() || endpoint.port <= 0 || endpoint.port > 65'535)
+        throw std::invalid_argument("HTTPS endpoint authority is invalid");
+    while (endpoint.path.size() > 1 && endpoint.path.ends_with('/'))
+        endpoint.path.pop_back();
+    return endpoint;
+}
+
+[[nodiscard]] std::string repository_endpoint_path(const std::string& repository_path,
+                                                   const std::string_view suffix) {
+    return repository_path == "/" ? std::string(suffix)
+                                  : repository_path + std::string(suffix);
+}
 
 [[nodiscard]] int pkt_hex(const char value) noexcept {
     if (value >= '0' && value <= '9')
@@ -281,7 +323,9 @@ struct BoundedHttpSubtransport final {
 }
 
 bool advertisement_ref_count_is_bounded(const std::vector<char>& bytes,
-                                        const std::size_t maximum_refs) noexcept {
+                                         const std::size_t maximum_refs) noexcept {
+    enum class State { Start, ServiceFlush, Records, Finished };
+    State state{State::Start};
     std::size_t offset{};
     std::size_t references{};
     while (offset != bytes.size()) {
@@ -294,46 +338,123 @@ bool advertisement_ref_count_is_bounded(const std::vector<char>& bytes,
                 return false;
             packet_size = packet_size * 16U + static_cast<std::size_t>(digit);
         }
-        if (packet_size == 0 || packet_size == 1 || packet_size == 2) {
+        if (packet_size == 0) {
+            if (state == State::ServiceFlush)
+                state = State::Records;
+            else if (state == State::Records)
+                state = State::Finished;
+            else
+                return false;
             offset += 4;
             continue;
         }
+        if (packet_size == 1 || packet_size == 2)
+            return false;
         if (packet_size < 4 || packet_size > bytes.size() - offset)
             return false;
         const std::string_view payload(bytes.data() + offset + 4, packet_size - 4);
-        if (!payload.starts_with("# service=") && payload != "version 2\n") {
-            if (++references > maximum_refs)
+        if (state == State::Start) {
+            if (payload == "# service=git-upload-pack\n")
+                state = State::ServiceFlush;
+            else if (payload == "version 2\n")
+                state = State::Records;
+            else
+                return false;
+        } else {
+            if (state != State::Records || payload.starts_with("# service=") ||
+                payload == "version 2\n" || ++references > maximum_refs)
                 return false;
         }
         offset += packet_size;
     }
-    return true;
+    return state == State::Finished;
+}
+
+[[nodiscard]] std::unique_ptr<httplib::SSLClient> make_https_client(BoundedHttpStream& stream) {
+    auto& context = *stream.context;
+    if (context.interrupted())
+        return {};
+    auto client = std::make_unique<httplib::SSLClient>(stream.host, stream.port);
+    client->enable_server_certificate_verification(true);
+    if (context.trusted_ca_bundle != nullptr && !context.trusted_ca_bundle->empty()) {
+        client->enable_system_ca(false);
+        client->set_ca_cert_path(git_path_utf8(*context.trusted_ca_bundle));
+    }
+    client->set_follow_location(false);
+    client->set_keep_alive(false);
+    client->set_decompress(false);
+    client->set_path_encode(false);
+    client->set_connection_timeout(context.limits->connect_timeout);
+    client->set_read_timeout(context.limits->stall_timeout);
+    client->set_write_timeout(context.limits->stall_timeout);
+    const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+        context.deadline - std::chrono::steady_clock::now());
+    if (remaining.count() <= 0) {
+        static_cast<void>(context.interrupted());
+        return {};
+    }
+    client->set_max_timeout(remaining);
+    return client;
+}
+
+int perform_http_request(BoundedHttpStream& stream, const std::string_view method,
+                         const std::string& path, const std::string_view expected_content_type,
+                         const std::size_t maximum_bytes, std::vector<char>& destination) {
+    auto& context = *stream.context;
+    auto client = make_https_client(stream);
+    if (!client)
+        return GIT_EUSER;
+    httplib::Request request;
+    request.method = method;
+    request.path = path;
+    request.set_header("Accept", std::string(expected_content_type));
+    if (method == "POST") {
+        request.set_header("Content-Type", "application/x-git-upload-pack-request");
+        request.body.assign(stream.upload_pack_request.begin(), stream.upload_pack_request.end());
+    }
+    bool accepted_headers{};
+    request.response_handler = [&](const httplib::Response& response) {
+        accepted_headers = response.status == 200 &&
+                           response.get_header_value("Content-Type") == expected_content_type;
+        if (accepted_headers && response.has_header("Content-Length"))
+            accepted_headers = response.get_header_value_u64("Content-Length", maximum_bytes + 1U) <=
+                               maximum_bytes;
+        return accepted_headers;
+    };
+    request.content_receiver = [&](const char* data, const std::size_t length, std::size_t,
+                                   std::size_t) {
+        if (context.interrupted())
+            return false;
+        if (length > maximum_bytes - std::min(maximum_bytes, destination.size())) {
+            context.reason = stream.action == GIT_SERVICE_UPLOADPACK_LS
+                                 ? AbortReason::AdvertisementBytes
+                                 : AbortReason::PackBytes;
+            return false;
+        }
+        destination.insert(destination.end(), data, data + length);
+        return !context.interrupted();
+    };
+    const auto result = client->send(request);
+    if (!result || !accepted_headers) {
+        if (!context.interrupted() && context.reason == AbortReason::None)
+            context.reason = AbortReason::Http;
+        return GIT_EUSER;
+    }
+    return context.interrupted() ? GIT_EUSER : 0;
 }
 
 int buffer_advertisement(BoundedHttpStream& stream) {
     auto& context = *stream.context;
-    std::array<char, 64U * 1024U> chunk{};
-    while (true) {
-        if (context.interrupted())
-            return GIT_EUSER;
-        const auto remaining = context.limits->max_advertisement_bytes -
-                               stream.advertisement.size();
-        const auto requested = std::min(chunk.size(), remaining + (remaining == 0 ? 1U : 0U));
-        std::size_t read{};
-        const auto result = stream.inner->read(stream.inner, chunk.data(), requested, &read);
-        if (result < 0)
-            return result;
-        if (read == 0)
-            break;
-        if (read > remaining) {
-            context.reason = AbortReason::AdvertisementBytes;
-            return GIT_EUSER;
-        }
-        stream.advertisement.insert(stream.advertisement.end(), chunk.begin(),
-                                    chunk.begin() + static_cast<std::ptrdiff_t>(read));
-    }
+    const auto separator = stream.repository_path.find('?') == std::string::npos ? '?' : '&';
+    const auto path = repository_endpoint_path(stream.repository_path, "/info/refs") + separator +
+                      "service=git-upload-pack";
+    if (const auto result = perform_http_request(
+            stream, "GET", path, "application/x-git-upload-pack-advertisement",
+            context.limits->max_advertisement_bytes, stream.advertisement);
+        result < 0)
+        return result;
     if (!advertisement_ref_count_is_bounded(stream.advertisement,
-                                             context.limits->max_advertised_refs)) {
+                                              context.limits->max_advertised_refs)) {
         context.reason = AbortReason::AdvertisementRefs;
         return GIT_EUSER;
     }
@@ -350,8 +471,23 @@ int buffer_advertisement(BoundedHttpStream& stream) {
 }
 
 [[nodiscard]] bool append_pack_from_smart_response(const std::vector<char>& response,
-                                                   std::vector<unsigned char>& pack) {
+                                                   std::vector<unsigned char>& pack,
+                                                   const char** failure = nullptr,
+                                                   bool* negotiation_only = nullptr) {
+    const auto reject = [&](const char* reason) noexcept {
+        if (failure != nullptr)
+            *failure = reason;
+        return false;
+    };
     std::size_t offset{};
+    bool saw_channel_one{};
+    bool saw_progress{};
+    bool saw_nak{};
+    bool saw_packfile_marker{};
+    bool saw_negotiation_record{};
+    bool saw_ack_or_nak{};
+    bool shallow_section_ended{};
+    bool terminated{};
     while (offset < response.size()) {
         if (response.size() - offset >= 4 &&
             std::memcmp(response.data() + offset, "PACK", 4) == 0) {
@@ -360,29 +496,85 @@ int buffer_advertisement(BoundedHttpStream& stream) {
             break;
         }
         if (response.size() - offset < 4)
-            return false;
+            return reject("truncated smart-response pkt-line");
         std::size_t packet_size{};
         for (std::size_t index = 0; index < 4; ++index) {
             const auto digit = pkt_hex(response[offset + index]);
             if (digit < 0)
-                return false;
+                return reject("invalid smart-response pkt-line length");
             packet_size = packet_size * 16U + static_cast<std::size_t>(digit);
         }
         if (packet_size <= 2) {
+            if (packet_size == 0 || packet_size == 2) {
+                if (saw_ack_or_nak)
+                    terminated = true;
+                else if (saw_negotiation_record)
+                    shallow_section_ended = true;
+            }
             offset += 4;
             continue;
         }
         if (packet_size < 4 || packet_size > response.size() - offset)
-            return false;
+            return reject("out-of-bounds smart-response pkt-line");
         const auto* payload = reinterpret_cast<const unsigned char*>(response.data() + offset + 4);
         const auto payload_size = packet_size - 4;
-        if (payload_size != 0 && payload[0] == 1)
+        const std::string_view payload_text(reinterpret_cast<const char*>(payload), payload_size);
+        if (payload_size != 0 && payload[0] == 1) {
+            saw_channel_one = true;
             pack.insert(pack.end(), payload + 1, payload + payload_size);
-        else if (payload_size != 0 && payload[0] == 3)
-            return false;
+        } else if (payload_size != 0 && payload[0] == 2) {
+            saw_progress = true;
+        } else if (payload_size != 0 && payload[0] == 3) {
+            return reject("remote side-band error");
+        } else if (payload_text == "NAK\n") {
+            if (terminated)
+                return reject("negotiation record followed response termination");
+            saw_nak = true;
+            saw_negotiation_record = true;
+            saw_ack_or_nak = true;
+        } else if (payload_text == "packfile\n") {
+            saw_packfile_marker = true;
+        } else if ((payload_text.starts_with("shallow ") ||
+                    payload_text.starts_with("unshallow ")) &&
+                   lowercase_sha1(payload_text.substr(payload_text.find(' ') + 1))) {
+            if (terminated || shallow_section_ended || saw_ack_or_nak)
+                return reject("shallow record followed section termination");
+            saw_negotiation_record = true;
+        } else if (payload_text.starts_with("ACK ")) {
+            if (terminated)
+                return reject("negotiation record followed response termination");
+            const auto oid = payload_text.substr(4, 40);
+            const auto suffix = payload_text.substr(std::min<std::size_t>(44, payload_text.size()));
+            if (!lowercase_sha1(oid) ||
+                (suffix != "\n" && suffix != " continue\n" && suffix != " common\n" &&
+                 suffix != " ready\n"))
+                return reject("invalid ACK negotiation record");
+            saw_negotiation_record = true;
+            saw_ack_or_nak = true;
+        } else {
+            return reject("unrecognized upload-pack negotiation record");
+        }
         offset += packet_size;
     }
-    return pack.size() >= 12 && std::memcmp(pack.data(), "PACK", 4) == 0;
+    if (pack.size() >= 12 && std::memcmp(pack.data(), "PACK", 4) == 0)
+        return true;
+    const auto negotiation_terminated =
+        terminated || (shallow_section_ended && !saw_ack_or_nak);
+    if (saw_negotiation_record && negotiation_terminated && !saw_channel_one &&
+        !saw_progress && !saw_packfile_marker) {
+        if (negotiation_only != nullptr)
+            *negotiation_only = true;
+        return true;
+    }
+    if (saw_channel_one)
+        return reject("smart response channel-one pack was invalid");
+    if (saw_packfile_marker)
+        return reject("smart response had packfile marker but no channel-one data");
+    if (saw_progress)
+        return reject("smart response had progress but no channel-one data");
+    if (saw_nak)
+        return reject("smart response had NAK but no pack data");
+    return reject("smart response did not contain recognized upload-pack data");
 }
 
 struct InflatedObject final {
@@ -493,19 +685,27 @@ struct InflatedObject final {
 [[nodiscard]] bool pack_is_safe(const std::vector<unsigned char>& pack,
                                 const Libgit2RuntimeRepositoryFetchLimits& limits,
                                 CallbackContext* context = nullptr) {
-    if (pack.size() < 32 || std::memcmp(pack.data(), "PACK", 4) != 0)
+    const auto reject = [&](const char* reason) noexcept {
+        if (context != nullptr)
+            context->pack_failure = reason;
         return false;
+    };
+    if (pack.size() < 32 || std::memcmp(pack.data(), "PACK", 4) != 0)
+        return reject("invalid header");
     const auto version = big_endian_u32(reinterpret_cast<const char*>(pack.data() + 4));
     const auto object_count = big_endian_u32(reinterpret_cast<const char*>(pack.data() + 8));
     if ((version != 2 && version != 3) || object_count > limits.max_received_objects)
-        return false;
+        return reject("version or object count");
     std::size_t offset = 12;
     std::uintmax_t uncompressed_total{};
+    std::vector<std::pair<std::size_t, std::size_t>> object_depths;
+    object_depths.reserve(object_count);
     for (std::uint32_t object_index = 0; object_index < object_count; ++object_index) {
         if (context != nullptr && context->interrupted())
-            return false;
+            return reject("interrupted");
         if (offset >= pack.size() - 20)
-            return false;
+            return reject("truncated object header");
+        const auto object_offset = offset;
         auto byte = pack[offset++];
         const auto type = static_cast<unsigned>((byte >> 4U) & 7U);
         std::uintmax_t declared_size = byte & 0x0fU;
@@ -513,30 +713,47 @@ struct InflatedObject final {
         std::size_t size_bytes = 1;
         while ((byte & 0x80U) != 0) {
             if (offset >= pack.size() - 20 || shift >= 64 || ++size_bytes > 10)
-                return false;
+                return reject("invalid object size varint");
             byte = pack[offset++];
             const auto part = static_cast<std::uintmax_t>(byte & 0x7fU);
             if (part > (std::numeric_limits<std::uintmax_t>::max() >> shift))
-                return false;
+                return reject("overflowing object size varint");
             declared_size |= part << shift;
             shift += 7;
         }
         if (declared_size > limits.max_odb_object_bytes)
-            return false;
+            return reject("declared object size limit");
         const bool delta = type == 6 || type == 7;
+        std::size_t delta_depth{};
         if (type == 6) {
-            std::size_t offset_bytes{};
-            do {
-                if (offset >= pack.size() - 20 || ++offset_bytes > 10)
-                    return false;
+            if (offset >= pack.size() - 20)
+                return reject("truncated OFS_DELTA base");
+            byte = pack[offset++];
+            std::uintmax_t distance = byte & 0x7fU;
+            std::size_t offset_bytes{1};
+            while ((byte & 0x80U) != 0) {
+                if (offset >= pack.size() - 20 || ++offset_bytes > 10 ||
+                    distance > (std::numeric_limits<std::uintmax_t>::max() >> 7U) - 1U)
+                    return reject("invalid OFS_DELTA distance");
                 byte = pack[offset++];
-            } while ((byte & 0x80U) != 0);
+                distance = ((distance + 1U) << 7U) | (byte & 0x7fU);
+            }
+            if (distance == 0 || distance > object_offset)
+                return reject("invalid OFS_DELTA base offset");
+            const auto base_offset = object_offset - static_cast<std::size_t>(distance);
+            const auto base = std::ranges::lower_bound(
+                object_depths, base_offset, {}, &std::pair<std::size_t, std::size_t>::first);
+            if (base == object_depths.end() || base->second == limits.max_delta_depth)
+                return reject("missing or over-depth OFS_DELTA base");
+            delta_depth = base->second + 1U;
         } else if (type == 7) {
-            if (pack.size() - 20 - offset < GIT_OID_SHA1_SIZE)
-                return false;
-            offset += GIT_OID_SHA1_SIZE;
+            // A new bare ODB has no external bases. Conservatively reject REF_DELTA
+            // so every accepted dependency can be proved by an OFS back-reference.
+            if (context != nullptr)
+                context->reason = AbortReason::PackRefDelta;
+            return reject("REF_DELTA is not preflightable");
         } else if (type == 0 || type == 5) {
-            return false;
+            return reject("invalid pack object type");
         }
         std::size_t type_limit = static_cast<std::size_t>(limits.max_odb_object_bytes);
         if (type == 1)
@@ -552,9 +769,9 @@ struct InflatedObject final {
         InflatedObject inflated;
         if (!inflate_pack_object(pack.data() + offset, pack.size() - 20 - offset, inflate_limit,
                                  delta, context, inflated))
-            return false;
+            return reject("object inflate or output limit");
         if (inflated.produced != declared_size)
-            return false;
+            return reject("inflated size differs from declared size");
         std::uintmax_t effective_size = declared_size;
         if (delta) {
             std::size_t cursor{};
@@ -565,49 +782,54 @@ struct InflatedObject final {
                 base_size > limits.max_odb_object_bytes ||
                 result_size > limits.max_odb_object_bytes ||
                 !delta_instructions_are_valid(inflated, cursor, base_size, result_size))
-                return false;
+                return reject("invalid delta instruction stream");
             effective_size = result_size;
         }
         if (effective_size > limits.max_odb_bytes -
                                  std::min(limits.max_odb_bytes, uncompressed_total))
-            return false;
+            return reject("cumulative object size limit");
         uncompressed_total += effective_size;
         offset += inflated.consumed;
+        object_depths.emplace_back(object_offset, delta_depth);
     }
-    return offset + 20 == pack.size();
+    return offset + 20 == pack.size() || reject("pack trailer position");
 }
 
 int buffer_and_preflight_upload_pack(BoundedHttpStream& stream) {
     auto& context = *stream.context;
-    std::array<char, 64U * 1024U> chunk{};
-    while (true) {
-        if (context.interrupted())
-            return GIT_EUSER;
-        const auto remaining = context.limits->max_pack_bytes - stream.upload_pack_response.size();
-        const auto requested = std::min(chunk.size(), remaining + (remaining == 0 ? 1U : 0U));
-        std::size_t read{};
-        const auto status = stream.inner->read(stream.inner, chunk.data(), requested, &read);
-        if (status < 0)
-            return status;
-        if (read == 0)
-            break;
-        if (read > remaining) {
-            context.reason = AbortReason::PackBytes;
-            return GIT_EUSER;
-        }
-        stream.upload_pack_response.insert(
-            stream.upload_pack_response.end(), chunk.begin(),
-            chunk.begin() + static_cast<std::ptrdiff_t>(read));
+    if (context.upload_pack_rounds == context.limits->max_upload_pack_rounds) {
+        context.reason = AbortReason::UploadPackRounds;
+        return GIT_EUSER;
     }
+    ++context.upload_pack_rounds;
+    const auto remaining_budget =
+        context.limits->max_pack_bytes -
+        std::min(context.limits->max_pack_bytes, context.upload_pack_bytes);
+    if (remaining_budget == 0) {
+        context.reason = AbortReason::PackBytes;
+        return GIT_EUSER;
+    }
+    if (const auto result = perform_http_request(
+            stream, "POST", repository_endpoint_path(stream.repository_path, "/git-upload-pack"),
+            "application/x-git-upload-pack-result", remaining_budget,
+            stream.upload_pack_response);
+        result < 0)
+        return result;
     std::vector<unsigned char> pack;
+    context.pack_response_preview_size = std::min(
+        context.pack_response_preview.size(), stream.upload_pack_response.size());
+    std::copy_n(stream.upload_pack_response.begin(), context.pack_response_preview_size,
+                context.pack_response_preview.begin());
     pack.reserve(stream.upload_pack_response.size());
-    if (!append_pack_from_smart_response(stream.upload_pack_response, pack) ||
-        !pack_is_safe(pack, *context.limits, &context)) {
+    bool negotiation_only{};
+    if (!append_pack_from_smart_response(stream.upload_pack_response, pack,
+                                         &context.pack_failure, &negotiation_only) ||
+        (!negotiation_only && !pack_is_safe(pack, *context.limits, &context))) {
         if (context.reason == AbortReason::None)
             context.reason = AbortReason::PackPreflight;
         return GIT_EUSER;
     }
-    context.upload_pack_bytes = stream.upload_pack_response.size();
+    context.upload_pack_bytes += stream.upload_pack_response.size();
     stream.upload_pack_buffered = true;
     return 0;
 }
@@ -658,65 +880,76 @@ int bounded_http_stream_read(git_smart_subtransport_stream* raw_stream, char* bu
 }
 
 int bounded_http_stream_write(git_smart_subtransport_stream* raw_stream, const char* buffer,
-                              const std::size_t length) {
+                              const std::size_t length) noexcept {
     auto& stream = *reinterpret_cast<BoundedHttpStream*>(raw_stream);
     if (stream.context->interrupted())
         return GIT_EUSER;
-    return stream.inner->write(stream.inner, buffer, length);
+    if (length == 0)
+        return 0;
+    if (stream.action != GIT_SERVICE_UPLOADPACK ||
+        length > maximum_upload_pack_request_bytes -
+                     std::min(maximum_upload_pack_request_bytes,
+                              stream.upload_pack_request.size())) {
+        stream.context->reason = AbortReason::Http;
+        return GIT_EUSER;
+    }
+    try {
+        stream.upload_pack_request.insert(stream.upload_pack_request.end(), buffer,
+                                          buffer + length);
+        return 0;
+    } catch (...) {
+        stream.context->reason = AbortReason::Allocation;
+        return GIT_EUSER;
+    }
 }
 
-void bounded_http_stream_free(git_smart_subtransport_stream* raw_stream) {
-    auto* stream = reinterpret_cast<BoundedHttpStream*>(raw_stream);
-    if (stream->inner != nullptr)
-        stream->inner->free(stream->inner);
-    delete stream;
+void bounded_http_stream_free(git_smart_subtransport_stream* raw_stream) noexcept {
+    delete reinterpret_cast<BoundedHttpStream*>(raw_stream);
 }
 
 int bounded_http_action(git_smart_subtransport_stream** out,
                         git_smart_subtransport* raw_transport, const char* url,
-                        const git_smart_service_t action) {
+                        const git_smart_service_t action) noexcept {
     auto& transport = *reinterpret_cast<BoundedHttpSubtransport*>(raw_transport);
-    git_smart_subtransport_stream* inner{};
-    const auto result = transport.inner->action(&inner, transport.inner, url, action);
-    if (result < 0)
-        return result;
+    if (action != GIT_SERVICE_UPLOADPACK_LS && action != GIT_SERVICE_UPLOADPACK)
+        return GIT_EAUTH;
     auto* stream = new (std::nothrow) BoundedHttpStream;
-    if (stream == nullptr) {
-        inner->free(inner);
+    if (stream == nullptr)
         return GIT_ERROR;
+    try {
+        stream->parent.subtransport = raw_transport;
+        stream->parent.read = &bounded_http_stream_read;
+        stream->parent.write = &bounded_http_stream_write;
+        stream->parent.free = &bounded_http_stream_free;
+        stream->context = transport.context;
+        stream->action = action;
+        if (url == nullptr)
+            throw std::invalid_argument("HTTPS action URL is absent");
+        const auto endpoint = parse_https_endpoint(url);
+        stream->host = endpoint.host;
+        stream->port = endpoint.port;
+        stream->repository_path = endpoint.path;
+    } catch (...) {
+        transport.context->reason = AbortReason::Allocation;
+        delete stream;
+        return GIT_EUSER;
     }
-    stream->parent.subtransport = raw_transport;
-    stream->parent.read = &bounded_http_stream_read;
-    stream->parent.write = &bounded_http_stream_write;
-    stream->parent.free = &bounded_http_stream_free;
-    stream->inner = inner;
-    stream->context = transport.context;
-    stream->action = action;
     *out = &stream->parent;
     return 0;
 }
 
-int bounded_http_close(git_smart_subtransport* raw_transport) {
-    auto& transport = *reinterpret_cast<BoundedHttpSubtransport*>(raw_transport);
-    return transport.inner->close(transport.inner);
+int bounded_http_close(git_smart_subtransport*) noexcept { return 0; }
+
+void bounded_http_free(git_smart_subtransport* raw_transport) noexcept {
+    delete reinterpret_cast<BoundedHttpSubtransport*>(raw_transport);
 }
 
-void bounded_http_free(git_smart_subtransport* raw_transport) {
-    auto* transport = reinterpret_cast<BoundedHttpSubtransport*>(raw_transport);
-    if (transport->inner != nullptr)
-        transport->inner->free(transport->inner);
-    delete transport;
-}
-
-int bounded_http_create(git_smart_subtransport** out, git_transport* owner, void* payload) {
+int bounded_http_create(git_smart_subtransport** out, git_transport* owner,
+                        void* payload) noexcept {
+    static_cast<void>(owner);
     auto* transport = new (std::nothrow) BoundedHttpSubtransport;
     if (transport == nullptr)
         return GIT_ERROR;
-    const auto result = git_smart_subtransport_http(&transport->inner, owner, nullptr);
-    if (result < 0) {
-        delete transport;
-        return result;
-    }
     transport->parent.action = &bounded_http_action;
     transport->parent.close = &bounded_http_close;
     transport->parent.free = &bounded_http_free;
@@ -725,7 +958,7 @@ int bounded_http_create(git_smart_subtransport** out, git_transport* owner, void
     return 0;
 }
 
-int bounded_https_transport(git_transport** out, git_remote* owner, void* payload) {
+int bounded_https_transport(git_transport** out, git_remote* owner, void* payload) noexcept {
     git_smart_subtransport_definition definition{};
     definition.callback = &bounded_http_create;
     definition.rpc = 1;
@@ -733,15 +966,16 @@ int bounded_https_transport(git_transport** out, git_remote* owner, void* payloa
     return git_transport_smart(out, owner, &definition);
 }
 
-int credentials_disabled(git_credential**, const char*, const char*, unsigned int, void*) {
+int credentials_disabled(git_credential**, const char*, const char*, unsigned int,
+                         void*) noexcept {
     return GIT_EAUTH;
 }
 
-int sideband_progress(const char*, const int, void* payload) {
+int sideband_progress(const char*, const int, void* payload) noexcept {
     return static_cast<CallbackContext*>(payload)->interrupted() ? GIT_EUSER : 0;
 }
 
-int transfer_progress(const git_indexer_progress* progress, void* payload) {
+int transfer_progress(const git_indexer_progress* progress, void* payload) noexcept {
     auto& context = *static_cast<CallbackContext*>(payload);
     if (context.interrupted())
         return GIT_EUSER;
@@ -770,7 +1004,25 @@ void throw_callback_failure(const CallbackContext& context, const std::string_vi
     if (context.reason == AbortReason::PackBytes)
         throw std::runtime_error("libgit2 repository pack byte limit exceeded");
     if (context.reason == AbortReason::PackPreflight)
-        throw std::runtime_error("libgit2 repository pack preflight rejected unsafe input");
+    {
+        std::string message =
+            std::string("libgit2 repository pack preflight rejected unsafe input: ") +
+            (context.pack_failure == nullptr ? "unknown reason" : context.pack_failure) +
+            "; response prefix=";
+        constexpr char hex[] = "0123456789abcdef";
+        for (std::size_t index = 0; index < context.pack_response_preview_size; ++index) {
+            const auto byte = context.pack_response_preview[index];
+            message.push_back(hex[byte >> 4U]);
+            message.push_back(hex[byte & 0x0fU]);
+        }
+        throw std::runtime_error(message);
+    }
+    if (context.reason == AbortReason::PackRefDelta)
+        throw std::runtime_error("libgit2 repository pack preflight rejected REF_DELTA input");
+    if (context.reason == AbortReason::UploadPackRounds)
+        throw std::runtime_error("libgit2 repository upload-pack round limit exceeded");
+    if (context.reason == AbortReason::Http)
+        throw std::runtime_error("bounded HTTPS smart transport failed");
     if (context.reason == AbortReason::Allocation)
         throw std::runtime_error("libgit2 repository bounded transport allocation failed");
     if (context.reason == AbortReason::ReceivedObjects)
@@ -805,7 +1057,7 @@ struct OdbScanContext final {
     std::uintmax_t bytes{};
 };
 
-int scan_odb(const git_oid* id, void* payload) {
+int scan_odb(const git_oid* id, void* payload) noexcept {
     auto& scan = *static_cast<OdbScanContext*>(payload);
     if (scan.callback->interrupted())
         return GIT_EUSER;
@@ -823,13 +1075,100 @@ int scan_odb(const git_oid* id, void* payload) {
     return 0;
 }
 
-[[nodiscard]] bool safe_component(const std::string_view value) noexcept {
-    if (value.empty() || value == "." || value == ".." ||
-        value.find('/') != std::string_view::npos || value.find('\\') != std::string_view::npos)
-        return false;
-    return std::ranges::none_of(value, [](const char character) {
-        return static_cast<unsigned char>(character) < 0x20U || character == 0x7f;
-    });
+[[nodiscard]] std::string portable_path_key(const std::string_view value) {
+    if (value.empty() || value.size() > 1'024 || value.front() == '/' || value.back() == '/' ||
+        value.find('\\') != std::string_view::npos || value.find(':') != std::string_view::npos)
+        throw std::runtime_error("repository tree entry path is not portable");
+    std::string key;
+    key.reserve(value.size());
+    std::size_t begin{};
+    while (begin < value.size()) {
+        const auto end = value.find('/', begin);
+        const auto component =
+            value.substr(begin, end == std::string_view::npos ? value.size() - begin : end - begin);
+        if (component.empty() || component == "." || component == ".." ||
+            component.front() == ' ' || component.back() == '.' || component.back() == ' ')
+            throw std::runtime_error("repository tree entry path is not canonical");
+        std::string folded;
+        folded.reserve(component.size());
+        for (std::size_t cursor = 0; cursor < component.size();) {
+            const auto first = static_cast<unsigned char>(component[cursor]);
+            std::uint32_t codepoint{};
+            std::size_t width{};
+            if (first < 0x80U) {
+                codepoint = first;
+                width = 1;
+            } else if (first >= 0xc2U && first <= 0xdfU) {
+                codepoint = first & 0x1fU;
+                width = 2;
+            } else if (first >= 0xe0U && first <= 0xefU) {
+                codepoint = first & 0x0fU;
+                width = 3;
+            } else if (first >= 0xf0U && first <= 0xf4U) {
+                codepoint = first & 0x07U;
+                width = 4;
+            } else {
+                throw std::runtime_error("repository tree entry path is not valid UTF-8");
+            }
+            if (cursor + width > component.size())
+                throw std::runtime_error("repository tree entry path is not valid UTF-8");
+            for (std::size_t index = 1; index < width; ++index) {
+                const auto continuation = static_cast<unsigned char>(component[cursor + index]);
+                if ((continuation & 0xc0U) != 0x80U)
+                    throw std::runtime_error("repository tree entry path is not valid UTF-8");
+                codepoint = (codepoint << 6U) | (continuation & 0x3fU);
+            }
+            const auto overlong = (width == 2 && codepoint < 0x80U) ||
+                                  (width == 3 && codepoint < 0x800U) ||
+                                  (width == 4 && codepoint < 0x10000U);
+            const auto combining = (codepoint >= 0x0300U && codepoint <= 0x036fU) ||
+                                   (codepoint >= 0x1ab0U && codepoint <= 0x1affU) ||
+                                   (codepoint >= 0x1dc0U && codepoint <= 0x1dffU) ||
+                                   (codepoint >= 0x20d0U && codepoint <= 0x20ffU) ||
+                                   (codepoint >= 0xfe20U && codepoint <= 0xfe2fU) ||
+                                   codepoint == 0x3099U || codepoint == 0x309aU ||
+                                   (codepoint >= 0x1100U && codepoint <= 0x11ffU) ||
+                                   (codepoint >= 0xa960U && codepoint <= 0xa97fU) ||
+                                   (codepoint >= 0xd7b0U && codepoint <= 0xd7ffU);
+            if (overlong || codepoint > 0x10ffffU ||
+                (codepoint >= 0xd800U && codepoint <= 0xdfffU) || codepoint == 0x85U ||
+                codepoint == 0x2028U || codepoint == 0x2029U ||
+                (codepoint >= 0x7fU && codepoint <= 0x9fU) ||
+                (codepoint >= 0xfdd0U && codepoint <= 0xfdefU) ||
+                (codepoint & 0xffffU) == 0xfffeU || (codepoint & 0xffffU) == 0xffffU || combining)
+                throw std::runtime_error("repository tree entry path is not portable UTF-8");
+            if (width == 1) {
+                const auto character = static_cast<char>(first);
+                if (first < 0x20U || character == '<' || character == '>' || character == '"' ||
+                    character == '|' || character == '?' || character == '*')
+                    throw std::runtime_error("repository tree entry path contains a reserved character");
+                folded.push_back(character >= 'A' && character <= 'Z'
+                                     ? static_cast<char>(character + ('a' - 'A'))
+                                     : character);
+            } else {
+                folded.append(component.substr(cursor, width));
+            }
+            cursor += width;
+        }
+        const auto dot = folded.find('.');
+        const auto stem = folded.substr(0, dot);
+        const auto reserved =
+            stem == "con" || stem == "prn" || stem == "aux" || stem == "nul" ||
+            (stem.size() == 4 && (stem.starts_with("com") || stem.starts_with("lpt")) &&
+             stem.back() >= '1' && stem.back() <= '9') ||
+            (stem.size() == 5 && (stem.starts_with("com") || stem.starts_with("lpt")) &&
+             (stem.ends_with("\xc2\xb9") || stem.ends_with("\xc2\xb2") ||
+              stem.ends_with("\xc2\xb3")));
+        if (reserved)
+            throw std::runtime_error("repository tree entry path uses a reserved name");
+        if (!key.empty())
+            key.push_back('/');
+        key += folded;
+        if (end == std::string_view::npos)
+            break;
+        begin = end + 1;
+    }
+    return key;
 }
 
 [[nodiscard]] std::filesystem::path utf8_path(const std::string_view value) {
@@ -848,6 +1187,7 @@ struct TreePlan final {
     std::vector<FilePlan> files;
     std::uintmax_t total_bytes{};
     std::size_t entries{};
+    std::set<std::string, std::less<>> portable_paths;
 };
 
 [[nodiscard]] git_object_t require_object_header(
@@ -880,11 +1220,11 @@ void preflight_tree(git_repository* repository, git_odb* odb, const git_tree* tr
         if (raw_name == nullptr)
             throw std::runtime_error("repository tree entry name is absent");
         const std::string_view name(raw_name);
-        if (!safe_component(name))
-            throw std::runtime_error("repository tree entry path is unsafe");
         const auto relative = prefix.empty() ? std::string(name) : prefix + "/" + std::string(name);
         if (relative.size() > limits.max_relative_path_bytes || ++plan.entries > limits.max_entries)
             throw std::runtime_error("repository tree path or entry limit exceeded");
+        if (!plan.portable_paths.emplace(portable_path_key(relative)).second)
+            throw std::runtime_error("repository tree contains a portable path collision");
         if (prefix.empty() && name == transport_directory_name)
             throw std::runtime_error("repository tree collides with the private transport path");
         const auto mode = git_tree_entry_filemode(entry);
@@ -1119,6 +1459,7 @@ struct Libgit2RuntimeRepositoryFetchBackend::Impl final {
     explicit Impl(Libgit2RuntimeRepositoryFetchOptions requested)
         : options(std::move(requested)) {
         validate_limits(options.limits);
+        validate_trusted_ca_bundle(options.trusted_ca_bundle);
     }
 
     GitLifetime lifetime;
@@ -1157,13 +1498,15 @@ RepositoryStageResult Libgit2RuntimeRepositoryFetchBackend::stage_exact(
 
     CallbackContext context{stop_token,
                             std::chrono::steady_clock::now() + options.limits.absolute_timeout,
-                            &options.limits};
+                            &options.limits,
+                            &options.trusted_ca_bundle};
     const auto transport_root = updater_owned_staging_directory / transport_directory_name;
     PrivateTransportCleanup failure_cleanup(transport_root);
     std::string resolved;
     {
         git_repository* raw_repository{};
-        require_git(git_repository_init(&raw_repository, transport_root.string().c_str(), 1),
+        const auto transport_root_utf8 = git_path_utf8(transport_root);
+        require_git(git_repository_init(&raw_repository, transport_root_utf8.c_str(), 1),
                     "private libgit2 repository initialization failed");
         GitOwner<git_repository, git_repository_free> repository(raw_repository,
                                                                  &git_repository_free);
@@ -1179,7 +1522,6 @@ RepositoryStageResult Libgit2RuntimeRepositoryFetchBackend::stage_exact(
         GitOwner<git_remote, git_remote_free> remote(raw_remote, &git_remote_free);
 
         {
-            GlobalTimeoutGuard timeout_guard(options.limits, stop_token, context.deadline);
             auto remote_callbacks = callbacks(context, https);
             const auto refspec = "+" + spec.advertised_reference + ":" +
                                  std::string(candidate_reference);
@@ -1256,6 +1598,116 @@ void set_file_transport_enabled(const bool enabled) noexcept {
     file_transport_enabled_for_testing = enabled;
 }
 
+std::string git_path_bytes(const std::filesystem::path& path) {
+    return git_path_utf8(path);
+}
+
+bool advertisement_is_safe(const std::vector<char>& advertisement,
+                           const std::size_t maximum_refs) noexcept {
+    return advertisement_ref_count_is_bounded(advertisement, maximum_refs);
+}
+
+bool https_endpoint_is_valid(const std::string_view url) noexcept {
+    try {
+        static_cast<void>(parse_https_endpoint(url));
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+bool trusted_https_advertisement_is_reachable(
+    const std::string_view url,
+    const Libgit2RuntimeRepositoryFetchLimits& limits) noexcept {
+    try {
+        const auto endpoint = parse_https_endpoint(url);
+        CallbackContext context{std::stop_token{},
+                                std::chrono::steady_clock::now() + limits.absolute_timeout,
+                                &limits};
+        BoundedHttpStream stream;
+        stream.context = &context;
+        stream.action = GIT_SERVICE_UPLOADPACK_LS;
+        stream.host = endpoint.host;
+        stream.port = endpoint.port;
+        stream.repository_path = endpoint.path;
+        return buffer_advertisement(stream) == 0;
+    } catch (...) {
+        return false;
+    }
+}
+
+bool trusted_https_roundtrip_resolves(
+    const std::string_view url, const std::string_view advertised_reference,
+    const std::string_view exact_commit, const std::filesystem::path& scratch_directory,
+    const Libgit2RuntimeRepositoryFetchLimits& limits) noexcept {
+    try {
+        validate_limits(limits);
+        if (!valid_https_url(url) || !valid_advertised_reference(std::string(advertised_reference)) ||
+            !lowercase_sha1(exact_commit) || !std::filesystem::is_empty(scratch_directory))
+            return false;
+        GitLifetime lifetime;
+        CallbackContext context{std::stop_token{},
+                                std::chrono::steady_clock::now() + limits.absolute_timeout,
+                                &limits};
+        const auto transport_root = scratch_directory / ".baas-git-roundtrip";
+        PrivateTransportCleanup cleanup(transport_root);
+        git_repository* raw_repository{};
+        const auto transport_root_utf8 = git_path_utf8(transport_root);
+        require_git(git_repository_init(&raw_repository, transport_root_utf8.c_str(), 1),
+                    "roundtrip repository initialization failed");
+        GitOwner<git_repository, git_repository_free> repository(raw_repository,
+                                                                 &git_repository_free);
+
+        git_remote_create_options remote_options = GIT_REMOTE_CREATE_OPTIONS_INIT;
+        remote_options.repository = repository.get();
+        remote_options.flags = GIT_REMOTE_CREATE_SKIP_INSTEADOF |
+                               GIT_REMOTE_CREATE_SKIP_DEFAULT_FETCHSPEC;
+        git_remote* raw_remote{};
+        const std::string remote_url(url);
+        require_git(git_remote_create_with_opts(&raw_remote, remote_url.c_str(), &remote_options),
+                    "roundtrip remote creation failed");
+        GitOwner<git_remote, git_remote_free> remote(raw_remote, &git_remote_free);
+
+        auto remote_callbacks = callbacks(context, true);
+        const auto refspec = "+" + std::string(advertised_reference) + ":" +
+                             std::string(candidate_reference);
+        char* refspec_pointer = const_cast<char*>(refspec.c_str());
+        git_strarray refspecs{&refspec_pointer, 1};
+        git_fetch_options fetch_options = GIT_FETCH_OPTIONS_INIT;
+        fetch_options.callbacks = remote_callbacks;
+        fetch_options.prune = GIT_FETCH_NO_PRUNE;
+        fetch_options.update_fetchhead = 0;
+        fetch_options.download_tags = GIT_REMOTE_DOWNLOAD_TAGS_NONE;
+        fetch_options.proxy_opts.type = GIT_PROXY_NONE;
+        fetch_options.depth = 1;
+        fetch_options.follow_redirects = GIT_REMOTE_REDIRECT_NONE;
+        require_git_or_callback(git_remote_fetch(remote.get(), &refspecs, &fetch_options, nullptr),
+                                context, "roundtrip exact-ref fetch failed");
+
+        git_odb* raw_odb{};
+        require_git(git_repository_odb(&raw_odb, repository.get()),
+                    "roundtrip object database lookup failed");
+        GitOwner<git_odb, git_odb_free> odb(raw_odb, &git_odb_free);
+        OdbScanContext scan{odb.get(), &context};
+        if (git_odb_foreach(odb.get(), &scan_odb, &scan) < 0)
+            throw_callback_failure(context, "roundtrip object database scan failed");
+
+        git_reference* raw_reference{};
+        require_git(git_reference_lookup(&raw_reference, repository.get(),
+                                         std::string(candidate_reference).c_str()),
+                    "roundtrip candidate reference lookup failed");
+        GitOwner<git_reference, git_reference_free> reference(raw_reference,
+                                                               &git_reference_free);
+        const auto* target = git_reference_target(reference.get());
+        if (target == nullptr)
+            return false;
+        const auto commit = peel_commit(repository.get(), odb.get(), *target, limits);
+        return oid_string(git_commit_id(commit.get())) == exact_commit;
+    } catch (...) {
+        return false;
+    }
+}
+
 bool pack_is_safe(const std::vector<unsigned char>& pack,
                   const Libgit2RuntimeRepositoryFetchLimits& limits) noexcept {
     try {
@@ -1274,6 +1726,31 @@ bool smart_response_is_safe(const std::vector<char>& response,
     } catch (...) {
         return false;
     }
+}
+
+bool negotiation_response_is_safe(const std::vector<char>& response) noexcept {
+    try {
+        std::vector<unsigned char> pack;
+        bool negotiation_only{};
+        return append_pack_from_smart_response(response, pack, nullptr, &negotiation_only) &&
+               negotiation_only && pack.empty();
+    } catch (...) {
+        return false;
+    }
+}
+
+bool upload_pack_budget_accepts(const std::vector<std::size_t>& response_sizes,
+                                const std::size_t byte_limit,
+                                const std::size_t round_limit) noexcept {
+    std::size_t used{};
+    std::size_t rounds{};
+    for (const auto size : response_sizes) {
+        if (rounds == round_limit || size > byte_limit - std::min(byte_limit, used))
+            return false;
+        ++rounds;
+        used += size;
+    }
+    return true;
 }
 
 bool pack_preflight_is_interrupted(const std::vector<unsigned char>& pack,

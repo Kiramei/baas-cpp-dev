@@ -609,7 +609,7 @@ if(BUILD_SERVICE_FILE_RESOURCE_STORE)
 endif()
 
 if(BUILD_RUNTIME_REPOSITORY_GIT2)
-    baas_request_dependencies(libgit2 miniz)
+    baas_request_dependencies(libgit2 miniz cpp_httplib)
 endif()
 
 baas_load_requested_dependencies()

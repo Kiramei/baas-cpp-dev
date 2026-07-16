@@ -10,6 +10,10 @@ if(NOT TARGET BAAS::miniz)
     message(FATAL_ERROR "BUILD_RUNTIME_REPOSITORY_GIT2=ON requires BAAS::miniz for pack preflight")
 endif()
 
+if(NOT TARGET BAAS::httplib)
+    message(FATAL_ERROR "BUILD_RUNTIME_REPOSITORY_GIT2=ON requires BAAS::httplib")
+endif()
+
 if(NOT TARGET BAAS_runtime_repository_updater)
     message(FATAL_ERROR "The libgit2 backend requires BAAS_runtime_repository_updater")
 endif()
@@ -25,7 +29,7 @@ target_include_directories(BAAS_runtime_repository_git2 PUBLIC "${BAAS_PROJECT_P
 target_link_libraries(
         BAAS_runtime_repository_git2
         PUBLIC BAAS_runtime_repository_updater
-        PRIVATE BAAS::libgit2 BAAS::miniz
+        PRIVATE BAAS::libgit2 BAAS::miniz BAAS::httplib
 )
 
 if(BUILD_RUNTIME_REPOSITORY_GIT2_TESTS)

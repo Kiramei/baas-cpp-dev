@@ -5,6 +5,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <memory>
 
 namespace baas::runtime::repository {
@@ -16,6 +17,7 @@ struct Libgit2RuntimeRepositoryFetchLimits final {
     std::size_t max_advertised_refs{4'096};
     std::size_t max_advertisement_bytes{2U * 1024U * 1024U};
     std::size_t max_pack_bytes{256U * 1024U * 1024U};
+    std::size_t max_upload_pack_rounds{4};
     std::size_t max_received_objects{131'072};
     std::size_t max_odb_objects{131'072};
     std::uintmax_t max_odb_bytes{3ULL * 1024ULL * 1024ULL * 1024ULL};
@@ -25,12 +27,16 @@ struct Libgit2RuntimeRepositoryFetchLimits final {
     std::size_t max_tree_bytes{16U * 1024U * 1024U};
     std::size_t max_fallback_blob_bytes{32U * 1024U * 1024U};
     std::size_t max_delta_instruction_bytes{16U * 1024U * 1024U};
+    std::size_t max_delta_depth{64};
     std::size_t max_peel_depth{8};
     RepositoryValidationLimits tree{};
 };
 
 struct Libgit2RuntimeRepositoryFetchOptions final {
     Libgit2RuntimeRepositoryFetchLimits limits{};
+    // Optional on desktop platforms. Android requires an absolute external PEM
+    // bundle path and fails closed when none is supplied.
+    std::filesystem::path trusted_ca_bundle;
 };
 
 // Optional production backend. It fetches only one trusted advertised heads or

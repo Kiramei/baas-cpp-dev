@@ -139,7 +139,8 @@ requests whose transport cap is about 68 MiB each. Multipart OCR requests must
 have exactly one valid `Content-Length`; chunked multipart requests omit that
 header and fail closed before JSON parsing or image decoding.
 
-The Conan `BAAS::httplib` target publishes both
+The Conan `BAAS::httplib` target publishes `CPPHTTPLIB_OPENSSL_SUPPORT=1` and
+links the pinned static OpenSSL 3.5.7 closure on every supported platform. It also publishes both
 `CPPHTTPLIB_WEBSOCKET_MAX_PAYLOAD_LENGTH=67108864` and
 `CPPHTTPLIB_HEADER_MAX_TOTAL_LENGTH=32768` to every 0.50.1 consumer. Because
 cpp-httplib is header-only, these process-wide target definitions prevent
