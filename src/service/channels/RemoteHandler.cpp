@@ -451,7 +451,7 @@ private:
         try {
             opened = backend_->open(
                 std::move(config->config_id),
-                { [core = core_](std::string payload) {
+                { [core = core_](RemoteDeviceMessageKind, std::string payload) {
                       return core->device_bytes(std::move(payload));
                   },
                   [core = core_](const RemoteSessionEnd reason) {

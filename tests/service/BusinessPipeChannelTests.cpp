@@ -387,7 +387,8 @@ public:
             state_->callbacks = callbacks;
         }
         const std::string startup{"\x00\x01\xfe", 3};
-        const auto status = callbacks.device_bytes(startup);
+        const auto status = callbacks.device_bytes(
+            channels::RemoteDeviceMessageKind::binary, startup);
         {
             std::lock_guard lock{state_->mutex};
             state_->startup_status = status;

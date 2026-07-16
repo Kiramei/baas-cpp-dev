@@ -50,9 +50,19 @@ by a second lease probe, closing the ADB round-trip window where an earlier
 matching server with no lease after that second probe remains a legacy, unowned
 server and may still be reused.
 
-The supervisor starts the child behind a private gate. It records the child PID
-and start time before atomically publishing the gate; any metadata or gate write
-failure kills only the still-waiting shell, so `app_process` has not executed.
+The production ADB boundary keeps legacy one-line commands free of control
+characters. Multiline backend-owned supervisor scripts are base64 encoded on
+the host after CRLF normalization and decoded through Android's
+`/system/bin/base64` into `/system/bin/sh`, so the strict transport boundary is
+not weakened. The supervisor is detached with `/system/bin/setsid`, ignores
+`SIGHUP`, and redirects standard input from `/dev/null`; closing the short-lived
+ADB shell that launched it therefore cannot terminate the owned process tree.
+
+The supervisor starts the child behind a private stop gate: after exporting the
+owner identity, the child stops itself with `SIGSTOP`. The supervisor records
+the stopped child PID and start time before releasing it with `SIGCONT`; any
+metadata or release failure kills only the still-stopped shell, so
+`app_process` has not executed.
 The child and supervisor both carry `BAAS_WS_SCRCPY_OWNER=TOKEN`. The resulting
 ownership record follows the pending open into the live session and release.
 
@@ -87,7 +97,9 @@ deadline because lease publication can precede listener readiness. cpp-httplib
 assembles fragments, handles ping/pong and close frames, and applies its global
 payload bound; the backend applies the tighter remote-frame limit after
 assembly. Both text and binary device messages are forwarded byte-exactly in a
-single reader's order.
+single reader's order. Their WebSocket message kind remains explicit at the
+backend callback boundary even though the service remote channel transports
+both as raw device bytes.
 
 Client-to-device messages are always binary. Concurrent sends are serialized so
 WebSocket frames cannot interleave. Close admission is linearized: one caller
@@ -109,3 +121,16 @@ termination, serialized sends, concurrent close, per-serial admission, failed
 open unwind, and the `stop()`/in-flight-open race. CI runs the native suite on
 Windows, Linux, and macOS in Debug and Release. No test invokes an adb executable
 or writes to an emulator.
+
+For an opt-in real-device check, configure
+`BUILD_SERVICE_REMOTE_BACKEND_LIVE_SMOKE=ON` and build
+`BAAS_service_remote_backend_live_smoke`. Invoke it with a BAAS project root,
+configuration id, pinned ws-scrcpy server jar, exact ADB serial, and optional
+timeout in seconds. The device must be clean before the run. Success requires at
+the Tauri-compatible video-settings command after `scrcpy_initial`, then requires
+an Annex-B H.264 IDR or non-IDR slice. Initialization metadata, SPS/PPS-only
+codec setup, and `scrcpy_message` device-event packets do not count as a screen
+frame. The smoke also verifies that the exact serial has
+no remaining `tcp:8886` forward, matching ws-scrcpy process, global lease
+symlink, or owner directory after close. Failed opens run the same cleanup
+oracle. Host CI compiles this target but deliberately does not run device I/O.

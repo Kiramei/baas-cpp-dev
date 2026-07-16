@@ -35,7 +35,10 @@ starts a process, kills a process, or creates a forward implicitly.
 
 `forward_tcp_zero` uses ADB's resolved-port response instead of probing and
 releasing an ephemeral host port, so a local process cannot win a bind race
-between selection and forward installation. `remove_tcp_forward` is only a
+between selection and forward installation. The wire exchange requires the
+host-request `OKAY`, the forward-allocation `OKAY`, and only then the
+length-framed resolved port; omitting either acknowledgement fails closed.
+`remove_tcp_forward` is only a
 primitive: the higher-level lease owner must call it exclusively for forwards
 that lease created, never for a matching forward discovered in `list_forwards`.
 

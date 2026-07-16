@@ -404,14 +404,16 @@ struct Fixture {
 struct CallbackLog {
     std::mutex mutex;
     std::condition_variable cv;
+    std::vector<channels::RemoteDeviceMessageKind> kinds;
     std::vector<std::string> frames;
     std::vector<channels::RemoteSessionEnd> ends;
     channels::RemoteIoStatus delivery{channels::RemoteIoStatus::accepted};
     channels::RemoteSessionCallbacks callbacks()
     {
         return {
-            [this](std::string payload) {
+            [this](channels::RemoteDeviceMessageKind kind, std::string payload) {
                 std::lock_guard lock{mutex};
+                kinds.emplace_back(kind);
                 frames.emplace_back(std::move(payload));
                 cv.notify_all();
                 return delivery;
@@ -479,6 +481,10 @@ void reuses_exact_server_and_forward_with_ordered_duplex()
     CHECK(log.wait(2, 1));
     {
         std::lock_guard lock{log.mutex};
+        const std::vector expected_kinds{
+            channels::RemoteDeviceMessageKind::text,
+            channels::RemoteDeviceMessageKind::binary};
+        CHECK(log.kinds == expected_kinds);
         CHECK(log.frames == std::vector<std::string>({"first", std::string{"b\0", 2}}));
         CHECK(log.ends == std::vector{channels::RemoteSessionEnd::device_closed});
     }
@@ -766,7 +772,7 @@ void device_callback_can_reenter_close()
     std::condition_variable cv;
     bool callback_returned{};
     channels::RemoteSessionCallbacks callbacks{
-        [&](std::string) {
+        [&](channels::RemoteDeviceMessageKind, std::string) {
             session->close();
             {
                 std::lock_guard lock{mutex};
@@ -810,7 +816,9 @@ void ended_callback_can_reenter_close()
     std::condition_variable cv;
     bool callback_returned{};
     channels::RemoteSessionCallbacks callbacks{
-        [](std::string) { return channels::RemoteIoStatus::accepted; },
+        [](channels::RemoteDeviceMessageKind, std::string) {
+            return channels::RemoteIoStatus::accepted;
+        },
         [&](channels::RemoteSessionEnd) {
             session->close();
             {

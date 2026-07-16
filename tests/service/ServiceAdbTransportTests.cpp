@@ -603,7 +603,7 @@ void forwarding_and_parsing()
     CHECK(forwarded->written == frame(
         "host-serial:emulator-5556:forward:tcp:27183;tcp:8886"));
 
-    auto allocated = fake(length_response("31415"), 1);
+    auto allocated = fake("OKAY" + length_response("31415"), 1);
     auto removed = fake("OKAY", 1);
     factory.push(allocated);
     factory.push(removed);
@@ -616,9 +616,16 @@ void forwarding_and_parsing()
     CHECK(removed->written == frame(
         "host-serial:emulator-5556:killforward:tcp:31415"));
 
+    FakeFactory missing_allocation_ack_factory;
+    missing_allocation_ack_factory.push(fake(length_response("31415")));
+    ServiceAdbTransport missing_allocation_ack(
+        {}, missing_allocation_ack_factory.callback());
+    CHECK(missing_allocation_ack.forward_tcp_zero("emulator-5556", 8886).error
+          == AdbTransportError::protocol_error);
+
     for (const auto invalid : {"", "0", "65536", "12x", " 12"}) {
         FakeFactory invalid_factory;
-        invalid_factory.push(fake(length_response(invalid)));
+        invalid_factory.push(fake("OKAY" + length_response(invalid)));
         ServiceAdbTransport invalid_transport({}, invalid_factory.callback());
         CHECK(invalid_transport.forward_tcp_zero("emulator-5556", 8886).error
               == AdbTransportError::protocol_error);

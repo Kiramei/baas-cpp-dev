@@ -29,6 +29,11 @@ enum class RemoteIoStatus : std::uint8_t {
     internal_error,
 };
 
+enum class RemoteDeviceMessageKind : std::uint8_t {
+    binary,
+    text,
+};
+
 enum class RemoteSessionEnd : std::uint8_t {
     clean,
     device_closed,
@@ -38,8 +43,10 @@ enum class RemoteSessionEnd : std::uint8_t {
 
 struct RemoteSessionCallbacks {
     // Implementations preserve device stream order. The callback is thread-safe
-    // and returns capacity/closed instead of silently dropping a scrcpy frame.
-    std::function<RemoteIoStatus(std::string payload)> device_bytes;
+    // and preserves the upstream WebSocket message kind while returning
+    // capacity/closed instead of silently dropping a scrcpy message.
+    std::function<RemoteIoStatus(
+        RemoteDeviceMessageKind kind, std::string payload)> device_bytes;
     std::function<void(RemoteSessionEnd reason)> ended;
 };
 

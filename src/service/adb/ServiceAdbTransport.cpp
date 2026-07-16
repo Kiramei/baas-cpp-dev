@@ -636,7 +636,8 @@ public:
     }
 
     AdbTransportResult<std::string> host_query(
-        const std::string_view request, const std::stop_token stop)
+        const std::string_view request, const std::stop_token stop,
+        const bool expect_secondary_okay = false)
     {
         AdbTransportError error{};
         std::string message;
@@ -649,6 +650,13 @@ public:
         if (error != AdbTransportError::none) return failure<std::string>(error);
         auto okay = expect_okay(*state, deadline, stop, total);
         if (!okay) return failure<std::string>(okay.error, std::move(okay.message));
+        if (expect_secondary_okay) {
+            okay = expect_okay(*state, deadline, stop, total);
+            if (!okay) {
+                return failure<std::string>(
+                    okay.error, std::move(okay.message));
+            }
+        }
         std::size_t size{};
         error = read_length(*state, size, deadline, stop, total);
         if (error != AdbTransportError::none) return failure<std::string>(error);
@@ -961,7 +969,9 @@ AdbTransportResult<std::uint16_t> ServiceAdbTransport::forward_tcp_zero(
     }
     const std::string request = "host-serial:" + std::string(exact_serial)
         + ":forward:norebind:tcp:0;tcp:" + std::to_string(device_port);
-    auto response = impl_->host_query(request, stop);
+    // ADB's tcp:0 forward service acknowledges both the host request and the
+    // forward allocation before returning the length-framed resolved port.
+    auto response = impl_->host_query(request, stop, true);
     if (!response) {
         return failure<std::uint16_t>(response.error, std::move(response.message));
     }

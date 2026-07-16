@@ -24,6 +24,9 @@ class ProductionRemoteBackendContractTests(unittest.TestCase):
         cls.docs = (
             ROOT / "docs" / "script-runtime" / "SERVICE_REMOTE_BACKEND.md"
         ).read_text(encoding="utf-8")
+        cls.live_smoke = (
+            ROOT / "tests" / "service" / "ProductionRemoteBackendLiveSmoke.cpp"
+        ).read_text(encoding="utf-8")
 
     def test_exact_device_and_independent_server_identity_are_owned(self) -> None:
         for anchor in (
@@ -52,6 +55,8 @@ class ProductionRemoteBackendContractTests(unittest.TestCase):
             "BAAS_WS_LEASE_PROBE",
             "BAAS_WS_SUPERVISOR_LAUNCH",
             "BAAS_WS_SUPERVISOR_STOP",
+            "/system/bin/setsid",
+            "kill -STOP",
             "baas-ws-scrcpy.owner.*",
             "send_mutex_",
             "close_mutex_",
@@ -70,11 +75,29 @@ class ProductionRemoteBackendContractTests(unittest.TestCase):
     def test_build_ci_and_test_gates_are_closed(self) -> None:
         self.assertIn("BAAS_service_remote_backend", self.cmake)
         self.assertIn("BAAS_service_remote_backend_tests", self.cmake)
+        self.assertIn("BAAS_service_remote_backend_live_smoke", self.cmake)
         self.assertIn("BUILD_SERVICE_REMOTE_BACKEND_TESTS", self.root_cmake)
+        self.assertIn("BUILD_SERVICE_REMOTE_BACKEND_LIVE_SMOKE", self.root_cmake)
         self.assertIn("BAAS_service_remote_backend_tests", self.workflow)
+        self.assertIn("BAAS_service_remote_backend_live_smoke", self.workflow)
+        self.assertIn("ProductionRemoteBackendLiveSmoke.cpp", self.workflow)
         self.assertIn("ServiceRemoteBackend.cmake", self.workflow)
         self.assertIn("test_ws_scrcpy_resource_lock.py", self.workflow)
         self.assertIn("Verify ws-scrcpy resource lock", self.workflow)
+        for path in (
+            "cmake/ServiceFileResourceStore.cmake",
+            "include/service/adapters/FileResourceStore.h",
+            "src/service/adapters/FileResourceStore.cpp",
+            "src/service/adapters/ConfigurationDefaults.h",
+        ):
+            self.assertEqual(self.workflow.count(path), 2)
+        self.assertIn("RemoteDeviceMessageKind::binary", self.live_smoke)
+        self.assertIn('"scrcpy_initial"', self.live_smoke)
+        self.assertIn('"scrcpy_message"', self.live_smoke)
+        self.assertIn("video_start_command", self.live_smoke)
+        self.assertIn("contains_h264_slice", self.live_smoke)
+        self.assertIn("/data/local/tmp/baas-ws-scrcpy.lease", self.live_smoke)
+        self.assertIn("failed-open cleanup verification failed", self.live_smoke)
 
 
 if __name__ == "__main__":

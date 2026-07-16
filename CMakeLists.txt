@@ -134,6 +134,7 @@ option(BUILD_SERVICE_REMOTE_HANDLER "Build the transport-independent remote hand
 option(BUILD_SERVICE_REMOTE_HANDLER_TESTS "Build deterministic remote-handler tests" OFF)
 option(BUILD_SERVICE_REMOTE_BACKEND "Build the production ws-scrcpy remote backend" OFF)
 option(BUILD_SERVICE_REMOTE_BACKEND_TESTS "Build deterministic ws-scrcpy backend tests" OFF)
+option(BUILD_SERVICE_REMOTE_BACKEND_LIVE_SMOKE "Build the opt-in live ws-scrcpy device smoke" OFF)
 option(BUILD_SERVICE_TRIGGER_HANDLER "Build the production trigger business handler" OFF)
 option(BUILD_SERVICE_TRIGGER_HANDLER_TESTS "Build deterministic trigger-handler tests" OFF)
 option(BUILD_SERVICE_STATUS_TRIGGER "Build the production status trigger registration" OFF)
@@ -309,6 +310,14 @@ endif()
 
 if(BUILD_SERVICE_REMOTE_BACKEND_TESTS AND NOT BUILD_SERVICE_REMOTE_BACKEND)
     set(BUILD_SERVICE_REMOTE_BACKEND ON CACHE BOOL "Build the production ws-scrcpy remote backend" FORCE)
+endif()
+
+if(BUILD_SERVICE_REMOTE_BACKEND_LIVE_SMOKE AND NOT BUILD_SERVICE_REMOTE_BACKEND)
+    set(BUILD_SERVICE_REMOTE_BACKEND ON CACHE BOOL "Build the production ws-scrcpy remote backend" FORCE)
+endif()
+
+if(BUILD_SERVICE_REMOTE_BACKEND_LIVE_SMOKE AND NOT BUILD_SERVICE_FILE_RESOURCE_STORE)
+    set(BUILD_SERVICE_FILE_RESOURCE_STORE ON CACHE BOOL "Build the durable JSON file resource store" FORCE)
 endif()
 
 if(BUILD_SERVICE_REMOTE_BACKEND)

@@ -188,14 +188,16 @@ struct BackendState {
 
     channels::RemoteIoStatus emit(std::string payload)
     {
-        std::function<channels::RemoteIoStatus(std::string)> callback;
+        std::function<channels::RemoteIoStatus(
+            channels::RemoteDeviceMessageKind, std::string)> callback;
         {
             std::lock_guard lock{mutex};
             if (!accepting_callbacks) return channels::RemoteIoStatus::closed;
             ++active_callbacks;
             callback = callbacks.device_bytes;
         }
-        const auto result = callback(std::move(payload));
+        const auto result = callback(
+            channels::RemoteDeviceMessageKind::binary, std::move(payload));
         {
             std::lock_guard lock{mutex};
             --active_callbacks;
