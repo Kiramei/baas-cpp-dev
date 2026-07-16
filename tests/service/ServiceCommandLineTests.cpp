@@ -13,6 +13,7 @@ using namespace baas::service::app;
 namespace {
 
 int failures = 0;
+const std::string runtime_repository_generation(64, 'a');
 
 void check(const bool condition, const std::string_view message)
 {
@@ -40,7 +41,8 @@ std::string project_root()
 std::vector<std::string> required_arguments()
 {
     return {
-        "--project-root", project_root(), "--host", "127.0.0.1", "--port", "8190"};
+        "--project-root", project_root(), "--host", "127.0.0.1", "--port", "8190",
+        "--runtime-repository-generation", runtime_repository_generation};
 }
 
 void test_valid_run_forms()
@@ -52,11 +54,15 @@ void test_valid_run_forms()
           "successful run must expose no error");
     check(separated.options.host == "127.0.0.1" && separated.options.port == 8190,
           "run options must preserve host and port");
+    check(separated.options.runtime_repository_generation
+              == runtime_repository_generation,
+          "run options must preserve the exact runtime repository generation");
     check(std::filesystem::equivalent(
               separated.options.project_root, std::filesystem::current_path()),
           "run options must preserve the directory project root");
 
     const std::vector<std::string> equals{
+        "--runtime-repository-generation=" + runtime_repository_generation,
         "--port=65535", "--host=127.0.0.1", "--project-root=" + project_root()};
     const auto inline_values = parse(equals);
     check(inline_values && inline_values.options.port == 65'535,
@@ -157,31 +163,69 @@ void test_required_values_and_filesystem_gate()
     check(parse({"--project-root", project_root(), "--host", "127.0.0.1"}).error
               == ServiceCommandLineError::missing_port,
           "port must be required");
-    check(parse({"--project-root", project_root(), "--host", "0.0.0.0", "--port", "8190"})
+    check(parse({"--project-root", project_root(), "--host", "127.0.0.1", "--port", "8190"})
+              .error
+              == ServiceCommandLineError::missing_runtime_repository_generation,
+          "runtime repository generation must be required");
+    check(parse({"--project-root", project_root(), "--host", "0.0.0.0", "--port", "8190",
+                 "--runtime-repository-generation", runtime_repository_generation})
               .error
               == ServiceCommandLineError::invalid_host,
           "non-loopback host must fail");
 
     for (const std::string port : {"0", "65536", "-1", "+1", "1x", " 1"}) {
         check(parse({"--project-root", project_root(), "--host", "127.0.0.1",
-                     "--port", port})
+                     "--port", port, "--runtime-repository-generation",
+                     runtime_repository_generation})
                   .error
                   == ServiceCommandLineError::invalid_port,
               "invalid port spelling or range must fail");
     }
     const auto missing = std::filesystem::current_path() / "definitely-missing-service-root";
     check(parse({"--project-root", missing.string(), "--host", "127.0.0.1", "--port",
-                 "8190"})
+                 "8190", "--runtime-repository-generation",
+                 runtime_repository_generation})
               .error
               == ServiceCommandLineError::project_root_not_directory,
           "missing or non-directory project root must fail closed");
     const auto file = std::filesystem::current_path() / "CMakeCache.txt";
     check(std::filesystem::is_regular_file(file),
           "regular-file project-root fixture must exist");
-    check(parse({"--project-root", file.string(), "--host", "127.0.0.1", "--port", "8190"})
+    check(parse({"--project-root", file.string(), "--host", "127.0.0.1", "--port", "8190",
+                 "--runtime-repository-generation", runtime_repository_generation})
               .error
               == ServiceCommandLineError::project_root_not_directory,
           "regular-file project root must fail closed");
+}
+
+void test_runtime_repository_generation_policy()
+{
+    for (const std::string invalid : {
+             std::string(63, 'a'), std::string(65, 'a'), std::string(64, 'A'),
+             std::string(64, 'g'), std::string(64, '_')}) {
+        auto arguments = required_arguments();
+        arguments.back() = invalid;
+        check(parse(arguments).error
+                  == ServiceCommandLineError::invalid_runtime_repository_generation,
+              "runtime repository generation must be canonical lowercase hex");
+    }
+
+    auto duplicate = required_arguments();
+    duplicate.emplace_back("--runtime-repository-generation="
+                           + runtime_repository_generation);
+    check(parse(duplicate).error == ServiceCommandLineError::duplicate_option,
+          "runtime repository generation must reject duplicate options");
+
+    auto missing_value = required_arguments();
+    missing_value.pop_back();
+    check(parse(missing_value).error == ServiceCommandLineError::missing_value,
+          "runtime repository generation must reject a missing separated value");
+
+    auto empty_value = required_arguments();
+    empty_value.pop_back();
+    empty_value.back() += '=';
+    check(parse(empty_value).error == ServiceCommandLineError::empty_value,
+          "runtime repository generation must reject an empty inline value");
 }
 
 void test_input_budgets_and_argument_vector()
@@ -208,8 +252,10 @@ void test_input_budgets_and_argument_vector()
               == ServiceCommandLineError::invalid_argument_vector,
           "argc/argv boundary must reject null argument entries");
     const auto root = project_root();
-    const char* valid[] = {"BAAS_service", "--project-root", root.c_str(), "--host",
-                           "127.0.0.1", "--port=1"};
+    const char* valid[] = {
+        "BAAS_service", "--project-root", root.c_str(), "--host", "127.0.0.1",
+        "--port=1", "--runtime-repository-generation",
+        runtime_repository_generation.c_str()};
     const auto valid_result = parse_service_command_line(
         static_cast<int>(std::size(valid)), valid);
     check(valid_result && valid_result.options.port == 1,
@@ -224,7 +270,9 @@ void test_stable_error_names()
         aggregate_too_long, embedded_nul, unknown_option, positional_argument,
         duplicate_option, missing_value, empty_value, option_value_not_allowed,
         informational_option_mixed, missing_project_root, missing_host, missing_port,
+        missing_runtime_repository_generation,
         project_root_not_directory, filesystem_error, invalid_host, invalid_port,
+        invalid_runtime_repository_generation,
         pipe_not_supported, invalid_pipe_name, resource_exhausted, internal_error};
     for (const auto error : errors) {
         check(service_command_line_error_name(error) != "unknown",
@@ -241,6 +289,7 @@ int main()
     test_help_and_version_are_isolated();
     test_strict_option_structure();
     test_required_values_and_filesystem_gate();
+    test_runtime_repository_generation_policy();
     test_input_budgets_and_argument_vector();
     test_stable_error_names();
     if (failures != 0) {

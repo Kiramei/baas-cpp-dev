@@ -5,7 +5,7 @@ target and packaged filename are exactly `BAAS_service` (`BAAS_service.exe` on
 Windows), matching `baas-tauri`'s `launch_cpp_backend_command`:
 
 ```text
-BAAS_service --project-root <directory> --host 127.0.0.1 --port <1..65535>
+BAAS_service --project-root <directory> --host 127.0.0.1 --port <1..65535> --runtime-repository-generation <64-lowercase-hex>
 ```
 
 The executable identity and wire identity are intentionally separate.
@@ -15,6 +15,14 @@ explicit cross-repository contract with `baas-tauri` revision `a1c8c837`,
 `src-tauri/src/commands.rs`, function `cpp_backend_ready`, whose strict
 readiness check requires `ok=true`, `api_version=1`, and the exact service
 literal `BAAS Service` before it accepts `/health` as ready.
+
+The runtime repository generation is a mandatory launch handoff from the
+publisher. Composition activates `current.json` once and starts only when the
+retained immutable snapshot has that exact generation. Missing state or a
+different valid generation returns the stable composition failure
+`runtime_repository_generation_mismatch`; malformed or tampered activation
+returns `runtime_repository_invalid`. These checks precede remote-resource,
+signal, auth, worker, and socket side effects.
 
 `--help` and `--version` succeed without constructing the service. Windows uses
 `wmain` and converts bounded UTF-16 arguments to UTF-8; other hosts use `main`.
@@ -29,8 +37,8 @@ setup `4`, composition `5`, HTTP start `6`, readiness `7`, and internal `8`.
   `HealthReadinessOwner`;
 - `ProductionProviderBackend`, `FileResourceStore`, and the joined
   `ServiceRuntimeProviderBridge`/`FileResourceWatcher` lifecycle;
-- `ServiceRuntimeRepositoryOwner`, which either retains one validated immutable
-  startup generation or reports that no current generation is available;
+- `ServiceRuntimeRepositoryOwner`, which retains the validated immutable
+  generation selected by the mandatory launch expectation;
 - desktop `ProductionRemoteBackend`, `RemoteHandlerFactory`, and the same
   shared resource store/ADB smart-socket transport;
 - real `status`, `add_config*`, `copy_config`, `remove_config*`, `export_config`,
@@ -57,10 +65,10 @@ auth/config file creation, executor threads, or socket binding. This is a
 fail-closed boundary, not a claim that Pipe works.
 
 Runtime repository ownership is independent of `FileResourceStore` and
-`ServiceRuntimeProviderBridge`. A missing runtime repository pointer is
-reported as `statuses.runtime.repository.phase=unavailable`; an existing but
-invalid activation fails composition with `runtime_repository_invalid` before
-auth/config side effects. A valid activation is pinned for the entire service
+`ServiceRuntimeProviderBridge`. A missing pointer or a valid activation for a
+different generation fails with `runtime_repository_generation_mismatch`; an
+invalid activation fails with `runtime_repository_invalid`. Both occur before
+auth/config side effects. An exact activation is pinned for the entire service
 lifetime and `/health` exposes only `phase=pinned` and its generation. This
 phase describes immutable activation metadata; it does not claim that object
 payload bytes have been revalidated or admitted by a resource/script consumer.
@@ -104,9 +112,11 @@ configuration create/copy commands,
 persistent auth restart and second-instance locking, and Pipe rejection before
 filesystem side effects. It also verifies desktop remote policy and missing
 ws-scrcpy-resource failure before composition. The dedicated runtime repository
-owner test covers missing current, malformed/tampered activation, retained pin
-lifetime, and concurrent readers observing one startup generation. Application
-tests also verify that health does not expose repository paths or metadata.
+owner test covers exact generation matching, missing current,
+malformed/tampered activation, retained pin lifetime, and concurrent readers
+observing one startup generation. Application tests also verify that missing
+or mismatched generations fail before composition side effects and that health
+does not expose repository paths or metadata.
 Separate CTest entries execute
 the actual binary for `--help` and `--version`. CI provisions pinned
 cpp-httplib, libsodium, nlohmann-json, and miniz recipes, builds the bounded ZIP

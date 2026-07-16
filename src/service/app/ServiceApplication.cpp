@@ -152,6 +152,8 @@ std::string_view service_application_error_name(
         case trigger_dispatch_failed: return "trigger_dispatch_failed";
         case remote_resource_unavailable: return "remote_resource_unavailable";
         case runtime_repository_invalid: return "runtime_repository_invalid";
+        case runtime_repository_generation_mismatch:
+            return "runtime_repository_generation_mismatch";
         case composition_failed: return "composition_failed";
         case authentication_failed: return "authentication_failed";
         case host_start_failed: return "host_start_failed";
@@ -187,12 +189,23 @@ ServiceApplicationOpenResult ServiceApplication::open(
         return {nullptr, ServiceApplicationError::invalid_options, {}};
     }
     auto runtime_repository = open_service_runtime_repository_owner(
-        options.project_root);
+        options.project_root, options.runtime_repository_generation);
     if (!runtime_repository) {
-        const auto error = runtime_repository.error
-                == ServiceRuntimeRepositoryOpenError::invalid_activation
-            ? ServiceApplicationError::runtime_repository_invalid
-            : ServiceApplicationError::internal_failure;
+        ServiceApplicationError error = ServiceApplicationError::internal_failure;
+        switch (runtime_repository.error) {
+            case ServiceRuntimeRepositoryOpenError::invalid_expected_generation:
+                error = ServiceApplicationError::invalid_options;
+                break;
+            case ServiceRuntimeRepositoryOpenError::generation_mismatch:
+                error = ServiceApplicationError::runtime_repository_generation_mismatch;
+                break;
+            case ServiceRuntimeRepositoryOpenError::invalid_activation:
+                error = ServiceApplicationError::runtime_repository_invalid;
+                break;
+            case ServiceRuntimeRepositoryOpenError::none:
+            case ServiceRuntimeRepositoryOpenError::internal_error:
+                break;
+        }
         return {nullptr, error, {}};
     }
 #if !defined(__ANDROID__)
@@ -471,7 +484,8 @@ int run_service_application(
         if (parsed.disposition == ServiceCommandLineDisposition::help) {
             output
                 << "Usage: BAAS_service --project-root <directory> --host 127.0.0.1 "
-                   "--port <1..65535>\n"
+                   "--port <1..65535> --runtime-repository-generation "
+                   "<64-lowercase-hex>\n"
                 << "       BAAS_service --help | --version\n";
 #if defined(__ANDROID__)
             output << "Pipe and host-side remote transports are not enabled.\n";

@@ -16,7 +16,7 @@ they are the sole argument. Values or any mixture with another argument fail.
 A run requires each of these exactly once:
 
 ```text
---project-root <directory> --host 127.0.0.1 --port <1..65535>
+--project-root <directory> --host 127.0.0.1 --port <1..65535> --runtime-repository-generation <64-lowercase-hex>
 ```
 
 It may contain `--pipe-name <endpoint>` once. Every valued option accepts both
@@ -25,6 +25,11 @@ Duplicate options, unknown options, positional arguments, missing or empty
 values, signs, whitespace, suffixes, zero, and out-of-range ports fail closed.
 The host value is exactly `127.0.0.1`; this parser does not opt the service into
 LAN exposure.
+
+The runtime repository generation is mandatory. It is exactly 64 lowercase
+hexadecimal characters and identifies the generation already published for
+this process start. Uppercase, short, long, or non-hex spellings are rejected;
+there is no absent-generation compatibility mode.
 
 The project root is converted only after all string and aggregate budgets pass.
 It must resolve to an existing directory. The implementation uses the
@@ -68,9 +73,10 @@ The library is opt-in through `BUILD_SERVICE_COMMAND_LINE`; tests use
 `BUILD_SERVICE_COMMAND_LINE_TESTS`. `BAAS_service_command_line_tests` covers
 separated/equal forms, option order, every required field, strict port parsing,
 help/version isolation, duplicate/unknown/positional rejection, project-root
-filesystem gating, Windows/Unix/Android Pipe policy, input budgets, embedded
-NUL, invalid `argc`/`argv`, and stable error names. Foundation CI builds and
-runs the target on Windows, Linux, and macOS in Debug and Release.
+filesystem gating, exact generation syntax, Windows/Unix/Android Pipe policy,
+input budgets, embedded NUL, invalid `argc`/`argv`, and stable error names.
+Foundation CI builds and runs the target on Windows, Linux, and macOS in Debug
+and Release.
 
 The module and `ServiceApplication` are excluded from the legacy `BAAS_CORE`
 glob. The executable, production composition, and loopback lifecycle tests are
