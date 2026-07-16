@@ -314,6 +314,18 @@ class ExternalResourceBoundaryTests(unittest.TestCase):
             "New service, foundation, and runtime-repository\ntargets must not use that helper",
         ):
             self.assertIn(anchor, documentation)
+        updater_header = (
+            ROOT / "include/runtime/repository/RuntimeRepositoryUpdater.h"
+        ).read_text(encoding="utf-8")
+        updater_source = (
+            ROOT / "src/runtime/repository/RuntimeRepositoryUpdater.cpp"
+        ).read_text(encoding="utf-8")
+        self.assertIn("class RuntimeRepositoryCommitClaim", updater_header)
+        self.assertIn("enum class RuntimeRepositoryRecoveryPolicy", updater_header)
+        self.assertIn("recover(const RuntimeRepositoryTreeValidator& validator)", updater_header)
+        self.assertIn("commit_claim->claim(journal.new_current.generation)", updater_source)
+        self.assertIn("A same-generation no-op does not invoke the claim", documentation)
+        self.assertIn("Crash recovery is a separate startup phase", documentation)
 
 
 class ExternalResourceConfigureSmokeTests(unittest.TestCase):

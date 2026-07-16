@@ -151,3 +151,29 @@ Writers must first publish the immutable snapshot file and then atomically
 replace `current.json`. A reader racing that replacement may pin either the old
 or the new complete generation; it never follows repository data through the
 mutable pointer after activation.
+
+## External cancellation commit claim
+
+Update callers that expose publication through a cancellable request may pass a
+`RuntimeRepositoryCommitClaim`. The updater invokes it exactly once for a
+changed generation, after candidate objects and the immutable snapshot are
+installed and after the final stop-token check, but before writing the recovery
+journal or changing `previous.json` or `current.json`. The callback receives
+the exact target generation.
+
+Returning `false` leaves no durable publication intent that crash recovery
+could replay. Returning `true` closes the caller's cancellation window;
+cancellation is not observed again during journal preparation and pointer
+replacement. The caller must then report
+either committed success or an irrevocable error if the replacement or its
+durability cleanup fails. A same-generation no-op does not invoke the claim.
+
+Crash recovery is a separate startup phase. `recover(validator)` completes any
+durable decision made by an earlier process before interactive requests are
+accepted. Interactive handlers then call `update` with
+`RuntimeRepositoryRecoveryPolicy::RequireClean`; a leftover journal fails that
+request without replaying it, so a newly cancelled request cannot publish an
+older request's generation and then report cancellation. Non-interactive
+startup orchestration retains the backward-compatible `RecoverPending` policy.
+The updater rejects a commit claim combined with `RecoverPending`, preventing
+interactive callers from accidentally bypassing this startup boundary.

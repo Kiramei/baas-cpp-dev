@@ -159,6 +159,11 @@ class EventLog final {
         return events_;
     }
 
+    void clear() {
+        std::lock_guard lock(mutex_);
+        events_.clear();
+    }
+
   private:
     mutable std::mutex mutex_;
     std::vector<std::string> events_;
@@ -578,6 +583,58 @@ class FileOperationFaultHooks final : public repository::RuntimeRepositoryUpdate
         if (fail_at && *fail_at == operation)
             throw std::runtime_error("injected updater file operation failure");
     }
+};
+
+class RecordingCommitClaim final : public repository::RuntimeRepositoryCommitClaim {
+  public:
+    explicit RecordingCommitClaim(
+        const bool accepted, EventLog* const events = nullptr,
+        std::filesystem::path state_root = {},
+        std::string expected_current = {})
+        : accepted_(accepted), events_(events), state_root_(std::move(state_root)),
+          expected_current_(std::move(expected_current)) {}
+
+    [[nodiscard]] bool claim(
+        const std::string_view target_generation) noexcept override {
+        called_.store(true, std::memory_order_release);
+        try {
+            generation_.assign(target_generation);
+            if (events_ != nullptr)
+                events_->add("claim");
+            if (!state_root_.empty()) {
+                clean_boundary_ =
+                    !std::filesystem::exists(
+                        state_root_ / ".publish-journal.json")
+                    && !std::filesystem::exists(state_root_ / "previous.json")
+                    && read_file(state_root_ / "current.json")
+                        == persisted_pointer(expected_current_);
+            }
+        } catch (...) {
+            return false;
+        }
+        return accepted_;
+    }
+
+    [[nodiscard]] bool called() const noexcept {
+        return called_.load(std::memory_order_acquire);
+    }
+
+    [[nodiscard]] const std::string& generation() const noexcept {
+        return generation_;
+    }
+
+    [[nodiscard]] bool clean_boundary() const noexcept {
+        return clean_boundary_;
+    }
+
+  private:
+    bool accepted_{};
+    EventLog* events_{};
+    std::filesystem::path state_root_;
+    std::string expected_current_;
+    std::atomic<bool> called_{};
+    std::string generation_;
+    bool clean_boundary_{};
 };
 
 [[nodiscard]] std::size_t first_event(const std::vector<std::string>& events,
@@ -1500,6 +1557,159 @@ void test_expected_current_conflicts_before_fetch() {
           "ExpectedCurrent conflict must preserve the current pin");
 }
 
+void test_commit_claim_linearizes_external_cancellation_before_publish() {
+    TempDirectory temporary;
+    const auto state_root = temporary.path() / "runtime-repositories";
+    EventLog events;
+    auto hooks = std::make_shared<FaultHooks>(events);
+    repository::RuntimeRepositoryUpdater updater(state_root, hooks);
+    FakeFetchBackend backend(events);
+    FakeTreeValidator validator(events);
+
+    const auto first_plan = plan('1', '2', 'a', 'b');
+    FakePlanProvider first_provider(first_plan, events);
+    const auto first = updater.update(
+        first_provider, backend, validator, repository::ExpectedCurrent::absent());
+    check_success(first, "commit-claim baseline update must succeed");
+    if (!first)
+        return;
+    events.clear();
+
+    const auto second_plan = plan('3', '4', 'c', 'd');
+    const auto second_generation =
+        repository::runtime_repository_generation(descriptors(second_plan));
+    FakePlanProvider second_provider(second_plan, events);
+    RecordingCommitClaim unsafe_claim(true);
+    const auto unsafe = updater.update(
+        second_provider, backend, validator,
+        repository::ExpectedCurrent::exact(first.pinned_generation), {},
+        &unsafe_claim);
+    check_error(unsafe, repository::RuntimeRepositoryUpdateErrorCode::InvalidPlan,
+                "commit claim without explicit startup recovery must fail closed");
+    check(!unsafe_claim.called(),
+          "unsafe recovery policy must be rejected before the commit claim");
+    events.clear();
+    RecordingCommitClaim rejected(
+        false, &events, state_root, first.pinned_generation);
+    const auto cancelled = updater.update(
+        second_provider, backend, validator,
+        repository::ExpectedCurrent::exact(first.pinned_generation), {}, &rejected,
+        repository::RuntimeRepositoryRecoveryPolicy::RequireClean);
+    check_error(cancelled, repository::RuntimeRepositoryUpdateErrorCode::Cancelled,
+                "a rejected commit claim must cancel before publication");
+    check(rejected.called() && rejected.generation() == second_generation,
+          "commit claim must receive the exact target generation");
+    check(rejected.clean_boundary(),
+          "a rejected claim must run before any recoverable commit intent is durable");
+    check(updater.pin_current()
+              && updater.pin_current()->generation() == first.pinned_generation,
+          "a rejected commit claim must preserve the old current generation");
+    check(!std::filesystem::exists(state_root / ".publish-journal.json"),
+          "a rejected commit claim must restore and remove its journal");
+    const auto rejected_events = events.snapshot();
+    check_event_order(
+        rejected_events, {"checkpoint:snapshot-installed", "claim"});
+    check(first_event(rejected_events, "checkpoint:journal-prepared")
+              == rejected_events.size(),
+          "a rejected claim must precede every durable publication checkpoint");
+    check(first_event(rejected_events, "committed:current-replaced")
+              == rejected_events.size(),
+          "a rejected claim must not emit a committed observation");
+
+    events.clear();
+    RecordingCommitClaim accepted(true, &events);
+    const auto published = updater.update(
+        second_provider, backend, validator,
+        repository::ExpectedCurrent::exact(first.pinned_generation), {}, &accepted,
+        repository::RuntimeRepositoryRecoveryPolicy::RequireClean);
+    check_success(published, "an accepted commit claim must allow publication");
+    check(accepted.called() && accepted.generation() == second_generation,
+          "accepted commit claim must bind the published generation");
+    check(published.pinned_generation == second_generation,
+          "accepted commit claim must publish the claimed generation");
+    check_event_order(
+        events.snapshot(), {"checkpoint:snapshot-installed", "claim",
+                            "checkpoint:journal-prepared",
+                            "committed:current-replaced"});
+
+    RecordingCommitClaim no_op_claim(false);
+    const auto no_op = updater.update(
+        second_provider, backend, validator,
+        repository::ExpectedCurrent::exact(second_generation), {}, &no_op_claim,
+        repository::RuntimeRepositoryRecoveryPolicy::RequireClean);
+    check_success(no_op, "same-generation retry must remain a no-op success");
+    check(!no_op_claim.called(),
+          "same-generation retry must not claim a nonexistent commit boundary");
+}
+
+void test_interactive_update_requires_explicit_startup_recovery() {
+    TempDirectory temporary;
+    const auto state_root = temporary.path() / "runtime-repositories";
+    EventLog events;
+    repository::RuntimeRepositoryUpdater updater(state_root);
+    FakeFetchBackend backend(events);
+    FakeTreeValidator validator(events);
+
+    const auto first_plan = plan('1', '2', 'a', 'b');
+    FakePlanProvider first_provider(first_plan, events);
+    const auto first = updater.update(
+        first_provider, backend, validator, repository::ExpectedCurrent::absent());
+    check_success(first, "explicit-recovery baseline must publish");
+    if (!first)
+        return;
+
+    const auto second_plan = plan('3', '4', 'c', 'd');
+    FakePlanProvider second_provider(second_plan, events);
+    const auto second = updater.update(
+        second_provider, backend, validator,
+        repository::ExpectedCurrent::exact(first.pinned_generation));
+    check_success(second, "explicit-recovery second generation must publish");
+    if (!second)
+        return;
+
+    // Model a crash after a rollback decision was journaled but before any
+    // pointer was replaced. Interactive update handling must not replay this
+    // older request and then report cancellation for the new one.
+    write_file(
+        state_root / ".publish-journal.json",
+        rollback_journal(
+            "prepared", first.pinned_generation, second.pinned_generation));
+    std::stop_source cancelled_source;
+    cancelled_source.request_stop();
+    const auto third_plan = plan('5', '6', 'e', 'f');
+    FakePlanProvider third_provider(third_plan, events);
+    RecordingCommitClaim claim(true);
+    const auto blocked = updater.update(
+        third_provider, backend, validator,
+        repository::ExpectedCurrent::exact(second.pinned_generation),
+        cancelled_source.get_token(), &claim,
+        repository::RuntimeRepositoryRecoveryPolicy::RequireClean);
+    check_error(blocked, repository::RuntimeRepositoryUpdateErrorCode::RecoveryFailed,
+                "interactive update must reject a pending startup recovery");
+    check(!claim.called(),
+          "interactive update must fail before claiming an unrelated pending transaction");
+    check(updater.pin_current()
+              && updater.pin_current()->generation() == second.pinned_generation,
+          "RequireClean must not replay the pending journal");
+    check(repository::RuntimeRepositorySnapshot::activate(state_root)->generation()
+              == second.pinned_generation,
+          "RequireClean must leave the persisted current generation unchanged");
+
+    const auto recovered = updater.recover(validator);
+    check_success(recovered, "startup recovery must replay the durable prior decision");
+    check(recovered.disposition == repository::PublishDisposition::Committed
+              && recovered.pinned_generation == first.pinned_generation,
+          "startup recovery must report and pin the recovered generation");
+    check(!std::filesystem::exists(state_root / ".publish-journal.json"),
+          "startup recovery must remove the completed journal");
+
+    const auto already_clean = updater.recover(validator);
+    check_success(already_clean, "clean startup recovery must be a success no-op");
+    check(already_clean.disposition == repository::PublishDisposition::NotCommitted
+              && already_clean.pinned_generation == first.pinned_generation,
+          "clean startup recovery must report no new commit and preserve the pin");
+}
+
 void test_rollback_no_previous_and_redo() {
     TempDirectory temporary;
     const auto state_root = temporary.path() / "runtime-repositories";
@@ -2005,6 +2215,8 @@ int main() {
         test_failed_installed_revalidation_does_not_poison_object_slot();
         test_constructor_reports_corrupt_persisted_current();
         test_expected_current_conflicts_before_fetch();
+        test_commit_claim_linearizes_external_cancellation_before_publish();
+        test_interactive_update_requires_explicit_startup_recovery();
         test_rollback_no_previous_and_redo();
         test_manifest_bound_payload_tamper_blocks_rollback();
         test_persisted_journal_phases_roll_forward_deterministically();
