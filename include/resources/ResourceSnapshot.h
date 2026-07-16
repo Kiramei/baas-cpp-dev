@@ -46,7 +46,7 @@ struct ResourceSelector {
 
 // This is the fully materialized output of package activation. Filesystem and
 // archive paths are deliberately absent: ResourceSnapshot never probes ambient
-// storage and only publishes bytes that were supplied by the trusted loader.
+// storage and defensively copies every validated byte payload before publication.
 struct ResourcePayload {
     std::string resource_id;
     std::optional<std::string> locale;
@@ -96,6 +96,9 @@ public:
     [[nodiscard]] std::shared_ptr<const ResourceEntry> resolve(
         std::string_view resource_id,
         std::optional<std::string_view> locale_override = std::nullopt) const;
+
+    [[nodiscard]] bool accepts_resource_id(std::string_view resource_id) const noexcept;
+    [[nodiscard]] bool accepts_locale(std::string_view locale) const noexcept;
 
     [[nodiscard]] const ResourceSelector& selector() const noexcept;
     [[nodiscard]] const std::string& snapshot_id() const noexcept;

@@ -141,6 +141,19 @@ private:
     return value != "." && value != "..";
 }
 
+[[nodiscard]] bool valid_activity_token(
+    const std::string_view value, const std::size_t max_bytes) noexcept
+{
+    if (value.empty() || value.size() > max_bytes || value == "." || value == "..")
+        return false;
+    return std::all_of(value.begin(), value.end(), [](const char character) {
+        const auto byte = static_cast<unsigned char>(character);
+        return (byte >= 'A' && byte <= 'Z') || (byte >= 'a' && byte <= 'z') ||
+            (byte >= '0' && byte <= '9') || character == '-' || character == '_' ||
+            character == '.' || character == '\'';
+    });
+}
+
 [[nodiscard]] bool valid_media_type(
     const std::string_view value, const std::size_t max_bytes) noexcept
 {
@@ -185,6 +198,7 @@ using VariantKey = std::tuple<std::string, std::string, std::string>;
 
 struct ResourceSnapshot::Impl {
     ResourceSelector selector;
+    ResourceSnapshotLimits limits;
     std::string snapshot_id;
     std::uint64_t numeric_snapshot_id{};
     std::size_t retained_bytes{};
@@ -247,7 +261,7 @@ bool valid_resource_locale(const std::string_view value, const std::size_t max_b
 
 bool valid_resource_activity(const std::string_view value, const std::size_t max_bytes) noexcept
 {
-    return valid_token(value, max_bytes);
+    return valid_activity_token(value, max_bytes);
 }
 
 std::string sha256_hex(const std::span<const std::byte> bytes)
@@ -288,6 +302,7 @@ std::shared_ptr<const ResourceSnapshot> ResourceSnapshot::build(
 
     auto impl = std::make_unique<Impl>();
     impl->selector = std::move(selector);
+    impl->limits = limits;
     std::sort(payloads.begin(), payloads.end(), [](const auto& left, const auto& right) {
         return key_for(left) < key_for(right);
     });
@@ -324,6 +339,11 @@ std::shared_ptr<const ResourceSnapshot> ResourceSnapshot::build(
         if (sha256_hex(*payload.bytes) != payload.sha256)
             throw ResourceError(ResourceErrorCode::DigestMismatch, "resource digest does not match bytes");
 
+        // ResourcePayload intentionally accepts shared storage so loaders can
+        // assemble a candidate cheaply. Publication must sever any mutable
+        // aliases retained by the loader or its caller.
+        payload.bytes = std::make_shared<const std::vector<std::byte>>(*payload.bytes);
+
         hash_length_prefixed(identity, payload.resource_id);
         hash_length_prefixed(identity, payload.locale.value_or(""));
         hash_length_prefixed(identity, payload.activity.value_or(""));
@@ -347,8 +367,9 @@ std::shared_ptr<const ResourceEntry> ResourceSnapshot::resolve(
     const std::string_view resource_id,
     const std::optional<std::string_view> locale_override) const
 {
-    if (!valid_resource_id(resource_id) ||
-        (locale_override && !valid_resource_locale(*locale_override))) return {};
+    if (!valid_resource_id(resource_id, impl_->limits.max_resource_id_bytes) ||
+        (locale_override && !valid_resource_locale(
+            *locale_override, impl_->limits.max_selector_bytes))) return {};
     const auto locale = std::string(locale_override.value_or(impl_->selector.locale));
     const auto activity = impl_->selector.current_activity.value_or("");
     const std::array<VariantKey, 4> candidates{
@@ -362,6 +383,16 @@ std::shared_ptr<const ResourceEntry> ResourceSnapshot::resolve(
         if (found != impl_->entries.end()) return found->second;
     }
     return {};
+}
+
+bool ResourceSnapshot::accepts_resource_id(const std::string_view resource_id) const noexcept
+{
+    return valid_resource_id(resource_id, impl_->limits.max_resource_id_bytes);
+}
+
+bool ResourceSnapshot::accepts_locale(const std::string_view locale) const noexcept
+{
+    return valid_resource_locale(locale, impl_->limits.max_selector_bytes);
 }
 
 const ResourceSelector& ResourceSnapshot::selector() const noexcept { return impl_->selector; }

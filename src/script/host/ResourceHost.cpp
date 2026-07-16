@@ -84,12 +84,12 @@ struct ResourceHost::Impl {
             (arguments[1] && arguments[1]->type() != HostValueType::String))
             return invalid("invalid resource resolve arguments");
         const auto& resource_id = std::get<std::string>(arguments[0]->storage());
-        if (!resources::valid_resource_id(resource_id))
+        if (!snapshot->accepts_resource_id(resource_id))
             return invalid("resource id is not canonical");
         std::optional<std::string_view> locale;
         if (arguments[1]) {
             const auto& value = std::get<std::string>(arguments[1]->storage());
-            if (!resources::valid_resource_locale(value))
+            if (!snapshot->accepts_locale(value))
                 return invalid("resource locale is not canonical");
             locale = value;
         }
@@ -156,7 +156,9 @@ struct ResourceHost::Impl {
                 HostEffectState::NotStarted, std::nullopt});
         const auto requested = std::get<std::int64_t>(arguments[1]->storage());
         if (requested <= 0)
-            return invalid("max_bytes must be positive");
+            return HostResult::failure({HostErrorCode::BudgetExceeded,
+                "resource byte budget must be positive", true,
+                HostEffectState::NotStarted, budget_detail("external_memory")});
         const auto max_bytes = static_cast<std::uint64_t>(requested);
         std::shared_ptr<const resources::ResourceEntry> entry;
         {
@@ -172,7 +174,7 @@ struct ResourceHost::Impl {
             entry->retained_bytes() > limits.max_single_read_bytes)
             return HostResult::failure({HostErrorCode::BudgetExceeded,
                 "resource byte budget exceeded", true,
-                HostEffectState::NotStarted, budget_detail("host_operation")});
+                HostEffectState::NotStarted, budget_detail("external_memory")});
         if (context.deadline_exceeded()) return deadline();
         if (context.cancelled()) return cancelled();
 
@@ -182,7 +184,7 @@ struct ResourceHost::Impl {
                     std::min(used, limits.max_total_read_bytes))
                 return HostResult::failure({HostErrorCode::BudgetExceeded,
                     "resource aggregate byte budget exceeded", true,
-                    HostEffectState::NotStarted, budget_detail("host_operation")});
+                    HostEffectState::NotStarted, budget_detail("external_memory")});
             if (read_bytes.compare_exchange_weak(
                     used, used + entry->retained_bytes(),
                     std::memory_order_acq_rel, std::memory_order_relaxed)) break;

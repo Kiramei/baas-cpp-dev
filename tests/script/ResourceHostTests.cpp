@@ -2,6 +2,7 @@
 #include "script/runtime/SynchronousEvaluator.h"
 
 #include <cstdlib>
+#include <future>
 #include <iostream>
 #include <memory>
 #include <string_view>
@@ -181,9 +182,9 @@ void test_budget_and_cancellation_fail_closed()
           "let h = resource.resolve(\"binary/sample\");\n"
           "let result = resource.read(h, 7);\n"}},
         options(owner));
-    expect_evaluation(runtime::LanguageErrorCode::TaskLimitExceeded, [&] {
+    expect_evaluation(runtime::LanguageErrorCode::MemoryLimitExceeded, [&] {
         (void)evaluator.execute("main");
-    }, "resource reads above the adapter byte budget must fail structurally");
+    }, "resource byte exhaustion must use the external-memory budget scope");
     check(evaluator.close() && owner.host->stats().released_handles == 1,
           "failed reads must still release their produced Resource handle");
 
@@ -208,11 +209,26 @@ void test_budget_and_cancellation_fail_closed()
         heap, produced.value(), runtime::HostValueType::HostResource,
         {}, direct.handles.get());
 
+    auto borrow = runtime::heap_to_host_value(
+        heap, published, runtime::HostValueType::HostResource,
+        {}, direct.handles.get());
+    const runtime::HostCallContext bounded_context{
+        "baas/resource", "read", read->binding_id, {1, 0}, 2};
+    const auto zero_budget = runtime::invoke_host_callback(
+        *read, bounded_context,
+        {std::move(borrow), runtime::HostValue(std::int64_t{0})},
+        direct.bindings->limits(), direct.handles.get());
+    check(zero_budget.has_error() &&
+              zero_budget.error().code == runtime::HostErrorCode::BudgetExceeded &&
+              runtime::translate_host_error(zero_budget.error()).code ==
+                  runtime::LanguageErrorCode::MemoryLimitExceeded,
+          "non-positive max_bytes must stay within the declared external-memory error set");
+
     auto probe = std::make_shared<Probe>();
     probe->cancel = true;
     runtime::HostCallContext read_context{
         "baas/resource", "read", read->binding_id, {1, 0}, 2, probe};
-    auto borrow = runtime::heap_to_host_value(
+    borrow = runtime::heap_to_host_value(
         heap, published, runtime::HostValueType::HostResource,
         {}, direct.handles.get());
     const auto cancelled = runtime::invoke_host_callback(
@@ -243,6 +259,54 @@ void test_budget_and_cancellation_fail_closed()
           "direct cancellation fixture must retain reliable handle teardown");
 }
 
+void test_thread_safe_snapshot_across_execution_contexts()
+{
+    const auto shared = snapshot();
+    const auto worker = [shared](const std::string locale) {
+        auto owner = host::make_resource_host_runtime(shared);
+        runtime::SynchronousEvaluator evaluator(
+            {{"main",
+              "import \"baas/resource\" as resource;\n"
+              "let h = resource.resolve(\"binary/sample\", \"" + locale + "\");\n"
+              "let result = resource.read(h, 7);\n"}},
+            options(owner));
+        (void)evaluator.execute("main");
+        const auto output = evaluator.heap().bytes_copy(
+            evaluator.module_export("main", "result").as_heap_ref());
+        return evaluator.close() && output.size() == 7;
+    };
+    auto cn = std::async(std::launch::async, worker, "CN");
+    auto jp = std::async(std::launch::async, worker, "JP");
+    check(cn.get() && jp.get(),
+          "thread-safe Resource adapters must run concurrently across owning contexts");
+}
+
+void test_host_uses_snapshot_validation_limits()
+{
+    resources::ResourceSnapshotLimits limits;
+    limits.max_resource_id_bytes = 1'200;
+    const std::string long_id(1'100, 'a');
+    const auto shared = resources::ResourceSnapshot::build(
+        {"CN", std::nullopt}, {payload(long_id, "value")}, limits);
+    auto owner = host::make_resource_host_runtime(shared);
+    runtime::Heap heap;
+    owner.handles->attach_context(heap);
+    const auto* resolve = owner.bindings->find("host.resource.resolve.v1");
+    const runtime::HostCallContext context{
+        "baas/resource", "resolve", resolve->binding_id, {1, 0}, 1};
+    const auto result = runtime::invoke_host_callback(
+        *resolve, context, {runtime::HostValue(long_id), std::nullopt},
+        owner.bindings->limits(), owner.handles.get());
+    check(result.ok(),
+          "Resource Host validation must use the limits frozen into its snapshot");
+    if (result.ok())
+        owner.handles->abandon(
+            std::get<runtime::HostHandleValue>(result.value().storage()));
+    owner.handles->dispatch_all(heap);
+    check(owner.handles->teardown(heap),
+          "custom-limit Host fixture must release its unpublished handle");
+}
+
 }  // namespace
 
 int main()
@@ -251,6 +315,8 @@ int main()
         test_catalog_contract_and_invalid_lookup();
         test_evaluator_resolve_read_close_vertical();
         test_budget_and_cancellation_fail_closed();
+        test_thread_safe_snapshot_across_execution_contexts();
+        test_host_uses_snapshot_validation_limits();
     } catch (const std::exception& error) {
         std::cerr << "UNCAUGHT: " << error.what() << '\n';
         return EXIT_FAILURE;

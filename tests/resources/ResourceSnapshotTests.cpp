@@ -84,8 +84,13 @@ void test_validation_is_atomic_and_bounded()
           "resource IDs must be canonical lowercase logical paths");
     check(resources::valid_resource_locale("Global_en-us") &&
               resources::valid_resource_activity("AbydosResortRestorationCommittee") &&
+              resources::valid_resource_activity(
+                  "InSearchOfAHiddenHeritageTrinity'sExtracurricularActivities") &&
+              resources::valid_resource_activity("livelyAndJoyfulWalkingTour.py") &&
+              !resources::valid_resource_activity("activity/name") &&
+              !resources::valid_resource_activity("activity\\name") &&
               !resources::valid_resource_locale("en/us"),
-          "selectors must be bounded opaque ASCII tokens");
+          "selectors must cover legacy activity keys without accepting paths");
 
     auto good = payload("json/rgb-feature", "{}", "CN", std::nullopt, "application/json");
     auto bad_hash = good;
@@ -151,6 +156,31 @@ void test_selector_precedence_and_stable_identity()
           "publishing another selector must not mutate entries pinned from the old snapshot");
 }
 
+void test_snapshot_owns_bytes_and_custom_limits()
+{
+    auto mutable_bytes = std::make_shared<std::vector<std::byte>>(
+        std::initializer_list<std::byte>{std::byte{'o'}, std::byte{'k'}});
+    resources::ResourcePayload source{
+        "binary/owned", std::nullopt, std::nullopt, "application/octet-stream",
+        mutable_bytes->size(), resources::sha256_hex(*mutable_bytes), mutable_bytes};
+    const auto snapshot = resources::ResourceSnapshot::build(
+        {"CN", std::nullopt}, {source});
+    (*mutable_bytes)[0] = std::byte{'x'};
+    const auto owned = snapshot->resolve("binary/owned");
+    check(owned && owned->bytes()[0] == std::byte{'o'} &&
+              resources::sha256_hex(owned->bytes()) == owned->sha256(),
+          "published snapshots must sever mutable aliases retained by loaders");
+
+    const std::string long_id(1'100, 'a');
+    resources::ResourceSnapshotLimits limits;
+    limits.max_resource_id_bytes = 1'200;
+    auto long_payload = payload(long_id, "value");
+    const auto extended = resources::ResourceSnapshot::build(
+        {"CN", std::nullopt}, {std::move(long_payload)}, limits);
+    check(extended->resolve(long_id) != nullptr,
+          "resolution must use the same custom ID limit accepted at build time");
+}
+
 }  // namespace
 
 int main()
@@ -158,6 +188,7 @@ int main()
     test_sha256_vectors();
     test_validation_is_atomic_and_bounded();
     test_selector_precedence_and_stable_identity();
+    test_snapshot_owns_bytes_and_custom_limits();
     if (failures != 0) return EXIT_FAILURE;
     std::cout << "resource snapshot tests passed\n";
     return EXIT_SUCCESS;

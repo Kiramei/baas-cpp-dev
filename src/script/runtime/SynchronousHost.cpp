@@ -1715,9 +1715,16 @@ HostValue heap_to_host_value(
             break;
         case HostValueType::Bytes:
             if (kind == ValueKind::Bytes) {
-                HostValue result(heap.bytes_copy(value.as_heap_ref()));
-                (void)measure_host_value(result, limits);
-                return result;
+                const auto size = heap.bytes_size(value.as_heap_ref());
+                // Charge the scalar kind byte and payload before creating the
+                // owning callback copy. This keeps a small remaining Host
+                // allowance from causing a large transient allocation.
+                if (size > limits.max_total_bytes ||
+                    1 > limits.max_total_bytes - size)
+                    throw RuntimeError(
+                        RuntimeErrorCode::JsonByteLimitExceeded,
+                        "Host byte argument limit exceeded");
+                return HostValue(heap.bytes_copy(value.as_heap_ref()));
             }
             break;
         case HostValueType::Json:
