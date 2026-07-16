@@ -1,7 +1,7 @@
 # Runtime repository activation contract
 
-Status: implemented foundation. Git transport, downloads, update publication,
-and repository object parsing are outside this target.
+Status: activation and transport-independent update publication are implemented.
+Git transport and application policy/provider integration remain separate.
 
 ## State layout
 
@@ -51,6 +51,34 @@ handles, validates the final handle path within the root, bounds size from that
 handle, and reads that handle. Unix walks from an opened root directory with
 `openat` plus `O_NOFOLLOW`, bounds with `fstat`, and reads the same final file
 descriptor. No validated pathname is reopened for content reads.
+
+## Repository tree manifest
+
+Each immutable repository root contains the snapshot-selected manifest. Its
+exact bytes are bound by `manifest_sha256`; the manifest then binds every other
+file in the tree. The document has schema
+`baas.runtime-repository.tree-manifest/v1` and exactly `schema` and `entries`.
+Every entry has exactly:
+
+- `path`: the canonical relative UTF-8 path;
+- `size`: the canonical unsigned decimal byte length encoded as a string;
+- `sha256`: the lowercase SHA-256 of the exact file bytes;
+- `mode`: `file`, corresponding only to Git mode `100644`.
+
+The manifest does not list itself. Entries must list every other file exactly
+once; extra files, missing files, empty directories, executable Git entries,
+links, reparse points, and special files are invalid. Paths use `/`, are at
+most 1,024 bytes and 32 components, reject Windows reserved names and
+characters, and are compared with ASCII case folding to reject common
+cross-platform aliases. Valid precomposed CJK, Hiragana, Katakana, and Hangul
+UTF-8 names are supported. Decomposed combining-mark forms and Hangul Jamo are
+rejected so a checkout cannot silently acquire a different normalized name.
+
+Protocol limits are 16,384 files, 32,768 total file/directory entries, 256 MiB
+per file, 2 GiB total file bytes, and 16 MiB manifest bytes. A transport may
+enforce stricter source-specific limits but may not publish a tree that this
+validator rejects. C++ and Rust implementations must apply the same manifest
+schema and acceptance rules before publishing or rolling back a generation.
 
 ## Generation identity
 

@@ -86,6 +86,8 @@ option(BUILD_RESOURCE_CORE      "Build immutable resource snapshot core" OFF)
 option(BUILD_RESOURCE_CORE_TESTS "Build immutable resource snapshot tests" OFF)
 option(BUILD_RUNTIME_REPOSITORY "Build read-only runtime repository activation" OFF)
 option(BUILD_RUNTIME_REPOSITORY_TESTS "Build runtime repository activation tests" OFF)
+option(BUILD_RUNTIME_REPOSITORY_UPDATER "Build the transport-independent runtime repository updater" OFF)
+option(BUILD_RUNTIME_REPOSITORY_UPDATER_TESTS "Build runtime repository updater tests" OFF)
 option(BUILD_RUNTIME_REPOSITORY_GIT2 "Build the optional libgit2 repository dependency boundary" OFF)
 option(BUILD_SCRIPT_RESOURCE_HOST "Build baas/resource script Host adapter" OFF)
 option(BUILD_SCRIPT_RESOURCE_HOST_TESTS "Build baas/resource script Host tests" OFF)
@@ -195,6 +197,14 @@ if(BUILD_RESOURCE_CORE_TESTS AND NOT BUILD_RESOURCE_CORE)
 endif()
 
 if(BUILD_RUNTIME_REPOSITORY_TESTS AND NOT BUILD_RUNTIME_REPOSITORY)
+    set(BUILD_RUNTIME_REPOSITORY ON CACHE BOOL "Build read-only runtime repository activation" FORCE)
+endif()
+
+if(BUILD_RUNTIME_REPOSITORY_UPDATER_TESTS AND NOT BUILD_RUNTIME_REPOSITORY_UPDATER)
+    set(BUILD_RUNTIME_REPOSITORY_UPDATER ON CACHE BOOL "Build the transport-independent runtime repository updater" FORCE)
+endif()
+
+if(BUILD_RUNTIME_REPOSITORY_UPDATER AND NOT BUILD_RUNTIME_REPOSITORY)
     set(BUILD_RUNTIME_REPOSITORY ON CACHE BOOL "Build read-only runtime repository activation" FORCE)
 endif()
 
@@ -668,6 +678,10 @@ endif()
 
 if(BUILD_RUNTIME_REPOSITORY)
     include("${CMAKE_CURRENT_LIST_DIR}/cmake/RuntimeRepository.cmake")
+endif()
+
+if(BUILD_RUNTIME_REPOSITORY_UPDATER)
+    include("${CMAKE_CURRENT_LIST_DIR}/cmake/RuntimeRepositoryUpdater.cmake")
 endif()
 
 if(BUILD_RUNTIME_REPOSITORY_GIT2)
