@@ -12,7 +12,14 @@ on:
     branches:
       - main
     paths: 
-      - 'apps/BAAS_auto_fight_workflow_checker/CMakeLists.txt'
+      - '.github/workflows/baas_afwc.yaml'
+      - 'CMakeLists.txt'
+      - 'CMakePresets.json'
+      - 'cmake/BAASResources.cmake'
+      - 'resources.lock.json'
+      - 'scripts/fetch_resources.py'
+      - 'tests/docs/test_external_resource_boundary.py'
+      - 'apps/BAAS_auto_fight_workflow_checker/**'
   pull_request:
     branches: 
       - main
@@ -79,7 +86,7 @@ jobs:
         run: |
           ../emsdk/emsdk activate latest
           source ../emsdk/emsdk_env.sh
-          emcmake cmake -B build -DBUILD_BAAS_AW_CHECKER=$BUILD_BAAS_AW_CHECKER -DBAAS_FETCH_RESOURCES=ON -DCMAKE_BUILD_TYPE=$BUILD_TYPE -DCMAKE_TOOLCHAIN_FILE="../emsdk/upstream/emscripten/cmake/Modules/Platform/Emscripten.cmake"
+          emcmake cmake -B build -DBUILD_APP_BAAS=OFF -DBUILD_APP_ISA=OFF -DBUILD_BAAS_OCR=OFF -DBUILD_BAAS_AW_CHECKER=$BUILD_BAAS_AW_CHECKER -DBAAS_FETCH_RESOURCES=ON -DCMAKE_BUILD_TYPE=$BUILD_TYPE -DCMAKE_TOOLCHAIN_FILE="../emsdk/upstream/emscripten/cmake/Modules/Platform/Emscripten.cmake"
           cmake --build build --config Release --target BAAS_workflow_checker -j $(nproc)
 
       - name: Clean Up

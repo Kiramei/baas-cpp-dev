@@ -8,7 +8,8 @@
     - Use python unittest to test all the api and check response
     - OCR test images are not stored in this repository. The tests fetch
       `ocr_test_images` from `resources.lock.json` automatically when
-      `apps/ocr_server/test/test_images` is missing.
+      `build/ocr-test-resources/test_images` is missing. Override the generated
+      fixture root with `BAAS_OCR_TEST_RESOURCE_ROOT` when needed.
     - working directory : folder `BAAS_Cpp`
     - python version : 3.9.18
     - command : 

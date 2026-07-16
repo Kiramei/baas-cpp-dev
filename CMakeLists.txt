@@ -74,6 +74,12 @@ message(STATUS "Build time  : ${BUILD_TIME}")
 option(BUILD_APP_BAAS               "Build BAAS app          "  OFF)
 option(BUILD_APP_ISA                "Build ISA  app          "  OFF)
 option(BAAS_FETCH_RESOURCES         "Download legacy BAAS runtime resources during configure" OFF)
+option(BAAS_INTERNAL_RESOURCE_BOUNDARY_CONFIGURE_ONLY "Stop after the resource-boundary configure probe" OFF)
+set(BAAS_INTERNAL_RESOURCE_BOUNDARY_SENTINEL "" CACHE FILEPATH "Resource-boundary configure probe result")
+mark_as_advanced(
+        BAAS_INTERNAL_RESOURCE_BOUNDARY_CONFIGURE_ONLY
+        BAAS_INTERNAL_RESOURCE_BOUNDARY_SENTINEL
+)
 
 # other
 option(BUILD_BAAS_OCR           "build the ocr server app"               OFF)
@@ -576,6 +582,31 @@ set(_baas_legacy_resource_tooling_enabled OFF)
 if(BUILD_APP_BAAS OR BUILD_APP_ISA OR BUILD_BAAS_OCR OR BUILD_BAAS_AW_CHECKER)
     set(_baas_legacy_resource_tooling_enabled ON)
     include("${CMAKE_CURRENT_LIST_DIR}/cmake/BAASResources.cmake")
+endif()
+
+# This internal configure-only path lets offline tests exercise the real root
+# option gate without resolving application dependencies or touching payloads.
+if(BAAS_INTERNAL_RESOURCE_BOUNDARY_CONFIGURE_ONLY)
+    if(BAAS_INTERNAL_RESOURCE_BOUNDARY_SENTINEL STREQUAL "")
+        message(FATAL_ERROR
+                "BAAS_INTERNAL_RESOURCE_BOUNDARY_CONFIGURE_ONLY requires "
+                "BAAS_INTERNAL_RESOURCE_BOUNDARY_SENTINEL")
+    endif()
+    if(_baas_legacy_resource_tooling_enabled)
+        if(NOT COMMAND baas_install_required_runtime_resources)
+            message(FATAL_ERROR "Legacy resource tooling was not loaded")
+        endif()
+        baas_install_required_runtime_resources()
+        file(WRITE "${BAAS_INTERNAL_RESOURCE_BOUNDARY_SENTINEL}"
+                "tooling=enabled\ninstaller=called\n")
+    else()
+        if(COMMAND baas_install_required_runtime_resources)
+            message(FATAL_ERROR "Legacy resource tooling leaked into a non-legacy configure")
+        endif()
+        file(WRITE "${BAAS_INTERNAL_RESOURCE_BOUNDARY_SENTINEL}"
+                "tooling=disabled\ninstaller=skipped\n")
+    endif()
+    return()
 endif()
 
 if(BUILD_BAAS_NMS_BENCHMARK)
