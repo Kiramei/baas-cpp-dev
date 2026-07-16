@@ -29,6 +29,8 @@ setup `4`, composition `5`, HTTP start `6`, readiness `7`, and internal `8`.
   `HealthReadinessOwner`;
 - `ProductionProviderBackend`, `FileResourceStore`, and the joined
   `ServiceRuntimeProviderBridge`/`FileResourceWatcher` lifecycle;
+- desktop `ProductionRemoteBackend`, `RemoteHandlerFactory`, and the same
+  shared resource store/ADB smart-socket transport;
 - real `status`, `copy_config`, and `remove_config*` registrations,
   `TriggerDispatcher`, `TriggerExecutor`, and `TriggerHandlerFactory`;
 - file auth storage, system clock, system random, and sodium password deriver;
@@ -36,9 +38,12 @@ setup `4`, composition `5`, HTTP start `6`, readiness `7`, and internal `8`.
 
 The status source reads the thread-safe production provider snapshot.
 Configuration triggers use the same durable `FileResourceStore` supplied to
-the sync channel. Other catalog triggers remain unregistered. Remote policy is explicitly
-`disabled` and its factory is null. This release does not install a remote
-route.
+the sync and remote channels. Other catalog triggers remain unregistered. On
+desktop, remote policy is `desktop_only` and `/ws/remote` uses the production
+ws-scrcpy backend. The pinned resource is read from
+`<project-root>/service/remote/scrcpy-server.jar`; a missing file fails with
+`remote_resource_unavailable` before auth/config side effects. Android keeps
+the host-side remote route disabled.
 
 The Pipe listener factory is not yet a complete application dependency. Any
 parsed `--pipe-name` therefore returns exit `3` before signal ownership,
@@ -57,8 +62,9 @@ ready snapshot; `/health` then returns `200`.
 
 The main thread waits for the first immutable shutdown reason. HTTP
 `POST /shutdown` only publishes intent. Teardown withdraws readiness, calls
-`ProductionHttpHost::stop()`, joins the runtime resource watcher and resets the
-Provider initialized flag, calls `TriggerExecutor::shutdown()`, and finally
+`ProductionHttpHost::stop()`, stops the remote backend and its ADB/session
+owners, joins the runtime resource watcher and resets the Provider initialized
+flag, calls `TriggerExecutor::shutdown()`, and finally
 `ServiceSignalOwner::stop()`. Failures publish failed readiness and use the same
 reverse release sequence.
 
@@ -79,9 +85,11 @@ The executable is opt-in and excluded from the legacy `BAAS_CORE` glob:
 real loopback `/version`, health `503` to ready `200`, auth routing, HTTP
 shutdown, fixed-port conflict, real status and durable `copy_config`,
 persistent auth restart and second-instance locking, and Pipe rejection before
-filesystem side effects. Separate CTest entries execute the actual binary for
-`--help` and `--version`. CI provisions pinned cpp-httplib, libsodium, and
-nlohmann-json recipes and runs Debug and Release on Windows, Linux, and macOS.
+filesystem side effects. It also verifies desktop remote policy and missing
+ws-scrcpy-resource failure before composition. Separate CTest entries execute
+the actual binary for `--help` and `--version`. CI provisions pinned
+cpp-httplib, libsodium, and nlohmann-json recipes and runs Debug and Release on
+Windows, Linux, and macOS.
 
-This slice does not claim remote, Pipe composition, Tauri packaging, or an
-Android service executable.
+This slice does not claim Pipe composition, packaged Tauri runtime resources,
+or an Android service executable.

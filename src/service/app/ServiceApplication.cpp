@@ -3,6 +3,7 @@
 #include "service/adapters/FileResourceStore.h"
 #include "service/app/ConfigurationTriggerRegistration.h"
 #include "service/app/ProductionProviderBackend.h"
+#include "service/app/ProductionRemoteBackend.h"
 #include "service/app/ServiceRuntimeProviderBridge.h"
 #include "service/app/StatusTriggerRegistration.h"
 #include "service/auth/Crypto.h"
@@ -33,7 +34,11 @@ namespace {
         router::HealthValue{router::HealthObject{
             {"phase", router::HealthValue{std::string{phase}}},
             {"pipe", router::HealthValue{"unavailable"}},
+#if defined(__ANDROID__)
             {"remote", router::HealthValue{"disabled"}},
+#else
+            {"remote", router::HealthValue{"desktop_only"}},
+#endif
         }});
     if (authentication) snapshot.auth = *authentication;
     return snapshot;
@@ -111,6 +116,7 @@ public:
     std::shared_ptr<ProductionProviderBackend> provider;
     std::shared_ptr<adapters::FileResourceStore> resources;
     std::unique_ptr<ServiceRuntimeProviderBridge> runtime_provider;
+    std::shared_ptr<ProductionRemoteBackend> remote_backend;
     std::shared_ptr<trigger::TriggerExecutor> executor;
     std::shared_ptr<channels::TriggerHandlerFactory> trigger_factory;
     std::unique_ptr<http::ProductionHttpHost> host;
@@ -130,6 +136,7 @@ std::string_view service_application_error_name(
         case signal_setup_failed: return "signal_setup_failed";
         case trigger_registration_failed: return "trigger_registration_failed";
         case trigger_dispatch_failed: return "trigger_dispatch_failed";
+        case remote_resource_unavailable: return "remote_resource_unavailable";
         case composition_failed: return "composition_failed";
         case authentication_failed: return "authentication_failed";
         case host_start_failed: return "host_start_failed";
@@ -164,6 +171,15 @@ ServiceApplicationOpenResult ServiceApplication::open(
         || filesystem_error) {
         return {nullptr, ServiceApplicationError::invalid_options, {}};
     }
+#if !defined(__ANDROID__)
+    const auto remote_server_jar =
+        options.project_root / "service" / "remote" / "scrcpy-server.jar";
+    filesystem_error.clear();
+    if (!std::filesystem::is_regular_file(remote_server_jar, filesystem_error)
+        || filesystem_error) {
+        return {nullptr, ServiceApplicationError::remote_resource_unavailable, {}};
+    }
+#endif
 
     auto signal_block = block_service_shutdown_signals();
     if (!signal_block) {
@@ -183,6 +199,16 @@ ServiceApplicationOpenResult ServiceApplication::open(
             impl->options.project_root);
         impl->runtime_provider = std::make_unique<ServiceRuntimeProviderBridge>(
             impl->resources, impl->provider);
+
+#if !defined(__ANDROID__)
+        ProductionRemoteBackendDependencies remote_dependencies;
+        remote_dependencies.resources = impl->resources;
+        remote_dependencies.adb_transport =
+            std::make_shared<adb::ServiceAdbTransport>();
+        remote_dependencies.server_jar = remote_server_jar;
+        impl->remote_backend = std::make_shared<ProductionRemoteBackend>(
+            std::move(remote_dependencies));
+#endif
 
         auto registration = make_status_trigger_registration(
             StatusSourceCallback{[provider = impl->provider](const std::stop_token stop) {
@@ -219,7 +245,7 @@ ServiceApplicationOpenResult ServiceApplication::open(
         };
         config.health_provider = impl->readiness;
         config.shutdown_intent = impl->shutdown;
-        config.remote = websocket::RemoteChannelPolicy::disabled;
+        config.remote = websocket::RemoteChannelPolicy::desktop_only;
         config.host.port = impl->options.port;
 
         http::ProductionHttpHostDependencies dependencies;
@@ -232,7 +258,12 @@ ServiceApplicationOpenResult ServiceApplication::open(
         dependencies.provider_backend = impl->provider;
         dependencies.resource_store = impl->resources;
         dependencies.trigger = impl->trigger_factory;
+#if defined(__ANDROID__)
         dependencies.remote = nullptr;
+#else
+        dependencies.remote = std::make_shared<channels::RemoteHandlerFactory>(
+            impl->remote_backend);
+#endif
 
         auto opened = http::open_production_http_host(
             std::move(config), std::move(dependencies));
@@ -363,6 +394,7 @@ void ServiceApplication::stop() noexcept
         }
     }
     if (impl_->host) impl_->host->stop();
+    if (impl_->remote_backend) impl_->remote_backend->stop();
     if (impl_->runtime_provider) impl_->runtime_provider->stop();
     if (impl_->executor) impl_->executor->shutdown();
     if (impl_->signal_owner) impl_->signal_owner->stop();
@@ -406,8 +438,13 @@ int run_service_application(
             output
                 << "Usage: BAAS_service --project-root <directory> --host 127.0.0.1 "
                    "--port <1..65535>\n"
-                << "       BAAS_service --help | --version\n"
-                << "Pipe and remote transports are not enabled in this release.\n";
+                << "       BAAS_service --help | --version\n";
+#if defined(__ANDROID__)
+            output << "Pipe and host-side remote transports are not enabled.\n";
+#else
+            output
+                << "Pipe transport is not enabled; desktop remote transport is enabled.\n";
+#endif
             return static_cast<int>(ServiceProcessExit::success);
         }
         if (parsed.disposition == ServiceCommandLineDisposition::version) {

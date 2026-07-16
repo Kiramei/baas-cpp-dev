@@ -2,9 +2,10 @@
 
 `BAAS_service_remote_backend` is the host-side implementation of
 `channels::RemoteBackend`. It replaces the Python `ScrcpyClient` proxy with a
-bounded C++ owner while preserving the service `remote` channel contract. It is
-not composed into `ServiceApplication` in this unit; application and Tauri
-wiring remain a separate integration change.
+bounded C++ owner while preserving the service `remote` channel contract.
+Desktop `ServiceApplication` composes it through `RemoteHandlerFactory` and
+requires `<project-root>/service/remote/scrcpy-server.jar` before creating any
+auth/config side effects. Android leaves this host-side route disabled.
 
 ## Exact device selection
 

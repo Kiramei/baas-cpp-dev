@@ -37,6 +37,7 @@ enum class ServiceApplicationError : std::uint8_t {
     signal_setup_failed,
     trigger_registration_failed,
     trigger_dispatch_failed,
+    remote_resource_unavailable,
     composition_failed,
     authentication_failed,
     host_start_failed,
