@@ -27,7 +27,8 @@ setup `4`, composition `5`, HTTP start `6`, readiness `7`, and internal `8`.
 
 - `ServiceShutdownCoordinator`, `ServiceSignalOwner`, and
   `HealthReadinessOwner`;
-- `ProductionProviderBackend` and `FileResourceStore`;
+- `ProductionProviderBackend`, `FileResourceStore`, and the joined
+  `ServiceRuntimeProviderBridge`/`FileResourceWatcher` lifecycle;
 - real `status`, `copy_config`, and `remove_config*` registrations,
   `TriggerDispatcher`, `TriggerExecutor`, and `TriggerHandlerFactory`;
 - file auth storage, system clock, system random, and sodium password deriver;
@@ -48,14 +49,16 @@ fail-closed boundary, not a claim that Pipe works.
 
 After CLI validation, the process rejects Pipe, blocks shutdown signals,
 publishes `starting`, constructs the production graph, and starts the loopback
-host. The listener initially returns `503 health_starting`. After start,
-`ServiceApplication` reads `AuthOwner::password_state()` and
+host. The listener initially returns `503 health_starting`. After start, the
+runtime/provider bridge must complete its real config/static/setup scan;
+`ServiceApplication` then reads `AuthOwner::password_state()` and
 `signing_public_key()`, base64url-encodes the key, and atomically publishes the
 ready snapshot; `/health` then returns `200`.
 
 The main thread waits for the first immutable shutdown reason. HTTP
 `POST /shutdown` only publishes intent. Teardown withdraws readiness, calls
-`ProductionHttpHost::stop()`, `TriggerExecutor::shutdown()`, and finally
+`ProductionHttpHost::stop()`, joins the runtime resource watcher and resets the
+Provider initialized flag, calls `TriggerExecutor::shutdown()`, and finally
 `ServiceSignalOwner::stop()`. Failures publish failed readiness and use the same
 reverse release sequence.
 

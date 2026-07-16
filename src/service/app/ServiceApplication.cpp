@@ -3,6 +3,7 @@
 #include "service/adapters/FileResourceStore.h"
 #include "service/app/ConfigurationTriggerRegistration.h"
 #include "service/app/ProductionProviderBackend.h"
+#include "service/app/ServiceRuntimeProviderBridge.h"
 #include "service/app/StatusTriggerRegistration.h"
 #include "service/auth/Crypto.h"
 #include "service/channels/TriggerHandler.h"
@@ -109,6 +110,7 @@ public:
     std::unique_ptr<ServiceSignalOwner> signal_owner;
     std::shared_ptr<ProductionProviderBackend> provider;
     std::shared_ptr<adapters::FileResourceStore> resources;
+    std::unique_ptr<ServiceRuntimeProviderBridge> runtime_provider;
     std::shared_ptr<trigger::TriggerExecutor> executor;
     std::shared_ptr<channels::TriggerHandlerFactory> trigger_factory;
     std::unique_ptr<http::ProductionHttpHost> host;
@@ -179,6 +181,8 @@ ServiceApplicationOpenResult ServiceApplication::open(
         impl->provider = std::make_shared<ProductionProviderBackend>();
         impl->resources = std::make_shared<adapters::FileResourceStore>(
             impl->options.project_root);
+        impl->runtime_provider = std::make_unique<ServiceRuntimeProviderBridge>(
+            impl->resources, impl->provider);
 
         auto registration = make_status_trigger_registration(
             StatusSourceCallback{[provider = impl->provider](const std::stop_token stop) {
@@ -294,6 +298,12 @@ bool ServiceApplication::publish_ready() noexcept
     }
     if (impl_->ready.load(std::memory_order_acquire)) return true;
     try {
+        const auto runtime_started = impl_->runtime_provider->start();
+        if (runtime_started != ServiceRuntimeProviderBridgeError::none) {
+            impl_->publish_failure("resources_failed");
+            stop();
+            return false;
+        }
         const auto authentication = impl_->host->authentication();
         if (!authentication) {
             impl_->publish_failure("auth_failed");
@@ -353,6 +363,7 @@ void ServiceApplication::stop() noexcept
         }
     }
     if (impl_->host) impl_->host->stop();
+    if (impl_->runtime_provider) impl_->runtime_provider->stop();
     if (impl_->executor) impl_->executor->shutdown();
     if (impl_->signal_owner) impl_->signal_owner->stop();
     impl_->ready.store(false, std::memory_order_release);

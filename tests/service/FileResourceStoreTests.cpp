@@ -1034,10 +1034,11 @@ void test_refresh_and_publish()
     check(!store.refresh_and_publish(
               {channels::SyncResource::gui, std::nullopt}, "filesystem"),
           "invalid external JSON is rejected");
-    auto preserved = store.pull({channels::SyncResource::gui, std::nullopt}, {});
-    check(preserved && Json::parse(preserved->data_json)["theme"] == "light"
+    auto invalidated = store.pull({channels::SyncResource::gui, std::nullopt}, {});
+    check(!invalidated
+              && invalidated.error == channels::ResourceStoreError::invalid_data
               && updates.size() == 1,
-          "invalid refresh leaves visible snapshot and publications unchanged");
+          "invalid refresh removes stale cache without publishing invalid data");
     write_bytes(project.root / "setup.toml",
                 "[general]\nchannel = 'dev'\nfuture = 'preserved'\n");
     check(store.refresh_and_publish(
@@ -1054,6 +1055,19 @@ void test_refresh_and_publish()
                          channels::SyncResource::setup_toml,
                          std::string{"global"}},
           "setup refresh and pull share one canonical global cache entry");
+    write_bytes(project.root / "config" / "gui.json", R"({"theme":"restored"})");
+    const auto restored = store.refresh(
+        {channels::SyncResource::gui, std::nullopt}, "filesystem");
+    check(restored.disposition == adapters::ResourceRefreshDisposition::updated,
+          "exact refresh reports a restored document");
+    std::filesystem::remove(project.root / "config" / "gui.json");
+    const auto removed = store.refresh(
+        {channels::SyncResource::gui, std::nullopt}, "filesystem");
+    check(removed.disposition == adapters::ResourceRefreshDisposition::removed
+              && updates.size() == 4
+              && Json::parse(updates.back().operations_json)
+                     == Json::array({Json{{"op", "remove"}, {"path", ""}}}),
+          "external deletion invalidates cache and publishes one root remove");
     check(!store.refresh_and_publish(
               {channels::SyncResource::gui, std::nullopt}, std::string(65, 'o')),
           "refresh origin is bounded");

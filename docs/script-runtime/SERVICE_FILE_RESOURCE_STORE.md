@@ -107,11 +107,17 @@ may destroy its own subscription without waiting on itself; no later publication
 can enter it. Callbacks run without the main state lock, may re-enter the store,
 and exceptions from one callback do not stop other subscribers.
 
-`refresh_and_publish(key, origin)` is the watcher integration point. It applies
-the same path and resource-specific validation, updates the cache only for a
-changed valid document, and publishes one root `replace` operation with the
-supplied bounded origin. No filesystem watcher is embedded in this adapter; a
-host watcher calls this method after observing an external change.
+`refresh(key, origin)` is the exact watcher integration point. It applies the
+same path and resource-specific validation and classifies unchanged, updated,
+missing, invalid, capacity, and internal outcomes. A changed valid document
+publishes one root `replace` operation with the supplied bounded origin. A disk
+failure invalidates the cache without publishing invalid data, so later pulls
+cannot return a stale document after an external delete or corrupt replacement.
+When a previously cached file is cleanly removed, subscribers receive one root
+`remove`; malformed data invalidates locally but is never published.
+`refresh_and_publish` remains the compatibility convenience for callers that
+only need to know whether a replacement was published. Filesystem lifecycle is
+owned by the separate `FileResourceWatcher` rather than this durable adapter.
 
 ## Configuration command operations
 
