@@ -86,6 +86,7 @@ option(BUILD_RESOURCE_CORE      "Build immutable resource snapshot core" OFF)
 option(BUILD_RESOURCE_CORE_TESTS "Build immutable resource snapshot tests" OFF)
 option(BUILD_RUNTIME_REPOSITORY "Build read-only runtime repository activation" OFF)
 option(BUILD_RUNTIME_REPOSITORY_TESTS "Build runtime repository activation tests" OFF)
+option(BUILD_RUNTIME_REPOSITORY_GIT2 "Build the optional libgit2 repository dependency boundary" OFF)
 option(BUILD_SCRIPT_RESOURCE_HOST "Build baas/resource script Host adapter" OFF)
 option(BUILD_SCRIPT_RESOURCE_HOST_TESTS "Build baas/resource script Host tests" OFF)
 option(BUILD_SERVICE_PROTOCOL   "Build the standalone BAAS service protocol library" OFF)
@@ -588,6 +589,10 @@ if(BUILD_SERVICE_FILE_RESOURCE_STORE)
     baas_request_dependencies(miniz)
 endif()
 
+if(BUILD_RUNTIME_REPOSITORY_GIT2)
+    baas_request_dependencies(libgit2)
+endif()
+
 baas_load_requested_dependencies()
 
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
@@ -612,6 +617,7 @@ file(
 # Standalone libraries must not leak into the legacy application's globbed
 # core sources.
 list(FILTER BAAS_CORE_SOURCES EXCLUDE REGEX "/src/script/.*\\.cpp$")
+list(FILTER BAAS_CORE_SOURCES EXCLUDE REGEX "/src/runtime/repository/.*\\.cpp$")
 list(FILTER BAAS_CORE_SOURCES EXCLUDE REGEX "/src/service/protocol/.*\\.cpp$")
 list(FILTER BAAS_CORE_SOURCES EXCLUDE REGEX "/src/service/trigger/.*\\.cpp$")
 list(FILTER BAAS_CORE_SOURCES EXCLUDE REGEX "/src/service/router/.*\\.cpp$")
@@ -662,6 +668,10 @@ endif()
 
 if(BUILD_RUNTIME_REPOSITORY)
     include("${CMAKE_CURRENT_LIST_DIR}/cmake/RuntimeRepository.cmake")
+endif()
+
+if(BUILD_RUNTIME_REPOSITORY_GIT2)
+    include("${CMAKE_CURRENT_LIST_DIR}/cmake/RuntimeRepositoryGit2.cmake")
 endif()
 
 if(BUILD_SCRIPT_RUNTIME)

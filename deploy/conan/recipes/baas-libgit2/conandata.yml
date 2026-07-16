@@ -1,0 +1,8 @@
+sources:
+  "1.9.3":
+    url: "https://github.com/libgit2/libgit2/archive/refs/tags/v1.9.3.tar.gz"
+    sha256: "d532172d7ab24d2a25944e2434212d63ee85f3650e97b5f7579e7f201a78ad64"
+    archive_type: "tar.gz"
+    strip_prefix: "libgit2-1.9.3"
+dependencies:
+  openssl: "3.5.7"
