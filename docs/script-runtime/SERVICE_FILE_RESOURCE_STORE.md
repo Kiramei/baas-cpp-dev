@@ -42,6 +42,9 @@ statements; an existing projected assignment changes only its value span, so
 formatting and trailing comments remain byte-for-byte stable. Unsupported
 syntax in a projected value, duplicate projected keys, invalid value types, or
 a transport outside `websocket|pipe` fails closed before the atomic writer.
+Dotted keys, subtables, or arrays-of-tables that reserve a projected canonical
+key as a table also fail closed; the merge never emits an invalid TOML
+scalar/table redefinition.
 This deliberately retains more unknown TOML data than Python's whole-schema
 rewrite.
 

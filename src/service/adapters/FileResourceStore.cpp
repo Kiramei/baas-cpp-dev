@@ -726,21 +726,72 @@ std::optional<std::string> merge_setup_toml(
         ? "\r\n" : "\n";
     std::optional<std::size_t> general_statement;
     std::size_t general_end = original.size();
+    std::vector<std::string> current_table;
+    bool root_dotted_general{};
     for (std::size_t index = 0; index < statements->size(); ++index) {
         const auto& statement = (*statements)[index];
         const auto content = trim_ascii(original.substr(
             statement.begin, statement.code_end - statement.begin));
-        if (content.empty() || content.front() != '[') continue;
-        const auto header = parse_toml_table_header(content);
-        if (!header) return std::nullopt;
-        if (!header->array && header->path.size() == 1
-            && header->path.front() == "general") {
-            if (general_statement) return std::nullopt;
-            general_statement = index;
-        } else if (general_statement && general_end == original.size()) {
-            general_end = statement.begin;
+        if (content.empty()) continue;
+        if (content.front() == '[') {
+            const auto header = parse_toml_table_header(content);
+            if (!header) return std::nullopt;
+            current_table = header->path;
+            if (header->array && header->path.size() == 1
+                && header->path.front() == "general") {
+                // A normal [general] table cannot coexist with [[general]].
+                return std::nullopt;
+            }
+            if (!header->array && header->path.size() == 1
+                && header->path.front() == "general") {
+                if (general_statement) return std::nullopt;
+                general_statement = index;
+            } else if (general_statement && general_end == original.size()) {
+                general_end = statement.begin;
+            }
+            for (const auto& replacement : replacements) {
+                if (header->path.size() >= 2
+                    && header->path[0] == "general"
+                    && header->path[1] == replacement.first) {
+                    // [general.transport] and equivalent quoted spellings
+                    // reserve `transport` as a table, so writing a scalar
+                    // with that key would make the document invalid TOML.
+                    return std::nullopt;
+                }
+            }
+            continue;
+        }
+
+        const auto separator = toml_assignment_separator(content);
+        if (!separator) continue;
+        const auto relative = parse_toml_key_path(content.substr(0, *separator));
+        if (!relative) return std::nullopt;
+        std::vector<std::string> absolute = current_table;
+        absolute.insert(absolute.end(), relative->begin(), relative->end());
+        if (current_table.empty() && absolute.size() >= 2
+            && absolute.front() == "general") {
+            // Root dotted keys implicitly define `general`; appending an
+            // explicit [general] later is forbidden by TOML. Fail closed
+            // instead of rewriting a representation the projection does not
+            // own.
+            root_dotted_general = true;
+        }
+        if (current_table.empty() && absolute.size() == 1
+            && absolute.front() == "general") {
+            // A root scalar/inline table named `general` also prevents the
+            // projected table from being declared.
+            return std::nullopt;
+        }
+        for (const auto& replacement : replacements) {
+            if (absolute.size() >= 3 && absolute[0] == "general"
+                && absolute[1] == replacement.first) {
+                // `transport.kind` reserves transport as a table. Replacing
+                // or appending `transport = ...` would overwrite that table.
+                return std::nullopt;
+            }
         }
     }
+    if (root_dotted_general) return std::nullopt;
     struct Edit {
         std::size_t begin{};
         std::size_t end{};

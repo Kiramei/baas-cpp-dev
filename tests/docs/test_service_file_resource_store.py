@@ -36,6 +36,7 @@ class ServiceFileResourceStoreDocsTests(unittest.TestCase):
         self.assertIn("setup_toml", spec)
         self.assertIn("seven-field Python", spec)
         self.assertIn("unknown TOML", spec)
+        self.assertIn("scalar/table redefinition", spec)
         self.assertIn("committed_durability_uncertain", spec)
         self.assertIn("entry barrier", spec)
         self.assertIn("refresh_and_publish", spec)

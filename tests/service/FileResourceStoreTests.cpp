@@ -2,6 +2,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -1127,6 +1128,60 @@ void test_setup_toml_eof_insertion_keeps_valid_line_boundaries()
           "setup merged at EOF remains readable after restart");
 }
 
+void test_setup_toml_scalar_table_conflicts_fail_closed()
+{
+    const std::array conflicting_sources{
+        std::string{"[general]\ntransport.kind = \"future\"\n"},
+        std::string{"[\"general\".\"transport\"]\nkind = \"future\"\n"},
+        std::string{"general.transport.kind = \"future\"\n"},
+        std::string{"[[general]]\nname = \"future\"\n"},
+    };
+    for (const auto& source : conflicting_sources) {
+        TempProject project;
+        const auto path = project.root / "setup.toml";
+        write_bytes(path, source);
+        adapters::FileResourceStore store(project.root, dependencies());
+        const channels::ResourceKey key{
+            channels::SyncResource::setup_toml, std::string{"global"}};
+        auto initial = store.pull(key, {});
+        check(static_cast<bool>(initial),
+              "valid dotted/table setup conflict fixture projects safely");
+        std::atomic_size_t publications{};
+        auto subscription = store.subscribe_updates(
+            [&publications](channels::ResourceUpdate) { ++publications; });
+        auto applied = store.apply_patch(
+            {key, initial ? initial->timestamp_json : "0",
+             {{"replace", "/transport", "\"pipe\""}}}, {});
+        check(!applied
+                  && applied.error
+                         == channels::ResourceStoreError::invalid_data,
+              "projected scalar never overwrites a dotted key or table");
+        check(read_bytes(path) == source && publications.load() == 0,
+              "scalar/table conflict leaves valid TOML and publications unchanged");
+    }
+
+    TempProject child_project;
+    const auto child_path = child_project.root / "setup.toml";
+    write_bytes(child_path,
+                "[[general.plugins]]\nname = \"future\"\n");
+    adapters::FileResourceStore child_store(child_project.root, dependencies());
+    const channels::ResourceKey child_key{
+        channels::SyncResource::setup_toml, std::string{"global"}};
+    auto child_initial = child_store.pull(child_key, {});
+    auto child_applied = child_store.apply_patch(
+        {child_key, child_initial ? child_initial->timestamp_json : "0",
+         {{"replace", "/channel", "\"dev\""}}}, {});
+    const auto child_disk = read_bytes(child_path);
+    adapters::FileResourceStore child_reloaded(child_project.root, dependencies());
+    auto child_after_restart = child_reloaded.pull(child_key, {});
+    check(child_applied
+              && child_disk.find("[general]\n") != std::string::npos
+              && child_disk.find("channel = \"dev\"\n") != std::string::npos
+              && child_after_restart
+              && Json::parse(child_after_restart->data_json)["channel"] == "dev",
+          "unrelated child arrays-of-tables do not block a projected scalar");
+}
+
 }  // namespace
 
 int main()
@@ -1154,6 +1209,7 @@ int main()
         test_setup_toml_projection_patch_and_unknown_retention();
         test_setup_toml_legacy_proxy_projection();
         test_setup_toml_eof_insertion_keeps_valid_line_boundaries();
+        test_setup_toml_scalar_table_conflicts_fail_closed();
         test_refresh_and_publish();
     } catch (const std::exception& error) {
         ++failures;
