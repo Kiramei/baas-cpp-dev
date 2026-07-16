@@ -5,6 +5,7 @@
 #include "service/app/ConfigurationTriggerRegistration.h"
 #include "service/app/ProductionProviderBackend.h"
 #include "service/app/ProductionRemoteBackend.h"
+#include "service/app/RuntimeConfigurationDefaults.h"
 #include "service/app/ServiceRuntimeProviderBridge.h"
 #include "service/app/ServiceRuntimeRepositoryOwner.h"
 #include "service/app/StatusTriggerRegistration.h"
@@ -212,6 +213,9 @@ ServiceApplicationOpenResult ServiceApplication::open(
     }
     std::shared_ptr<const runtime::repository::RuntimeRepositoryReadBundle>
         runtime_repository_read_bundle;
+    std::shared_ptr<const adapters::ConfigurationDefaults>
+        configuration_defaults;
+    channels::ResourceStoreLimits resource_limits;
     try {
         runtime_repository_read_bundle =
             runtime_repository.owner->open_read_bundle();
@@ -220,6 +224,8 @@ ServiceApplicationOpenResult ServiceApplication::open(
                 != runtime_repository.owner->generation()) {
             return {nullptr, ServiceApplicationError::runtime_repository_invalid, {}};
         }
+        configuration_defaults = load_runtime_configuration_defaults(
+            runtime_repository_read_bundle->resources(), resource_limits);
     } catch (const runtime::repository::RuntimeRepositoryReadError& error) {
         const auto application_error = error.code()
                 == runtime::repository::RuntimeRepositoryReadErrorCode::resource_exhausted
@@ -228,6 +234,8 @@ ServiceApplicationOpenResult ServiceApplication::open(
         return {nullptr, application_error, {}};
     } catch (const std::bad_alloc&) {
         return {nullptr, ServiceApplicationError::internal_failure, {}};
+    } catch (const std::invalid_argument&) {
+        return {nullptr, ServiceApplicationError::runtime_repository_invalid, {}};
     } catch (...) {
         return {nullptr, ServiceApplicationError::internal_failure, {}};
     }
@@ -259,8 +267,12 @@ ServiceApplicationOpenResult ServiceApplication::open(
             health_snapshot("starting", *impl->runtime_repository));
 
         impl->provider = std::make_shared<ProductionProviderBackend>();
+        adapters::FileResourceStoreDependencies resource_dependencies;
+        resource_dependencies.configuration_defaults =
+            std::move(configuration_defaults);
         impl->resources = std::make_shared<adapters::FileResourceStore>(
-            impl->options.project_root);
+            impl->options.project_root, std::move(resource_dependencies),
+            resource_limits);
         impl->runtime_provider = std::make_unique<ServiceRuntimeProviderBridge>(
             impl->resources, impl->provider);
 

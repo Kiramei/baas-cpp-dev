@@ -33,6 +33,7 @@ on:
       - 'cmake/ServiceWebSocket.cmake'
       - 'cmake/RuntimeRepository.cmake'
       - 'cmake/ServiceRuntimeRepositoryOwner.cmake'
+      - 'cmake/ServiceRuntimeConfigurationDefaults.cmake'
       - 'cmake/ServiceProductionHttpHost.cmake'
       - 'cmake/ServiceHttp.cmake'
       - 'cmake/ServiceRouter.cmake'
@@ -86,11 +87,15 @@ on:
       - 'include/service/app/ProductionRemoteBackend.h'
       - 'src/service/app/ProductionRemoteBackend.cpp'
       - 'include/service/adapters/FileResourceStore.h'
+      - 'include/service/adapters/BoundedJson.h'
       - 'src/service/adapters/FileResourceStore.cpp'
       - 'src/service/adapters/ConfigArchiveCodec.h'
       - 'src/service/adapters/ConfigArchiveCodec.cpp'
       - 'tests/service/ConfigArchiveCodecTests.cpp'
-      - 'src/service/adapters/ConfigurationDefaults.h'
+      - 'include/service/adapters/ConfigurationDefaults.h'
+      - 'include/service/app/RuntimeConfigurationDefaults.h'
+      - 'src/service/app/RuntimeConfigurationDefaults.cpp'
+      - 'tests/service/TestConfigurationDefaults.h'
       - 'include/service/channels/RemoteHandler.h'
       - 'src/service/channels/RemoteHandler.cpp'
       - 'include/service/channels/SyncHandler.h'
@@ -173,6 +178,7 @@ on:
       - 'cmake/ServiceWebSocket.cmake'
       - 'cmake/RuntimeRepository.cmake'
       - 'cmake/ServiceRuntimeRepositoryOwner.cmake'
+      - 'cmake/ServiceRuntimeConfigurationDefaults.cmake'
       - 'cmake/ServiceProductionHttpHost.cmake'
       - 'cmake/ServiceHttp.cmake'
       - 'cmake/ServiceRouter.cmake'
@@ -226,11 +232,15 @@ on:
       - 'include/service/app/ProductionRemoteBackend.h'
       - 'src/service/app/ProductionRemoteBackend.cpp'
       - 'include/service/adapters/FileResourceStore.h'
+      - 'include/service/adapters/BoundedJson.h'
       - 'src/service/adapters/FileResourceStore.cpp'
       - 'src/service/adapters/ConfigArchiveCodec.h'
       - 'src/service/adapters/ConfigArchiveCodec.cpp'
       - 'tests/service/ConfigArchiveCodecTests.cpp'
-      - 'src/service/adapters/ConfigurationDefaults.h'
+      - 'include/service/adapters/ConfigurationDefaults.h'
+      - 'include/service/app/RuntimeConfigurationDefaults.h'
+      - 'src/service/app/RuntimeConfigurationDefaults.cpp'
+      - 'tests/service/TestConfigurationDefaults.h'
       - 'include/service/channels/RemoteHandler.h'
       - 'src/service/channels/RemoteHandler.cpp'
       - 'include/service/channels/SyncHandler.h'
@@ -556,6 +566,7 @@ jobs:
           -DBUILD_SERVICE_FILE_RESOURCE_STORE=ON
           -DBUILD_SERVICE_CONFIGURATION_TRIGGERS=ON
           -DBUILD_SERVICE_RUNTIME_REPOSITORY_OWNER=ON
+          -DBUILD_SERVICE_RUNTIME_CONFIGURATION_DEFAULTS=ON
           -DBUILD_SERVICE_PRODUCTION_HTTP_HOST_TESTS=ON
           -DBUILD_APP_BAAS=OFF
           -DBUILD_APP_ISA=OFF
@@ -577,4 +588,5 @@ jobs:
           BAAS_service_file_resource_store
           BAAS_service_configuration_triggers
           BAAS_service_runtime_repository_owner
+          BAAS_service_runtime_configuration_defaults
           BAAS_service_production_http_host_android_policy_contract

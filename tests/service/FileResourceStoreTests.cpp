@@ -1,5 +1,6 @@
 #include "service/adapters/FileResourceStore.h"
 #include "../../src/service/adapters/ConfigArchiveCodec.h"
+#include "TestConfigurationDefaults.h"
 
 #include <nlohmann/json.hpp>
 
@@ -44,6 +45,7 @@ using Json = nlohmann::json;
 namespace adapters = baas::service::adapters;
 namespace archive = baas::service::adapters::config_archive;
 namespace channels = baas::service::channels;
+namespace test_defaults = baas::service::test;
 
 std::atomic<int> failures{};
 
@@ -115,7 +117,7 @@ int run_import_crash_child(const std::filesystem::path& root)
     const auto input = archive_bytes({
         {"config.json", R"({"name":"Crash Lock","server":"日服"})"},
     });
-    adapters::FileResourceStoreDependencies dependencies;
+    auto dependencies = test_defaults::with_synthetic_defaults();
     dependencies.clock = [] { return 32'000.0; };
     dependencies.config_archive_fault_injector =
         [root](const std::string_view step) {
@@ -182,7 +184,11 @@ adapters::FileResourceStoreDependencies dependencies(
     adapters::FileResourceStoreDependencies::AtomicWriter writer = {},
     adapters::FileResourceStoreDependencies::PostCommitDurabilityCheck check = {})
 {
-    return {[] { return 9'000'000'000'000.0; }, std::move(writer), std::move(check)};
+    adapters::FileResourceStoreDependencies result;
+    result.clock = [] { return 9'000'000'000'000.0; };
+    result.atomic_writer = std::move(writer);
+    result.post_commit_durability_check = std::move(check);
+    return test_defaults::with_synthetic_defaults(std::move(result));
 }
 
 channels::ResourceKey config_key(std::string id = "alpha")
@@ -1305,7 +1311,7 @@ void test_setup_toml_scalar_table_conflicts_fail_closed()
 void test_create_config_transaction_concurrency_cancellation_and_cleanup()
 {
     TempProject project;
-    adapters::FileResourceStoreDependencies create_dependencies;
+    auto create_dependencies = test_defaults::with_synthetic_defaults();
     create_dependencies.clock = [] { return 7'000.9; };
     adapters::FileResourceStore store(
         project.root, std::move(create_dependencies));
@@ -1414,7 +1420,7 @@ void test_create_config_transaction_concurrency_cancellation_and_cleanup()
         std::filesystem::create_directory(
             frozen_project.root / "config" / std::to_string(10'000 + index));
     }
-    adapters::FileResourceStoreDependencies frozen_dependencies;
+    auto frozen_dependencies = test_defaults::with_synthetic_defaults();
     frozen_dependencies.clock = [] { return 10'000.0; };
     adapters::FileResourceStore frozen_store(
         frozen_project.root, std::move(frozen_dependencies));
@@ -1442,7 +1448,8 @@ void test_create_config_transaction_concurrency_cancellation_and_cleanup()
           "create enforces max_resources before staging or static mutation");
 
     TempProject missing_static_failure_project;
-    adapters::FileResourceStoreDependencies missing_static_failure_dependencies;
+    auto missing_static_failure_dependencies =
+        test_defaults::with_synthetic_defaults();
     missing_static_failure_dependencies.clock = [] { return 11'000.0; };
     missing_static_failure_dependencies.atomic_writer =
         [](const std::filesystem::path&, const std::string_view) {
@@ -1464,7 +1471,7 @@ void test_create_config_transaction_concurrency_cancellation_and_cleanup()
     TempProject injected_project;
     const std::string original_static = R"({"sentinel":"preserve"})";
     write_bytes(injected_project.root / "config" / "static.json", original_static);
-    adapters::FileResourceStoreDependencies injected_dependencies;
+    auto injected_dependencies = test_defaults::with_synthetic_defaults();
     injected_dependencies.clock = [] { return 12'000.0; };
     injected_dependencies.config_create_fault_injector =
         [](const std::string_view step) {
@@ -1491,7 +1498,7 @@ void test_create_config_transaction_concurrency_cancellation_and_cleanup()
           "fault injection reclaims staging/backup and emits no error.log");
 
     TempProject throwing_fault_project;
-    adapters::FileResourceStoreDependencies throwing_fault_dependencies;
+    auto throwing_fault_dependencies = test_defaults::with_synthetic_defaults();
     throwing_fault_dependencies.clock = [] { return 13'000.0; };
     throwing_fault_dependencies.config_create_fault_injector =
         [](const std::string_view step) -> bool {
@@ -1677,7 +1684,7 @@ void test_config_archive_export_and_python_compatible_import()
         "old-b", R"({"name":"  Archive Name  ","server":"日服","old":2})");
     project.add_pair(
         "other", R"({"name":"Other","server":"日服","keep":true})");
-    adapters::FileResourceStoreDependencies import_dependencies;
+    auto import_dependencies = test_defaults::with_synthetic_defaults();
     import_dependencies.clock = [] { return 20'000.9; };
     adapters::FileResourceStore store(
         project.root, std::move(import_dependencies));
@@ -1757,7 +1764,7 @@ void test_config_archive_export_and_python_compatible_import()
           "import atomically replaces every complete same-name pair, preserves other pairs, and invalidates caches");
 
     TempProject prefixed_project;
-    adapters::FileResourceStoreDependencies prefixed_dependencies;
+    auto prefixed_dependencies = test_defaults::with_synthetic_defaults();
     prefixed_dependencies.clock = [] { return 21'000.0; };
     adapters::FileResourceStore prefixed_store(
         prefixed_project.root, std::move(prefixed_dependencies));
@@ -1784,7 +1791,7 @@ void test_copy_and_remove_claim_self_cancel_linearization()
     TempProject copy_project;
     copy_project.add_pair(
         "source", R"({"name":"Source","server":"日服"})");
-    adapters::FileResourceStoreDependencies copy_dependencies;
+    auto copy_dependencies = test_defaults::with_synthetic_defaults();
     copy_dependencies.clock = [] { return 31'000.0; };
     adapters::FileResourceStore copy_store(
         copy_project.root, std::move(copy_dependencies));
@@ -1888,7 +1895,7 @@ void test_config_archive_import_claim_cancellation_and_rollback()
     TempProject rejected_project;
     rejected_project.add_pair(
         "old", R"({"name":"Atomic","server":"日服","sentinel":"old"})");
-    adapters::FileResourceStoreDependencies rejected_dependencies;
+    auto rejected_dependencies = test_defaults::with_synthetic_defaults();
     rejected_dependencies.clock = [] { return 22'000.0; };
     adapters::FileResourceStore rejected_store(
         rejected_project.root, std::move(rejected_dependencies));
@@ -1935,7 +1942,7 @@ void test_config_archive_import_claim_cancellation_and_rollback()
             "old", R"({"name":"Atomic","server":"日服","sentinel":"old"})");
         project.add_pair(
             "other", R"({"name":"Other","server":"日服","sentinel":"keep"})");
-        adapters::FileResourceStoreDependencies fault_dependencies;
+        auto fault_dependencies = test_defaults::with_synthetic_defaults();
         fault_dependencies.clock = [] { return 23'000.0; };
         fault_dependencies.config_archive_fault_injector =
             [step](const std::string_view candidate) { return candidate == step; };
@@ -1970,7 +1977,7 @@ void test_config_archive_claim_self_cancel_and_crash_recovery()
         {"config.json", R"({"name":"Claim Wins","server":"日服"})"},
     });
     TempProject claim_project;
-    adapters::FileResourceStoreDependencies claim_dependencies;
+    auto claim_dependencies = test_defaults::with_synthetic_defaults();
     claim_dependencies.clock = [] { return 26'000.0; };
     adapters::FileResourceStore claim_store(
         claim_project.root, std::move(claim_dependencies));
@@ -2090,7 +2097,7 @@ void test_config_archive_root_lock_and_journal_binding()
     std::condition_variable gate_condition;
     bool before_retire{};
     bool release_import{};
-    adapters::FileResourceStoreDependencies dependencies;
+    auto dependencies = test_defaults::with_synthetic_defaults();
     dependencies.clock = [] { return 29'000.0; };
     dependencies.config_archive_fault_injector =
         [&](const std::string_view step) {
@@ -2146,7 +2153,7 @@ void test_config_archive_root_lock_and_journal_binding()
     TempProject shared_cache_project;
     shared_cache_project.add_pair(
         "old", R"({"name":"Shared Cache","server":"日服","value":"old"})");
-    adapters::FileResourceStoreDependencies writer_dependencies;
+    auto writer_dependencies = test_defaults::with_synthetic_defaults();
     writer_dependencies.clock = [] { return 29'500.0; };
     adapters::FileResourceStore writer(
         shared_cache_project.root, std::move(writer_dependencies));
@@ -2360,7 +2367,7 @@ void test_config_archive_cross_process_lock_and_crash_recovery()
 void test_config_archive_import_invalid_and_capacity_inputs()
 {
     TempProject project;
-    adapters::FileResourceStoreDependencies archive_dependencies;
+    auto archive_dependencies = test_defaults::with_synthetic_defaults();
     archive_dependencies.clock = [] { return 24'000.0; };
     adapters::FileResourceStore store(
         project.root, std::move(archive_dependencies));
@@ -2385,7 +2392,7 @@ void test_config_archive_import_invalid_and_capacity_inputs()
         "only", R"({"name":"Keep","server":"日服"})");
     channels::ResourceStoreLimits one_pair;
     one_pair.max_resources = 1;
-    adapters::FileResourceStoreDependencies full_dependencies;
+    auto full_dependencies = test_defaults::with_synthetic_defaults();
     full_dependencies.clock = [] { return 25'000.0; };
     adapters::FileResourceStore full_store(
         full_project.root, std::move(full_dependencies), one_pair);
@@ -2401,6 +2408,35 @@ void test_config_archive_import_invalid_and_capacity_inputs()
               && !std::filesystem::exists(full_project.root / "config" / "static.json")
               && !has_private_config_artifact(full_project.root),
           "import capacity admission rejects a new pair before static or staging side effects");
+}
+
+void test_missing_runtime_defaults_fail_mutations_closed()
+{
+    TempProject project;
+    project.add_pair(
+        "source", R"({"name":"Source","server":"日服"})", "[]");
+    adapters::FileResourceStore store(project.root);
+    const auto input = archive_bytes({
+        {"config.json", R"({"name":"Imported","server":"日服"})"},
+    });
+
+    const auto source = store.pull(config_key("source"), {});
+    const auto created = store.create_config("Created", "日服", {});
+    const auto copied = store.copy_config("source", {});
+    const auto imported = store.import_config(
+        {input.data(), input.size()}, {});
+    const auto listed = store.config_list({});
+
+    check(source
+              && created.error == adapters::ConfigCommandError::internal_error
+              && copied.error == adapters::ConfigCommandError::internal_error
+              && imported.error == adapters::ConfigCommandError::internal_error
+              && listed
+              && Json::parse(listed->data_json) == Json::array({"source"})
+              && !std::filesystem::exists(
+                  project.root / "config" / "static.json")
+              && !has_private_config_artifact(project.root),
+          "missing admitted runtime defaults preserve reads and fail every initializer mutation without side effects");
 }
 
 }  // namespace
@@ -2442,6 +2478,7 @@ int main(const int argc, char** argv)
         test_config_archive_root_lock_and_journal_binding();
         test_config_archive_cross_process_lock_and_crash_recovery();
         test_config_archive_import_invalid_and_capacity_inputs();
+        test_missing_runtime_defaults_fail_mutations_closed();
         test_refresh_and_publish();
         test_cross_store_pull_preserves_refresh_publication_baseline();
     } catch (const std::exception& error) {

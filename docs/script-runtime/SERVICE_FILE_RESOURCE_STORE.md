@@ -145,13 +145,16 @@ reads only regular files through the persistent root anchor and commits
 destination files through anchored create-exclusive writers. Every staging and
 nested directory is also created relative to the persistent anchor; POSIX
 creation verifies `O_NOFOLLOW`/mode `0700` and syncs the parent directory.
-Create initializes user, event, and switch documents from the same embedded
-Python vectors used by copy, assigns `name`/`server`, rebuilds the server-specific
+Create initializes user, event, and switch documents from the same immutable
+runtime-resource defaults used by copy, assigns `name`/`server`, rebuilds the server-specific
 manufacturing quantities, and makes the private staging directory visible with
 one durable rename. Millisecond id selection is serialized by the mutation gate,
 while one atomic open/cancelled/claimed phase gives cancellation and the
 irreversible response claim an exact winner; failed claims, invalid static
 targets, and initialization failures reclaim all `.baas-create-*` siblings.
+Production construction injects those owned documents from the service's pinned
+repository read bundle. Tests use synthetic private fixtures; absence of the injected
+defaults fails closed for create, copy, and import rather than selecting compiled data.
 
 Export holds the mutation gate for a coherent snapshot, recursively reads only
 anchored regular files, sorts normalized forward-slash member names, and

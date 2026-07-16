@@ -94,6 +94,8 @@ class ServiceApplicationContractTests(unittest.TestCase):
             self.assertIn(anchor, self.tests)
         self.assertNotIn("TEST_HOOKS=1", self.cmake)
         self.assertIn("BUILD_SERVICE_APP_TESTS", self.cmake)
+        self.assertIn("BAAS_service_no_embedded_configuration_defaults", self.cmake)
+        self.assertIn("no_embedded_configuration_defaults", self.workflow)
         for platform in ("windows-latest", "ubuntu-latest", "macos-latest"):
             self.assertIn(platform, self.workflow)
         for build_type in ("Debug", "Release"):

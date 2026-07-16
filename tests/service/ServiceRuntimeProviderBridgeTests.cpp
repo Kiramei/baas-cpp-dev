@@ -1,4 +1,5 @@
 #include "service/app/ServiceRuntimeProviderBridge.h"
+#include "TestConfigurationDefaults.h"
 
 #include <nlohmann/json.hpp>
 
@@ -35,6 +36,7 @@ using baas::service::channels::ResourceKey;
 using baas::service::channels::ResourceStoreError;
 using baas::service::channels::SyncResource;
 using Json = nlohmann::json;
+namespace test_defaults = baas::service::test;
 
 int failures{};
 
@@ -131,7 +133,8 @@ void test_real_initialization_and_external_refresh()
     TempProject project;
     project.add_config("alpha");
     project.add_globals();
-    auto store = std::make_shared<FileResourceStore>(project.root);
+    auto store = std::make_shared<FileResourceStore>(
+        project.root, test_defaults::with_synthetic_defaults());
     auto provider = std::make_shared<ProductionProviderBackend>();
     ServiceRuntimeProviderBridge bridge(store, provider, dependencies());
     std::atomic<int> status_publications{};
@@ -196,7 +199,8 @@ void test_config_rescan_invalidates_removed_cache()
     TempProject project;
     project.add_config("alpha");
     project.add_globals();
-    auto store = std::make_shared<FileResourceStore>(project.root);
+    auto store = std::make_shared<FileResourceStore>(
+        project.root, test_defaults::with_synthetic_defaults());
     auto provider = std::make_shared<ProductionProviderBackend>();
     ServiceRuntimeProviderBridge bridge(store, provider, dependencies());
     check(bridge.start() == ServiceRuntimeProviderBridgeError::none,
@@ -223,7 +227,8 @@ void test_created_config_reaches_watcher_subscribers_and_ready_provider()
     TempProject project;
     project.add_config("alpha");
     project.add_globals();
-    auto store = std::make_shared<FileResourceStore>(project.root);
+    auto store = std::make_shared<FileResourceStore>(
+        project.root, test_defaults::with_synthetic_defaults());
     auto provider = std::make_shared<ProductionProviderBackend>();
     std::mutex updates_mutex;
     std::vector<baas::service::channels::ResourceUpdate> updates;
@@ -280,9 +285,8 @@ void test_config_pair_replacement_advances_at_capacity()
     write_bytes(project.root / "setup.toml", "[general]\nchannel = 'stable'\n");
     baas::service::channels::ResourceStoreLimits limits;
     limits.max_resources = 4;
-    auto store = std::make_shared<FileResourceStore>(project.root,
-                                                      baas::service::adapters::FileResourceStoreDependencies{},
-                                                      limits);
+    auto store = std::make_shared<FileResourceStore>(
+        project.root, test_defaults::with_synthetic_defaults(), limits);
     auto provider = std::make_shared<ProductionProviderBackend>();
     std::mutex updates_mutex;
     std::vector<baas::service::channels::ResourceUpdate> updates;
@@ -341,8 +345,7 @@ void test_create_and_copy_reserve_watcher_cache_capacity()
     baas::service::channels::ResourceStoreLimits limits;
     limits.max_resources = 4;
     auto store = std::make_shared<FileResourceStore>(
-        project.root, baas::service::adapters::FileResourceStoreDependencies{},
-        limits);
+        project.root, test_defaults::with_synthetic_defaults(), limits);
     auto provider = std::make_shared<ProductionProviderBackend>();
     ServiceRuntimeProviderBridge bridge(store, provider, dependencies());
     check(bridge.start() == ServiceRuntimeProviderBridgeError::none
@@ -381,8 +384,7 @@ void test_deleted_optional_gui_frees_capacity_before_pair_refresh()
     // second pair only after the externally deleted optional GUI is retired.
     limits.max_resources = 6;
     auto store = std::make_shared<FileResourceStore>(
-        project.root, baas::service::adapters::FileResourceStoreDependencies{},
-        limits);
+        project.root, test_defaults::with_synthetic_defaults(), limits);
     auto provider = std::make_shared<ProductionProviderBackend>();
     ServiceRuntimeProviderBridge bridge(store, provider, dependencies());
     check(bridge.start() == ServiceRuntimeProviderBridgeError::none
@@ -417,8 +419,7 @@ void test_partial_pair_capacity_failure_can_recover_after_replacement()
     baas::service::channels::ResourceStoreLimits limits;
     limits.max_resources = 6;
     auto store = std::make_shared<FileResourceStore>(
-        project.root, baas::service::adapters::FileResourceStoreDependencies{},
-        limits);
+        project.root, test_defaults::with_synthetic_defaults(), limits);
     auto provider = std::make_shared<ProductionProviderBackend>();
     ServiceRuntimeProviderBridge bridge(store, provider, dependencies());
     check(bridge.start() == ServiceRuntimeProviderBridgeError::none
@@ -458,7 +459,8 @@ void test_failure_recovery_bounded_logs_and_stop_race()
     TempProject project;
     project.add_config("alpha");
     write_bytes(project.root / "setup.toml", "[general]\nchannel = 'stable'\n");
-    auto store = std::make_shared<FileResourceStore>(project.root);
+    auto store = std::make_shared<FileResourceStore>(
+        project.root, test_defaults::with_synthetic_defaults());
     auto provider = std::make_shared<ProductionProviderBackend>();
     ServiceRuntimeProviderBridge bridge(store, provider, dependencies());
 
@@ -506,7 +508,8 @@ void test_reentrant_provider_callback_can_stop_watcher()
     TempProject project;
     project.add_config("alpha");
     project.add_globals();
-    auto store = std::make_shared<FileResourceStore>(project.root);
+    auto store = std::make_shared<FileResourceStore>(
+        project.root, test_defaults::with_synthetic_defaults());
     auto provider = std::make_shared<ProductionProviderBackend>();
     ServiceRuntimeProviderBridge bridge(store, provider, dependencies());
     check(bridge.start() == ServiceRuntimeProviderBridgeError::none,
@@ -533,7 +536,8 @@ void test_start_callbacks_can_destroy_last_owner()
         TempProject project;
         project.add_config("alpha");
         project.add_globals();
-        auto store = std::make_shared<FileResourceStore>(project.root);
+        auto store = std::make_shared<FileResourceStore>(
+            project.root, test_defaults::with_synthetic_defaults());
         auto provider = std::make_shared<ProductionProviderBackend>();
         std::unique_ptr<ServiceRuntimeProviderBridge> bridge;
         auto subscription = provider->subscribe_status(
@@ -558,7 +562,8 @@ void test_start_callbacks_can_destroy_last_owner()
         TempProject project;
         project.add_config("alpha");
         project.add_globals();
-        auto store = std::make_shared<FileResourceStore>(project.root);
+        auto store = std::make_shared<FileResourceStore>(
+            project.root, test_defaults::with_synthetic_defaults());
         auto provider = std::make_shared<ProductionProviderBackend>();
         std::unique_ptr<ServiceRuntimeProviderBridge> bridge;
         auto subscription = provider->subscribe_status(
@@ -586,7 +591,8 @@ void test_start_callbacks_can_destroy_last_owner()
         TempProject project;
         project.add_config("alpha");
         project.add_globals();
-        auto store = std::make_shared<FileResourceStore>(project.root);
+        auto store = std::make_shared<FileResourceStore>(
+            project.root, test_defaults::with_synthetic_defaults());
         std::unique_ptr<FileResourceWatcher> watcher;
         baas::service::adapters::FileResourceWatcherConfig config;
         config.poll_interval = 20ms;
@@ -610,7 +616,8 @@ void test_reentrant_provider_callback_can_destroy_last_bridge()
     TempProject project;
     project.add_config("alpha");
     project.add_globals();
-    auto store = std::make_shared<FileResourceStore>(project.root);
+    auto store = std::make_shared<FileResourceStore>(
+        project.root, test_defaults::with_synthetic_defaults());
     auto provider = std::make_shared<ProductionProviderBackend>();
     auto bridge = std::make_unique<ServiceRuntimeProviderBridge>(
         store, provider, dependencies());
@@ -637,7 +644,8 @@ void test_external_stop_waits_for_detached_reentrant_callback()
     TempProject project;
     project.add_config("alpha");
     project.add_globals();
-    auto store = std::make_shared<FileResourceStore>(project.root);
+    auto store = std::make_shared<FileResourceStore>(
+        project.root, test_defaults::with_synthetic_defaults());
     auto provider = std::make_shared<ProductionProviderBackend>();
     ServiceRuntimeProviderBridge bridge(store, provider, dependencies());
     check(bridge.start() == ServiceRuntimeProviderBridgeError::none,

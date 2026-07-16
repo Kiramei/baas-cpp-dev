@@ -86,9 +86,14 @@ class ProductionRemoteBackendContractTests(unittest.TestCase):
         self.assertIn("Verify ws-scrcpy resource lock", self.workflow)
         for path in (
             "cmake/ServiceFileResourceStore.cmake",
+            "cmake/ServiceRuntimeConfigurationDefaults.cmake",
             "include/service/adapters/FileResourceStore.h",
+            "include/service/adapters/BoundedJson.h",
             "src/service/adapters/FileResourceStore.cpp",
-            "src/service/adapters/ConfigurationDefaults.h",
+            "include/service/adapters/ConfigurationDefaults.h",
+            "include/service/app/RuntimeConfigurationDefaults.h",
+            "src/service/app/RuntimeConfigurationDefaults.cpp",
+            "tests/service/TestConfigurationDefaults.h",
         ):
             self.assertEqual(self.workflow.count(path), 2)
         self.assertIn("RemoteDeviceMessageKind::binary", self.live_smoke)

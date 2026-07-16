@@ -80,6 +80,25 @@ and returns owned bytes after checking that the same anchored file handle is
 regular, non-reparse, has link count one, has the declared size, and hashes to
 the declared SHA-256. Validation never reopens a pathname for content use.
 
+## Service resource contract
+
+Before composing mutable configuration state or starting transports, the service
+reads these exact logical entries from the admitted `resources` view:
+
+```text
+service/configuration/defaults/user.json
+service/configuration/defaults/event.json
+service/configuration/defaults/switch.json
+service/configuration/defaults/static.json
+```
+
+They are external, generation-bound runtime data. They are not CMake inputs,
+embedded resources, or executable string literals. Startup bounds their byte,
+JSON-depth, and JSON-node counts and validates the initializer shapes; any missing,
+oversized, malformed, or incompatible document rejects the generation before the
+service creates user configuration directories or listeners. `FileResourceStore`
+receives only immutable owned bytes, never repository paths or an update capability.
+
 Path validation and file reading operate on the same opened object. Windows
 opens every state component with reparse-point inspection, pins directory
 handles, validates the final handle path within the root, bounds size from that

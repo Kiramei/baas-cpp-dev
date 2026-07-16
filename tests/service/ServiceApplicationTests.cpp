@@ -157,24 +157,39 @@ void write_runtime_repository_file(
     if (!output) throw std::runtime_error("runtime repository fixture write failed");
 }
 
-constexpr std::string_view runtime_repository_manifest =
+constexpr std::string_view runtime_repository_script_manifest =
     R"({"schema":"baas.runtime-repository.tree-manifest/v1","entries":[{"path":"nested/payload.bin","size":"7","sha256":"239f59ed55e737c77147cf55ad0c1b030b6d7ee748a7426952f9b852d5a935e5","mode":"file"}]})";
 
-constexpr std::string_view runtime_repository_manifest_sha256 =
+constexpr std::string_view runtime_repository_script_manifest_sha256 =
     "737a1b1bcb0b033b9d8a969ac87271ee6dc4ad2f1659a49488413b5a2986b270";
+
+constexpr std::string_view runtime_repository_resource_manifest =
+    R"({"schema":"baas.runtime-repository.tree-manifest/v1","entries":[{"path":"nested/payload.bin","size":"7","sha256":"239f59ed55e737c77147cf55ad0c1b030b6d7ee748a7426952f9b852d5a935e5","mode":"file"},{"path":"service/configuration/defaults/event.json","size":"2","sha256":"4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945","mode":"file"},{"path":"service/configuration/defaults/static.json","size":"81","sha256":"055b391aba7c182b1f76ad4a45e6e75eb29f050a388a3dc01475705b8d6f81a3","mode":"file"},{"path":"service/configuration/defaults/switch.json","size":"2","sha256":"4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945","mode":"file"},{"path":"service/configuration/defaults/user.json","size":"66","sha256":"e03d45b3aa4893c429e5357d601791206cecc5c47a5e0f708780e4aa61b9d0f4","mode":"file"}]})";
+
+constexpr std::string_view runtime_repository_resource_manifest_sha256 =
+    "36b1f6eae4470624d4a2ca2032023142e99c15f7e3c088c392d9de0e9d430abc";
+
+constexpr std::string_view runtime_repository_invalid_user_manifest =
+    R"({"schema":"baas.runtime-repository.tree-manifest/v1","entries":[{"path":"nested/payload.bin","size":"7","sha256":"239f59ed55e737c77147cf55ad0c1b030b6d7ee748a7426952f9b852d5a935e5","mode":"file"},{"path":"service/configuration/defaults/event.json","size":"2","sha256":"4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945","mode":"file"},{"path":"service/configuration/defaults/static.json","size":"81","sha256":"055b391aba7c182b1f76ad4a45e6e75eb29f050a388a3dc01475705b8d6f81a3","mode":"file"},{"path":"service/configuration/defaults/switch.json","size":"2","sha256":"4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945","mode":"file"},{"path":"service/configuration/defaults/user.json","size":"2","sha256":"4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945","mode":"file"}]})";
+
+constexpr std::string_view runtime_repository_invalid_user_manifest_sha256 =
+    "bd175452e9273d3f2f3c91b3b87d498f39f55bacd1716ecd995bfb7700dc6d85";
 
 [[nodiscard]] std::string add_runtime_repository_activation(
     const std::filesystem::path& project_root,
     const char resource_digit = '1',
-    const char script_digit = '2')
+    const char script_digit = '2',
+    const bool invalid_user_default = false)
 {
     const std::string resource_commit(40, resource_digit);
     const std::string script_commit(40, script_digit);
     const std::array<repository::RuntimeRepository, 2> values{{
         {"resources", resource_commit, "objects/resources/" + resource_commit,
-         "manifest.json", std::string(runtime_repository_manifest_sha256)},
+         "manifest.json", std::string(invalid_user_default
+                 ? runtime_repository_invalid_user_manifest_sha256
+                 : runtime_repository_resource_manifest_sha256)},
         {"scripts", script_commit, "objects/scripts/" + script_commit,
-         "manifest.json", std::string(runtime_repository_manifest_sha256)},
+         "manifest.json", std::string(runtime_repository_script_manifest_sha256)},
     }};
     const auto generation = repository::runtime_repository_generation(values);
     const auto state_root =
@@ -210,9 +225,26 @@ constexpr std::string_view runtime_repository_manifest_sha256 =
     for (const auto& value : values) {
         const auto repository_root = state_root / value.root;
         write_runtime_repository_file(
-            repository_root / value.manifest, runtime_repository_manifest);
+            repository_root / value.manifest,
+            value.id != "resources" ? runtime_repository_script_manifest
+                : invalid_user_default ? runtime_repository_invalid_user_manifest
+                                       : runtime_repository_resource_manifest);
         write_runtime_repository_file(
             repository_root / "nested" / "payload.bin", "payload");
+        if (value.id == "resources") {
+            write_runtime_repository_file(
+                repository_root / "service/configuration/defaults/user.json",
+                invalid_user_default
+                    ? "[]"
+                    : R"({"name":"Default","server":"CN","create_item_holding_quantity":{}})");
+            write_runtime_repository_file(
+                repository_root / "service/configuration/defaults/event.json", "[]");
+            write_runtime_repository_file(
+                repository_root / "service/configuration/defaults/switch.json", "[]");
+            write_runtime_repository_file(
+                repository_root / "service/configuration/defaults/static.json",
+                R"({"create_item_order":{"CN":{"basic":{}},"Global":{"basic":{}},"JP":{"basic":{}}}})");
+        }
     }
     return generation;
 }
@@ -400,7 +432,7 @@ void test_real_loopback_lifecycle_trigger_and_persistence()
                   == runtime_repository_generation
               && runtime_repository_read_bundle->scripts().generation()
                   == runtime_repository_generation
-              && runtime_repository_read_bundle->resources().entries().size() == 1
+              && runtime_repository_read_bundle->resources().entries().size() == 5
               && runtime_repository_read_bundle->scripts().entries().size() == 1,
           "application must retain one validated resources/scripts bundle for its startup generation");
     if (runtime_repository_read_bundle) {
@@ -823,6 +855,21 @@ void test_missing_remote_resource_fails_before_composition_side_effects()
           "missing remote resource must fail before auth or resource-store effects");
 }
 
+void test_invalid_runtime_configuration_default_fails_before_composition()
+{
+    TemporaryRoot root{"invalid-runtime-default"};
+    add_remote_server_resource(root.path);
+    const auto generation = add_runtime_repository_activation(
+        root.path, '1', '2', true);
+    const auto opened = app::ServiceApplication::open(
+        options(root.path, unused_loopback_port(), generation));
+    check(opened.error == app::ServiceApplicationError::runtime_repository_invalid
+              && !opened.application,
+          "manifest-valid but structurally invalid runtime defaults must fail service composition");
+    check(!std::filesystem::exists(root.path / "config"),
+          "invalid runtime defaults must fail before auth and mutable resource-store side effects");
+}
+
 void test_invalid_repository_payload_fails_before_remote_and_composition()
 {
     TemporaryRoot root{"invalid-runtime-payload"};
@@ -852,6 +899,7 @@ int main()
         test_missing_repository_fails_before_composition();
         test_repository_generation_mismatch_fails_before_composition();
         test_invalid_runtime_repository_fails_before_composition();
+        test_invalid_runtime_configuration_default_fails_before_composition();
         test_invalid_repository_payload_fails_before_remote_and_composition();
         test_missing_remote_resource_fails_before_composition_side_effects();
     } catch (const std::exception& error) {

@@ -1,5 +1,6 @@
 #include "service/app/ConfigurationTriggerRegistration.h"
 #include "service/trigger/TriggerExecutor.h"
+#include "TestConfigurationDefaults.h"
 
 #include <nlohmann/json.hpp>
 
@@ -31,6 +32,7 @@ namespace adapters = baas::service::adapters;
 namespace app = baas::service::app;
 namespace channels = baas::service::channels;
 namespace protocol = baas::service::protocol::trigger;
+namespace test_defaults = baas::service::test;
 namespace trigger = baas::service::trigger;
 using Json = nlohmann::json;
 
@@ -259,7 +261,8 @@ void test_copy_and_remove_exact_python_envelopes()
     TempProject project;
     project.add("source", "Alpha");
     project.add("existing", "Alpha_copy");
-    auto store = std::make_shared<adapters::FileResourceStore>(project.root);
+    auto store = std::make_shared<adapters::FileResourceStore>(
+        project.root, test_defaults::with_synthetic_defaults());
     auto executor = std::make_shared<trigger::TriggerExecutor>(dispatcher(store));
 
     const auto copied = execute(executor, "copy_config", 7, R"({"id":"source"})");
@@ -309,7 +312,8 @@ void test_export_import_binary_round_trip_and_errors()
 {
     TempProject project;
     project.add("source", "Alpha");
-    auto store = std::make_shared<adapters::FileResourceStore>(project.root);
+    auto store = std::make_shared<adapters::FileResourceStore>(
+        project.root, test_defaults::with_synthetic_defaults());
     auto executor = std::make_shared<trigger::TriggerExecutor>(dispatcher(store));
 
     const auto exported = execute(
@@ -387,7 +391,7 @@ void test_export_import_binary_round_trip_and_errors()
 void test_add_config_prefix_exact_python_envelope_and_defaults()
 {
     TempProject project;
-    adapters::FileResourceStoreDependencies dependencies;
+    auto dependencies = test_defaults::with_synthetic_defaults();
     dependencies.clock = [] { return 1'725'000'123'456.75; };
     auto store = std::make_shared<adapters::FileResourceStore>(
         project.root, std::move(dependencies));
@@ -448,7 +452,8 @@ void test_validation_bounds_and_fail_closed_paths()
 {
     TempProject project;
     project.add("source", "Alpha");
-    auto store = std::make_shared<adapters::FileResourceStore>(project.root);
+    auto store = std::make_shared<adapters::FileResourceStore>(
+        project.root, test_defaults::with_synthetic_defaults());
     auto executor = std::make_shared<trigger::TriggerExecutor>(dispatcher(store));
     for (const auto payload : {R"({})", R"({"id":1})"}) {
         const auto response = execute(executor, "copy_config", 10, payload);
@@ -542,7 +547,8 @@ void test_wide_tree_entry_budget_and_cancellation_cleanup()
             source / ("empty-" + std::to_string(index)));
     }
 
-    auto store = std::make_shared<adapters::FileResourceStore>(project.root);
+    auto store = std::make_shared<adapters::FileResourceStore>(
+        project.root, test_defaults::with_synthetic_defaults());
     const auto before_capacity = store->config_list({});
     const auto rejected = store->copy_config("wide", {});
     const auto after_capacity = store->config_list({});
@@ -593,7 +599,7 @@ void test_structural_success_invalidates_cached_resources()
     std::ofstream(project.root / "config" / "static.json")
         << R"({"stale":true})";
 
-    adapters::FileResourceStoreDependencies dependencies;
+    auto dependencies = test_defaults::with_synthetic_defaults();
     dependencies.clock = [] { return 4'242.0; };
     auto store = std::make_shared<adapters::FileResourceStore>(
         project.root, std::move(dependencies));
@@ -675,7 +681,8 @@ void test_python_initializer_migration_vector()
 {
     TempProject project;
     project.add_legacy_without_event("legacy");
-    auto store = std::make_shared<adapters::FileResourceStore>(project.root);
+    auto store = std::make_shared<adapters::FileResourceStore>(
+        project.root, test_defaults::with_synthetic_defaults());
     auto executor = std::make_shared<trigger::TriggerExecutor>(dispatcher(store));
     const auto copied = execute(executor, "copy_config", 20, R"({"id":"legacy"})");
     check(copied.status == protocol::ResponseStatus::ok,
@@ -769,7 +776,8 @@ void test_commit_point_wins_late_stop_and_staging_is_protected_scope()
 {
     TempProject project;
     project.add("source", "Alpha");
-    auto store = std::make_shared<adapters::FileResourceStore>(project.root);
+    auto store = std::make_shared<adapters::FileResourceStore>(
+        project.root, test_defaults::with_synthetic_defaults());
     std::stop_source stop;
     std::optional<std::thread> canceller;
     bool saw_private_staging{};
@@ -805,7 +813,8 @@ void test_all_python_server_mappings_and_invalid_servers()
         {"官服", 154}, {"B服", 154}, {"国际服", 157},
         {"国际服青少年", 157}, {"韩国ONE", 157},
         {"Steam国际服", 157}, {"日服", 157}, {"日服PC端", 157}};
-    auto store = std::make_shared<adapters::FileResourceStore>(project.root);
+    auto store = std::make_shared<adapters::FileResourceStore>(
+        project.root, test_defaults::with_synthetic_defaults());
     for (std::size_t index = 0; index < servers.size(); ++index) {
         const auto id = "server-" + std::to_string(index);
         project.add_server(id, servers[index].first);
@@ -832,7 +841,7 @@ void test_all_python_server_mappings_and_invalid_servers()
     }
 
     TempProject create_project;
-    adapters::FileResourceStoreDependencies create_dependencies;
+    auto create_dependencies = test_defaults::with_synthetic_defaults();
     create_dependencies.clock = [] { return 80'000.0; };
     adapters::FileResourceStore create_store(
         create_project.root, std::move(create_dependencies));
@@ -887,7 +896,8 @@ void test_registration_scope_and_limits()
               == app::ConfigurationTriggerRegistrationError::missing_store,
           "registration must reject a missing production store");
     TempProject project;
-    auto store = std::make_shared<adapters::FileResourceStore>(project.root);
+    auto store = std::make_shared<adapters::FileResourceStore>(
+        project.root, test_defaults::with_synthetic_defaults());
     app::ConfigurationTriggerLimits invalid;
     invalid.max_payload_nodes = 0;
     check(app::make_configuration_trigger_registrations(store, invalid).error
@@ -905,7 +915,7 @@ void test_registration_scope_and_limits()
 void test_add_irrevocable_claim_is_corrected_after_commit_failure()
 {
     TempProject project;
-    adapters::FileResourceStoreDependencies dependencies;
+    auto dependencies = test_defaults::with_synthetic_defaults();
     dependencies.clock = [] { return 91'000.0; };
     dependencies.config_create_fault_injector =
         [](const std::string_view step) {
@@ -933,7 +943,7 @@ void test_import_irrevocable_claim_is_corrected_after_commit_failure()
 {
     TempProject project;
     project.add("source", "Alpha");
-    adapters::FileResourceStoreDependencies dependencies;
+    auto dependencies = test_defaults::with_synthetic_defaults();
     dependencies.clock = [] { return 93'000.0; };
     dependencies.config_archive_fault_injector =
         [](const std::string_view step) { return step == "before_retire"; };
@@ -964,7 +974,8 @@ void test_archive_response_rejection_remains_reversible()
     TempProject project;
     const std::string long_name(512, 'x');
     project.add("source", long_name);
-    auto store = std::make_shared<adapters::FileResourceStore>(project.root);
+    auto store = std::make_shared<adapters::FileResourceStore>(
+        project.root, test_defaults::with_synthetic_defaults());
     const auto archive = store->export_config("source", {});
     check(static_cast<bool>(archive),
           "response rejection fixture must create a valid archive");
@@ -1001,7 +1012,8 @@ void test_copy_static_upgrade_is_independent_of_directory_claim()
     project.add_server("source", "日服");
     std::ofstream(project.root / "config" / "static.json")
         << R"({"old_but_valid":true})";
-    auto store = std::make_shared<adapters::FileResourceStore>(project.root);
+    auto store = std::make_shared<adapters::FileResourceStore>(
+        project.root, test_defaults::with_synthetic_defaults());
     const auto copied = store->copy_config(
         "source", {},
         [](const std::string_view, const std::string_view) { return false; });
@@ -1020,7 +1032,7 @@ void test_directory_commit_never_replaces_concurrent_target()
 {
     TempProject project;
     project.add_server("source", "日服");
-    adapters::FileResourceStoreDependencies dependencies;
+    auto dependencies = test_defaults::with_synthetic_defaults();
     dependencies.clock = [] { return 92'000.0; };
     auto store = std::make_shared<adapters::FileResourceStore>(
         project.root, std::move(dependencies));
@@ -1052,7 +1064,8 @@ void test_backpressure_retries_terminal_without_repeating_copy()
 {
     TempProject project;
     project.add("source", "Alpha");
-    auto store = std::make_shared<adapters::FileResourceStore>(project.root);
+    auto store = std::make_shared<adapters::FileResourceStore>(
+        project.root, test_defaults::with_synthetic_defaults());
     auto executor = std::make_shared<trigger::TriggerExecutor>(dispatcher(store));
     protocol::TriggerSessionLimits session_limits;
     session_limits.max_queued_batches = 1;

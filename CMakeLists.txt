@@ -136,6 +136,7 @@ option(BUILD_SERVICE_RUNTIME_PROVIDER_BRIDGE "Build the file-watched runtime/pro
 option(BUILD_SERVICE_RUNTIME_PROVIDER_BRIDGE_TESTS "Build runtime/provider bridge tests" OFF)
 option(BUILD_SERVICE_RUNTIME_REPOSITORY_OWNER "Build the immutable service runtime repository owner" OFF)
 option(BUILD_SERVICE_RUNTIME_REPOSITORY_OWNER_TESTS "Build service runtime repository owner tests" OFF)
+option(BUILD_SERVICE_RUNTIME_CONFIGURATION_DEFAULTS "Build generation-bound service configuration defaults" OFF)
 option(BUILD_SERVICE_ADB_TRANSPORT "Build the standalone ADB smart-socket transport" OFF)
 option(BUILD_SERVICE_ADB_TRANSPORT_TESTS "Build deterministic ADB transport tests" OFF)
 option(BUILD_SERVICE_ADB_SYNC "Build the bounded production ADB SYNC client" OFF)
@@ -179,11 +180,16 @@ if(BUILD_SERVICE_APP)
     set(BUILD_SERVICE_FILE_RESOURCE_STORE ON CACHE BOOL "Build the durable JSON file resource store" FORCE)
     set(BUILD_SERVICE_RUNTIME_PROVIDER_BRIDGE ON CACHE BOOL "Build the file-watched runtime/provider bridge" FORCE)
     set(BUILD_SERVICE_RUNTIME_REPOSITORY_OWNER ON CACHE BOOL "Build the immutable service runtime repository owner" FORCE)
+    set(BUILD_SERVICE_RUNTIME_CONFIGURATION_DEFAULTS ON CACHE BOOL "Build generation-bound service configuration defaults" FORCE)
     set(BUILD_SERVICE_REMOTE_BACKEND ON CACHE BOOL "Build the production ws-scrcpy remote backend" FORCE)
     set(BUILD_SERVICE_TRIGGER_HANDLER ON CACHE BOOL "Build the production trigger business handler" FORCE)
     set(BUILD_SERVICE_STATUS_TRIGGER ON CACHE BOOL "Build the production status trigger registration" FORCE)
     set(BUILD_SERVICE_ADB_DISCOVERY_TRIGGER ON CACHE BOOL "Build the production detect_adb trigger registration" FORCE)
     set(BUILD_SERVICE_CONFIGURATION_TRIGGERS ON CACHE BOOL "Build production configuration trigger registrations" FORCE)
+endif()
+
+if(BUILD_SERVICE_RUNTIME_CONFIGURATION_DEFAULTS AND NOT BUILD_RUNTIME_REPOSITORY)
+    set(BUILD_RUNTIME_REPOSITORY ON CACHE BOOL "Build read-only runtime repository activation" FORCE)
 endif()
 
 if(BUILD_SERVICE_RUNTIME_REPOSITORY_OWNER_TESTS
@@ -626,7 +632,8 @@ if(BUILD_SERVICE_AUTH_CRYPTO OR BUILD_SERVICE_AUTH_OWNER)
 endif()
 
 if(BUILD_SERVICE_SYNC_HANDLER OR BUILD_SERVICE_REMOTE_HANDLER
-   OR BUILD_SERVICE_FILE_RESOURCE_STORE)
+   OR BUILD_SERVICE_FILE_RESOURCE_STORE
+   OR BUILD_SERVICE_RUNTIME_CONFIGURATION_DEFAULTS)
     baas_request_dependencies(nlohmann_json)
 endif()
 
@@ -817,6 +824,10 @@ endif()
 
 if(BUILD_SERVICE_RUNTIME_REPOSITORY_OWNER)
     include("${CMAKE_CURRENT_LIST_DIR}/cmake/ServiceRuntimeRepositoryOwner.cmake")
+endif()
+
+if(BUILD_SERVICE_RUNTIME_CONFIGURATION_DEFAULTS)
+    include("${CMAKE_CURRENT_LIST_DIR}/cmake/ServiceRuntimeConfigurationDefaults.cmake")
 endif()
 
 if(BUILD_SERVICE_ADB_TRANSPORT)

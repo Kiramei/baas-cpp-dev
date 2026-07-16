@@ -1,6 +1,6 @@
 #include "service/adapters/FileResourceStore.h"
+#include "service/adapters/BoundedJson.h"
 #include "ConfigArchiveCodec.h"
-#include "ConfigurationDefaults.h"
 
 #include <nlohmann/json.hpp>
 
@@ -49,58 +49,16 @@
 namespace baas::service::adapters {
 namespace {
 
-[[nodiscard]] bool is_valid_utf8(const std::string_view input) noexcept
-{
-    const auto* bytes = reinterpret_cast<const unsigned char*>(input.data());
-    std::size_t index = 0;
-    while (index < input.size()) {
-        const auto lead = bytes[index++];
-        if (lead <= 0x7fU) continue;
-
-        std::size_t trailing{};
-        std::uint32_t code_point{};
-        std::uint32_t minimum{};
-        if (lead >= 0xc2U && lead <= 0xdfU) {
-            trailing = 1;
-            code_point = lead & 0x1fU;
-            minimum = 0x80U;
-        } else if (lead >= 0xe0U && lead <= 0xefU) {
-            trailing = 2;
-            code_point = lead & 0x0fU;
-            minimum = 0x800U;
-        } else if (lead >= 0xf0U && lead <= 0xf4U) {
-            trailing = 3;
-            code_point = lead & 0x07U;
-            minimum = 0x10000U;
-        } else {
-            return false;
-        }
-        if (trailing > input.size() - index) return false;
-        for (std::size_t offset = 0; offset < trailing; ++offset) {
-            const auto byte = bytes[index++];
-            if ((byte & 0xc0U) != 0x80U) return false;
-            code_point = (code_point << 6U) | (byte & 0x3fU);
-        }
-        if (code_point < minimum || code_point > 0x10ffffU
-            || (code_point >= 0xd800U && code_point <= 0xdfffU)) {
-            return false;
-        }
-    }
-    return true;
-}
-
 using Json = nlohmann::json;
+using bounded_json::JsonBounds;
+using bounded_json::bounded_tree;
+using bounded_json::is_valid_utf8;
+using bounded_json::parse_json;
 using channels::ResourceKey;
 using channels::ResourcePatchOperation;
 using channels::ResourceSnapshot;
 using channels::ResourceStoreError;
 using channels::SyncResource;
-
-struct JsonBounds {
-    std::size_t bytes;
-    std::size_t depth;
-    std::size_t nodes;
-};
 
 struct ResourceKeyHash {
     std::size_t operator()(const ResourceKey& key) const noexcept
@@ -110,57 +68,6 @@ struct ResourceKeyHash {
         return result;
     }
 };
-
-bool bounded_tree(const Json& value, const std::size_t maximum_depth,
-                  const std::size_t maximum_nodes, const std::size_t depth,
-                  std::size_t& nodes)
-{
-    if (++nodes > maximum_nodes || depth > maximum_depth) return false;
-    if (value.is_array()) {
-        for (const auto& child : value) {
-            if (!bounded_tree(child, maximum_depth, maximum_nodes, depth + 1, nodes)) {
-                return false;
-            }
-        }
-    } else if (value.is_object()) {
-        for (const auto& [key, child] : value.items()) {
-            static_cast<void>(key);
-            if (!bounded_tree(child, maximum_depth, maximum_nodes, depth + 1, nodes)) {
-                return false;
-            }
-        }
-    }
-    return true;
-}
-
-std::optional<Json> parse_json(const std::string_view text, const JsonBounds bounds)
-{
-    if (text.size() > bounds.bytes || !is_valid_utf8(text)) return std::nullopt;
-    try {
-        bool duplicate{};
-        std::vector<std::unordered_set<std::string>> object_keys;
-        const auto callback = [&duplicate, &object_keys](
-                                  int, const Json::parse_event_t event, Json& parsed) {
-            if (event == Json::parse_event_t::object_start) {
-                object_keys.emplace_back();
-            } else if (event == Json::parse_event_t::key && !object_keys.empty()) {
-                if (!object_keys.back().insert(parsed.get<std::string>()).second) {
-                    duplicate = true;
-                }
-            } else if (event == Json::parse_event_t::object_end && !object_keys.empty()) {
-                object_keys.pop_back();
-            }
-            return !duplicate;
-        };
-        Json value = Json::parse(text, callback, false);
-        if (duplicate || value.is_discarded()) return std::nullopt;
-        std::size_t nodes{};
-        if (!bounded_tree(value, bounds.depth, bounds.nodes, 0, nodes)) return std::nullopt;
-        return value;
-    } catch (...) {
-        return std::nullopt;
-    }
-}
 
 std::string_view trim_ascii(std::string_view value) noexcept
 {
@@ -2172,11 +2079,12 @@ struct ConfigTreeStats {
 }
 
 [[nodiscard]] std::optional<Json> migrated_user_config(
-    Json document, const std::string_view copy_name)
+    Json document, const std::string_view copy_name,
+    const ConfigurationDefaults& configuration_defaults)
 {
     try {
         if (!document.is_object()) return std::nullopt;
-        const auto defaults = Json::parse(config_defaults::user);
+        const auto defaults = Json::parse(configuration_defaults.user_json);
         for (auto iterator = document.begin(); iterator != document.end();) {
             if (!defaults.contains(iterator.key())) iterator = document.erase(iterator);
             else ++iterator;
@@ -2205,7 +2113,8 @@ struct ConfigTreeStats {
         } else {
             return std::nullopt;
         }
-        const auto create_order = Json::parse(config_defaults::create_item_order);
+        const auto create_order =
+            Json::parse(configuration_defaults.static_json).at("create_item_order");
         const auto& basic = create_order.at(server_mode).at("basic");
         auto& quantities = document.at("create_item_holding_quantity");
         if (!quantities.is_object()) return std::nullopt;
@@ -2228,9 +2137,11 @@ struct ConfigTreeStats {
     }
 }
 
-[[nodiscard]] Json server_event_defaults(const Json& user_config)
+[[nodiscard]] Json server_event_defaults(
+    const Json& user_config,
+    const ConfigurationDefaults& configuration_defaults)
 {
-    auto defaults = Json::parse(config_defaults::event);
+    auto defaults = Json::parse(configuration_defaults.event_json);
     const auto server = user_config.value("server", std::string{});
     const auto utf8 = [](const std::u8string_view value) {
         return std::string_view{
@@ -2249,9 +2160,10 @@ struct ConfigTreeStats {
 }
 
 [[nodiscard]] Json migrated_event_config(
-    const std::optional<Json>& source, const Json& user_config)
+    const std::optional<Json>& source, const Json& user_config,
+    const ConfigurationDefaults& configuration_defaults)
 {
-    auto defaults = server_event_defaults(user_config);
+    auto defaults = server_event_defaults(user_config, configuration_defaults);
     if (!source || !source->is_array()) return defaults;
     try {
         auto result = *source;
@@ -3073,6 +2985,8 @@ public:
         if (!clock || !atomic_writer) {
             throw std::invalid_argument("file resource store dependencies are invalid");
         }
+        configuration_defaults =
+            std::move(dependencies.configuration_defaults);
         config_create_fault_injector =
             std::move(dependencies.config_create_fault_injector);
         config_archive_fault_injector =
@@ -3321,6 +3235,7 @@ public:
 #endif
     FileResourceStoreDependencies::Clock clock;
     FileResourceStoreDependencies::AtomicWriter atomic_writer;
+    std::shared_ptr<const ConfigurationDefaults> configuration_defaults;
     FileResourceStoreDependencies::ConfigCreateFaultInjector
         config_create_fault_injector;
     FileResourceStoreDependencies::ConfigArchiveFaultInjector
@@ -3901,6 +3816,9 @@ ConfigCreateResult FileResourceStore::create_config(
         return impl->config_create_fault_injector(step);
     };
     if (stop.stop_requested()) return {{}, ConfigCommandError::cancelled};
+    if (!impl->configuration_defaults) {
+        return {{}, ConfigCommandError::internal_error};
+    }
     if (supplied_name.empty() || supplied_server.empty()
         || trim_config_name(std::string{supplied_name}).empty()
         || supplied_name.size() > impl->limits.max_json_bytes
@@ -3997,17 +3915,20 @@ ConfigCreateResult FileResourceStore::create_config(
     std::string event_bytes;
     std::string switch_bytes;
     try {
-        user_document = Json::parse(config_defaults::user);
+        user_document = Json::parse(impl->configuration_defaults->user_json);
         user_document["server"] = supplied_server;
         const auto migrated = migrated_user_config(
-            std::move(user_document), supplied_name);
+            std::move(user_document), supplied_name,
+            *impl->configuration_defaults);
         if (!migrated) {
             remove_tree_best_effort(staging);
             return {{}, ConfigCommandError::invalid_data};
         }
         user_document = std::move(*migrated);
-        event_document = migrated_event_config(std::nullopt, user_document);
-        switch_document = Json::parse(config_defaults::switches);
+        event_document = migrated_event_config(
+            std::nullopt, user_document, *impl->configuration_defaults);
+        switch_document = Json::parse(
+            impl->configuration_defaults->switch_json);
         user_bytes = user_document.dump(2);
         event_bytes = event_document.dump(2);
         switch_bytes = switch_document.dump(2);
@@ -4039,7 +3960,7 @@ ConfigCreateResult FileResourceStore::create_config(
         return {{}, ConfigCommandError::internal_error};
     }
 
-    const auto default_static = config_defaults::static_json();
+    const auto& default_static = impl->configuration_defaults->static_json;
     const auto static_path = impl->config_root / "static.json";
     if (injected_failure("before_static_commit")) {
         remove_tree_best_effort(staging);
@@ -4118,6 +4039,9 @@ ConfigCopyResult FileResourceStore::copy_config(
 {
     const auto impl = impl_;
     if (stop.stop_requested()) return {{}, {}, ConfigCommandError::cancelled};
+    if (!impl->configuration_defaults) {
+        return {{}, {}, ConfigCommandError::internal_error};
+    }
     const std::string source_name{source_id};
     if (!valid_resource_id(source_name, impl->limits.max_resource_id_bytes)) {
         return {{}, {}, ConfigCommandError::invalid_id};
@@ -4302,7 +4226,8 @@ ConfigCopyResult FileResourceStore::copy_config(
         remove_tree_best_effort(staging);
         return {{}, {}, copied};
     }
-    auto copied_document = migrated_user_config(config.value->document, copy_name);
+    auto copied_document = migrated_user_config(
+        config.value->document, copy_name, *impl->configuration_defaults);
     if (!copied_document) {
         remove_tree_best_effort(staging);
         return {{}, {}, ConfigCommandError::invalid_data};
@@ -4325,13 +4250,15 @@ ConfigCopyResult FileResourceStore::copy_config(
             source_event = parse_json(event_read.bytes, impl->bounds());
         }
     }
-    auto event_document = migrated_event_config(source_event, *copied_document);
+    auto event_document = migrated_event_config(
+        source_event, *copied_document, *impl->configuration_defaults);
     Json switch_document;
     std::string copied_bytes;
     std::string event_bytes;
     std::string switch_bytes;
     try {
-        switch_document = Json::parse(config_defaults::switches);
+        switch_document = Json::parse(
+            impl->configuration_defaults->switch_json);
         copied_bytes = copied_document->dump(2);
         event_bytes = event_document.dump(2);
         switch_bytes = switch_document.dump(2);
@@ -4379,7 +4306,7 @@ ConfigCopyResult FileResourceStore::copy_config(
     static_cast<void>(std::filesystem::remove(
         staging / "display.json", display_error));
 
-    const auto default_static = config_defaults::static_json();
+    const auto& default_static = impl->configuration_defaults->static_json;
     const auto static_path = impl->config_root / "static.json";
     const auto static_upgrade = ensure_current_static(
         static_path, default_static, impl->bounds(),
@@ -4586,6 +4513,9 @@ ConfigArchiveImportResult FileResourceStore::import_config(
     if (stop.stop_requested()) {
         return {{}, {}, ConfigCommandError::cancelled};
     }
+    if (!impl->configuration_defaults) {
+        return {{}, {}, ConfigCommandError::internal_error};
+    }
     const config_archive::Limits archive_limits{};
     auto decoded = config_archive::decode(content, stop, archive_limits);
     if (!decoded) {
@@ -4672,7 +4602,8 @@ ConfigArchiveImportResult FileResourceStore::import_config(
                                            : ConfigCommandError::capacity};
     }
     auto migrated_user = migrated_user_config(
-        std::move(*user_document), original_name);
+        std::move(*user_document), original_name,
+        *impl->configuration_defaults);
     if (!migrated_user) {
         return {{}, {}, ConfigCommandError::invalid_data};
     }
@@ -4680,8 +4611,10 @@ ConfigArchiveImportResult FileResourceStore::import_config(
     if (event_entry) {
         source_event = parse_json(entry_text(*event_entry), impl->bounds());
     }
-    auto migrated_event = migrated_event_config(source_event, *migrated_user);
-    auto switch_document = Json::parse(config_defaults::switches);
+    auto migrated_event = migrated_event_config(
+        source_event, *migrated_user, *impl->configuration_defaults);
+    auto switch_document = Json::parse(
+        impl->configuration_defaults->switch_json);
     std::string user_bytes = migrated_user->dump(2);
     std::string event_bytes = migrated_event.dump(2);
     std::string switch_bytes = switch_document.dump(2);
@@ -4954,7 +4887,7 @@ ConfigArchiveImportResult FileResourceStore::import_config(
 
     const auto static_path = impl->config_root / "static.json";
     const auto static_upgrade = ensure_current_static(
-        static_path, config_defaults::static_json(), impl->bounds(),
+        static_path, impl->configuration_defaults->static_json, impl->bounds(),
         [impl, &static_path] {
 #if defined(_WIN32)
             auto current = read_windows_resource(

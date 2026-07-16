@@ -100,9 +100,12 @@ Tombstone reclamation is attempted after releasing the mutation gate; the
 journal is retained until reclamation finishes, so an interrupted cleanup is
 retried on the next start instead of becoming an unowned hidden tree.
 
-Create and copy run the observable Python initializer projection before publication. They
-use the audited 97-key user default, 26-event default, 11-entry switch default,
-and complete 25-key static default. Create rejects names that are empty after
+Create and copy run the observable Python initializer projection before publication. The
+four initializer documents are admitted from the pinned resources repository generation
+before service composition; no business JSON fallback is compiled into the executable.
+The currently published runtime data retains the audited 97-key user default,
+26-event default, 11-entry switch default, and complete 25-key static default.
+Create rejects names that are empty after
 Python-compatible Unicode stripping but preserves the accepted name verbatim;
 copy uses the stripped source name when deriving its suffix. Only Python's
 documented server labels are accepted; manufacturing quantities
@@ -112,9 +115,9 @@ to server-adjusted defaults, including Python's whole-file fallback when a
 normalized to a three-element reset array instead of preserving Python's
 accidental `len(...) == 3` shapes; this is intentional type-safety hardening.
 Deprecated `display.json` is removed; and
-`config/static.json` is atomically upgraded. The embedded static vector
-has canonical SHA-256
-`4b31c708fbbcd88300eb00e1ec71a556bc22f596467e5af356330b5496d2b247`.
+`config/static.json` is atomically upgraded from that admitted runtime document.
+Missing, malformed, oversized, or structurally invalid defaults fail startup before
+the resource store, transport, worker, or listening socket is created.
 
 Windows file authentication keeps a protected DACL on `<project-root>/config`.
 Its allow-list ACEs inherit to child directories and files, so starting the
