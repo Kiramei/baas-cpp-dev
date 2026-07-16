@@ -84,6 +84,8 @@ option(BUILD_SCRIPT_TESTS       "Build native tests for the BAAS script runtime"
 option(BUILD_SCRIPT_TOOLS       "Build BAAS script developer tools" OFF)
 option(BUILD_RESOURCE_CORE      "Build immutable resource snapshot core" OFF)
 option(BUILD_RESOURCE_CORE_TESTS "Build immutable resource snapshot tests" OFF)
+option(BUILD_RUNTIME_REPOSITORY "Build read-only runtime repository activation" OFF)
+option(BUILD_RUNTIME_REPOSITORY_TESTS "Build runtime repository activation tests" OFF)
 option(BUILD_SCRIPT_RESOURCE_HOST "Build baas/resource script Host adapter" OFF)
 option(BUILD_SCRIPT_RESOURCE_HOST_TESTS "Build baas/resource script Host tests" OFF)
 option(BUILD_SERVICE_PROTOCOL   "Build the standalone BAAS service protocol library" OFF)
@@ -189,6 +191,10 @@ endif()
 
 if(BUILD_RESOURCE_CORE_TESTS AND NOT BUILD_RESOURCE_CORE)
     set(BUILD_RESOURCE_CORE ON CACHE BOOL "Build immutable resource snapshot core" FORCE)
+endif()
+
+if(BUILD_RUNTIME_REPOSITORY_TESTS AND NOT BUILD_RUNTIME_REPOSITORY)
+    set(BUILD_RUNTIME_REPOSITORY ON CACHE BOOL "Build read-only runtime repository activation" FORCE)
 endif()
 
 if(BUILD_SCRIPT_RESOURCE_HOST_TESTS AND NOT BUILD_SCRIPT_RESOURCE_HOST)
@@ -652,6 +658,10 @@ endif()
 
 if(BUILD_RESOURCE_CORE)
     include("${CMAKE_CURRENT_LIST_DIR}/cmake/ResourceCore.cmake")
+endif()
+
+if(BUILD_RUNTIME_REPOSITORY)
+    include("${CMAKE_CURRENT_LIST_DIR}/cmake/RuntimeRepository.cmake")
 endif()
 
 if(BUILD_SCRIPT_RUNTIME)
