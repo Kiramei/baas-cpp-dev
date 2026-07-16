@@ -35,6 +35,12 @@
 #include <cerrno>
 #include <fcntl.h>
 #include <sys/stat.h>
+#if defined(__linux__)
+#include <sys/syscall.h>
+#endif
+#if defined(__APPLE__)
+#include <stdio.h>
+#endif
 #include <unistd.h>
 #endif
 
@@ -1341,7 +1347,7 @@ WindowsDirectoryChain open_windows_resource_parent(
                 FILE_LIST_DIRECTORY | FILE_TRAVERSE
                     | FILE_READ_ATTRIBUTES
                     | (writable && index + 1 == components.size()
-                           ? FILE_ADD_FILE : 0U),
+                           ? FILE_ADD_FILE | FILE_ADD_SUBDIRECTORY : 0U),
                 FILE_OPEN, true);
             if (!next) return {};
             chain.handles.push_back(std::move(next));
@@ -1679,11 +1685,14 @@ AtomicWriteResult durable_atomic_write(const std::filesystem::path& target,
     mode_t mode = 0600;
     struct stat target_status {};
     if (::fstatat(directory.get(), target_name.c_str(), &target_status,
-                  AT_SYMLINK_NOFOLLOW) != 0
-        || !S_ISREG(target_status.st_mode)) {
+                  AT_SYMLINK_NOFOLLOW) == 0) {
+        if (!S_ISREG(target_status.st_mode)) {
+            return AtomicWriteResult::not_committed;
+        }
+        mode = target_status.st_mode & 0777;
+    } else if (errno != ENOENT) {
         return AtomicWriteResult::not_committed;
     }
-    mode = target_status.st_mode & 0777;
     for (std::size_t attempt = 0; attempt < 64; ++attempt) {
         const auto temporary_name = temporary_path(
             target, next_sequence.fetch_add(1)).filename().native();
@@ -2012,25 +2021,143 @@ struct ConfigTreeStats {
     }
 }
 
-[[nodiscard]] ConfigCommandError create_private_directory(
-    const std::filesystem::path& path)
-{
-    std::error_code error;
-    if (!std::filesystem::create_directory(path, error)) {
-        return error ? ConfigCommandError::internal_error
-                     : ConfigCommandError::conflict;
-    }
-#if !defined(_WIN32)
-    std::filesystem::permissions(
-        path, std::filesystem::perms::owner_all,
-        std::filesystem::perm_options::replace, error);
-    if (error) {
-        std::error_code ignored;
-        std::filesystem::remove_all(path, ignored);
-        return ConfigCommandError::internal_error;
-    }
+struct StaticUpgradeResult {
+    ConfigCommandError error{ConfigCommandError::none};
+    bool committed{};
+};
+
+struct ConfigIdentifiersResult {
+    std::vector<std::string> identifiers;
+    ResourceStoreError error{ResourceStoreError::none};
+};
+
+[[nodiscard]] ConfigIdentifiersResult enumerate_config_identifiers(
+    const std::filesystem::path& config_root,
+    const channels::ResourceStoreLimits& limits,
+    const std::stop_token stop,
+#if defined(_WIN32)
+    const std::shared_ptr<WindowsRootAnchor>& anchor)
+#else
+    const std::shared_ptr<PosixRootAnchor>& anchor)
 #endif
-    return ConfigCommandError::none;
+{
+    const auto kind = path_kind(config_root);
+    if (kind == PathKind::missing) return {};
+    if (kind != PathKind::directory) {
+        return {{}, ResourceStoreError::invalid_data};
+    }
+    ConfigIdentifiersResult result;
+    std::error_code iteration_error;
+    std::filesystem::directory_iterator iterator(
+        config_root,
+        std::filesystem::directory_options::skip_permission_denied,
+        iteration_error);
+    const std::filesystem::directory_iterator end;
+    for (; !iteration_error && iterator != end; iterator.increment(iteration_error)) {
+        if (stop.stop_requested()) {
+            return {{}, ResourceStoreError::internal_error};
+        }
+        std::string id;
+        try {
+            id = filename_utf8(iterator->path());
+        } catch (...) {
+            continue;
+        }
+        if (!valid_resource_id(id, limits.max_resource_id_bytes)) continue;
+        const auto config_path = iterator->path() / "config.json";
+        const auto event_path = iterator->path() / "event.json";
+#if defined(_WIN32)
+        const bool safe_pair = windows_regular_resource_exists(*anchor, config_path)
+            && windows_regular_resource_exists(*anchor, event_path);
+#else
+        const bool safe_pair = posix_regular_resource_exists(*anchor, config_path)
+            && posix_regular_resource_exists(*anchor, event_path);
+#endif
+        if (!safe_pair) continue;
+        if (result.identifiers.size() >= limits.max_resources) {
+            return {{}, ResourceStoreError::capacity};
+        }
+        result.identifiers.push_back(std::move(id));
+    }
+    if (iteration_error) return {{}, ResourceStoreError::internal_error};
+    std::sort(result.identifiers.begin(), result.identifiers.end());
+    return result;
+}
+
+[[nodiscard]] bool config_pair_admission_fits(
+    const std::filesystem::path& config_root,
+    const std::size_t current_pair_count,
+    const channels::ResourceStoreLimits& limits,
+#if defined(_WIN32)
+    const std::shared_ptr<WindowsRootAnchor>& anchor)
+#else
+    const std::shared_ptr<PosixRootAnchor>& anchor)
+#endif
+{
+    const auto gui_path = config_root / "gui.json";
+#if defined(_WIN32)
+    const bool gui_exists = windows_regular_resource_exists(*anchor, gui_path);
+#else
+    const bool gui_exists = posix_regular_resource_exists(*anchor, gui_path);
+#endif
+    // Each configuration consumes a config and event cache slot. The watcher
+    // also requires static.json and setup.toml, plus gui.json only when that
+    // optional resource exists through the anchored safe-file boundary.
+    const std::size_t global_slots = 2 + static_cast<std::size_t>(gui_exists);
+    if (limits.max_resources < global_slots) return false;
+    const auto pair_capacity = (limits.max_resources - global_slots) / 2;
+    // Avoid current_pair_count + 1 so adversarial limits cannot overflow.
+    return current_pair_count < pair_capacity;
+}
+
+[[nodiscard]] StaticUpgradeResult ensure_current_static(
+    const std::filesystem::path& path,
+    const std::string_view expected_bytes,
+    const JsonBounds bounds,
+    const std::function<std::pair<ResourceStoreError, std::string>()>& reader,
+    const FileResourceStoreDependencies::AtomicWriter& replace)
+{
+    if (expected_bytes.size() > bounds.bytes) {
+        return {ConfigCommandError::capacity, false};
+    }
+    const auto kind = path_kind(path);
+    if (kind == PathKind::missing) {
+        AtomicWriteResult written{AtomicWriteResult::not_committed};
+        try {
+            written = replace(path, expected_bytes);
+        } catch (...) {
+            written = AtomicWriteResult::not_committed;
+        }
+        return written == AtomicWriteResult::not_committed
+            ? StaticUpgradeResult{ConfigCommandError::internal_error, false}
+            : StaticUpgradeResult{ConfigCommandError::none, true};
+    }
+    if (kind != PathKind::regular_file) {
+        return {ConfigCommandError::invalid_data, false};
+    }
+    auto [read_error, bytes] = reader();
+    if (read_error == ResourceStoreError::capacity) {
+        return {ConfigCommandError::capacity, false};
+    }
+    if (read_error != ResourceStoreError::none) {
+        return {read_error == ResourceStoreError::invalid_data
+                    ? ConfigCommandError::invalid_data
+                    : ConfigCommandError::internal_error,
+                false};
+    }
+    const auto current = parse_json(bytes, bounds);
+    const auto expected = parse_json(expected_bytes, bounds);
+    if (!expected) return {ConfigCommandError::internal_error, false};
+    if (current && *current == *expected) return {};
+    AtomicWriteResult written{AtomicWriteResult::not_committed};
+    try {
+        written = replace(path, expected_bytes);
+    } catch (...) {
+        written = AtomicWriteResult::not_committed;
+    }
+    return written == AtomicWriteResult::not_committed
+        ? StaticUpgradeResult{ConfigCommandError::internal_error, false}
+        : StaticUpgradeResult{ConfigCommandError::none, true};
 }
 
 [[nodiscard]] ConfigCommandError copy_config_tree(
@@ -2040,10 +2167,12 @@ struct ConfigTreeStats {
     const std::function<std::pair<std::optional<std::string>, ConfigCommandError>(
         const std::filesystem::path&)>& reader,
     const std::function<bool(const std::filesystem::path&, std::string_view)>& writer,
+    const std::function<ConfigCommandError(const std::filesystem::path&)>&
+        create_directory,
     ConfigTreeStats& stats)
 {
     std::error_code error;
-    if (const auto created = create_private_directory(target);
+    if (const auto created = create_directory(target);
         created != ConfigCommandError::none) return created;
     std::filesystem::recursive_directory_iterator iterator(
         source, std::filesystem::directory_options::none, error);
@@ -2064,7 +2193,7 @@ struct ConfigTreeStats {
         const auto destination = target / relative;
         const auto kind = path_kind(iterator->path());
         if (kind == PathKind::directory) {
-            if (const auto directory_created = create_private_directory(destination);
+            if (const auto directory_created = create_directory(destination);
                 directory_created != ConfigCommandError::none) {
                 return directory_created;
             }
@@ -2092,12 +2221,50 @@ enum class DirectoryRenameResult { not_committed, committed, committed_uncertain
 #if defined(_WIN32)
 [[nodiscard]] DirectoryRenameResult durable_directory_rename(
     const std::filesystem::path& source,
-    const std::filesystem::path& target) noexcept
+    const std::filesystem::path& target,
+    const std::shared_ptr<WindowsRootAnchor>& anchor) noexcept
 {
-    if (!MoveFileExW(source.c_str(), target.c_str(), MOVEFILE_WRITE_THROUGH)) {
+    try {
+        if (!anchor || source.parent_path() != target.parent_path()) {
+            return DirectoryRenameResult::not_committed;
+        }
+        auto parent = open_windows_resource_parent(*anchor, target, true);
+        if (!parent) return DirectoryRenameResult::not_committed;
+        const auto source_kind = path_kind(source);
+        const bool source_is_directory = source_kind == PathKind::directory;
+        if (!source_is_directory && source_kind != PathKind::regular_file) {
+            return DirectoryRenameResult::not_committed;
+        }
+        auto directory = open_relative_windows(
+            parent.get(), source.filename().native(),
+            DELETE | FILE_READ_ATTRIBUTES, FILE_OPEN, source_is_directory);
+        if (!directory || !windows_handle_has_exact_path(directory.get(), source)) {
+            return DirectoryRenameResult::not_committed;
+        }
+        const auto target_name = target.filename().native();
+        const auto name_bytes = target_name.size() * sizeof(wchar_t);
+        const auto rename_size = sizeof(FILE_RENAME_INFO) + name_bytes;
+        const auto units = (rename_size + sizeof(std::max_align_t) - 1)
+            / sizeof(std::max_align_t);
+        std::vector<std::max_align_t> storage(units);
+        auto* const rename = reinterpret_cast<FILE_RENAME_INFO*>(storage.data());
+        rename->ReplaceIfExists = FALSE;
+        rename->RootDirectory = parent.get();
+        rename->FileNameLength = static_cast<DWORD>(name_bytes);
+        std::memcpy(rename->FileName, target_name.data(), name_bytes);
+        IO_STATUS_BLOCK status{};
+        const auto set_information = nt_set_information_file();
+        if (!set_information
+            || set_information(
+                   directory.get(), &status, rename,
+                   static_cast<ULONG>(rename_size),
+                   static_cast<FILE_INFORMATION_CLASS>(10)) < 0) {
+            return DirectoryRenameResult::not_committed;
+        }
+        return DirectoryRenameResult::committed;
+    } catch (...) {
         return DirectoryRenameResult::not_committed;
     }
-    return DirectoryRenameResult::committed;
 }
 #else
 [[nodiscard]] DirectoryRenameResult durable_directory_rename(
@@ -2112,9 +2279,22 @@ enum class DirectoryRenameResult { not_committed, committed, committed_uncertain
         }
         const auto source_name = source.filename().native();
         const auto target_name = target.filename().native();
-        if (::renameat(
-                directory.get(), source_name.c_str(), directory.get(),
-                target_name.c_str()) != 0) {
+#if defined(__linux__)
+        constexpr unsigned int rename_no_replace = 1U;
+        const auto rename_result = ::syscall(
+            SYS_renameat2, directory.get(), source_name.c_str(), directory.get(),
+            target_name.c_str(), rename_no_replace);
+#elif defined(__APPLE__)
+        const auto rename_result = ::renameatx_np(
+            directory.get(), source_name.c_str(), directory.get(),
+            target_name.c_str(), RENAME_EXCL);
+#else
+        // There is no portable atomic no-replace rename for directories. Fail
+        // closed instead of introducing a check-then-rename overwrite race.
+        const auto rename_result = -1;
+        errno = ENOTSUP;
+#endif
+        if (rename_result != 0) {
             return DirectoryRenameResult::not_committed;
         }
         return ::fsync(directory.get()) == 0
@@ -2131,6 +2311,28 @@ void remove_tree_best_effort(const std::filesystem::path& path) noexcept
     std::error_code ignored;
     std::filesystem::remove_all(path, ignored);
 }
+
+class StagingCleanup final {
+public:
+    explicit StagingCleanup(const std::filesystem::path& path) noexcept
+        : path_(std::addressof(path))
+    {
+    }
+
+    StagingCleanup(const StagingCleanup&) = delete;
+    StagingCleanup& operator=(const StagingCleanup&) = delete;
+
+    ~StagingCleanup()
+    {
+        if (active_) remove_tree_best_effort(*path_);
+    }
+
+    void release() noexcept { active_ = false; }
+
+private:
+    const std::filesystem::path* path_;
+    bool active_{true};
+};
 
 }  // namespace
 
@@ -2257,6 +2459,8 @@ public:
         if (!clock || !atomic_writer) {
             throw std::invalid_argument("file resource store dependencies are invalid");
         }
+        config_create_fault_injector =
+            std::move(dependencies.config_create_fault_injector);
         subscribers->maximum = limits.max_subscribers;
     }
 
@@ -2501,6 +2705,8 @@ public:
 #endif
     FileResourceStoreDependencies::Clock clock;
     FileResourceStoreDependencies::AtomicWriter atomic_writer;
+    FileResourceStoreDependencies::ConfigCreateFaultInjector
+        config_create_fault_injector;
     channels::ResourceStoreLimits limits;
     std::mutex state_mutex;
     std::mutex mutation_mutex;
@@ -2527,63 +2733,19 @@ channels::ResourceStoreResult<ResourceSnapshot> FileResourceStore::config_list(
     const auto impl = impl_;
     if (stop.stop_requested()) return {std::nullopt, ResourceStoreError::internal_error};
     std::lock_guard mutation_lock(impl->mutation_mutex);
-    std::vector<std::string> identifiers;
-    const auto config_kind = path_kind(impl->config_root);
-    if (config_kind == PathKind::missing) {
-        double now{};
-        try {
-            now = impl->clock();
-        } catch (...) {
-            return {std::nullopt, ResourceStoreError::internal_error};
-        }
-        if (!std::isfinite(now)) return {std::nullopt, ResourceStoreError::internal_error};
-        return {ResourceSnapshot{timestamp_json(now), "[]"}, ResourceStoreError::none};
-    }
-    if (config_kind != PathKind::directory) {
-        return {std::nullopt, ResourceStoreError::invalid_data};
-    }
-
-    std::error_code iteration_error;
-    std::filesystem::directory_iterator iterator(
-        impl->config_root, std::filesystem::directory_options::skip_permission_denied,
-        iteration_error);
-    const std::filesystem::directory_iterator end;
-    for (; !iteration_error && iterator != end; iterator.increment(iteration_error)) {
-        if (stop.stop_requested()) {
-            return {std::nullopt, ResourceStoreError::internal_error};
-        }
-        const auto& child = iterator->path();
-        std::string name;
-        try {
-            name = filename_utf8(child);
-        } catch (...) {
-            continue;
-        }
-        if (!valid_resource_id(name, impl->limits.max_resource_id_bytes)) {
-            continue;
-        }
-        const auto config_path = child / "config.json";
-        const auto event_path = child / "event.json";
 #if defined(_WIN32)
-        const bool safe_pair = windows_regular_resource_exists(
-                                   *impl->windows_root, config_path)
-            && windows_regular_resource_exists(*impl->windows_root, event_path);
+    auto enumerated = enumerate_config_identifiers(
+        impl->config_root, impl->limits, stop, impl->windows_root);
 #else
-        const bool safe_pair = posix_regular_resource_exists(
-                                   *impl->posix_root, config_path)
-            && posix_regular_resource_exists(*impl->posix_root, event_path);
+    auto enumerated = enumerate_config_identifiers(
+        impl->config_root, impl->limits, stop, impl->posix_root);
 #endif
-        if (!safe_pair) continue;
-        if (identifiers.size() >= impl->limits.max_resources) {
-            return {std::nullopt, ResourceStoreError::capacity};
-        }
-        identifiers.push_back(name);
+    if (enumerated.error != ResourceStoreError::none) {
+        return {std::nullopt, enumerated.error};
     }
-    if (iteration_error) return {std::nullopt, ResourceStoreError::internal_error};
-    std::sort(identifiers.begin(), identifiers.end());
 
     try {
-        Json data = identifiers;
+        Json data = enumerated.identifiers;
         const auto serialized = data.dump();
         if (serialized.size() > impl->limits.max_json_bytes) {
             return {std::nullopt, ResourceStoreError::capacity};
@@ -2607,6 +2769,7 @@ channels::ResourceStoreResult<ResourceSnapshot> FileResourceStore::pull(
         return {std::nullopt, *invalid};
     }
     const auto canonical_key = impl->canonical_key(key);
+    std::lock_guard mutation_lock(impl->mutation_mutex);
     std::lock_guard lock(impl->state_mutex);
     const auto found = impl->resources.find(canonical_key);
     if (found != impl->resources.end()) return {found->second, ResourceStoreError::none};
@@ -3041,6 +3204,285 @@ const std::filesystem::path& FileResourceStore::project_root() const noexcept
     return impl_->root;
 }
 
+#if defined(_WIN32)
+[[nodiscard]] ConfigCommandError create_private_directory_anchored(
+    const std::filesystem::path& path,
+    const std::shared_ptr<WindowsRootAnchor>& anchor)
+{
+    auto parent = open_windows_resource_parent(*anchor, path, true);
+    if (!parent) return ConfigCommandError::invalid_data;
+    const auto name = path.filename().native();
+    auto directory = open_relative_windows(
+        parent.get(), name,
+        FILE_LIST_DIRECTORY | FILE_TRAVERSE | FILE_READ_ATTRIBUTES | DELETE,
+        FILE_CREATE, true);
+    if (!directory) {
+        return path_kind(path) == PathKind::missing
+            ? ConfigCommandError::internal_error : ConfigCommandError::conflict;
+    }
+    if (!windows_handle_has_exact_path(directory.get(), path)) {
+        FILE_DISPOSITION_INFO remove{TRUE};
+        static_cast<void>(SetFileInformationByHandle(
+            directory.get(), FileDispositionInfo, &remove, sizeof(remove)));
+        return ConfigCommandError::invalid_data;
+    }
+    return ConfigCommandError::none;
+}
+#else
+[[nodiscard]] ConfigCommandError create_private_directory_anchored(
+    const std::filesystem::path& path,
+    const std::shared_ptr<PosixRootAnchor>& anchor)
+{
+    auto parent = open_posix_resource_parent(*anchor, path);
+    if (!parent) return ConfigCommandError::invalid_data;
+    const auto name = path.filename().native();
+    if (::mkdirat(parent.get(), name.c_str(), 0700) != 0) {
+        return errno == EEXIST ? ConfigCommandError::conflict
+                              : ConfigCommandError::internal_error;
+    }
+    PosixFd directory(::openat(
+        parent.get(), name.c_str(),
+        O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW));
+    struct stat status {};
+    if (!directory || ::fstat(directory.get(), &status) != 0
+        || !S_ISDIR(status.st_mode)
+        || (status.st_mode & (S_IRWXG | S_IRWXO)) != 0) {
+        static_cast<void>(::unlinkat(parent.get(), name.c_str(), AT_REMOVEDIR));
+        static_cast<void>(::fsync(parent.get()));
+        return ConfigCommandError::invalid_data;
+    }
+    if (::fsync(parent.get()) != 0) {
+        static_cast<void>(::unlinkat(parent.get(), name.c_str(), AT_REMOVEDIR));
+        static_cast<void>(::fsync(parent.get()));
+        return ConfigCommandError::internal_error;
+    }
+    return ConfigCommandError::none;
+}
+#endif
+
+ConfigCreateResult FileResourceStore::create_config(
+    const std::string_view supplied_name, const std::string_view supplied_server,
+    const std::stop_token stop, ConfigCreateCommitClaim claim) try
+{
+    const auto impl = impl_;
+    const auto injected_failure = [impl](const std::string_view step) {
+        if (!impl->config_create_fault_injector) return false;
+        return impl->config_create_fault_injector(step);
+    };
+    if (stop.stop_requested()) return {{}, ConfigCommandError::cancelled};
+    if (supplied_name.empty() || supplied_server.empty()
+        || trim_config_name(std::string{supplied_name}).empty()
+        || supplied_name.size() > impl->limits.max_json_bytes
+        || supplied_server.size() > impl->limits.max_json_bytes
+        || !is_valid_utf8(supplied_name) || !is_valid_utf8(supplied_server)) {
+        return {{}, ConfigCommandError::invalid_data};
+    }
+
+    std::unique_lock mutation_lock(impl->mutation_mutex);
+    if (stop.stop_requested()) return {{}, ConfigCommandError::cancelled};
+    const auto root_kind = path_kind(impl->config_root);
+    if (root_kind != PathKind::directory) {
+        return {{}, ConfigCommandError::invalid_data};
+    }
+
+#if defined(_WIN32)
+    auto enumerated = enumerate_config_identifiers(
+        impl->config_root, impl->limits, stop, impl->windows_root);
+#else
+    auto enumerated = enumerate_config_identifiers(
+        impl->config_root, impl->limits, stop, impl->posix_root);
+#endif
+    if (stop.stop_requested()) return {{}, ConfigCommandError::cancelled};
+    if (enumerated.error != ResourceStoreError::none) {
+        return {{}, enumerated.error == ResourceStoreError::capacity
+                ? ConfigCommandError::capacity
+                : enumerated.error == ResourceStoreError::invalid_data
+                    ? ConfigCommandError::invalid_data
+                    : ConfigCommandError::internal_error};
+    }
+#if defined(_WIN32)
+    const bool admission_fits = config_pair_admission_fits(
+        impl->config_root, enumerated.identifiers.size(), impl->limits,
+        impl->windows_root);
+#else
+    const bool admission_fits = config_pair_admission_fits(
+        impl->config_root, enumerated.identifiers.size(), impl->limits,
+        impl->posix_root);
+#endif
+    if (!admission_fits) {
+        return {{}, ConfigCommandError::capacity};
+    }
+
+    double now{};
+    try {
+        now = impl->clock();
+    } catch (...) {
+        return {{}, ConfigCommandError::internal_error};
+    }
+    if (!std::isfinite(now) || now < 0
+        || now > static_cast<double>(
+            std::numeric_limits<std::int64_t>::max() - 1'024)) {
+        return {{}, ConfigCommandError::internal_error};
+    }
+    const auto initial = static_cast<std::int64_t>(now);
+    std::string target_id;
+    std::filesystem::path target;
+    for (std::size_t attempt = 0; attempt < 1'024; ++attempt) {
+        target_id = std::to_string(initial + static_cast<std::int64_t>(attempt));
+        target = impl->config_root / target_id;
+        if (path_kind(target) == PathKind::missing) break;
+        target_id.clear();
+    }
+    if (target_id.empty()) return {{}, ConfigCommandError::conflict};
+    // Construct every key that owns the identifier before staging and before
+    // the response claim. After the directory rename, success must not depend
+    // on another allocation of the client-visible identifier.
+    const ResourceKey config_key{SyncResource::config, target_id};
+    const ResourceKey event_key{SyncResource::event, target_id};
+    const ResourceKey static_key{SyncResource::static_data, std::nullopt};
+
+    static std::atomic<std::uint64_t> staging_sequence{};
+    const auto sequence = staging_sequence.fetch_add(1, std::memory_order_relaxed);
+    const auto staging = impl->config_root /
+        (".baas-create-" + target_id + "-" + std::to_string(sequence));
+    if (path_kind(staging) != PathKind::missing) {
+        return {{}, ConfigCommandError::conflict};
+    }
+    const auto directory_created =
+#if defined(_WIN32)
+        create_private_directory_anchored(staging, impl->windows_root);
+#else
+        create_private_directory_anchored(staging, impl->posix_root);
+#endif
+    if (directory_created != ConfigCommandError::none) {
+        return {{}, directory_created};
+    }
+    StagingCleanup staging_cleanup(staging);
+
+    Json user_document;
+    Json event_document;
+    Json switch_document;
+    std::string user_bytes;
+    std::string event_bytes;
+    std::string switch_bytes;
+    try {
+        user_document = Json::parse(config_defaults::user);
+        user_document["server"] = supplied_server;
+        const auto migrated = migrated_user_config(
+            std::move(user_document), supplied_name);
+        if (!migrated) {
+            remove_tree_best_effort(staging);
+            return {{}, ConfigCommandError::invalid_data};
+        }
+        user_document = std::move(*migrated);
+        event_document = migrated_event_config(std::nullopt, user_document);
+        switch_document = Json::parse(config_defaults::switches);
+        user_bytes = user_document.dump(2);
+        event_bytes = event_document.dump(2);
+        switch_bytes = switch_document.dump(2);
+    } catch (...) {
+        remove_tree_best_effort(staging);
+        return {{}, ConfigCommandError::internal_error};
+    }
+    if (user_bytes.size() > impl->limits.max_json_bytes
+        || event_bytes.size() > impl->limits.max_json_bytes
+        || switch_bytes.size() > impl->limits.max_json_bytes) {
+        remove_tree_best_effort(staging);
+        return {{}, ConfigCommandError::capacity};
+    }
+    const auto create_file = [impl](const std::filesystem::path& path,
+                                    const std::string_view bytes) {
+        try {
+#if defined(_WIN32)
+            return durable_create_new(path, bytes, impl->windows_root);
+#else
+            return durable_create_new(path, bytes, impl->posix_root);
+#endif
+        } catch (...) { return false; }
+    };
+    if (injected_failure("before_staging_write")
+        || !create_file(staging / "config.json", user_bytes)
+        || !create_file(staging / "event.json", event_bytes)
+        || !create_file(staging / "switch.json", switch_bytes)) {
+        remove_tree_best_effort(staging);
+        return {{}, ConfigCommandError::internal_error};
+    }
+
+    const auto default_static = config_defaults::static_json();
+    const auto static_path = impl->config_root / "static.json";
+    if (injected_failure("before_static_commit")) {
+        remove_tree_best_effort(staging);
+        return {{}, ConfigCommandError::internal_error};
+    }
+    const auto static_upgrade = ensure_current_static(
+        static_path, default_static, impl->bounds(),
+        [impl, &static_path] {
+#if defined(_WIN32)
+            auto current = read_windows_resource(
+                *impl->windows_root, static_path, impl->limits.max_json_bytes);
+#else
+            auto current = read_posix_resource(
+                *impl->posix_root, static_path, impl->limits.max_json_bytes);
+#endif
+            return std::pair{current.error, std::move(current.bytes)};
+        },
+        impl->atomic_writer);
+    if (static_upgrade.error != ConfigCommandError::none) {
+        remove_tree_best_effort(staging);
+        return {{}, static_upgrade.error};
+    }
+    if (static_upgrade.committed) {
+        // The current static vector is an independent idempotent project-root
+        // metadata upgrade. It remains committed even if the later directory
+        // publication loses its claim or fails.
+        std::lock_guard state_lock(impl->state_mutex);
+        impl->resources.erase(
+            ResourceKey{SyncResource::static_data, std::nullopt});
+    }
+
+    std::mutex commit_mutex;
+    bool cancellation_observed = stop.stop_requested();
+    std::stop_callback cancellation(stop, [&] {
+        std::lock_guard lock(commit_mutex);
+        cancellation_observed = true;
+    });
+    DirectoryRenameResult renamed{DirectoryRenameResult::not_committed};
+    {
+        std::lock_guard commit_lock(commit_mutex);
+        if (cancellation_observed || stop.stop_requested()) {
+            remove_tree_best_effort(staging);
+            return {{}, ConfigCommandError::cancelled};
+        }
+        if (claim && !claim(target_id)) {
+            remove_tree_best_effort(staging);
+            return {{}, ConfigCommandError::cancelled};
+        }
+        if (!injected_failure("before_directory_commit")) {
+#if defined(_WIN32)
+            renamed = durable_directory_rename(staging, target, impl->windows_root);
+#else
+            renamed = durable_directory_rename(staging, target, impl->posix_root);
+#endif
+        }
+    }
+    if (renamed == DirectoryRenameResult::not_committed) {
+        remove_tree_best_effort(staging);
+        return {{}, path_kind(target) == PathKind::missing
+                ? ConfigCommandError::internal_error
+                : ConfigCommandError::conflict};
+    }
+    staging_cleanup.release();
+    {
+        std::lock_guard state_lock(impl->state_mutex);
+        impl->resources.erase(config_key);
+        impl->resources.erase(event_key);
+        impl->resources.erase(static_key);
+    }
+    return {std::move(target_id), ConfigCommandError::none};
+} catch (...) {
+    return {{}, ConfigCommandError::internal_error};
+}
+
 ConfigCopyResult FileResourceStore::copy_config(
     const std::string_view source_id, const std::stop_token stop,
     ConfigCopyCommitClaim claim) try
@@ -3053,6 +3495,33 @@ ConfigCopyResult FileResourceStore::copy_config(
     }
     std::unique_lock mutation_lock(impl->mutation_mutex);
     if (stop.stop_requested()) return {{}, {}, ConfigCommandError::cancelled};
+#if defined(_WIN32)
+    auto enumerated = enumerate_config_identifiers(
+        impl->config_root, impl->limits, stop, impl->windows_root);
+#else
+    auto enumerated = enumerate_config_identifiers(
+        impl->config_root, impl->limits, stop, impl->posix_root);
+#endif
+    if (stop.stop_requested()) return {{}, {}, ConfigCommandError::cancelled};
+    if (enumerated.error != ResourceStoreError::none) {
+        return {{}, {}, enumerated.error == ResourceStoreError::capacity
+                ? ConfigCommandError::capacity
+                : enumerated.error == ResourceStoreError::invalid_data
+                    ? ConfigCommandError::invalid_data
+                    : ConfigCommandError::internal_error};
+    }
+#if defined(_WIN32)
+    const bool admission_fits = config_pair_admission_fits(
+        impl->config_root, enumerated.identifiers.size(), impl->limits,
+        impl->windows_root);
+#else
+    const bool admission_fits = config_pair_admission_fits(
+        impl->config_root, enumerated.identifiers.size(), impl->limits,
+        impl->posix_root);
+#endif
+    if (!admission_fits) {
+        return {{}, {}, ConfigCommandError::capacity};
+    }
 
     const ResourceKey config_key{SyncResource::config, source_name};
     auto config = impl->load(config_key);
@@ -3151,6 +3620,7 @@ ConfigCopyResult FileResourceStore::copy_config(
     if (path_kind(staging) != PathKind::missing) {
         return {{}, {}, ConfigCommandError::conflict};
     }
+    StagingCleanup staging_cleanup(staging);
     const auto reader = [impl](const std::filesystem::path& path)
         -> std::pair<std::optional<std::string>, ConfigCommandError> {
 #if defined(_WIN32)
@@ -3186,9 +3656,19 @@ ConfigCopyResult FileResourceStore::copy_config(
 #endif
         } catch (...) { return false; }
     };
+    const auto create_directory = [impl](const std::filesystem::path& path) {
+        try {
+#if defined(_WIN32)
+            return create_private_directory_anchored(path, impl->windows_root);
+#else
+            return create_private_directory_anchored(path, impl->posix_root);
+#endif
+        } catch (...) { return ConfigCommandError::internal_error; }
+    };
     ConfigTreeStats tree_stats;
     const auto copied =
-        copy_config_tree(source, staging, stop, reader, writer, tree_stats);
+        copy_config_tree(
+            source, staging, stop, reader, writer, create_directory, tree_stats);
     if (copied != ConfigCommandError::none) {
         remove_tree_best_effort(staging);
         return {{}, {}, copied};
@@ -3272,43 +3752,26 @@ ConfigCopyResult FileResourceStore::copy_config(
 
     const auto default_static = config_defaults::static_json();
     const auto static_path = impl->config_root / "static.json";
-    bool update_static = true;
-    if (path_kind(static_path) == PathKind::regular_file) {
+    const auto static_upgrade = ensure_current_static(
+        static_path, default_static, impl->bounds(),
+        [impl, &static_path] {
 #if defined(_WIN32)
-        auto current_static = read_windows_resource(
-            *impl->windows_root, static_path, impl->limits.max_json_bytes);
+            auto current = read_windows_resource(
+                *impl->windows_root, static_path, impl->limits.max_json_bytes);
 #else
-        auto current_static = read_posix_resource(
-            *impl->posix_root, static_path, impl->limits.max_json_bytes);
+            auto current = read_posix_resource(
+                *impl->posix_root, static_path, impl->limits.max_json_bytes);
 #endif
-        if (current_static.error == ResourceStoreError::capacity) {
-            remove_tree_best_effort(staging);
-            return {{}, {}, ConfigCommandError::capacity};
-        }
-        if (current_static.error == ResourceStoreError::none) {
-            const auto parsed = parse_json(current_static.bytes, impl->bounds());
-            const auto expected = parse_json(default_static, impl->bounds());
-            update_static = !parsed || !expected || *parsed != *expected;
-        }
-    } else if (path_kind(static_path) != PathKind::missing) {
+            return std::pair{current.error, std::move(current.bytes)};
+        },
+        impl->atomic_writer);
+    if (static_upgrade.error != ConfigCommandError::none) {
         remove_tree_best_effort(staging);
-        return {{}, {}, ConfigCommandError::invalid_data};
+        return {{}, {}, static_upgrade.error};
     }
-    const auto static_candidate = impl->config_root /
-        (".baas-static-" + target_id + "-" +
-         std::to_string(staging_sequence.fetch_add(1, std::memory_order_relaxed)));
-    const auto static_backup = impl->config_root /
-        (".baas-static-backup-" + target_id + "-" +
-         std::to_string(staging_sequence.fetch_add(1, std::memory_order_relaxed)));
-    if (update_static) {
-        if (default_static.size() > impl->limits.max_json_bytes
-            || path_kind(static_candidate) != PathKind::missing
-            || path_kind(static_backup) != PathKind::missing
-            || !writer(static_candidate, default_static)) {
-            remove_tree_best_effort(staging);
-            remove_tree_best_effort(static_candidate);
-            return {{}, {}, ConfigCommandError::internal_error};
-        }
+    if (static_upgrade.committed) {
+        std::lock_guard state_lock(impl->state_mutex);
+        impl->resources.erase(static_key);
     }
     std::mutex commit_mutex;
     bool cancellation_observed = stop.stop_requested();
@@ -3317,8 +3780,6 @@ ConfigCopyResult FileResourceStore::copy_config(
         cancellation_observed = true;
     });
     DirectoryRenameResult renamed{DirectoryRenameResult::not_committed};
-    bool static_backed_up{};
-    bool static_installed{};
     {
         std::lock_guard commit_lock(commit_mutex);
         if (cancellation_observed || stop.stop_requested()) {
@@ -3327,77 +3788,26 @@ ConfigCopyResult FileResourceStore::copy_config(
         }
         if (claim && !claim(target_id, copy_name)) {
             remove_tree_best_effort(staging);
-            remove_tree_best_effort(static_candidate);
             return {{}, {}, ConfigCommandError::cancelled};
         }
-        if (update_static && path_kind(static_path) == PathKind::regular_file) {
 #if defined(_WIN32)
-            static_backed_up = durable_directory_rename(
-                static_path, static_backup) != DirectoryRenameResult::not_committed;
-#else
-            static_backed_up = durable_directory_rename(
-                static_path, static_backup, impl->posix_root)
-                != DirectoryRenameResult::not_committed;
-#endif
-            if (!static_backed_up) {
-                remove_tree_best_effort(staging);
-                remove_tree_best_effort(static_candidate);
-                return {{}, {}, ConfigCommandError::internal_error};
-            }
-        }
-        if (update_static) {
-#if defined(_WIN32)
-            static_installed = durable_directory_rename(
-                static_candidate, static_path)
-                != DirectoryRenameResult::not_committed;
-#else
-            static_installed = durable_directory_rename(
-                static_candidate, static_path, impl->posix_root)
-                != DirectoryRenameResult::not_committed;
-#endif
-            if (!static_installed) {
-#if defined(_WIN32)
-                if (static_backed_up) static_cast<void>(durable_directory_rename(
-                    static_backup, static_path));
-#else
-                if (static_backed_up) static_cast<void>(durable_directory_rename(
-                    static_backup, static_path, impl->posix_root));
-#endif
-                remove_tree_best_effort(staging);
-                remove_tree_best_effort(static_candidate);
-                return {{}, {}, ConfigCommandError::internal_error};
-            }
-        }
-#if defined(_WIN32)
-        renamed = durable_directory_rename(staging, target);
+        renamed = durable_directory_rename(staging, target, impl->windows_root);
 #else
         renamed = durable_directory_rename(staging, target, impl->posix_root);
 #endif
     }
     if (renamed == DirectoryRenameResult::not_committed) {
-        if (static_installed) {
-            std::error_code ignored;
-            static_cast<void>(std::filesystem::remove(static_path, ignored));
-        }
-#if defined(_WIN32)
-        if (static_backed_up) static_cast<void>(durable_directory_rename(
-            static_backup, static_path));
-#else
-        if (static_backed_up) static_cast<void>(durable_directory_rename(
-            static_backup, static_path, impl->posix_root));
-#endif
         remove_tree_best_effort(staging);
-        remove_tree_best_effort(static_candidate);
         return {{}, {}, path_kind(target) == PathKind::missing
                 ? ConfigCommandError::internal_error : ConfigCommandError::conflict};
     }
+    staging_cleanup.release();
     {
         std::lock_guard state_lock(impl->state_mutex);
         impl->resources.erase(target_config_key);
         impl->resources.erase(target_event_key);
         impl->resources.erase(static_key);
     }
-    remove_tree_best_effort(static_backup);
     return {std::move(target_id), std::move(copy_name), ConfigCommandError::none};
 } catch (...) {
     return {{}, {}, ConfigCommandError::internal_error};
@@ -3451,7 +3861,7 @@ ConfigRemoveResult FileResourceStore::remove_config(
         }
         if (claim && !claim()) return {ConfigCommandError::cancelled};
 #if defined(_WIN32)
-        renamed = durable_directory_rename(target, tombstone);
+        renamed = durable_directory_rename(target, tombstone, impl->windows_root);
 #else
         renamed = durable_directory_rename(target, tombstone, impl->posix_root);
 #endif

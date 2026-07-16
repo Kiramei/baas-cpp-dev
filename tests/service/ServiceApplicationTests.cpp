@@ -6,7 +6,9 @@
 #include <httplib.h>
 #include <nlohmann/json.hpp>
 
+#include <atomic>
 #include <chrono>
+#include <cstdint>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -19,6 +21,12 @@
 #include <thread>
 #include <utility>
 #include <vector>
+
+#if defined(_WIN32)
+#include <process.h>
+#else
+#include <unistd.h>
+#endif
 
 #if defined(BAAS_SECRETSTREAM_TEST_HOOKS) \
  || defined(BAAS_BUSINESS_SESSION_TEST_HOOKS) \
@@ -39,6 +47,15 @@ using namespace std::chrono_literals;
 namespace {
 
 int failures = 0;
+
+std::uint64_t current_process_id() noexcept
+{
+#if defined(_WIN32)
+    return static_cast<std::uint64_t>(::_getpid());
+#else
+    return static_cast<std::uint64_t>(::getpid());
+#endif
+}
 
 void check(const bool condition, const std::string_view message)
 {
@@ -99,10 +116,13 @@ class TemporaryRoot final {
 public:
     explicit TemporaryRoot(const std::string_view suffix)
     {
+        static std::atomic<std::uint64_t> sequence{};
         const auto unique = std::to_string(
             std::chrono::steady_clock::now().time_since_epoch().count());
         path = std::filesystem::temp_directory_path()
-            / ("baas-service-app-" + std::string{suffix} + "-" + unique);
+            / ("baas-service-app-" + std::string{suffix} + "-"
+               + std::to_string(current_process_id()) + "-" + unique + "-"
+               + std::to_string(sequence.fetch_add(1)));
         std::filesystem::create_directories(path);
     }
     ~TemporaryRoot()
@@ -360,6 +380,50 @@ void test_real_loopback_lifecycle_trigger_and_persistence()
             }
             check(static_cast<bool>(connection.complete_send(*lease)),
                   "copy_config terminal must complete through executor ownership");
+        }
+    }
+
+    auto add = ingress_item(
+        "add_config_remote", 4,
+        R"({"name":"Application profile","server":"日服"})");
+    check(add.has_value(), "add_config production ingress fixture must parse");
+    if (add) {
+        const auto submitted = connection.submit(std::move(*add));
+        check(static_cast<bool>(submitted),
+              "application dispatcher must install the real add_config handler");
+        std::optional<protocol::SendLease> lease;
+        check(wait_until([&] {
+                  auto begun = session->begin_send();
+                  if (!begun) return false;
+                  lease = std::move(*begun.lease);
+                  return true;
+              }),
+              "add_config must complete through the production executor");
+        if (lease) {
+            const auto envelope = nlohmann::json::parse(lease->batch().json());
+            const bool valid_add = envelope.value("status", "") == "ok"
+                && envelope.value("command", "") == "add_config_remote"
+                && envelope.at("data").is_object()
+                && envelope.at("data").size() == 1
+                && envelope.at("data").at("serial").is_string();
+            check(valid_add,
+                  "add_config production response must contain only serial");
+            if (valid_add) {
+                const auto serial = envelope.at("data").at("serial")
+                                        .get<std::string>();
+                const auto directory = root.path / "config" / serial;
+                const auto config = nlohmann::json::parse(std::ifstream(
+                    directory / "config.json"));
+                check(config["name"] == "Application profile"
+                          && config["server"] == "日服"
+                          && std::filesystem::is_regular_file(
+                              directory / "event.json")
+                          && std::filesystem::is_regular_file(
+                              directory / "switch.json"),
+                      "BAAS_service must execute a real durable config create");
+            }
+            check(static_cast<bool>(connection.complete_send(*lease)),
+                  "add_config terminal must complete through executor ownership");
         }
     }
 

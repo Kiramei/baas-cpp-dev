@@ -4,6 +4,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -12,6 +13,12 @@
 #include <string>
 #include <thread>
 #include <vector>
+
+#if defined(_WIN32)
+#include <process.h>
+#else
+#include <unistd.h>
+#endif
 
 namespace {
 
@@ -30,6 +37,15 @@ using baas::service::channels::SyncResource;
 using Json = nlohmann::json;
 
 int failures{};
+
+std::uint64_t current_process_id() noexcept
+{
+#if defined(_WIN32)
+    return static_cast<std::uint64_t>(::_getpid());
+#else
+    return static_cast<std::uint64_t>(::getpid());
+#endif
+}
 
 void check(const bool condition, const std::string& message)
 {
@@ -50,10 +66,13 @@ void write_bytes(const std::filesystem::path& path, const std::string& bytes)
 struct TempProject {
     TempProject()
     {
+        static std::atomic<std::uint64_t> sequence{};
         const auto unique = std::to_string(
             std::chrono::steady_clock::now().time_since_epoch().count());
         root = std::filesystem::temp_directory_path()
-            / ("baas-runtime-provider-" + unique);
+            / ("baas-runtime-provider-"
+               + std::to_string(current_process_id()) + "-" + unique + "-"
+               + std::to_string(sequence.fetch_add(1)));
         std::filesystem::create_directories(root);
     }
 
@@ -199,6 +218,60 @@ void test_config_rescan_invalidates_removed_cache()
     bridge.stop();
 }
 
+void test_created_config_reaches_watcher_subscribers_and_ready_provider()
+{
+    TempProject project;
+    project.add_config("alpha");
+    project.add_globals();
+    auto store = std::make_shared<FileResourceStore>(project.root);
+    auto provider = std::make_shared<ProductionProviderBackend>();
+    std::mutex updates_mutex;
+    std::vector<baas::service::channels::ResourceUpdate> updates;
+    auto subscription = store->subscribe_updates(
+        [&updates_mutex, &updates](baas::service::channels::ResourceUpdate update) {
+            std::lock_guard lock(updates_mutex);
+            updates.push_back(std::move(update));
+        });
+    ServiceRuntimeProviderBridge bridge(store, provider, dependencies());
+    check(subscription
+              && bridge.start() == ServiceRuntimeProviderBridgeError::none,
+          "create visibility fixture starts with a real watcher subscriber");
+    {
+        std::lock_guard lock(updates_mutex);
+        updates.clear();
+    }
+    const auto created = store->create_config("new profile", "日服", {});
+    check(static_cast<bool>(created), "production store create commits");
+    if (!created) {
+        bridge.stop();
+        return;
+    }
+    check(eventually([&] {
+        bool config{};
+        bool event{};
+        std::lock_guard lock(updates_mutex);
+        for (const auto& update : updates) {
+            if (!update.key.resource_id
+                || *update.key.resource_id != created.serial) continue;
+            const auto operations = Json::parse(update.operations_json);
+            if (operations.size() != 1 || operations[0]["op"] != "replace"
+                || operations[0]["path"] != "") continue;
+            config = config || update.key.resource == SyncResource::config;
+            event = event || update.key.resource == SyncResource::event;
+        }
+        return config && event;
+    }), "watcher publishes new config and event within its poll interval");
+    const auto config = store->pull(
+        {SyncResource::config, created.serial}, {});
+    const auto event = store->pull(
+        {SyncResource::event, created.serial}, {});
+    check(config && event && initialized(provider) == true
+              && Json::parse(config->data_json)["name"] == "new profile"
+              && Json::parse(event->data_json).size() == 26,
+          "created pair is pull-visible while provider readiness stays true");
+    bridge.stop();
+}
+
 void test_config_pair_replacement_advances_at_capacity()
 {
     TempProject project;
@@ -256,6 +329,127 @@ void test_config_pair_replacement_advances_at_capacity()
     check(removed_config && removed_event && !stale_alpha
               && stale_alpha.error == ResourceStoreError::capacity,
           "removed id publishes both root removes even when one sibling remains");
+    bridge.stop();
+}
+
+void test_create_and_copy_reserve_watcher_cache_capacity()
+{
+    TempProject project;
+    project.add_config("alpha");
+    write_bytes(project.root / "config" / "static.json", R"({"version":1})");
+    write_bytes(project.root / "setup.toml", "[general]\nchannel = 'stable'\n");
+    baas::service::channels::ResourceStoreLimits limits;
+    limits.max_resources = 4;
+    auto store = std::make_shared<FileResourceStore>(
+        project.root, baas::service::adapters::FileResourceStoreDependencies{},
+        limits);
+    auto provider = std::make_shared<ProductionProviderBackend>();
+    ServiceRuntimeProviderBridge bridge(store, provider, dependencies());
+    check(bridge.start() == ServiceRuntimeProviderBridgeError::none
+              && initialized(provider) == true,
+          "one pair plus static/setup exactly fills four watcher cache slots");
+
+    const auto created = store->create_config("overflow", "日服", {});
+    const auto copied = store->copy_config("alpha", {});
+    const auto list_after_rejection = store->config_list({});
+    check(created.error
+                  == baas::service::adapters::ConfigCommandError::capacity
+              && copied.error
+                  == baas::service::adapters::ConfigCommandError::capacity
+              && list_after_rejection
+              && Json::parse(list_after_rejection->data_json)
+                     == Json::array({"alpha"}),
+          "create and copy reserve both slots for every newly admitted pair");
+    // Cross multiple 20 ms watcher polls so this cannot pass only from the
+    // synchronous initial snapshot retained before the rejected operations.
+    std::this_thread::sleep_for(60ms);
+    const auto list_after_polls = store->config_list({});
+    check(initialized(provider) == true && list_after_polls
+              && Json::parse(list_after_polls->data_json)
+                     == Json::array({"alpha"}),
+          "capacity rejection leaves the running provider ready across rescans");
+    bridge.stop();
+}
+
+void test_deleted_optional_gui_frees_capacity_before_pair_refresh()
+{
+    TempProject project;
+    project.add_config("alpha");
+    project.add_globals();
+    baas::service::channels::ResourceStoreLimits limits;
+    // alpha + gui + static + setup consume five slots. Six slots can hold a
+    // second pair only after the externally deleted optional GUI is retired.
+    limits.max_resources = 6;
+    auto store = std::make_shared<FileResourceStore>(
+        project.root, baas::service::adapters::FileResourceStoreDependencies{},
+        limits);
+    auto provider = std::make_shared<ProductionProviderBackend>();
+    ServiceRuntimeProviderBridge bridge(store, provider, dependencies());
+    check(bridge.start() == ServiceRuntimeProviderBridgeError::none
+              && initialized(provider) == true,
+          "optional-GUI capacity fixture starts ready");
+
+    std::filesystem::remove(project.root / "config" / "gui.json");
+    project.add_config("beta");
+    check(eventually([&] {
+        auto config = store->pull(
+            {SyncResource::config, std::string{"beta"}}, {});
+        auto event = store->pull(
+            {SyncResource::event, std::string{"beta"}}, {});
+        auto gui = store->pull({SyncResource::gui, std::nullopt}, {});
+        return config && event && !gui
+            && gui.error == ResourceStoreError::not_found
+            && initialized(provider) == true;
+    }), "deleted optional GUI is retired before a new pair uses its slot");
+    // Cross several additional polls to prove the watcher did not enter a
+    // permanent capacity-degraded retry loop.
+    std::this_thread::sleep_for(80ms);
+    check(initialized(provider) == true,
+          "provider stays ready after optional-GUI capacity turnover");
+    bridge.stop();
+}
+
+void test_partial_pair_capacity_failure_can_recover_after_replacement()
+{
+    TempProject project;
+    project.add_config("alpha");
+    project.add_globals();
+    baas::service::channels::ResourceStoreLimits limits;
+    limits.max_resources = 6;
+    auto store = std::make_shared<FileResourceStore>(
+        project.root, baas::service::adapters::FileResourceStoreDependencies{},
+        limits);
+    auto provider = std::make_shared<ProductionProviderBackend>();
+    ServiceRuntimeProviderBridge bridge(store, provider, dependencies());
+    check(bridge.start() == ServiceRuntimeProviderBridgeError::none
+              && initialized(provider) == true,
+          "partial-pair recovery fixture starts ready");
+
+    // Only beta/config can enter the last slot; beta/event forces this scan
+    // into the capacity-degraded path after a partial cache insertion.
+    project.add_config("beta");
+    check(eventually([&] {
+        auto beta = store->pull(
+            {SyncResource::config, std::string{"beta"}}, {});
+        return beta && initialized(provider) == false;
+    }), "over-capacity beta leaves an observable partial cached pair");
+
+    std::filesystem::remove_all(project.root / "config" / "beta");
+    std::filesystem::remove(project.root / "config" / "gui.json");
+    project.add_config("gamma");
+    check(eventually([&] {
+        auto gamma_config = store->pull(
+            {SyncResource::config, std::string{"gamma"}}, {});
+        auto gamma_event = store->pull(
+            {SyncResource::event, std::string{"gamma"}}, {});
+        auto beta = store->pull(
+            {SyncResource::config, std::string{"beta"}}, {});
+        return gamma_config && gamma_event && !beta
+            && initialized(provider) == true;
+    }), "next scan retires the failed pair and admits its replacement");
+    std::this_thread::sleep_for(80ms);
+    check(initialized(provider) == true,
+          "partial-pair replacement remains ready across later polls");
     bridge.stop();
 }
 
@@ -495,7 +689,11 @@ int main()
 {
     test_real_initialization_and_external_refresh();
     test_config_rescan_invalidates_removed_cache();
+    test_created_config_reaches_watcher_subscribers_and_ready_provider();
     test_config_pair_replacement_advances_at_capacity();
+    test_create_and_copy_reserve_watcher_cache_capacity();
+    test_deleted_optional_gui_frees_capacity_before_pair_refresh();
+    test_partial_pair_capacity_failure_can_recover_after_replacement();
     test_failure_recovery_bounded_logs_and_stop_race();
     test_reentrant_provider_callback_can_stop_watcher();
     test_start_callbacks_can_destroy_last_owner();

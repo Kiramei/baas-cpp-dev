@@ -93,6 +93,27 @@ public:
                     ResourceKey{SyncResource::event, identifier}, config.origin));
             }
 
+            // Retire a deleted optional GUI resource before admitting new
+            // configuration pairs. Otherwise a stale GUI cache entry can
+            // consume the last slot forever: pair refresh fails at capacity,
+            // and the scan never reaches the later GUI invalidation.
+            const auto gui = store->refresh(
+                ResourceKey{SyncResource::gui, std::nullopt}, config.origin);
+            if (gui.disposition != ResourceRefreshDisposition::not_found
+                && gui.disposition != ResourceRefreshDisposition::removed
+                && !gui) {
+                return {std::nullopt, FileResourceScanError::config_resource};
+            }
+
+            // Remember the structurally valid list before loading its pairs.
+            // A capacity failure can cache the first sibling of a new pair;
+            // retaining the id lets the next scan retire that partial cache if
+            // the directory disappears during recovery.
+            {
+                std::lock_guard lock(state_mutex);
+                config_ids = *identifiers;
+            }
+
             for (const auto& identifier : *identifiers) {
                 if (stop.stop_requested()) {
                     return {std::nullopt, FileResourceScanError::cancelled};
@@ -102,24 +123,6 @@ public:
                         return {std::nullopt, FileResourceScanError::config_resource};
                     }
                 }
-            }
-
-            // Retain the successfully validated structure even if a required
-            // global resource later fails. This guarantees that the next scan
-            // can invalidate cached entries removed during a degraded period.
-            {
-                std::lock_guard lock(state_mutex);
-                config_ids = *identifiers;
-            }
-
-            // gui.json is optional in headless projects, but when present it
-            // is refreshed and validated through the same store boundary.
-            const auto gui = store->refresh(
-                ResourceKey{SyncResource::gui, std::nullopt}, config.origin);
-            if (gui.disposition != ResourceRefreshDisposition::not_found
-                && gui.disposition != ResourceRefreshDisposition::removed
-                && !gui) {
-                return {std::nullopt, FileResourceScanError::config_resource};
             }
 
             auto static_data = store->refresh(

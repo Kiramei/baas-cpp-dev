@@ -118,6 +118,11 @@ or internal read failure. Invalid bytes are never published.
 `invalidate_and_publish(key, origin)` applies the same root-remove barrier
 without consulting the current path. The config-list watcher uses it to retire
 both config/event keys when their pair disappears, even if one sibling remains.
+It also retires a deleted optional `gui.json` before admitting newly discovered
+pairs, so a stale GUI cache slot cannot trap a capacity-bound provider in a
+permanent degraded retry loop. The watcher retains each structurally valid id
+list before pair refresh, allowing a later scan to retire a one-sibling partial
+cache left by a capacity failure.
 `refresh_and_publish` remains the compatibility convenience for callers that
 only need to know whether a replacement or invalidation was published.
 Filesystem lifecycle is owned by the separate `FileResourceWatcher` rather
@@ -125,16 +130,44 @@ than this durable adapter.
 
 ## Configuration command operations
 
-The production `copy_config` and `remove_config*` trigger registrations use
-explicit structural operations on this store. They share the patch mutation
+The production `add_config*`, `copy_config`, and `remove_config*` trigger
+registrations use explicit structural operations on this store. They share the patch mutation
 gate, use bounded auth-protected siblings under `config/` plus same-volume rename,
 and invalidate affected config/event cache entries on every successful outcome;
-copy also invalidates `static_data` on every success, including when the disk
+create and copy also invalidate `static_data` on every success, including when the disk
 file already matches the current default and requires no replacement.
 This includes idempotent removal of an already-absent directory and reuse of a
 clock-derived identifier whose old files disappeared externally. Recursive copy
 reads only regular files through the persistent root anchor and commits
-destination files through anchored create-exclusive and replacement writers.
+destination files through anchored create-exclusive writers. Every staging and
+nested directory is also created relative to the persistent anchor; POSIX
+creation verifies `O_NOFOLLOW`/mode `0700` and syncs the parent directory.
+Create initializes user, event, and switch documents from the same embedded
+Python vectors used by copy, assigns `name`/`server`, rebuilds the server-specific
+manufacturing quantities, and makes the private staging directory visible with
+one durable rename. Millisecond id selection and commit-claim/cancellation
+ordering are serialized by the mutation gate; failed claims, invalid static
+targets, and initialization failures reclaim all `.baas-create-*` siblings.
+
+The `config/` root is a production precondition: `create_config` never creates
+an unprotected root. `ServiceApplication`'s auth owner creates and tightens that
+root before commands are accepted. POSIX staging uses anchored `mkdirat(0700)`
+plus `openat(O_NOFOLLOW)` verification; Windows uses handle-relative directory
+creation under the anchored, protected parent and verifies the exact physical
+path. Directory publication is likewise anchored and atomically no-replace
+(`renameat2(RENAME_NOREPLACE)` on Linux/Android, `renameatx_np(RENAME_EXCL)` on
+macOS, or handle-relative `NtSetInformationFile` on Windows), so a pathname swap
+cannot redirect it and a concurrent serial claimant is never overwritten.
+
+`config/static.json` is current project-root metadata, not part of the new
+directory. Create repairs or upgrades it first through the single-file durable
+atomic writer. That idempotent upgrade may remain if the subsequent directory
+claim or rename fails; no old-static backup/restore transaction is claimed.
+Pulls acquire the mutation gate before the cache gate, so no reader can observe
+the static upgrade/cache invalidation or directory publication mid-boundary.
+After success, `FileResourceWatcher` discovers the new config/event pair within
+its configured poll interval (250 ms in `ServiceRuntimeProviderBridge`) and
+publishes both replacements to provider subscribers.
 
 Structural command methods invalidate caches but do not synthesize subscriber
 updates. Their trigger response owns command acknowledgement; a host filesystem

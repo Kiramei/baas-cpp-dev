@@ -31,7 +31,7 @@ setup `4`, composition `5`, HTTP start `6`, readiness `7`, and internal `8`.
   `ServiceRuntimeProviderBridge`/`FileResourceWatcher` lifecycle;
 - desktop `ProductionRemoteBackend`, `RemoteHandlerFactory`, and the same
   shared resource store/ADB smart-socket transport;
-- real `status`, `copy_config`, and `remove_config*` registrations,
+- real `status`, `add_config*`, `copy_config`, and `remove_config*` registrations,
   `TriggerDispatcher`, `TriggerExecutor`, and `TriggerHandlerFactory`;
 - file auth storage, system clock, system random, and sodium password deriver;
 - `ProductionHttpHost` on the exact CLI port.
@@ -83,7 +83,7 @@ The executable is opt-in and excluded from the legacy `BAAS_CORE` glob:
 
 `BAAS_service_application_tests` links hook-free production targets. It covers
 real loopback `/version`, health `503` to ready `200`, auth routing, HTTP
-shutdown, fixed-port conflict, real status, `detect_adb`, and durable `copy_config`,
+shutdown, fixed-port conflict, real status, `detect_adb`, durable `add_config*`, and `copy_config`,
 persistent auth restart and second-instance locking, and Pipe rejection before
 filesystem side effects. It also verifies desktop remote policy and missing
 ws-scrcpy-resource failure before composition. Separate CTest entries execute
