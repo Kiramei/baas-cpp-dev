@@ -82,6 +82,10 @@ option(BUILD_BAAS_NMS_BENCHMARK "Build BAAS vs OpenCV dnn NMS Google Benchmark e
 option(BUILD_SCRIPT_RUNTIME     "Build the standalone BAAS script runtime" OFF)
 option(BUILD_SCRIPT_TESTS       "Build native tests for the BAAS script runtime" OFF)
 option(BUILD_SCRIPT_TOOLS       "Build BAAS script developer tools" OFF)
+option(BUILD_RESOURCE_CORE      "Build immutable resource snapshot core" OFF)
+option(BUILD_RESOURCE_CORE_TESTS "Build immutable resource snapshot tests" OFF)
+option(BUILD_SCRIPT_RESOURCE_HOST "Build baas/resource script Host adapter" OFF)
+option(BUILD_SCRIPT_RESOURCE_HOST_TESTS "Build baas/resource script Host tests" OFF)
 option(BUILD_SERVICE_PROTOCOL   "Build the standalone BAAS service protocol library" OFF)
 option(BUILD_SERVICE_PROTOCOL_TESTS "Build native tests for the BAAS service protocol" OFF)
 option(BUILD_SERVICE_TRIGGER_CATALOG "Build the transport-independent trigger command catalog" OFF)
@@ -180,6 +184,19 @@ if(BUILD_SCRIPT_TESTS AND NOT BUILD_SCRIPT_RUNTIME)
 endif()
 
 if(BUILD_SCRIPT_TOOLS AND NOT BUILD_SCRIPT_RUNTIME)
+    set(BUILD_SCRIPT_RUNTIME ON CACHE BOOL "Build the standalone BAAS script runtime" FORCE)
+endif()
+
+if(BUILD_RESOURCE_CORE_TESTS AND NOT BUILD_RESOURCE_CORE)
+    set(BUILD_RESOURCE_CORE ON CACHE BOOL "Build immutable resource snapshot core" FORCE)
+endif()
+
+if(BUILD_SCRIPT_RESOURCE_HOST_TESTS AND NOT BUILD_SCRIPT_RESOURCE_HOST)
+    set(BUILD_SCRIPT_RESOURCE_HOST ON CACHE BOOL "Build baas/resource script Host adapter" FORCE)
+endif()
+
+if(BUILD_SCRIPT_RESOURCE_HOST)
+    set(BUILD_RESOURCE_CORE ON CACHE BOOL "Build immutable resource snapshot core" FORCE)
     set(BUILD_SCRIPT_RUNTIME ON CACHE BOOL "Build the standalone BAAS script runtime" FORCE)
 endif()
 
@@ -633,8 +650,16 @@ if (BUILD_BAAS_AW_CHECKER)
     add_subdirectory(apps/BAAS_auto_fight_workflow_checker)
 endif()
 
+if(BUILD_RESOURCE_CORE)
+    include("${CMAKE_CURRENT_LIST_DIR}/cmake/ResourceCore.cmake")
+endif()
+
 if(BUILD_SCRIPT_RUNTIME)
     include("${CMAKE_CURRENT_LIST_DIR}/cmake/ScriptRuntime.cmake")
+endif()
+
+if(BUILD_SCRIPT_RESOURCE_HOST)
+    include("${CMAKE_CURRENT_LIST_DIR}/cmake/ScriptResourceHost.cmake")
 endif()
 
 if(BUILD_SERVICE_TRIGGER_CATALOG)
