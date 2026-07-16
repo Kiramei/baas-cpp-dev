@@ -223,9 +223,12 @@ void write_runtime_repository_file(
 }
 
 [[nodiscard]] app::ServiceRunOptions options(
-    const std::filesystem::path& root, const std::uint16_t port)
+    const std::filesystem::path& root, const std::uint16_t port,
+    std::string runtime_repository_generation = std::string(64, 'a'))
 {
-    return {root, "127.0.0.1", port, std::nullopt};
+    return {
+        root, "127.0.0.1", port, std::nullopt,
+        std::move(runtime_repository_generation)};
 }
 
 [[nodiscard]] std::optional<protocol::TriggerIngressItem> ingress_item(
@@ -292,7 +295,9 @@ void test_information_and_pipe_fail_before_side_effect()
 
     const std::vector<std::string> owned{
         "--project-root", root.path.string(), "--host", "127.0.0.1",
-        "--port", std::to_string(unused_loopback_port()), "--pipe-name", pipe,
+        "--port", std::to_string(unused_loopback_port()),
+        "--runtime-repository-generation", std::string(64, 'a'),
+        "--pipe-name", pipe,
     };
     std::vector<std::string_view> arguments;
     for (const auto& value : owned) arguments.emplace_back(value);
@@ -348,7 +353,8 @@ void test_real_loopback_lifecycle_trigger_and_persistence()
         if (!setup) throw std::runtime_error("setup fixture write failed");
     }
     const auto port = unused_loopback_port();
-    auto opened = app::ServiceApplication::open(options(root.path, port));
+    auto opened = app::ServiceApplication::open(
+        options(root.path, port, runtime_repository_generation));
     check(static_cast<bool>(opened),
           "real production dependencies must compose ServiceApplication");
     if (!opened) return;
@@ -358,7 +364,7 @@ void test_real_loopback_lifecycle_trigger_and_persistence()
           "application must begin in explicit starting readiness");
 
     auto contender = app::ServiceApplication::open(
-        options(root.path, unused_loopback_port()));
+        options(root.path, unused_loopback_port(), runtime_repository_generation));
     check(contender.error == app::ServiceApplicationError::authentication_failed
               && contender.authentication_error
                   == baas::service::auth::AuthError::storage_failure,
@@ -572,7 +578,7 @@ void test_real_loopback_lifecycle_trigger_and_persistence()
     application.reset();
 
     auto restarted = app::ServiceApplication::open(
-        options(root.path, unused_loopback_port()));
+        options(root.path, unused_loopback_port(), runtime_repository_generation));
     check(static_cast<bool>(restarted),
           "auth installation lock must release after orderly teardown");
     if (restarted) {
@@ -606,8 +612,9 @@ void test_port_conflict_reports_nonzero_start_failure()
 
     TemporaryRoot root{"conflict"};
     add_remote_server_resource(root.path);
+    const auto generation = add_runtime_repository_activation(root.path);
     auto opened = app::ServiceApplication::open(
-        options(root.path, occupied.port));
+        options(root.path, occupied.port, generation));
     check(static_cast<bool>(opened),
           "port selection must not bind during composition");
     if (opened) {
@@ -623,6 +630,7 @@ void test_port_conflict_reports_nonzero_start_failure()
     const std::vector<std::string> owned{
         "--project-root", root.path.string(), "--host", "127.0.0.1",
         "--port", std::to_string(occupied.port),
+        "--runtime-repository-generation", generation,
     };
     std::vector<std::string_view> arguments;
     for (const auto& value : owned) arguments.emplace_back(value);
@@ -639,8 +647,9 @@ void test_readiness_requires_real_runtime_resources()
 {
     TemporaryRoot root{"missing-resources"};
     add_remote_server_resource(root.path);
+    const auto generation = add_runtime_repository_activation(root.path);
     auto opened = app::ServiceApplication::open(
-        options(root.path, unused_loopback_port()));
+        options(root.path, unused_loopback_port(), generation));
     check(static_cast<bool>(opened),
           "missing resources do not cause optimistic failure during composition");
     if (!opened) return;
@@ -653,38 +662,57 @@ void test_readiness_requires_real_runtime_resources()
           "application readiness fails closed without real static and setup data");
 }
 
-void test_missing_repository_health_is_unavailable()
+void test_missing_repository_fails_before_composition()
 {
-    TemporaryRoot root{"repository-unavailable"};
+    TemporaryRoot root{"repository-missing"};
     add_remote_server_resource(root.path);
-    std::filesystem::create_directories(root.path / "config");
-    write_runtime_repository_file(
-        root.path / "config" / "static.json", R"({"version":1})");
-    write_runtime_repository_file(
-        root.path / "setup.toml", "[general]\nchannel = 'stable'\n");
-    auto opened = app::ServiceApplication::open(
+    const auto opened = app::ServiceApplication::open(
         options(root.path, unused_loopback_port()));
-    check(static_cast<bool>(opened), "missing repository fixture must compose");
-    if (!opened) return;
-    const auto started = opened.application->start_transport();
-    check(started.started && opened.application->publish_ready(),
-          "missing repository must not prevent otherwise valid readiness");
-    if (!started.started) return;
-    httplib::Client client{"127.0.0.1", started.port};
-    const auto ready = client.Get("/health");
-    const auto health = ready ? nlohmann::json::parse(ready->body)
-                              : nlohmann::json{};
-    const auto repository_pointer =
-        nlohmann::json::json_pointer{"/statuses/runtime/repository"};
-    const auto* repository_health =
-        ready && health.contains(repository_pointer)
-        ? &health.at(repository_pointer) : nullptr;
-    check(repository_health && repository_health->is_object()
-              && repository_health->size() == 1
-              && repository_health->value("phase", "") == "unavailable"
-              && !repository_health->contains("generation"),
-          "ready health must expose missing current only as repository unavailable");
-    opened.application->stop();
+    check(opened.error
+              == app::ServiceApplicationError::runtime_repository_generation_mismatch
+              && app::service_application_error_name(opened.error)
+                  == "runtime_repository_generation_mismatch"
+              && !opened.application,
+          "missing current must fail the expected generation contract");
+    check(!std::filesystem::exists(root.path / "config"),
+          "missing current must fail before auth and resource-store side effects");
+
+    const std::vector<std::string> owned{
+        "--project-root", root.path.string(), "--host", "127.0.0.1",
+        "--port", std::to_string(unused_loopback_port()),
+        "--runtime-repository-generation", std::string(64, 'a'),
+    };
+    std::vector<std::string_view> arguments;
+    for (const auto& value : owned) arguments.emplace_back(value);
+    std::ostringstream output;
+    std::ostringstream diagnostics;
+    check(app::run_service_application(arguments, output, diagnostics)
+              == static_cast<int>(app::ServiceProcessExit::composition)
+              && diagnostics.str().find("runtime_repository_generation_mismatch")
+                  != std::string::npos,
+          "process boundary must report missing expected generation as composition exit 5");
+}
+
+void test_repository_generation_mismatch_fails_before_composition()
+{
+    TemporaryRoot root{"repository-mismatch"};
+    add_remote_server_resource(root.path);
+    const auto installed = add_runtime_repository_activation(root.path);
+    const std::string expected(64, installed == std::string(64, 'f') ? 'e' : 'f');
+    const auto opened = app::ServiceApplication::open(
+        options(root.path, unused_loopback_port(), expected));
+    check(opened.error
+              == app::ServiceApplicationError::runtime_repository_generation_mismatch
+              && !opened.application,
+          "a valid activation for another generation must fail service composition");
+    check(!std::filesystem::exists(root.path / "config"),
+          "generation mismatch must fail before auth and resource-store side effects");
+
+    const auto invalid = app::ServiceApplication::open(
+        options(root.path, unused_loopback_port(), std::string(64, 'A')));
+    check(invalid.error == app::ServiceApplicationError::invalid_options
+              && !invalid.application,
+          "direct application callers must supply a canonical expected generation");
 }
 
 void test_invalid_runtime_repository_fails_before_composition()
@@ -707,6 +735,7 @@ void test_invalid_runtime_repository_fails_before_composition()
     const std::vector<std::string> owned{
         "--project-root", root.path.string(), "--host", "127.0.0.1",
         "--port", std::to_string(unused_loopback_port()),
+        "--runtime-repository-generation", std::string(64, 'a'),
     };
     std::vector<std::string_view> arguments;
     for (const auto& value : owned) arguments.emplace_back(value);
@@ -722,8 +751,9 @@ void test_invalid_runtime_repository_fails_before_composition()
 void test_missing_remote_resource_fails_before_composition_side_effects()
 {
     TemporaryRoot root{"missing-remote"};
+    const auto generation = add_runtime_repository_activation(root.path);
     const auto opened = app::ServiceApplication::open(
-        options(root.path, unused_loopback_port()));
+        options(root.path, unused_loopback_port(), generation));
     check(opened.error == app::ServiceApplicationError::remote_resource_unavailable,
           "desktop composition must fail closed without the ws-scrcpy jar");
     check(!std::filesystem::exists(root.path / "config"),
@@ -739,7 +769,8 @@ int main()
         test_real_loopback_lifecycle_trigger_and_persistence();
         test_port_conflict_reports_nonzero_start_failure();
         test_readiness_requires_real_runtime_resources();
-        test_missing_repository_health_is_unavailable();
+        test_missing_repository_fails_before_composition();
+        test_repository_generation_mismatch_fails_before_composition();
         test_invalid_runtime_repository_fails_before_composition();
         test_missing_remote_resource_fails_before_composition_side_effects();
     } catch (const std::exception& error) {

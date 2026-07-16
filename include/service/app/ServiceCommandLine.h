@@ -60,10 +60,12 @@ enum class ServiceCommandLineError : std::uint8_t {
     missing_project_root,
     missing_host,
     missing_port,
+    missing_runtime_repository_generation,
     project_root_not_directory,
     filesystem_error,
     invalid_host,
     invalid_port,
+    invalid_runtime_repository_generation,
     pipe_not_supported,
     invalid_pipe_name,
     resource_exhausted,
@@ -78,6 +80,7 @@ struct ServiceRunOptions {
     std::string host;
     std::uint16_t port = 0;
     std::optional<std::string> pipe_name;
+    std::string runtime_repository_generation;
 };
 
 struct ServiceCommandLineResult {

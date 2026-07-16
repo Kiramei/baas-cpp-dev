@@ -128,24 +128,24 @@ void write_file(const std::filesystem::path& path, const std::string_view bytes)
     return generation;
 }
 
-void test_missing_current_is_unavailable()
+void test_missing_current_fails_expected_generation()
 {
     TemporaryRoot root{"missing"};
     std::filesystem::create_directories(
         root.path / ".baas-updater" / "runtime-repositories" / "snapshots");
-    auto opened = app::open_service_runtime_repository_owner(root.path);
-    check(static_cast<bool>(opened), "missing current must create an owner");
-    if (!opened) return;
-    check(opened.owner->phase() == app::ServiceRuntimeRepositoryPhase::unavailable
-              && opened.owner->generation().empty() && !opened.owner->pin(),
-          "missing current must remain explicitly unavailable");
+    const auto opened = app::open_service_runtime_repository_owner(
+        root.path, std::string(64, 'a'));
+    check(!opened
+              && opened.error
+                  == app::ServiceRuntimeRepositoryOpenError::generation_mismatch,
+          "missing current must fail the expected generation contract");
 }
 
 void test_valid_activation_is_pinned_for_owner_lifetime()
 {
     TemporaryRoot root{"lifetime"};
     const auto generation = install_generation(root.path, descriptors('1', '2'));
-    auto opened = app::open_service_runtime_repository_owner(root.path);
+    auto opened = app::open_service_runtime_repository_owner(root.path, generation);
     check(static_cast<bool>(opened), "valid activation must open");
     if (!opened) return;
     auto owner = std::move(opened.owner);
@@ -171,7 +171,8 @@ void test_malformed_and_tampered_activation_fail_closed()
         write_file(
             root.path / ".baas-updater" / "runtime-repositories" / "current.json",
             "{not-json");
-        const auto opened = app::open_service_runtime_repository_owner(root.path);
+        const auto opened = app::open_service_runtime_repository_owner(
+            root.path, std::string(64, 'a'));
         check(!opened
                   && opened.error
                       == app::ServiceRuntimeRepositoryOpenError::invalid_activation,
@@ -184,7 +185,8 @@ void test_malformed_and_tampered_activation_fail_closed()
         write_file(
             root.path / ".baas-updater" / "runtime-repositories" / "current.json",
             current_json(generation));
-        const auto opened = app::open_service_runtime_repository_owner(root.path);
+        const auto opened = app::open_service_runtime_repository_owner(
+            root.path, generation);
         check(!opened
                   && opened.error
                       == app::ServiceRuntimeRepositoryOpenError::invalid_activation,
@@ -200,12 +202,37 @@ void test_malformed_and_tampered_activation_fail_closed()
         write_file(
             state_root / "snapshots" / (generation + ".json"),
             snapshot_json(tampered, generation));
-        const auto opened = app::open_service_runtime_repository_owner(root.path);
+        const auto opened = app::open_service_runtime_repository_owner(
+            root.path, generation);
         check(!opened
                   && opened.error
                       == app::ServiceRuntimeRepositoryOpenError::invalid_activation,
               "descriptor tampering must fail generation validation");
     }
+}
+
+void test_expected_generation_is_exact_and_canonical()
+{
+    TemporaryRoot root{"expected"};
+    const auto generation = install_generation(root.path, descriptors('4', '5'));
+    const auto mismatch = app::open_service_runtime_repository_owner(
+        root.path, std::string(64, 'f'));
+    check(!mismatch
+              && mismatch.error
+                  == app::ServiceRuntimeRepositoryOpenError::generation_mismatch,
+          "a complete activation for another generation must fail closed");
+
+    for (const std::string invalid : {
+             std::string(63, 'a'), std::string(64, 'A'), std::string(64, 'g')}) {
+        const auto opened = app::open_service_runtime_repository_owner(
+            root.path, invalid);
+        check(!opened
+                  && opened.error
+                      == app::ServiceRuntimeRepositoryOpenError::invalid_expected_generation,
+              "direct owner callers must supply a canonical generation");
+    }
+    check(generation != std::string(64, 'f'),
+          "mismatch fixture must differ from the installed generation");
 }
 
 void test_concurrent_readers_observe_one_generation()
@@ -215,7 +242,8 @@ void test_concurrent_readers_observe_one_generation()
     const auto second = descriptors('7', '8');
     const auto first_generation = install_generation(root.path, first);
     const auto second_generation = install_generation(root.path, second, false);
-    auto opened = app::open_service_runtime_repository_owner(root.path);
+    auto opened = app::open_service_runtime_repository_owner(
+        root.path, first_generation);
     check(static_cast<bool>(opened), "concurrent fixture must open");
     if (!opened) return;
     auto owner = std::move(opened.owner);
@@ -247,15 +275,33 @@ void test_concurrent_readers_observe_one_generation()
           "all readers must retain the startup generation after current advances");
 }
 
+void test_stable_names_cover_public_states()
+{
+    using enum app::ServiceRuntimeRepositoryOpenError;
+    for (const auto error : {
+             none, invalid_expected_generation, generation_mismatch,
+             invalid_activation, internal_error}) {
+        check(app::service_runtime_repository_open_error_name(error) != "unknown",
+              "every repository owner error must have a stable name");
+    }
+    using enum app::ServiceRuntimeRepositoryPhase;
+    for (const auto phase : {unavailable, pinned}) {
+        check(app::service_runtime_repository_phase_name(phase) != "unknown",
+              "every repository owner phase must have a stable name");
+    }
+}
+
 }  // namespace
 
 int main()
 {
     try {
-        test_missing_current_is_unavailable();
+        test_missing_current_fails_expected_generation();
         test_valid_activation_is_pinned_for_owner_lifetime();
         test_malformed_and_tampered_activation_fail_closed();
+        test_expected_generation_is_exact_and_canonical();
         test_concurrent_readers_observe_one_generation();
+        test_stable_names_cover_public_states();
     } catch (const std::exception& error) {
         std::cerr << "UNEXPECTED: " << error.what() << '\n';
         return 2;

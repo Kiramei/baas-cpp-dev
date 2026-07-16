@@ -14,6 +14,8 @@ constexpr std::string_view project_root_option = "--project-root";
 constexpr std::string_view host_option = "--host";
 constexpr std::string_view port_option = "--port";
 constexpr std::string_view pipe_name_option = "--pipe-name";
+constexpr std::string_view runtime_repository_generation_option =
+    "--runtime-repository-generation";
 constexpr std::string_view help_option = "--help";
 constexpr std::string_view version_option = "--version";
 constexpr std::string_view required_host = "127.0.0.1";
@@ -62,7 +64,20 @@ struct ParsedOption {
 [[nodiscard]] bool is_known_option(const std::string_view name) noexcept
 {
     return name == project_root_option || name == host_option || name == port_option
-        || name == pipe_name_option || name == help_option || name == version_option;
+        || name == pipe_name_option || name == runtime_repository_generation_option
+        || name == help_option || name == version_option;
+}
+
+[[nodiscard]] bool valid_runtime_repository_generation(
+    const std::string_view value) noexcept
+{
+    if (value.size() != 64) return false;
+    for (const char byte : value) {
+        if (!((byte >= '0' && byte <= '9') || (byte >= 'a' && byte <= 'f'))) {
+            return false;
+        }
+    }
+    return true;
 }
 
 [[nodiscard]] bool is_option_token(const std::string_view value) noexcept
@@ -185,6 +200,7 @@ struct ParsedOption {
     std::optional<std::string_view> host;
     std::optional<std::string_view> port;
     std::optional<std::string_view> pipe_name;
+    std::optional<std::string_view> runtime_repository_generation;
     for (std::size_t index = 0; index < arguments.size(); ++index) {
         const auto argument = arguments[index];
         if (!is_option_token(argument)) {
@@ -202,6 +218,9 @@ struct ParsedOption {
         if (option.name == host_option) destination = &host;
         if (option.name == port_option) destination = &port;
         if (option.name == pipe_name_option) destination = &pipe_name;
+        if (option.name == runtime_repository_generation_option) {
+            destination = &runtime_repository_generation;
+        }
         if (destination->has_value()) {
             return fail(ServiceCommandLineError::duplicate_option, index);
         }
@@ -216,11 +235,17 @@ struct ParsedOption {
     if (!project_root.has_value()) return fail(ServiceCommandLineError::missing_project_root);
     if (!host.has_value()) return fail(ServiceCommandLineError::missing_host);
     if (!port.has_value()) return fail(ServiceCommandLineError::missing_port);
+    if (!runtime_repository_generation.has_value()) {
+        return fail(ServiceCommandLineError::missing_runtime_repository_generation);
+    }
     if (project_root->size() > service_command_line_max_project_root_bytes) {
         return fail(ServiceCommandLineError::argument_too_long);
     }
     if (*host != required_host) {
         return fail(ServiceCommandLineError::invalid_host);
+    }
+    if (!valid_runtime_repository_generation(*runtime_repository_generation)) {
+        return fail(ServiceCommandLineError::invalid_runtime_repository_generation);
     }
 
     unsigned int parsed_port = 0;
@@ -270,6 +295,8 @@ struct ParsedOption {
     result.options.host = std::string{*host};
     result.options.port = static_cast<std::uint16_t>(parsed_port);
     if (pipe_name.has_value()) result.options.pipe_name = std::string{*pipe_name};
+    result.options.runtime_repository_generation =
+        std::string{*runtime_repository_generation};
     result.disposition = ServiceCommandLineDisposition::run;
     result.error = ServiceCommandLineError::none;
     result.error_argument = ServiceCommandLineResult::no_argument;
@@ -307,10 +334,14 @@ std::string_view service_command_line_error_name(const ServiceCommandLineError e
     case missing_project_root: return "missing_project_root";
     case missing_host: return "missing_host";
     case missing_port: return "missing_port";
+    case missing_runtime_repository_generation:
+        return "missing_runtime_repository_generation";
     case project_root_not_directory: return "project_root_not_directory";
     case filesystem_error: return "filesystem_error";
     case invalid_host: return "invalid_host";
     case invalid_port: return "invalid_port";
+    case invalid_runtime_repository_generation:
+        return "invalid_runtime_repository_generation";
     case pipe_not_supported: return "pipe_not_supported";
     case invalid_pipe_name: return "invalid_pipe_name";
     case resource_exhausted: return "resource_exhausted";

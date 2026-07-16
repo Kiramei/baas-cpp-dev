@@ -16,6 +16,8 @@ enum class ServiceRuntimeRepositoryPhase {
 
 enum class ServiceRuntimeRepositoryOpenError {
     none,
+    invalid_expected_generation,
+    generation_mismatch,
     invalid_activation,
     internal_error,
 };
@@ -57,10 +59,12 @@ struct ServiceRuntimeRepositoryOpenResult {
     }
 };
 
-// project_root is the BAAS project root. A missing current.json creates an
-// unavailable owner. Once any current entry exists, all activation failures
-// are fatal so malformed or tampered state can never silently fall back.
+// project_root is the BAAS project root. expected_generation is the exact
+// generation selected by the publisher for this process start. Missing state,
+// or a valid activation for any other generation, fails closed. Activation is
+// performed once and the comparison uses that retained immutable pin.
 [[nodiscard]] ServiceRuntimeRepositoryOpenResult open_service_runtime_repository_owner(
-    const std::filesystem::path& project_root) noexcept;
+    const std::filesystem::path& project_root,
+    std::string_view expected_generation) noexcept;
 
 }  // namespace baas::service::app

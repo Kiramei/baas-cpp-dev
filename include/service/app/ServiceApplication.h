@@ -39,6 +39,7 @@ enum class ServiceApplicationError : std::uint8_t {
     trigger_dispatch_failed,
     remote_resource_unavailable,
     runtime_repository_invalid,
+    runtime_repository_generation_mismatch,
     composition_failed,
     authentication_failed,
     host_start_failed,
