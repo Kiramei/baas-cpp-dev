@@ -3,7 +3,9 @@
 #include "script/Ast.h"
 #include "script/Parser.h"
 #include "script/runtime/Environment.h"
+#include "script/runtime/ErrorEnvelope.h"
 #include "script/runtime/ErrorTranslation.h"
+#include "script/runtime/JsonBridge.h"
 #include "script/runtime/ModuleGraph.h"
 
 #include <algorithm>
@@ -114,6 +116,26 @@ using namespace ast;
     return name.empty() || name.front() != '_';
 }
 
+[[nodiscard]] std::string_view value_kind_label(const ValueKind kind) noexcept
+{
+    switch (kind) {
+        case ValueKind::Null: return "null";
+        case ValueKind::Boolean: return "boolean";
+        case ValueKind::Integer: return "integer";
+        case ValueKind::Float: return "float";
+        case ValueKind::String: return "string";
+        case ValueKind::List: return "list";
+        case ValueKind::OrderedMap: return "ordered_map";
+        case ValueKind::Function: return "function";
+        case ValueKind::Module: return "module";
+        case ValueKind::Error: return "error";
+        case ValueKind::Task: return "task";
+        case ValueKind::HostHandle: return "host_handle";
+        case ValueKind::HeapReference: return "heap_reference";
+    }
+    return "unknown";
+}
+
 }  // namespace
 
 EvaluationCompileError::EvaluationCompileError(std::vector<ModuleDiagnostic> diagnostics)
@@ -127,9 +149,10 @@ EvaluationError::EvaluationError(
     std::string message,
     std::string module,
     const SourceSpan span,
-    const std::size_t steps)
+    const std::size_t steps,
+    std::string structured_error)
     : std::runtime_error(std::move(message)), code_(code), module_(std::move(module)),
-      span_(span), steps_(steps)
+      span_(span), steps_(steps), structured_error_(std::move(structured_error))
 {
 }
 
@@ -189,7 +212,57 @@ struct SynchronousEvaluator::Impl {
         std::shared_ptr<LexicalEnvironment> environment;
         Value namespace_value;
         std::optional<Heap::RootId> namespace_root;
-        std::optional<EvaluationError> failure;
+        std::optional<Value> failure;
+        std::optional<Heap::RootId> failure_root;
+        std::optional<EvaluationError> boundary_failure;
+    };
+
+    struct ScriptUnwind {
+        Value error;
+        Heap* heap{};
+        Heap::RootId root{};
+
+        ScriptUnwind(Heap& owner, const Value value)
+            : error(value), heap(&owner), root(owner.add_root(value)) {}
+        ~ScriptUnwind() { if (heap) heap->remove_root(root); }
+        ScriptUnwind(const ScriptUnwind& other)
+            : error(other.error), heap(other.heap), root(other.heap->add_root(other.error)) {}
+        ScriptUnwind& operator=(const ScriptUnwind&) = delete;
+        ScriptUnwind(ScriptUnwind&& other) noexcept
+            : error(other.error), heap(std::exchange(other.heap, nullptr)), root(other.root) {}
+        ScriptUnwind& operator=(ScriptUnwind&&) = delete;
+
+        void replace(const Value value)
+        {
+            if (!heap->update_root(root, value)) std::terminate();
+            error = value;
+        }
+    };
+
+    struct ActiveFrame {
+        std::string module;
+        std::string function;
+        ErrorFramePhase phase{ErrorFramePhase::Body};
+        std::optional<SourceReference> call_source;
+        std::optional<SourceReference> definition_source;
+        std::optional<SourceReference> defer_source;
+    };
+
+    struct DeferredStatement {
+        StmtPtr statement;
+        std::shared_ptr<LexicalEnvironment> environment;
+        ActiveFrame cleanup_frame;
+        Heap::RootId failure_root{};
+    };
+
+    struct Activation {
+        std::string module;
+        std::string function;
+        Heap::RootId pending_root{};
+        std::vector<DeferredStatement> defers;
+        // Capacity is admitted before each defer is registered, so cleanup
+        // failure accumulation cannot allocate while the activation drains.
+        std::vector<Value> cleanup_errors;
     };
 
     enum class FlowKind { Normal, Break, Continue, Return };
@@ -218,8 +291,23 @@ struct SynchronousEvaluator::Impl {
 
     struct CallGuard {
         Impl* evaluator;
-        explicit CallGuard(Impl& evaluator, const SourceSpan span) : evaluator(&evaluator)
+        bool cleanup{};
+        explicit CallGuard(Impl& evaluator, const SourceSpan span)
+            : evaluator(&evaluator), cleanup(evaluator.cleanup_depth != 0)
         {
+            if (cleanup) {
+                if (evaluator.cleanup_call_depth >= evaluator.limits.max_cleanup_call_depth) {
+                    evaluator.fail(
+                        LanguageErrorCode::CleanupLimitExceeded,
+                        "synchronous evaluator cleanup call depth limit exceeded",
+                        span);
+                }
+                ++evaluator.cleanup_call_depth;
+                evaluator.stats.peak_cleanup_call_depth = std::max(
+                    evaluator.stats.peak_cleanup_call_depth,
+                    evaluator.cleanup_call_depth);
+                return;
+            }
             if (evaluator.call_depth >= evaluator.limits.max_call_depth) {
                 evaluator.fail(
                     LanguageErrorCode::StackLimitExceeded,
@@ -230,7 +318,27 @@ struct SynchronousEvaluator::Impl {
             evaluator.stats.peak_call_depth = std::max(
                 evaluator.stats.peak_call_depth, evaluator.call_depth);
         }
-        ~CallGuard() { --evaluator->call_depth; }
+        ~CallGuard()
+        {
+            if (cleanup) --evaluator->cleanup_call_depth;
+            else --evaluator->call_depth;
+        }
+    };
+
+    struct FrameGuard {
+        Impl* evaluator;
+        bool active{true};
+        FrameGuard(Impl& evaluator, ActiveFrame frame) : evaluator(&evaluator)
+        {
+            evaluator.active_frames.push_back(std::move(frame));
+        }
+        void leave()
+        {
+            if (!active) return;
+            evaluator->active_frames.pop_back();
+            active = false;
+        }
+        ~FrameGuard() { leave(); }
     };
 
     struct ModuleGuard {
@@ -260,8 +368,13 @@ struct SynchronousEvaluator::Impl {
     std::size_t call_depth{};
     std::size_t import_depth{};
     std::size_t host_registry_validation_work{};
+    std::vector<ActiveFrame> active_frames;
+    std::vector<Activation> activations;
     std::thread::id owner_thread{std::this_thread::get_id()};
     bool host_call_active{};
+    bool execution_active{};
+    std::size_t cleanup_depth{};
+    std::size_t cleanup_call_depth{};
 
     explicit Impl(
         std::vector<SourceModule> sources,
@@ -278,21 +391,243 @@ struct SynchronousEvaluator::Impl {
         configure_host();
     }
 
+    [[nodiscard]] SourceReference source_reference(
+        const std::string& module, const SourceSpan span) const
+    {
+        return {"synchronous-conformance", module, span};
+    }
+
+    [[nodiscard]] Value make_error(
+        const LanguageErrorCode code,
+        std::string message,
+        const SourceSpan span,
+        const ErrorOrigin origin = ErrorOrigin::Runtime,
+        const std::string_view host_module = {},
+        const std::string_view host_function = {},
+        std::vector<std::pair<std::string, Value>> details = {})
+    {
+        ErrorMetadata metadata;
+        metadata.code = code;
+        metadata.message = std::move(message);
+        metadata.origin = origin;
+        metadata.details = std::move(details);
+        if (!current_module.empty())
+            metadata.source = source_reference(current_module, span);
+        metadata.stack.reserve(active_frames.size() + (origin == ErrorOrigin::Host ? 1 : 0));
+        if (origin == ErrorOrigin::Host) {
+            metadata.stack.push_back({
+                ErrorFrameKind::Host,
+                std::string(host_module),
+                std::string(host_function),
+                ErrorFramePhase::Host,
+                current_module.empty()
+                    ? std::nullopt
+                    : std::optional<SourceReference>{source_reference(current_module, span)},
+                std::nullopt,
+                std::nullopt});
+        }
+        for (auto frame = active_frames.rbegin(); frame != active_frames.rend(); ++frame) {
+            metadata.stack.push_back({
+                ErrorFrameKind::Script,
+                frame->module,
+                frame->function,
+                frame->phase,
+                frame->call_source,
+                frame->definition_source,
+                frame->defer_source});
+        }
+        return heap.allocate_error(std::move(metadata));
+    }
+
+    [[nodiscard]] Value make_thrown_value_error(
+        const Value thrown, const SourceSpan span)
+    {
+        auto roots = heap.root_scope();
+        roots.add(thrown);
+        const auto kind = heap.allocate_string(
+            std::string(value_kind_label(heap.kind(thrown))));
+        roots.add(kind);
+        ErrorMetadata metadata;
+        metadata.code = LanguageErrorCode::ThrownValue;
+        metadata.message = "script threw a non-Error value";
+        metadata.origin = ErrorOrigin::Script;
+        metadata.source = source_reference(current_module, span);
+        metadata.details.emplace_back("thrown_kind", kind);
+        metadata.stack.reserve(active_frames.size());
+        for (auto frame = active_frames.rbegin(); frame != active_frames.rend(); ++frame) {
+            metadata.stack.push_back({
+                ErrorFrameKind::Script,
+                frame->module,
+                frame->function,
+                frame->phase,
+                frame->call_source,
+                frame->definition_source,
+                frame->defer_source});
+        }
+        return heap.allocate_error(std::move(metadata));
+    }
+
+    [[noreturn]] void raise(Value error)
+    {
+        throw ScriptUnwind(heap, error);
+    }
+
     [[noreturn]] void fail(
         const LanguageErrorCode code,
         std::string message,
-        const SourceSpan span = {}) const
+        const SourceSpan span = {})
     {
+        if (execution_active) {
+            try {
+                raise(make_error(code, std::move(message), span));
+            } catch (const ScriptUnwind&) {
+                throw;
+            } catch (const RuntimeError&) {
+                throw EvaluationError(
+                    LanguageErrorCode::MemoryLimitExceeded,
+                    "structured Error publication exhausted evaluator memory",
+                    current_module,
+                    span,
+                    stats.steps);
+            } catch (const std::bad_alloc&) {
+                throw EvaluationError(
+                    LanguageErrorCode::MemoryLimitExceeded,
+                    "structured Error publication allocation failed",
+                    current_module,
+                    span,
+                    stats.steps);
+            }
+        }
         throw EvaluationError(code, std::move(message), current_module, span, stats.steps);
     }
 
-    void validate_limits() const
+    [[noreturn]] void fail_host(
+        const LanguageErrorCode code,
+        std::string message,
+        const SourceSpan span,
+        const std::string_view host_module,
+        const std::string_view host_function)
+    {
+        if (execution_active) {
+            try {
+                raise(make_error(
+                    code,
+                    std::move(message),
+                    span,
+                    ErrorOrigin::Host,
+                    host_module,
+                    host_function));
+            } catch (const ScriptUnwind&) {
+                throw;
+            } catch (const RuntimeError&) {
+                throw EvaluationError(
+                    LanguageErrorCode::MemoryLimitExceeded,
+                    "Host Error publication exhausted evaluator memory",
+                    current_module,
+                    span,
+                    stats.steps);
+            } catch (const std::bad_alloc&) {
+                throw EvaluationError(
+                    LanguageErrorCode::MemoryLimitExceeded,
+                    "Host Error publication allocation failed",
+                    current_module,
+                    span,
+                    stats.steps);
+            }
+        }
+        throw EvaluationError(code, std::move(message), current_module, span, stats.steps);
+    }
+
+    [[noreturn]] void fail_host_result(
+        const LanguageErrorCode code,
+        std::string message,
+        const SourceSpan span,
+        const std::string_view host_module,
+        const std::string_view host_function,
+        const HostError& host_error,
+        const bool declared_status)
+    {
+        if (!execution_active)
+            throw EvaluationError(code, std::move(message), current_module, span, stats.steps);
+        try {
+            auto roots = heap.root_scope();
+            std::vector<std::pair<std::string, Value>> details;
+            details.reserve(4);
+            const auto add_string = [&](std::string key, const std::string_view value) {
+                const auto converted = heap.allocate_string(std::string(value));
+                roots.add(converted);
+                details.emplace_back(std::move(key), converted);
+            };
+            add_string("host_code", host_error_code_name(host_error.code));
+            details.emplace_back("retryable", Value(host_error.retryable));
+            add_string(
+                "effect_state",
+                host_error.effect_state == HostEffectState::NotStarted ? "not_started"
+                    : host_error.effect_state == HostEffectState::Committed
+                        ? "committed" : "unknown");
+            if (declared_status && host_error.details
+                && host_error.details->kind() == JsonKind::Object
+                && (host_error.code == HostErrorCode::DeadlineExceeded
+                    || host_error.code == HostErrorCode::BudgetExceeded)) {
+                const auto& entries = std::get<JsonObject>(host_error.details->value());
+                const auto bridge_limits = effective_host_json_limits(
+                    host_options->bindings->limits());
+                JsonObject allowlisted;
+                for (const auto& [name, value] : entries) {
+                    const auto expected_name = host_error.code == HostErrorCode::DeadlineExceeded
+                        ? std::string_view("deadline_scope")
+                        : std::string_view("budget_scope");
+                    if (name != expected_name || value.kind() != JsonKind::String) continue;
+                    const auto& discriminator = std::get<std::string>(value.value());
+                    const auto allowed = host_error.code == HostErrorCode::DeadlineExceeded
+                        ? discriminator == "context" || discriminator == "call"
+                        : discriminator == "external_memory"
+                            || discriminator == "host_operation";
+                    if (allowed) allowlisted.emplace_back(name, value);
+                }
+                if (!allowlisted.empty()) {
+                    const auto converted = json_to_heap_value(
+                        heap, JsonValue(std::move(allowlisted)), bridge_limits);
+                    roots.add(converted);
+                    details.emplace_back("host_details", converted);
+                }
+            }
+            raise(make_error(
+                code,
+                std::move(message),
+                span,
+                ErrorOrigin::Host,
+                host_module,
+                host_function,
+                std::move(details)));
+        } catch (const ScriptUnwind&) {
+            throw;
+        } catch (const RuntimeError&) {
+            throw EvaluationError(
+                LanguageErrorCode::MemoryLimitExceeded,
+                "Host Error detail publication exhausted evaluator memory",
+                current_module,
+                span,
+                stats.steps);
+        } catch (const std::bad_alloc&) {
+            throw EvaluationError(
+                LanguageErrorCode::MemoryLimitExceeded,
+                "Host Error detail publication allocation failed",
+                current_module,
+                span,
+                stats.steps);
+        }
+    }
+
+    void validate_limits()
     {
         if (limits.max_module_source_bytes == 0 || limits.max_total_source_bytes == 0
             || limits.max_steps == 0 || limits.max_call_depth == 0
             || limits.max_value_stack == 0 || limits.max_container_elements == 0
             || limits.max_collection_work == 0 || limits.max_functions == 0
-            || limits.max_import_depth == 0 || limits.max_modules == 0) {
+            || limits.max_import_depth == 0 || limits.max_modules == 0
+            || limits.max_defers_per_frame == 0 || limits.max_cleanup_steps == 0
+            || limits.max_cleanup_call_depth == 0) {
             fail(LanguageErrorCode::ArgumentInvalid, "evaluator limits must be positive");
         }
     }
@@ -460,6 +795,16 @@ struct SynchronousEvaluator::Impl {
 
     void charge_step(const SourceSpan span)
     {
+        if (cleanup_depth != 0) {
+            if (stats.cleanup_steps >= limits.max_cleanup_steps) {
+                fail(
+                    LanguageErrorCode::CleanupLimitExceeded,
+                    "synchronous evaluator cleanup step limit exceeded",
+                    span);
+            }
+            ++stats.cleanup_steps;
+            return;
+        }
         if (stats.steps >= limits.max_steps) {
             fail(
                 LanguageErrorCode::InstructionLimitExceeded,
@@ -685,7 +1030,7 @@ struct SynchronousEvaluator::Impl {
     [[nodiscard]] Value read_binding(
         const std::shared_ptr<LexicalEnvironment>& environment,
         const std::string_view name,
-        const SourceSpan span) const
+        const SourceSpan span)
     {
         for (auto current = environment; current; current = current->parent) {
             const auto found = current->initialized.find(name);
@@ -757,6 +1102,89 @@ struct SynchronousEvaluator::Impl {
         return execute_statements(block.statements, environment);
     }
 
+    [[nodiscard]] std::optional<Value> drain_activation(
+        std::optional<Value> primary,
+        const bool boundary_terminal = false)
+    {
+        if (activations.empty())
+            fail(LanguageErrorCode::InternalInvariant, "cleanup activation is absent");
+        auto activation = std::move(activations.back());
+        activations.pop_back();
+        struct ActivationRootGuard {
+            Heap& heap;
+            Activation& activation;
+            ~ActivationRootGuard()
+            {
+                heap.remove_root(activation.pending_root);
+                for (const auto& deferred : activation.defers)
+                    heap.remove_root(deferred.failure_root);
+            }
+        } activation_roots{heap, activation};
+        struct CleanupGuard {
+            Impl& evaluator;
+            explicit CleanupGuard(Impl& evaluator) : evaluator(evaluator)
+            {
+                ++evaluator.cleanup_depth;
+            }
+            ~CleanupGuard() { --evaluator.cleanup_depth; }
+        } cleanup(*this);
+        bool error_publication_failed = false;
+
+        for (auto deferred = activation.defers.rbegin();
+            deferred != activation.defers.rend(); ++deferred) {
+            try {
+                const auto registration_span = deferred->cleanup_frame.defer_source->span;
+                // Registration prebuilds this frame. The function body frame
+                // has already left active_frames, preserving enough vector
+                // capacity for this move-only, allocation-free replacement.
+                FrameGuard frame_guard(*this, std::move(deferred->cleanup_frame));
+                ++stats.executed_defers;
+                const auto flow = execute_statement(deferred->statement, deferred->environment);
+                if (flow.kind != FlowKind::Normal)
+                    fail(LanguageErrorCode::InternalInvariant,
+                         "non-local control escaped cleanup", registration_span);
+            } catch (const ScriptUnwind& failure) {
+                if (!heap.update_root(deferred->failure_root, failure.error))
+                    std::terminate();
+                const auto failure_catchable =
+                    heap.error_metadata_view(failure.error.as_heap_ref()).catchable();
+                if (!primary) {
+                    primary = failure.error;
+                } else if (!boundary_terminal
+                           && heap.error_metadata_view(primary->as_heap_ref()).catchable()
+                           && !failure_catchable) {
+                    // ERR-014: the first terminal cleanup failure takes
+                    // precedence. Preserve the displaced primary before all
+                    // cleanup failures already observed, in deterministic
+                    // execution order.
+                    activation.cleanup_errors.insert(
+                        activation.cleanup_errors.begin(), *primary);
+                    primary = failure.error;
+                } else {
+                    activation.cleanup_errors.push_back(failure.error);
+                }
+            } catch (const EvaluationError&) {
+                // Publishing the cleanup failure itself may exhaust the heap. Keep
+                // draining the activation, then fail closed with a terminal error.
+                error_publication_failed = true;
+            } catch (const std::bad_alloc&) {
+                error_publication_failed = true;
+            }
+        }
+        if (error_publication_failed && boundary_terminal)
+            return std::nullopt;
+        if (error_publication_failed)
+            fail(LanguageErrorCode::MemoryLimitExceeded,
+                 "structured cleanup Error publication failed");
+        if (boundary_terminal) return std::nullopt;
+        if (primary && !activation.cleanup_errors.empty()) {
+            *primary = heap.derive_error(
+                primary->as_heap_ref(),
+                ErrorDerivation{std::nullopt, activation.cleanup_errors});
+        }
+        return primary;
+    }
+
     [[nodiscard]] Value create_function(
         std::string name,
         const bool is_async,
@@ -793,6 +1221,16 @@ struct SynchronousEvaluator::Impl {
         }
     }
 
+    void commit_boundary_failure(ModuleRecord& module, EvaluationError failure)
+    {
+        // Construct the complete payload while the transaction still owns the
+        // Loading state. If this move/emplace fails, InitializationTransaction
+        // rolls the module back to Uninitialized. Failed is the final publish.
+        module.boundary_failure.emplace(std::move(failure));
+        module.environment.reset();
+        module.state = ModuleState::Failed;
+    }
+
     [[nodiscard]] Value initialize_module(const std::string& id, const SourceSpan import_span)
     {
         const auto found = modules.find(id);
@@ -807,7 +1245,10 @@ struct SynchronousEvaluator::Impl {
         if (module.state == ModuleState::Loading) {
             fail(LanguageErrorCode::ImportCycle, "runtime module loading cycle detected", import_span);
         }
-        if (module.state == ModuleState::Failed && module.failure) throw *module.failure;
+        if (module.state == ModuleState::Failed && module.failure)
+            throw ScriptUnwind(heap, *module.failure);
+        if (module.state == ModuleState::Failed && module.boundary_failure)
+            throw *module.boundary_failure;
         if (module.state == ModuleState::Failed) {
             fail(LanguageErrorCode::InternalInvariant, "module failure cache is incomplete", import_span);
         }
@@ -835,6 +1276,9 @@ struct SynchronousEvaluator::Impl {
             }
         } transaction(*this, module);
         ModuleGuard module_guard(*this, id);
+        FrameGuard frame_guard(*this, {
+            id, "<module>", ErrorFramePhase::ModuleInit,
+            std::nullopt, std::nullopt, std::nullopt});
         try {
             module.environment = make_environment();
             predeclare_statements(module.environment, module.parsed->program.statements);
@@ -866,10 +1310,38 @@ struct SynchronousEvaluator::Impl {
             transaction.committed = true;
             ++stats.initialized_modules;
             return module.namespace_value;
-        } catch (const EvaluationError& error) {
-            module.state = ModuleState::Failed;
-            module.failure = error;
+        } catch (const ScriptUnwind& unwind) {
+            Heap::RootId failure_root{};
+            try {
+                failure_root = heap.add_root(unwind.error);
+            } catch (const RuntimeError&) {
+                EvaluationError boundary(
+                    LanguageErrorCode::MemoryLimitExceeded,
+                    "module Error cache root allocation failed",
+                    id,
+                    module.parsed->program.span,
+                    stats.steps);
+                commit_boundary_failure(module, std::move(boundary));
+                throw *module.boundary_failure;
+            } catch (const std::bad_alloc&) {
+                EvaluationError boundary(
+                    LanguageErrorCode::MemoryLimitExceeded,
+                    "module Error cache allocation failed",
+                    id,
+                    module.parsed->program.span,
+                    stats.steps);
+                commit_boundary_failure(module, std::move(boundary));
+                throw *module.boundary_failure;
+            }
+            // Root acquisition is the commit point for structured failures.
+            // Value/RootId optionals cannot allocate; publish Failed last.
+            module.failure.emplace(unwind.error);
+            module.failure_root.emplace(failure_root);
             module.environment.reset();
+            module.state = ModuleState::Failed;
+            throw;
+        } catch (const EvaluationError& error) {
+            commit_boundary_failure(module, EvaluationError(error));
             throw;
         } catch (const RuntimeError& error) {
             EvaluationError translated(
@@ -878,10 +1350,8 @@ struct SynchronousEvaluator::Impl {
                 current_module,
                 module.parsed->program.span,
                 stats.steps);
-            module.state = ModuleState::Failed;
-            module.failure = translated;
-            module.environment.reset();
-            throw translated;
+            commit_boundary_failure(module, std::move(translated));
+            throw *module.boundary_failure;
         } catch (const std::bad_alloc&) {
             EvaluationError translated(
                 LanguageErrorCode::MemoryLimitExceeded,
@@ -889,10 +1359,8 @@ struct SynchronousEvaluator::Impl {
                 current_module,
                 module.parsed->program.span,
                 stats.steps);
-            module.state = ModuleState::Failed;
-            module.failure = translated;
-            module.environment.reset();
-            throw translated;
+            commit_boundary_failure(module, std::move(translated));
+            throw *module.boundary_failure;
         } catch (const std::length_error&) {
             EvaluationError translated(
                 LanguageErrorCode::MemoryLimitExceeded,
@@ -900,10 +1368,8 @@ struct SynchronousEvaluator::Impl {
                 current_module,
                 module.parsed->program.span,
                 stats.steps);
-            module.state = ModuleState::Failed;
-            module.failure = translated;
-            module.environment.reset();
-            throw translated;
+            commit_boundary_failure(module, std::move(translated));
+            throw *module.boundary_failure;
         } catch (const std::exception&) {
             EvaluationError translated(
                 LanguageErrorCode::InternalInvariant,
@@ -911,10 +1377,8 @@ struct SynchronousEvaluator::Impl {
                 current_module,
                 module.parsed->program.span,
                 stats.steps);
-            module.state = ModuleState::Failed;
-            module.failure = translated;
-            module.environment.reset();
-            throw translated;
+            commit_boundary_failure(module, std::move(translated));
+            throw *module.boundary_failure;
         } catch (...) {
             EvaluationError translated(
                 LanguageErrorCode::InternalInvariant,
@@ -922,15 +1386,13 @@ struct SynchronousEvaluator::Impl {
                 current_module,
                 module.parsed->program.span,
                 stats.steps);
-            module.state = ModuleState::Failed;
-            module.failure = translated;
-            module.environment.reset();
-            throw translated;
+            commit_boundary_failure(module, std::move(translated));
+            throw *module.boundary_failure;
         }
     }
 
     [[nodiscard]] Value initialize_host_module(
-        const std::string& id, const SourceSpan import_span) const
+        const std::string& id, const SourceSpan import_span)
     {
         if (!host_options)
             fail(LanguageErrorCode::HostUnavailable,
@@ -1027,29 +1489,70 @@ struct SynchronousEvaluator::Impl {
         }
     }
 
+    [[nodiscard]] std::string structured_error_envelope(const Value error) const
+    {
+        ErrorEnvelopeLimits envelope_limits;
+        envelope_limits.max_output_bytes = 64U * 1024U;
+        std::string output(envelope_limits.max_output_bytes, '\0');
+        const auto serialized = serialize_error_envelope(
+            heap,
+            error,
+            std::span<char>(output.data(), output.size()),
+            envelope_limits);
+        if (serialized.status == ErrorEnvelopeStatus::InsufficientCapacity)
+            return {};
+        output.resize(serialized.bytes_written);
+        return output;
+    }
+
     [[nodiscard]] EvaluationResult execute(const std::string_view entry)
     {
+        const auto boundary_fail = [&](const LanguageErrorCode code,
+                                       std::string message) -> void {
+            throw EvaluationError(code, std::move(message), current_module, {}, stats.steps);
+        };
         if (std::this_thread::get_id() != owner_thread)
-            fail(LanguageErrorCode::HostUnavailable,
-                 "synchronous evaluator called from a non-owning thread");
+            boundary_fail(LanguageErrorCode::HostUnavailable,
+                          "synchronous evaluator called from a non-owning thread");
         if (host_call_active)
-            fail(LanguageErrorCode::HostUnavailable,
-                 "Host callback re-entry into the evaluator is forbidden");
+            boundary_fail(LanguageErrorCode::HostUnavailable,
+                          "Host callback re-entry into the evaluator is forbidden");
         ModuleSpecifier specifier;
         try {
             specifier = validate_module_specifier(entry, nfc);
         } catch (const ModuleSpecifierError&) {
-            fail(LanguageErrorCode::ImportSpecifierInvalid, "entry module id is not canonical");
+            boundary_fail(LanguageErrorCode::ImportSpecifierInvalid,
+                          "entry module id is not canonical");
         }
         if (specifier.kind != ModuleKind::Package) {
-            fail(LanguageErrorCode::HostUnavailable, "Host modules cannot be evaluator entries");
+            boundary_fail(LanguageErrorCode::HostUnavailable,
+                          "Host modules cannot be evaluator entries");
         }
-        const auto value = initialize_module(specifier.canonical_id, {});
-        return {value, stats};
+        struct ExecutionGuard {
+            Impl& evaluator;
+            explicit ExecutionGuard(Impl& evaluator) : evaluator(evaluator)
+            {
+                evaluator.execution_active = true;
+            }
+            ~ExecutionGuard() { evaluator.execution_active = false; }
+        } execution(*this);
+        try {
+            const auto value = initialize_module(specifier.canonical_id, {});
+            return {value, stats};
+        } catch (const ScriptUnwind& unwind) {
+            const auto& metadata = heap.error_metadata_view(unwind.error.as_heap_ref());
+            const auto code = metadata.code;
+            const auto message = metadata.message;
+            const auto module = metadata.source ? metadata.source->module : current_module;
+            const auto span = metadata.source ? metadata.source->span : SourceSpan{};
+            const auto envelope = structured_error_envelope(unwind.error);
+            throw EvaluationError(
+                code, message, module, span, stats.steps, envelope);
+        }
     }
 
     [[nodiscard]] Value module_export(
-        const std::string_view module_id, const std::string_view export_name) const
+        const std::string_view module_id, const std::string_view export_name)
     {
         if (std::this_thread::get_id() != owner_thread)
             fail(LanguageErrorCode::HostUnavailable,
@@ -1320,6 +1823,120 @@ Value SynchronousEvaluator::Impl::read_member(
     const Value object, const std::string_view member, const SourceSpan span)
 {
     const auto kind = heap.kind(object);
+    if (kind == ValueKind::Error) {
+        const auto& metadata = heap.error_metadata_view(object.as_heap_ref());
+        auto roots = heap.root_scope();
+        roots.add(object);
+        const auto string_value = [&](const std::string_view value) {
+            const auto result = heap.allocate_string(std::string(value));
+            roots.add(result);
+            return result;
+        };
+        const auto integer_value = [&](const std::size_t value) {
+            if (value > static_cast<std::size_t>(std::numeric_limits<std::int64_t>::max()))
+                fail(LanguageErrorCode::InternalInvariant,
+                     "Error metadata integer is out of range", span);
+            return Value(static_cast<std::int64_t>(value));
+        };
+        const auto location_value = [&](const SourceLocation& location) {
+            const auto result = heap.allocate_map({
+                {"byte_offset", integer_value(location.byte_offset)},
+                {"line", integer_value(location.line)},
+                {"column", integer_value(location.column)}});
+            roots.add(result);
+            return result;
+        };
+        const auto source_value = [&](const std::optional<SourceReference>& source) {
+            if (!source) return Value::null();
+            const auto begin = location_value(source->span.begin);
+            const auto end = location_value(source->span.end);
+            const auto span_value = heap.allocate_map({{"begin", begin}, {"end", end}});
+            roots.add(span_value);
+            const auto result = heap.allocate_map({
+                {"snapshot_id", string_value(source->snapshot_id)},
+                {"module", string_value(source->module)},
+                {"span", span_value}});
+            roots.add(result);
+            return result;
+        };
+        if (member == "schema") return string_value("baas.script.error/v1");
+        if (member == "code") return string_value(metadata.code_name());
+        if (member == "message") return string_value(metadata.message);
+        if (member == "origin") {
+            return string_value(metadata.origin == ErrorOrigin::Script ? "script"
+                : metadata.origin == ErrorOrigin::Host ? "host" : "runtime");
+        }
+        if (member == "catchable") return Value(metadata.catchable());
+        if (member == "source") return source_value(metadata.source);
+        if (member == "cause") return metadata.cause.value_or(Value::null());
+        if (member == "suppressed") {
+            charge_collection(metadata.suppressed.size(), span);
+            return heap.allocate_list(metadata.suppressed);
+        }
+        if (member == "details") {
+            charge_collection(metadata.details.size(), span);
+            std::vector<std::pair<std::string, Value>> detached;
+            detached.reserve(metadata.details.size());
+            JsonBridgeLimits bridge_limits;
+            bridge_limits.max_depth = 64;
+            bridge_limits.max_nodes = limits.max_container_elements;
+            bridge_limits.max_total_bytes = heap.limits().max_error_detail_bytes;
+            bridge_limits.max_string_bytes = std::min(
+                heap.limits().max_string_bytes,
+                heap.limits().max_error_detail_bytes);
+            bridge_limits.max_work = limits.max_collection_work;
+            for (const auto& [name, value] : metadata.details) {
+                const auto json = heap_value_to_json(heap, value, bridge_limits);
+                const auto copy = json_to_heap_value(heap, json, bridge_limits);
+                roots.add(copy);
+                detached.emplace_back(name, copy);
+            }
+            return heap.allocate_map(std::move(detached));
+        }
+        if (member == "stack") {
+            charge_collection(metadata.stack.size(), span);
+            std::vector<Value> frames;
+            frames.reserve(metadata.stack.size());
+            for (const auto& frame : metadata.stack) {
+                const auto frame_value = heap.allocate_map({
+                    {"kind", string_value(frame.kind == ErrorFrameKind::Script ? "script" : "host")},
+                    {"module", string_value(frame.module)},
+                    {"function", string_value(frame.function)},
+                    {"phase", string_value(frame.phase == ErrorFramePhase::Body ? "body"
+                        : frame.phase == ErrorFramePhase::ModuleInit ? "module_init"
+                        : frame.phase == ErrorFramePhase::Cleanup ? "cleanup" : "host")},
+                    {"call_source", source_value(frame.call_source)},
+                    {"definition_source", source_value(frame.definition_source)},
+                    {"defer_source", source_value(frame.defer_source)}});
+                roots.add(frame_value);
+                frames.push_back(frame_value);
+            }
+            return heap.allocate_list(std::move(frames));
+        }
+        if (member == "context") {
+            const auto optional_string = [&](const std::optional<std::string>& value) {
+                return value ? string_value(*value) : Value::null();
+            };
+            return heap.allocate_map({
+                {"task_id", optional_string(metadata.context.task_id)},
+                {"session_id", optional_string(metadata.context.session_id)},
+                {"package_id", optional_string(metadata.context.package_id)},
+                {"snapshot_id", optional_string(metadata.context.snapshot_id)},
+                {"language_version", optional_string(metadata.context.language_version)},
+                {"correlation_id", optional_string(metadata.context.correlation_id)}});
+        }
+        if (member == "truncated") {
+            return heap.allocate_map({
+                {"stack_frames", integer_value(metadata.truncated.stack_frames)},
+                {"cause_errors", integer_value(metadata.truncated.cause_errors)},
+                {"suppressed_errors", integer_value(metadata.truncated.suppressed_errors)},
+                {"message_bytes", integer_value(metadata.truncated.message_bytes)},
+                {"detail_bytes", integer_value(metadata.truncated.detail_bytes)},
+                {"details_replaced", Value(metadata.truncated.details_replaced)},
+                {"fallback", Value(metadata.truncated.fallback)}});
+        }
+        fail(LanguageErrorCode::NameNotFound, "Error member is absent", span);
+    }
     if (kind == ValueKind::OrderedMap) {
         charge_collection(heap.map_size(object.as_heap_ref()), span);
         const auto value = heap.map_get(object.as_heap_ref(), member);
@@ -1467,6 +2084,8 @@ Value SynchronousEvaluator::Impl::evaluate_expression(
     StackGuard guard(*this, expression->span);
     try {
         return evaluate_expression_impl(*expression, environment);
+    } catch (const ScriptUnwind&) {
+        throw;
     } catch (const EvaluationError&) {
         throw;
     } catch (const RuntimeError& error) {
@@ -1796,13 +2415,19 @@ Value SynchronousEvaluator::Impl::invoke_native(
                            const bool adapter_result) {
         const auto add = [&](std::size_t& target, const std::size_t amount,
                              const std::size_t maximum) {
-            if (amount > maximum || target > maximum - amount)
-                fail(adapter_result ? LanguageErrorCode::HostInternal
-                                    : LanguageErrorCode::HostValidationFailed,
-                     adapter_result
-                         ? "Host result exceeded the conversion contract"
-                         : "Host arguments exceeded the aggregate conversion contract",
-                     span);
+            if (amount > maximum || target > maximum - amount) {
+                if (adapter_result)
+                    fail_host(
+                        LanguageErrorCode::HostInternal,
+                        "Host result exceeded the conversion contract",
+                        span,
+                        function.module,
+                        function.export_name);
+                fail(
+                    LanguageErrorCode::HostValidationFailed,
+                    "Host arguments exceeded the aggregate conversion contract",
+                    span);
+            }
             target += amount;
         };
         add(aggregate.nodes, metrics.nodes,
@@ -1892,8 +2517,9 @@ Value SynchronousEvaluator::Impl::invoke_native(
             message += function.binding->binding_id;
             message += result.boundary_failure() == HostResult::BoundaryFailure::Allocation
                 ? " callback allocation failed" : " callback failed";
-            fail(translate_host_boundary_failure(result.boundary_failure()),
-                 std::move(message), span);
+            fail_host(
+                translate_host_boundary_failure(result.boundary_failure()),
+                std::move(message), span, function.module, function.export_name);
         }
         const auto translated = translate_host_error(result.error());
         const auto effect = result.error().effect_state == HostEffectState::NotStarted
@@ -1909,7 +2535,14 @@ Value SynchronousEvaluator::Impl::invoke_native(
             message += ": ";
             message += result.error().message;
         }
-        fail(translated.code, std::move(message), span);
+        fail_host_result(
+            translated.code,
+            std::move(message),
+            span,
+            function.module,
+            function.export_name,
+            result.error(),
+            translated.declared_status);
     }
 
     try {
@@ -1944,13 +2577,19 @@ Value SynchronousEvaluator::Impl::invoke_native(
         throw;
     } catch (const RuntimeError& error) {
         const auto translated = translate_host_result_runtime_error(error.code());
-        fail(translated,
-             translated == LanguageErrorCode::MemoryLimitExceeded
-                 ? "Host result publication exhausted evaluator memory"
-                 : translated == LanguageErrorCode::InternalInvariant
-                     ? "Host result referenced invalid evaluator state"
-                     : "Host result does not satisfy the binding contract",
-             span);
+        const auto message = translated == LanguageErrorCode::MemoryLimitExceeded
+            ? "Host result publication exhausted evaluator memory"
+            : translated == LanguageErrorCode::InternalInvariant
+                ? "Host result referenced invalid evaluator state"
+                : "Host result does not satisfy the binding contract";
+        if (translated == LanguageErrorCode::MemoryLimitExceeded)
+            fail(translated, message, span);
+        fail_host(
+            translated,
+            message,
+            span,
+            function.module,
+            function.export_name);
     }
 }
 
@@ -2032,7 +2671,17 @@ Value SynchronousEvaluator::Impl::invoke(
         bound[index] = argument.value;
     }
 
+    const auto caller_module = current_module;
     ModuleGuard module_guard(*this, function.module);
+    FrameGuard frame_guard(*this, {
+        function.module,
+        function.name,
+        ErrorFramePhase::Body,
+        caller_module.empty()
+            ? std::nullopt
+            : std::optional<SourceReference>{source_reference(caller_module, span)},
+        source_reference(function.module, function.definition_span),
+        std::nullopt});
     for (std::size_t index = 0; index < function.parameters.size(); ++index) {
         const auto& parameter = function.parameters[index];
         Value value;
@@ -2047,15 +2696,56 @@ Value SynchronousEvaluator::Impl::invoke(
         initialize_binding(environment, parameter.name, value, parameter.span);
     }
 
-    auto flow = execute_block(*function.body, environment, false);
-    if (flow.kind == FlowKind::Break || flow.kind == FlowKind::Continue) {
-        fail(LanguageErrorCode::InternalInvariant, "loop control escaped a function", span);
+    const auto pending_root = heap.add_root(Value::null());
+    try {
+        activations.push_back({function.module, function.name, pending_root, {}, {}});
+    } catch (...) {
+        heap.remove_root(pending_root);
+        throw;
     }
-    if (flow.kind == FlowKind::Return) {
-        roots.add(flow.value);
-        return flow.value;
+    Flow flow;
+    Value result = Value::null();
+    try {
+        flow = execute_block(*function.body, environment, false);
+        if (flow.kind == FlowKind::Break || flow.kind == FlowKind::Continue) {
+            fail(LanguageErrorCode::InternalInvariant, "loop control escaped a function", span);
+        }
+        result = flow.kind == FlowKind::Return ? flow.value : Value::null();
+        if (!heap.update_root(activations.back().pending_root, result))
+            fail(LanguageErrorCode::InternalInvariant,
+                 "function pending-value root is absent", span);
+    } catch (ScriptUnwind& unwind) {
+        frame_guard.leave();
+        const auto primary = drain_activation(unwind.error);
+        if (!primary)
+            fail(LanguageErrorCode::InternalInvariant, "cleanup lost the primary Error", span);
+        if (*primary != unwind.error) unwind.replace(*primary);
+        throw;
+    } catch (const EvaluationError&) {
+        frame_guard.leave();
+        // Error publication may fail after defers have been registered. The
+        // boundary failure is terminal and cannot be represented as a same-heap
+        // Error, but every admitted cleanup is still drained fail-closed.
+        static_cast<void>(drain_activation(std::nullopt, true));
+        throw;
+    } catch (const RuntimeError&) {
+        frame_guard.leave();
+        static_cast<void>(drain_activation(std::nullopt, true));
+        throw;
+    } catch (const std::bad_alloc&) {
+        frame_guard.leave();
+        static_cast<void>(drain_activation(std::nullopt, true));
+        throw;
+    } catch (...) {
+        frame_guard.leave();
+        static_cast<void>(drain_activation(std::nullopt, true));
+        throw;
     }
-    return Value::null();
+    frame_guard.leave();
+    if (const auto cleanup_error = drain_activation(std::nullopt))
+        raise(*cleanup_error);
+    roots.add(result);
+    return result;
 }
 
 std::vector<Value> SynchronousEvaluator::Impl::iteration_plan(
@@ -2109,6 +2799,8 @@ SynchronousEvaluator::Impl::Flow SynchronousEvaluator::Impl::execute_statement(
     charge_step(statement->span);
     try {
         return execute_statement_impl(*statement, environment);
+    } catch (const ScriptUnwind&) {
+        throw;
     } catch (const EvaluationError&) {
         throw;
     } catch (const RuntimeError& error) {
@@ -2227,13 +2919,76 @@ SynchronousEvaluator::Impl::Flow SynchronousEvaluator::Impl::execute_statement_i
             initialize_binding(environment, imported.alias, module, imported.span);
             return {};
         }
-        case NodeKind::ThrowStatement:
-        case NodeKind::TryCatchStatement:
-        case NodeKind::DeferStatement:
-            fail(
-                LanguageErrorCode::ArgumentInvalid,
-                "structured throw/catch/defer requires the pending error unwinder",
-                statement.span);
+        case NodeKind::ThrowStatement: {
+            const auto& thrown = static_cast<const ThrowStatement&>(statement);
+            auto roots = heap.root_scope();
+            const auto operand = evaluate_expression(thrown.value, environment);
+            roots.add(operand);
+            if (heap.kind(operand) == ValueKind::Error) raise(operand);
+            const auto error = make_thrown_value_error(operand, thrown.span);
+            roots.add(error);
+            raise(error);
+        }
+        case NodeKind::TryCatchStatement: {
+            const auto& attempted = static_cast<const TryCatchStatement&>(statement);
+            try {
+                return execute_block(*attempted.try_block, environment, true);
+            } catch (const ScriptUnwind& unwind) {
+                const auto& metadata = heap.error_metadata_view(unwind.error.as_heap_ref());
+                if (!metadata.catchable()) throw;
+                auto catch_environment = make_environment(environment);
+                predeclare(catch_environment, attempted.binding, attempted.catch_block->span);
+                predeclare_statements(catch_environment, attempted.catch_block->statements);
+                initialize_binding(
+                    catch_environment, attempted.binding, unwind.error,
+                    attempted.catch_block->span);
+                return execute_block(*attempted.catch_block, catch_environment, false);
+            }
+        }
+        case NodeKind::DeferStatement: {
+            const auto& deferred = static_cast<const DeferStatement&>(statement);
+            if (activations.empty())
+                fail(LanguageErrorCode::InternalInvariant,
+                     "defer executed without a function activation", deferred.span);
+            auto& activation = activations.back();
+            if (activation.defers.size() >= limits.max_defers_per_frame)
+                fail(LanguageErrorCode::CleanupLimitExceeded,
+                     "defer registration limit exceeded", deferred.span);
+            // Admit every allocation/root required to record one possible
+            // cleanup failure before publishing the defer registration.
+            activation.cleanup_errors.reserve(activation.defers.size() + 1);
+            const auto failure_root = heap.add_root(Value::null());
+            try {
+                const auto function_frame = std::find_if(
+                    active_frames.rbegin(),
+                    active_frames.rend(),
+                    [&](const ActiveFrame& frame) {
+                        return frame.module == activation.module
+                            && frame.function == activation.function
+                            && frame.phase == ErrorFramePhase::Body;
+                    });
+                if (function_frame == active_frames.rend())
+                    fail(LanguageErrorCode::InternalInvariant,
+                         "defer activation frame is absent", deferred.span);
+                activation.defers.push_back({
+                    deferred.statement,
+                    environment,
+                    {
+                        current_module,
+                        activation.function,
+                        ErrorFramePhase::Cleanup,
+                        function_frame->call_source,
+                        function_frame->definition_source,
+                        source_reference(current_module, deferred.span),
+                    },
+                    failure_root});
+            } catch (...) {
+                heap.remove_root(failure_root);
+                throw;
+            }
+            ++stats.registered_defers;
+            return {};
+        }
         default:
             fail(LanguageErrorCode::InternalInvariant, "expression node used as statement", statement.span);
     }

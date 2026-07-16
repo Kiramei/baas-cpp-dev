@@ -36,6 +36,7 @@ class ConformanceRunnerContractTests(unittest.TestCase):
             "missing",
             "nested",
             "runtime_error",
+            "structured",
         }
         actual = {path.name for path in self.corpus_root.iterdir() if path.is_dir()}
         self.assertEqual(expected, actual)
@@ -54,6 +55,8 @@ class ConformanceRunnerContractTests(unittest.TestCase):
         ):
             self.assertIn(anchor, self.guide)
         self.assertIn("production bytecode\n  VM execution CLI remains pending", self.roadmap)
+        self.assertIn("structured Error\nidentity and cleanup", self.guide)
+        self.assertIn("BAAS_script_run_python_cleanup_parity", self.cmake)
 
 
 if __name__ == "__main__":

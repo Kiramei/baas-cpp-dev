@@ -337,9 +337,10 @@ The checked-in static diagnostic anchors are:
 | `SEM009` | forbidden non-local or suspending operation in a defer cleanup body |
 
 The evaluator uses the applicable stable dynamic categories below with module,
-source span, and step metadata. The future VM/loader MUST preserve them. Full
-structured Error payload, stack capture, and unwinding follow
-`ERRORS_AND_CLEANUP.md` and remain pending:
+source span, and step metadata. The future VM/loader MUST preserve them. The
+bounded synchronous evaluator implements structured Error payloads, live stack
+capture, and unwinding under `ERRORS_AND_CLEANUP.md`; production bytecode-VM and
+async propagation remain pending:
 
 | Future stable category | Required dynamic condition |
 | --- | --- |

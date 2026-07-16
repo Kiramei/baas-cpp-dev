@@ -407,9 +407,9 @@ void test_dynamic_failures_compile_gate_and_explicit_boundaries()
 
     runtime::SynchronousEvaluator structured_error({{
         "main", "fn fail() { throw 1; } let result = fail();\n"}});
-    expect_error(runtime::LanguageErrorCode::ArgumentInvalid,
+    expect_error(runtime::LanguageErrorCode::ThrownValue,
                  [&] { static_cast<void>(structured_error.execute("main")); },
-                 "throw/catch/defer must fail explicitly until the Error unwinder is integrated");
+                 "an uncaught non-Error throw must cross the evaluator boundary as ThrownValue");
 
     try {
         runtime::SynchronousEvaluator invalid({{
@@ -421,6 +421,217 @@ void test_dynamic_failures_compile_gate_and_explicit_boundaries()
                   && compile_error.diagnostics()[0].diagnostic.code == "SEM001",
               "compile diagnostics must remain stable and module-qualified");
     }
+}
+
+void test_structured_errors_and_defer_unwinding()
+{
+    runtime::SynchronousEvaluator evaluator({{
+        "main",
+        "let trace = 0;\n"
+        "fn ordered() {\n"
+        "  defer trace = trace * 10 + 3;\n"
+        "  defer trace = trace * 10 + 2;\n"
+        "  trace = trace * 10 + 1;\n"
+        "  return 7;\n"
+        "}\n"
+        "let returned = ordered();\n"
+        "let held = null;\n"
+        "let same_rethrow = false;\n"
+        "try {\n"
+        "  try { let bad = 1 / 0; } catch (error) { held = error; throw error; }\n"
+        "} catch (outer) { same_rethrow = outer is held; }\n"
+        "let thrown_code = \"\";\n"
+        "let thrown_kind = \"\";\n"
+        "try { throw [1, 2]; } catch (error) {\n"
+        "  thrown_code = error.code;\n"
+        "  thrown_kind = error.details.thrown_kind;\n"
+        "}\n"
+        "let primary_code = \"\";\n"
+        "let suppressed_code = \"\";\n"
+        "let derived_primary = false;\n"
+        "fn cleanup_failure() {\n"
+        "  defer throw 9;\n"
+        "  try { let bad = 1 / 0; } catch (error) { held = error; throw error; }\n"
+        "}\n"
+        "try { cleanup_failure(); } catch (error) {\n"
+        "  primary_code = error.code;\n"
+        "  suppressed_code = error.suppressed[0].code;\n"
+        "  derived_primary = not (error is held);\n"
+        "}\n"
+        "let registering_catch_ran = false;\n"
+        "let outer_catch_ran = false;\n"
+        "fn deferred_after_try() {\n"
+        "  try { defer throw 11; } catch (error) { registering_catch_ran = true; }\n"
+        "}\n"
+        "try { deferred_after_try(); } catch (error) { outer_catch_ran = true; }\n"
+        "let cleanup_trace = 0;\n"
+        "let cleanup_primary = \"\";\n"
+        "let cleanup_suppressed = \"\";\n"
+        "fn all_cleanups() {\n"
+        "  defer { cleanup_trace = cleanup_trace * 10 + 1; throw 1; }\n"
+        "  defer { cleanup_trace = cleanup_trace * 10 + 2; throw 2; }\n"
+        "}\n"
+        "try { all_cleanups(); } catch (error) {\n"
+        "  cleanup_primary = error.code;\n"
+        "  cleanup_suppressed = error.suppressed[0].code;\n"
+        "}\n"
+        "let readonly_code = \"\";\n"
+        "try {\n"
+        "  try { let bad = 1 / 0; } catch (error) { error.code = \"changed\"; }\n"
+        "} catch (error) { readonly_code = error.code; }\n",
+    }});
+    static_cast<void>(evaluator.execute("main"));
+
+    check(integer_export(evaluator, "main", "trace") == 123
+              && integer_export(evaluator, "main", "returned") == 7,
+          "return value evaluation must precede per-activation LIFO cleanup");
+    check(evaluator.module_export("main", "same_rethrow").as_boolean(),
+          "throw Error must preserve exact heap identity through catch and rethrow");
+    check(evaluator.heap().string_copy(
+              evaluator.module_export("main", "thrown_code").as_heap_ref()) == "ThrownValue"
+              && evaluator.heap().string_copy(
+                  evaluator.module_export("main", "thrown_kind").as_heap_ref()) == "list",
+          "throwing a non-Error must materialize only stable ThrownValue metadata");
+    check(evaluator.heap().string_copy(
+              evaluator.module_export("main", "primary_code").as_heap_ref()) == "DivisionByZero"
+              && evaluator.heap().string_copy(
+                  evaluator.module_export("main", "suppressed_code").as_heap_ref()) == "ThrownValue"
+              && evaluator.module_export("main", "derived_primary").as_boolean(),
+          "cleanup failure must derive the existing primary and append a suppressed Error");
+    check(!evaluator.module_export("main", "registering_catch_ran").as_boolean()
+              && evaluator.module_export("main", "outer_catch_ran").as_boolean(),
+          "a defer registered in a try must execute after that try handler is out of scope");
+    check(integer_export(evaluator, "main", "cleanup_trace") == 21
+              && evaluator.heap().string_copy(
+                  evaluator.module_export("main", "cleanup_primary").as_heap_ref()) == "ThrownValue"
+              && evaluator.heap().string_copy(
+                  evaluator.module_export("main", "cleanup_suppressed").as_heap_ref()) == "ThrownValue",
+          "all defers must run after a cleanup failure and preserve LIFO primary ordering");
+    check(evaluator.heap().string_copy(
+              evaluator.module_export("main", "readonly_code").as_heap_ref()) == "TypeMismatch",
+          "Error members must be read-only even though structured members are inspectable");
+    check(evaluator.stats().registered_defers == 6
+              && evaluator.stats().executed_defers == 6
+              && evaluator.stats().cleanup_steps > 0,
+          "structured cleanup work must publish stable registration, execution and step stats");
+}
+
+void test_terminal_failure_bypasses_catch_and_still_unwinds()
+{
+    runtime::EvaluatorLimits limits;
+    limits.max_steps = 50;
+    runtime::SynchronousEvaluator evaluator({{
+        "main",
+        "let trace = 0;\n"
+        "fn spin() {\n"
+        "  defer trace = trace * 10 + 1;\n"
+        "  defer trace = trace * 10 + 2;\n"
+        "  try { while (true) { let work = 1; } } catch (error) { trace = 999; }\n"
+        "}\n"
+        "spin();\n",
+    }}, limits);
+    const auto error = expect_error(
+        runtime::LanguageErrorCode::InstructionLimitExceeded,
+        [&] { static_cast<void>(evaluator.execute("main")); },
+        "terminal instruction exhaustion must escape script catch handlers");
+    check(!error.catchable() && evaluator.stats().registered_defers == 2
+              && evaluator.stats().executed_defers == 2
+              && evaluator.stats().cleanup_steps > 0,
+          "terminal failure must use the independent cleanup allowance and execute every defer");
+}
+
+void test_terminal_cleanup_promotion_and_public_error_envelope()
+{
+    runtime::EvaluatorLimits limits;
+    limits.max_cleanup_steps = 20;
+    runtime::SynchronousEvaluator evaluator({{
+        "main",
+        "let caught = false;\n"
+        "fn fail_during_cleanup() {\n"
+        "  defer while (true) { let work = 1; }\n"
+        "  throw 7;\n"
+        "}\n"
+        "try { fail_during_cleanup(); } catch (error) { caught = true; }\n",
+    }}, limits);
+    const auto error = expect_error(
+        runtime::LanguageErrorCode::CleanupLimitExceeded,
+        [&] { static_cast<void>(evaluator.execute("main")); },
+        "terminal cleanup exhaustion must replace a propagating catchable primary");
+    const auto& envelope = error.structured_error();
+    check(!error.catchable() && error.has_structured_error()
+              && envelope.find("\"code\":\"CleanupLimitExceeded\"") != std::string::npos
+              && envelope.find("\"phase\":\"cleanup\",\"call_source\":{\"snapshot_id\"")
+                     != std::string::npos
+              && envelope.find("\"definition_source\":{\"snapshot_id\"")
+                     != std::string::npos
+              && envelope.find("\"suppressed\":[{\"schema\":\"baas.script.error/v1\",\"code\":\"ThrownValue\"")
+                     != std::string::npos,
+          "the public Error envelope must expose terminal primary promotion and the displaced primary");
+    check(evaluator.stats().registered_defers == 1
+              && evaluator.stats().executed_defers == 1,
+          "terminal promotion must not skip the cleanup that produced it");
+}
+
+void test_publication_failure_still_drains_registered_defers()
+{
+    runtime::HeapLimits heap_limits;
+    heap_limits.max_cells = 1;
+    runtime::SynchronousEvaluator evaluator(
+        {{
+            "main",
+            "let trace = 0;\n"
+            "fn fail_without_error_cell() {\n"
+            "  defer trace = trace * 10 + 1;\n"
+            "  defer { let cleanup_bad = 1 / 0; }\n"
+            "  let bad = 1 / 0;\n"
+            "}\n"
+            "fail_without_error_cell();\n",
+        }},
+        {},
+        heap_limits);
+    const auto error = expect_error(
+        runtime::LanguageErrorCode::MemoryLimitExceeded,
+        [&] { static_cast<void>(evaluator.execute("main")); },
+        "Error-cell publication exhaustion must fail closed at the public boundary");
+    const auto after_first = evaluator.stats();
+    const auto repeated = expect_error(
+        runtime::LanguageErrorCode::MemoryLimitExceeded,
+        [&] { static_cast<void>(evaluator.execute("main")); },
+        "a cached boundary failure must remain complete and stable on retry");
+    const auto after_second = evaluator.stats();
+    check(!error.catchable()
+              && std::string(error.what()).find("structured Error publication exhausted")
+                     != std::string::npos
+              && std::string(repeated.what()) == error.what()
+              && after_first.registered_defers == 2
+              && evaluator.stats().executed_defers == 2
+              && evaluator.stats().cleanup_steps > 0,
+          "cleanup publication failure must not replace the original terminal boundary");
+    check(after_second.steps == after_first.steps
+              && after_second.executed_defers == after_first.executed_defers,
+          "a boundary failure cache retry must not expose incomplete Failed state or rerun cleanup");
+}
+
+void test_stack_terminal_uses_independent_cleanup_call_depth()
+{
+    runtime::EvaluatorLimits limits;
+    limits.max_call_depth = 2;
+    limits.max_cleanup_call_depth = 2;
+    runtime::SynchronousEvaluator evaluator({{
+        "main",
+        "let trace = 0;\n"
+        "fn cleanup_helper() { trace = trace + 1; }\n"
+        "fn descend() { defer cleanup_helper(); descend(); }\n"
+        "descend();\n",
+    }}, limits);
+    const auto error = expect_error(
+        runtime::LanguageErrorCode::StackLimitExceeded,
+        [&] { static_cast<void>(evaluator.execute("main")); },
+        "ordinary call-depth exhaustion must remain the terminal primary");
+    check(!error.catchable() && evaluator.stats().registered_defers == 2
+              && evaluator.stats().executed_defers == 2
+              && evaluator.stats().peak_cleanup_call_depth == 1,
+          "stack-terminal unwind must call bounded cleanup helpers under an independent depth budget");
 }
 
 void test_input_order_independent_results_and_stats()
@@ -495,6 +706,11 @@ int main()
     test_source_and_expanded_collection_preflights();
     test_closure_side_table_survives_heap_collection();
     test_dynamic_failures_compile_gate_and_explicit_boundaries();
+    test_structured_errors_and_defer_unwinding();
+    test_terminal_failure_bypasses_catch_and_still_unwinds();
+    test_terminal_cleanup_promotion_and_public_error_envelope();
+    test_publication_failure_still_drains_registered_defers();
+    test_stack_terminal_uses_independent_cleanup_call_depth();
     test_input_order_independent_results_and_stats();
     test_nested_imports_participate_in_the_complete_module_graph();
     } catch (const std::exception& error) {

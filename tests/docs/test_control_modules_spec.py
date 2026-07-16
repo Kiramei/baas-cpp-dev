@@ -327,14 +327,18 @@ class ControlAndModulesSpecificationTests(unittest.TestCase):
         self.assertIn("let c0 = null;", self.fixture)
         self.assertIn("let c1 = null;", self.fixture)
 
-    def test_future_dynamic_error_categories_are_explicit_and_pending(self) -> None:
+    def test_dynamic_error_categories_and_production_boundary_are_explicit(self) -> None:
         documented = tuple(re.findall(
             r"^\| `([A-Z][A-Za-z]+)` \|",
             self.spec,
             re.MULTILINE,
         ))
         self.assertEqual(documented, EXPECTED_FUTURE_ERRORS)
-        self.assertIn("Full\nstructured Error payload, stack capture, and unwinding", self.spec)
+        self.assertIn(
+            "bounded synchronous evaluator implements structured Error payloads",
+            self.spec,
+        )
+        self.assertIn("production bytecode-VM and\nasync propagation remain pending", self.spec)
         self.assertIn("Production VM/loader limits", self.spec)
 
     def test_language_docs_roadmap_and_ci_link_the_normative_spec(self) -> None:

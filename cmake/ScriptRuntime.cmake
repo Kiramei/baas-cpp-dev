@@ -206,7 +206,7 @@ if(BUILD_SCRIPT_TESTS)
 
         set(BAAS_SCRIPT_CONFORMANCE_ROOT "${BAAS_PROJECT_PATH}/tests/script/conformance/v1")
         set(BAAS_SCRIPT_CONFORMANCE_DIRECTORIES
-                bounds cycle diagnostic escape happy host missing nested runtime_error)
+                bounds cycle diagnostic escape happy host missing nested runtime_error structured)
         file(GLOB BAAS_SCRIPT_CONFORMANCE_ENTRIES
                 RELATIVE "${BAAS_SCRIPT_CONFORMANCE_ROOT}"
                 "${BAAS_SCRIPT_CONFORMANCE_ROOT}/*")
@@ -318,6 +318,20 @@ if(BUILD_SCRIPT_TESTS)
                 "界😀界😀"
                 unicode_diagnostic.json
         )
+        baas_add_script_run_case(
+                BAAS_script_run_structured_cleanup
+                structured/main 0
+                "\"cleanup_primary\":\"ThrownValue\",\"cleanup_suppressed\":\"ThrownValue\""
+                structured_cleanup.json
+        )
+        add_test(
+                NAME BAAS_script_run_python_cleanup_parity
+                COMMAND "${Python3_EXECUTABLE}"
+                        "${BAAS_PROJECT_PATH}/tests/script/verify_cleanup_parity.py"
+                        --runner "$<TARGET_FILE:BAAS_script_run>"
+                        --package-root "${BAAS_SCRIPT_CONFORMANCE_ROOT}"
+        )
+        set_tests_properties(BAAS_script_run_python_cleanup_parity PROPERTIES TIMEOUT 30)
         add_test(
                 NAME BAAS_script_run_step_bound
                 COMMAND "${CMAKE_COMMAND}"

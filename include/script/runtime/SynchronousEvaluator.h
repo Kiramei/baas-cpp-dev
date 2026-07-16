@@ -32,6 +32,9 @@ struct EvaluatorLimits {
     std::size_t max_functions{100'000};
     std::size_t max_import_depth{128};
     std::size_t max_modules{4'096};
+    std::size_t max_defers_per_frame{1'024};
+    std::size_t max_cleanup_steps{100'000};
+    std::size_t max_cleanup_call_depth{128};
 };
 
 struct HostPermissionInput {
@@ -89,7 +92,8 @@ public:
         std::string message,
         std::string module,
         SourceSpan span,
-        std::size_t steps);
+        std::size_t steps,
+        std::string structured_error = {});
 
     [[nodiscard]] LanguageErrorCode code() const noexcept { return code_; }
     [[nodiscard]] std::string_view code_name() const noexcept
@@ -103,12 +107,23 @@ public:
     [[nodiscard]] const std::string& module() const noexcept { return module_; }
     [[nodiscard]] SourceSpan span() const noexcept { return span_; }
     [[nodiscard]] std::size_t steps() const noexcept { return steps_; }
+    [[nodiscard]] bool has_structured_error() const noexcept
+    {
+        return !structured_error_.empty();
+    }
+    // Bounded compact baas.script.error/v1 JSON. This survives evaluator
+    // teardown and preserves the full public Error envelope at the boundary.
+    [[nodiscard]] const std::string& structured_error() const noexcept
+    {
+        return structured_error_;
+    }
 
 private:
     LanguageErrorCode code_;
     std::string module_;
     SourceSpan span_;
     std::size_t steps_;
+    std::string structured_error_;
 };
 
 struct EvaluationStats {
@@ -118,6 +133,10 @@ struct EvaluationStats {
     std::size_t collection_work{};
     std::size_t initialized_modules{};
     std::size_t created_functions{};
+    std::size_t registered_defers{};
+    std::size_t executed_defers{};
+    std::size_t cleanup_steps{};
+    std::size_t peak_cleanup_call_depth{};
     std::size_t host_authorization_attempts{};
     std::size_t authorized_host_exports{};
     std::size_t host_calls{};
@@ -131,8 +150,9 @@ struct EvaluationResult {
 };
 
 // Dependency-free synchronous conformance evaluator. It executes validated
-// package ASTs only; bytecode, async/tasks, Host adapters, and structured
-// throw/catch/defer unwinding remain separate runtime boundaries.
+// package ASTs only; bytecode, async/tasks, and asynchronous Host adapters
+// remain separate runtime boundaries. Synchronous structured errors and defer
+// cleanup are implemented as the conformance oracle for ERR-009 through ERR-015.
 class SynchronousEvaluator final {
 public:
     explicit SynchronousEvaluator(

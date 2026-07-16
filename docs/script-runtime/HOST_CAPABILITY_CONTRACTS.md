@@ -353,9 +353,10 @@ The guarded callback returns `HostResult<HostValue>` or a structured `HostError`
 All HOST001-HOST016 mappings and deadline/budget discriminators are total;
 `std::bad_alloc` uses an allocation-free boundary state that maps to
 `MemoryLimitExceeded`, while other C++ exceptions are redacted to `HostInternal`.
-The transitional evaluator preserves safe binding identity and `effect_state`
-in `EvaluationError` text, but does not claim the pending ERR-003 heap-Error
-unwinder.
+The synchronous conformance evaluator materializes translated Host failures as
+ERR-003 heap Errors with `origin = host`, one allowlisted Host frame, stable
+`host_code`, `retryable`, `effect_state`, and allowlisted discriminator details.
+The remaining real/asynchronous adapters and production bytecode VM are pending.
 
 The executable catalog vertical slice is `host.log.emit.v1(level:string,
 message:string, fields?:ordered-map<string,json>) -> null`, capability

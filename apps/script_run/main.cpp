@@ -167,7 +167,8 @@ void append_json_value(std::string& out, const runtime::JsonValue& value,
 std::string error_json(const std::string_view phase, const std::string_view code,
                        const std::string_view message, const std::string_view module = {},
                        const script::SourceSpan span = {},
-                       const std::optional<std::size_t> steps = std::nullopt)
+                       const std::optional<std::size_t> steps = std::nullopt,
+                       const std::string_view structured_error = {})
 {
     const auto clipped = [](const std::string_view value) {
         constexpr std::size_t limit = 256;
@@ -247,6 +248,13 @@ std::string error_json(const std::string_view phase, const std::string_view code
         out += ",\"steps\":";
         append_size(out, *steps);
     }
+    if (!structured_error.empty()) {
+        // EvaluationError owns a bounded ErrorEnvelope serializer result, so
+        // this is already one complete validated JSON object rather than text
+        // requiring another lossy escape layer.
+        out += ",\"structured_error\":";
+        out += structured_error;
+    }
     out += "}}\n";
     return out;
 }
@@ -276,6 +284,8 @@ Options parse_options(const int argc, char** argv)
             std::cout
                 << "BAAS_script_run --package-root DIR --entry MODULE [--export NAME]\n"
                    "                [--max-steps N] [--max-call-depth N]\n"
+                   "                [--max-defers-per-frame N] [--max-cleanup-steps N]\n"
+                   "                [--max-cleanup-call-depth N]\n"
                    "                [--max-module-bytes N] [--max-total-bytes N]\n"
                    "                [--max-modules N] [--max-json-nodes N]\n"
                    "                [--max-json-output-bytes N]\n"
@@ -292,6 +302,9 @@ Options parse_options(const int argc, char** argv)
         else if (argument == "--export") options.export_name = value;
         else if (argument == "--max-steps") options.limits.max_steps = parse_size(value, argument);
         else if (argument == "--max-call-depth") options.limits.max_call_depth = parse_size(value, argument);
+        else if (argument == "--max-defers-per-frame") options.limits.max_defers_per_frame = parse_size(value, argument);
+        else if (argument == "--max-cleanup-steps") options.limits.max_cleanup_steps = parse_size(value, argument);
+        else if (argument == "--max-cleanup-call-depth") options.limits.max_cleanup_call_depth = parse_size(value, argument);
         else if (argument == "--max-module-bytes") options.limits.max_module_source_bytes = parse_size(value, argument);
         else if (argument == "--max-total-bytes") options.limits.max_total_source_bytes = parse_size(value, argument);
         else if (argument == "--max-modules") options.limits.max_modules = parse_size(value, argument);
@@ -538,6 +551,11 @@ std::string success_json(const Options& options, const runtime::JsonValue& value
     out += ",\"collection_work\":"; append_size(out, stats.collection_work);
     out += ",\"initialized_modules\":"; append_size(out, stats.initialized_modules);
     out += ",\"created_functions\":"; append_size(out, stats.created_functions);
+    out += ",\"registered_defers\":"; append_size(out, stats.registered_defers);
+    out += ",\"executed_defers\":"; append_size(out, stats.executed_defers);
+    out += ",\"cleanup_steps\":"; append_size(out, stats.cleanup_steps);
+    out += ",\"peak_cleanup_call_depth\":";
+    append_size(out, stats.peak_cleanup_call_depth);
     out += "}}\n";
     check_output_size(out, options.max_json_output_bytes);
     return out;
@@ -568,7 +586,7 @@ int main(const int argc, char** argv)
         return 1;
     } catch (const runtime::EvaluationError& error) {
         std::cout << error_json("execute", error.code_name(), error.what(), error.module(),
-                                error.span(), error.steps());
+                                error.span(), error.steps(), error.structured_error());
         return 1;
     } catch (const runtime::RuntimeError& error) {
         std::cout << error_json("result", runtime::runtime_error_code_name(error.code()),
