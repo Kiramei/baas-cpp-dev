@@ -6,6 +6,7 @@
 #include "service/app/ProductionProviderBackend.h"
 #include "service/app/ProductionRemoteBackend.h"
 #include "service/app/ServiceRuntimeProviderBridge.h"
+#include "service/app/ServiceRuntimeRepositoryOwner.h"
 #include "service/app/StatusTriggerRegistration.h"
 #include "service/auth/Crypto.h"
 #include "service/channels/TriggerHandler.h"
@@ -27,14 +28,25 @@ namespace {
 
 [[nodiscard]] router::HealthSnapshot health_snapshot(
     const std::string_view phase,
+    const ServiceRuntimeRepositoryOwner& runtime_repository,
     const std::optional<router::HealthAuthSnapshot>& authentication = std::nullopt)
 {
     router::HealthSnapshot snapshot;
+    router::HealthObject repository_status{
+        {"phase", router::HealthValue{std::string{
+            service_runtime_repository_phase_name(runtime_repository.phase())}}},
+    };
+    if (runtime_repository.phase() == ServiceRuntimeRepositoryPhase::pinned) {
+        repository_status.emplace_back(
+            "generation",
+            router::HealthValue{runtime_repository.generation()});
+    }
     snapshot.statuses.emplace_back(
         "runtime",
         router::HealthValue{router::HealthObject{
             {"phase", router::HealthValue{std::string{phase}}},
             {"pipe", router::HealthValue{"unavailable"}},
+            {"repository", router::HealthValue{std::move(repository_status)}},
 #if defined(__ANDROID__)
             {"remote", router::HealthValue{"disabled"}},
 #else
@@ -101,7 +113,7 @@ public:
     void publish_failure(const std::string_view phase) noexcept
     {
         try {
-            readiness->publish_failed(health_snapshot(phase));
+            readiness->publish_failed(health_snapshot(phase, *runtime_repository));
         } catch (...) {
             try {
                 readiness->publish_failed();
@@ -116,6 +128,7 @@ public:
     std::unique_ptr<ServiceSignalOwner> signal_owner;
     std::shared_ptr<ProductionProviderBackend> provider;
     std::shared_ptr<adapters::FileResourceStore> resources;
+    std::unique_ptr<ServiceRuntimeRepositoryOwner> runtime_repository;
     std::unique_ptr<ServiceRuntimeProviderBridge> runtime_provider;
     std::shared_ptr<ProductionRemoteBackend> remote_backend;
     std::shared_ptr<trigger::TriggerExecutor> executor;
@@ -138,6 +151,7 @@ std::string_view service_application_error_name(
         case trigger_registration_failed: return "trigger_registration_failed";
         case trigger_dispatch_failed: return "trigger_dispatch_failed";
         case remote_resource_unavailable: return "remote_resource_unavailable";
+        case runtime_repository_invalid: return "runtime_repository_invalid";
         case composition_failed: return "composition_failed";
         case authentication_failed: return "authentication_failed";
         case host_start_failed: return "host_start_failed";
@@ -172,6 +186,15 @@ ServiceApplicationOpenResult ServiceApplication::open(
         || filesystem_error) {
         return {nullptr, ServiceApplicationError::invalid_options, {}};
     }
+    auto runtime_repository = open_service_runtime_repository_owner(
+        options.project_root);
+    if (!runtime_repository) {
+        const auto error = runtime_repository.error
+                == ServiceRuntimeRepositoryOpenError::invalid_activation
+            ? ServiceApplicationError::runtime_repository_invalid
+            : ServiceApplicationError::internal_failure;
+        return {nullptr, error, {}};
+    }
 #if !defined(__ANDROID__)
     const auto remote_server_jar =
         options.project_root / "service" / "remote" / "scrcpy-server.jar";
@@ -190,10 +213,12 @@ ServiceApplicationOpenResult ServiceApplication::open(
     try {
         auto impl = std::make_unique<Impl>();
         impl->options = std::move(options);
+        impl->runtime_repository = std::move(runtime_repository.owner);
         impl->shutdown = std::make_shared<ServiceShutdownCoordinator>();
         impl->readiness = std::make_shared<health::HealthReadinessOwner>(
-            health_snapshot("starting"));
-        impl->readiness->begin_startup(health_snapshot("starting"));
+            health_snapshot("starting", *impl->runtime_repository));
+        impl->readiness->begin_startup(
+            health_snapshot("starting", *impl->runtime_repository));
 
         impl->provider = std::make_shared<ProductionProviderBackend>();
         impl->resources = std::make_shared<adapters::FileResourceStore>(
@@ -363,7 +388,7 @@ bool ServiceApplication::publish_ready() noexcept
             std::move(*public_key.value),
         };
         if (!impl_->readiness->publish_ready(
-                health_snapshot("ready", auth_snapshot))) {
+                health_snapshot("ready", *impl_->runtime_repository, auth_snapshot))) {
             impl_->publish_failure("readiness_failed");
             stop();
             return false;
@@ -393,7 +418,8 @@ void ServiceApplication::stop() noexcept
     if (!impl_ || impl_->stopped.exchange(true, std::memory_order_acq_rel)) return;
     try {
         auto current = impl_->readiness->readiness_snapshot();
-        current.health.statuses = health_snapshot("stopped").statuses;
+        current.health.statuses =
+            health_snapshot("stopped", *impl_->runtime_repository).statuses;
         impl_->readiness->publish_failed(std::move(current.health));
     } catch (...) {
         try {

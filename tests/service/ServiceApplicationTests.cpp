@@ -1,5 +1,6 @@
 #include "service/app/ServiceApplication.h"
 
+#include "runtime/repository/RuntimeRepositorySnapshot.h"
 #include "service/http/HttpHost.h"
 #include "service/protocol/TriggerIngress.h"
 
@@ -7,6 +8,7 @@
 #include <nlohmann/json.hpp>
 
 #include <atomic>
+#include <array>
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
@@ -42,6 +44,7 @@ namespace http = baas::service::http;
 namespace protocol = baas::service::protocol::trigger;
 namespace trigger = baas::service::trigger;
 namespace router = baas::service::router;
+namespace repository = baas::runtime::repository;
 using namespace std::chrono_literals;
 
 namespace {
@@ -142,6 +145,61 @@ void add_remote_server_resource(const std::filesystem::path& root)
     jar << "deterministic application-test ws-scrcpy fixture";
     jar.close();
     if (!jar) throw std::runtime_error("remote server fixture write failed");
+}
+
+void write_runtime_repository_file(
+    const std::filesystem::path& path, const std::string_view bytes)
+{
+    std::filesystem::create_directories(path.parent_path());
+    std::ofstream output(path, std::ios::binary | std::ios::trunc);
+    output.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+    output.close();
+    if (!output) throw std::runtime_error("runtime repository fixture write failed");
+}
+
+[[nodiscard]] std::string add_runtime_repository_activation(
+    const std::filesystem::path& project_root)
+{
+    const std::string resource_commit(40, '1');
+    const std::string script_commit(40, '2');
+    const std::array<repository::RuntimeRepository, 2> values{{
+        {"resources", resource_commit, "objects/resources/" + resource_commit,
+         "manifest.json", std::string(64, 'a')},
+        {"scripts", script_commit, "objects/scripts/" + script_commit,
+         "manifest.json", std::string(64, 'b')},
+    }};
+    const auto generation = repository::runtime_repository_generation(values);
+    const auto state_root =
+        project_root / ".baas-updater" / "runtime-repositories";
+    const nlohmann::json snapshot{
+        {"schema", "baas.runtime-repositories.snapshot/v1"},
+        {"generation", generation},
+        {"repositories", nlohmann::json::array({
+            {
+                {"id", values[0].id},
+                {"commit", values[0].commit},
+                {"root", values[0].root},
+                {"manifest", values[0].manifest},
+                {"manifest_sha256", values[0].manifest_sha256},
+            },
+            {
+                {"id", values[1].id},
+                {"commit", values[1].commit},
+                {"root", values[1].root},
+                {"manifest", values[1].manifest},
+                {"manifest_sha256", values[1].manifest_sha256},
+            },
+        })},
+    };
+    const nlohmann::json current{
+        {"schema", "baas.runtime-repositories.current/v1"},
+        {"generation", generation},
+        {"snapshot", "snapshots/" + generation + ".json"},
+    };
+    write_runtime_repository_file(
+        state_root / "snapshots" / (generation + ".json"), snapshot.dump());
+    write_runtime_repository_file(state_root / "current.json", current.dump());
+    return generation;
 }
 
 [[nodiscard]] std::uint16_t unused_loopback_port()
@@ -255,6 +313,8 @@ void test_real_loopback_lifecycle_trigger_and_persistence()
 {
     TemporaryRoot root{"lifecycle"};
     add_remote_server_resource(root.path);
+    const auto runtime_repository_generation =
+        add_runtime_repository_activation(root.path);
     std::filesystem::create_directories(root.path / "config" / "source");
     {
         std::ofstream config(
@@ -334,12 +394,28 @@ void test_real_loopback_lifecycle_trigger_and_persistence()
     check(application->publish_ready(),
           "AuthOwner-derived public state must publish readiness");
     const auto ready = client.Get("/health");
+    const auto ready_json = ready ? nlohmann::json::parse(ready->body)
+                                  : nlohmann::json{};
+    const auto repository_pointer =
+        nlohmann::json::json_pointer{"/statuses/runtime/repository"};
+    const auto* repository_health =
+        ready && ready_json.contains(repository_pointer)
+        ? &ready_json.at(repository_pointer) : nullptr;
     check(ready && ready->status == 200
               && ready->body.find(R"("phase":"ready")") != std::string::npos
               && ready->body.find(R"("remote":"desktop_only")") != std::string::npos
               && ready->body.find(R"("server_sign_public_key":")")
                   != std::string::npos,
           "ready health must contain runtime policy and real auth public state");
+    check(repository_health && repository_health->is_object()
+              && repository_health->size() == 2
+              && repository_health->value("phase", "") == "pinned"
+              && repository_health->value("generation", "")
+                  == runtime_repository_generation
+              && ready->body.find(".baas-updater") == std::string::npos
+              && ready->body.find("objects/resources") == std::string::npos
+              && ready->body.find("manifest.json") == std::string::npos,
+          "health must expose only pinned phase and generation, never paths or repository metadata");
     const auto public_key = application->readiness_snapshot()
                                 .health.auth.server_sign_public_key;
     check(!public_key.empty(), "sodium AuthOwner must publish a signing key");
@@ -577,6 +653,72 @@ void test_readiness_requires_real_runtime_resources()
           "application readiness fails closed without real static and setup data");
 }
 
+void test_missing_repository_health_is_unavailable()
+{
+    TemporaryRoot root{"repository-unavailable"};
+    add_remote_server_resource(root.path);
+    std::filesystem::create_directories(root.path / "config");
+    write_runtime_repository_file(
+        root.path / "config" / "static.json", R"({"version":1})");
+    write_runtime_repository_file(
+        root.path / "setup.toml", "[general]\nchannel = 'stable'\n");
+    auto opened = app::ServiceApplication::open(
+        options(root.path, unused_loopback_port()));
+    check(static_cast<bool>(opened), "missing repository fixture must compose");
+    if (!opened) return;
+    const auto started = opened.application->start_transport();
+    check(started.started && opened.application->publish_ready(),
+          "missing repository must not prevent otherwise valid readiness");
+    if (!started.started) return;
+    httplib::Client client{"127.0.0.1", started.port};
+    const auto ready = client.Get("/health");
+    const auto health = ready ? nlohmann::json::parse(ready->body)
+                              : nlohmann::json{};
+    const auto repository_pointer =
+        nlohmann::json::json_pointer{"/statuses/runtime/repository"};
+    const auto* repository_health =
+        ready && health.contains(repository_pointer)
+        ? &health.at(repository_pointer) : nullptr;
+    check(repository_health && repository_health->is_object()
+              && repository_health->size() == 1
+              && repository_health->value("phase", "") == "unavailable"
+              && !repository_health->contains("generation"),
+          "ready health must expose missing current only as repository unavailable");
+    opened.application->stop();
+}
+
+void test_invalid_runtime_repository_fails_before_composition()
+{
+    TemporaryRoot root{"invalid-runtime-repository"};
+    add_remote_server_resource(root.path);
+    write_runtime_repository_file(
+        root.path / ".baas-updater" / "runtime-repositories" / "current.json",
+        R"({"schema":"baas.runtime-repositories.current/v1","generation":"tampered"})");
+    const auto opened = app::ServiceApplication::open(
+        options(root.path, unused_loopback_port()));
+    check(opened.error == app::ServiceApplicationError::runtime_repository_invalid
+              && app::service_application_error_name(opened.error)
+                  == "runtime_repository_invalid"
+              && !opened.application,
+          "malformed or tampered activation must fail service composition");
+    check(!std::filesystem::exists(root.path / "config"),
+          "invalid activation must fail before auth and resource-store side effects");
+
+    const std::vector<std::string> owned{
+        "--project-root", root.path.string(), "--host", "127.0.0.1",
+        "--port", std::to_string(unused_loopback_port()),
+    };
+    std::vector<std::string_view> arguments;
+    for (const auto& value : owned) arguments.emplace_back(value);
+    std::ostringstream output;
+    std::ostringstream diagnostics;
+    check(app::run_service_application(arguments, output, diagnostics)
+              == static_cast<int>(app::ServiceProcessExit::composition)
+              && diagnostics.str().find("runtime_repository_invalid")
+                  != std::string::npos,
+          "process boundary must report invalid activation as composition exit 5");
+}
+
 void test_missing_remote_resource_fails_before_composition_side_effects()
 {
     TemporaryRoot root{"missing-remote"};
@@ -597,6 +739,8 @@ int main()
         test_real_loopback_lifecycle_trigger_and_persistence();
         test_port_conflict_reports_nonzero_start_failure();
         test_readiness_requires_real_runtime_resources();
+        test_missing_repository_health_is_unavailable();
+        test_invalid_runtime_repository_fails_before_composition();
         test_missing_remote_resource_fails_before_composition_side_effects();
     } catch (const std::exception& error) {
         std::cerr << "UNEXPECTED: " << error.what() << '\n';

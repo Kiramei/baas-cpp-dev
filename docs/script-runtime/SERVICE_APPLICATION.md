@@ -29,6 +29,8 @@ setup `4`, composition `5`, HTTP start `6`, readiness `7`, and internal `8`.
   `HealthReadinessOwner`;
 - `ProductionProviderBackend`, `FileResourceStore`, and the joined
   `ServiceRuntimeProviderBridge`/`FileResourceWatcher` lifecycle;
+- `ServiceRuntimeRepositoryOwner`, which either retains one validated immutable
+  startup generation or reports that no current generation is available;
 - desktop `ProductionRemoteBackend`, `RemoteHandlerFactory`, and the same
   shared resource store/ADB smart-socket transport;
 - real `status`, `add_config*`, `copy_config`, `remove_config*`, `export_config`,
@@ -54,11 +56,21 @@ parsed `--pipe-name` therefore returns exit `3` before signal ownership,
 auth/config file creation, executor threads, or socket binding. This is a
 fail-closed boundary, not a claim that Pipe works.
 
+Runtime repository ownership is independent of `FileResourceStore` and
+`ServiceRuntimeProviderBridge`. A missing runtime repository pointer is
+reported as `statuses.runtime.repository.phase=unavailable`; an existing but
+invalid activation fails composition with `runtime_repository_invalid` before
+auth/config side effects. A valid activation is pinned for the entire service
+lifetime and `/health` exposes only `phase=pinned` and its generation. This
+phase describes immutable activation metadata; it does not claim that object
+payload bytes have been revalidated or admitted by a resource/script consumer.
+
 ## Lifecycle
 
-After CLI validation, the process rejects Pipe, blocks shutdown signals,
-publishes `starting`, constructs the production graph, and starts the loopback
-host. The listener initially returns `503 health_starting`. After start, the
+After CLI validation, the process rejects Pipe and fixes the runtime repository
+activation before it blocks shutdown signals, publishes `starting`, constructs
+the production graph, and starts the loopback host. The listener initially
+returns `503 health_starting`. After start, the
 runtime/provider bridge must complete its real config/static/setup scan;
 `ServiceApplication` then reads `AuthOwner::password_state()` and
 `signing_public_key()`, base64url-encodes the key, and atomically publishes the
@@ -91,7 +103,11 @@ shutdown, fixed-port conflict, real status, `detect_adb`, and durable
 configuration create/copy commands,
 persistent auth restart and second-instance locking, and Pipe rejection before
 filesystem side effects. It also verifies desktop remote policy and missing
-ws-scrcpy-resource failure before composition. Separate CTest entries execute
+ws-scrcpy-resource failure before composition. The dedicated runtime repository
+owner test covers missing current, malformed/tampered activation, retained pin
+lifetime, and concurrent readers observing one startup generation. Application
+tests also verify that health does not expose repository paths or metadata.
+Separate CTest entries execute
 the actual binary for `--help` and `--version`. CI provisions pinned
 cpp-httplib, libsodium, nlohmann-json, and miniz recipes, builds the bounded ZIP
 codec test, and runs Debug and Release on Windows, Linux, and macOS.
