@@ -1,16 +1,20 @@
 #include "service/adapters/FileResourceStore.h"
+#include "../../src/service/adapters/ConfigArchiveCodec.h"
 
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
+#include <cstring>
 #include <cwctype>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <initializer_list>
 #include <iterator>
 #include <mutex>
 #include <stdexcept>
@@ -26,6 +30,10 @@
 #include <Windows.h>
 #include <process.h>
 #else
+#include <csignal>
+#include <fcntl.h>
+#include <sys/file.h>
+#include <sys/wait.h>
 #include <unistd.h>
 #endif
 
@@ -34,6 +42,7 @@ namespace {
 using namespace std::chrono_literals;
 using Json = nlohmann::json;
 namespace adapters = baas::service::adapters;
+namespace archive = baas::service::adapters::config_archive;
 namespace channels = baas::service::channels;
 
 std::atomic<int> failures{};
@@ -77,6 +86,54 @@ std::string read_bytes(const std::filesystem::path& path)
 {
     std::ifstream input(path, std::ios::binary);
     return {std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
+}
+
+std::vector<std::byte> byte_vector(const std::string_view bytes)
+{
+    std::vector<std::byte> result(bytes.size());
+    if (!bytes.empty()) {
+        std::memcpy(result.data(), bytes.data(), bytes.size());
+    }
+    return result;
+}
+
+std::vector<std::byte> archive_bytes(
+    const std::initializer_list<std::pair<std::string, std::string_view>> files)
+{
+    std::vector<archive::Entry> entries;
+    entries.reserve(files.size());
+    for (const auto& [path, bytes] : files) {
+        entries.push_back({path, byte_vector(bytes)});
+    }
+    auto encoded = archive::encode(entries, {});
+    if (!encoded) throw std::runtime_error("fixture archive encoding failed");
+    return std::move(encoded.bytes);
+}
+
+int run_import_crash_child(const std::filesystem::path& root)
+{
+    const auto input = archive_bytes({
+        {"config.json", R"({"name":"Crash Lock","server":"日服"})"},
+    });
+    adapters::FileResourceStoreDependencies dependencies;
+    dependencies.clock = [] { return 32'000.0; };
+    dependencies.config_archive_fault_injector =
+        [root](const std::string_view step) {
+            if (step != "before_target_commit") return false;
+            write_bytes(root / "child-import-ready", "ready");
+            for (;;) std::this_thread::sleep_for(100ms);
+        };
+    adapters::FileResourceStore store(root, std::move(dependencies));
+    const auto result = store.import_config({input.data(), input.size()}, {});
+    return result ? 0 : 2;
+}
+
+bool has_private_config_artifact(const std::filesystem::path& root)
+{
+    for (const auto& child : std::filesystem::directory_iterator(root / "config")) {
+        if (child.path().filename().string().starts_with(".baas-")) return true;
+    }
+    return false;
 }
 
 class TempProject {
@@ -370,8 +427,11 @@ void test_posix_ancestor_symlink_swap_fails_closed()
     }
     check(constructor_rejected,
           "POSIX store construction refuses a swapped config ancestor symlink");
-    check(!store.refresh_and_publish(config_key(), "filesystem"),
-          "POSIX anchored refresh refuses a swapped config ancestor symlink");
+    check(store.refresh_and_publish(config_key(), "filesystem"),
+          "POSIX anchored refresh publishes a fail-closed removal for a swapped config ancestor symlink");
+    const auto invalidated = store.pull(config_key(), {});
+    check(!invalidated,
+          "POSIX anchored refresh leaves no cached snapshot after refusing the swapped ancestor");
     auto patched = store.apply_patch(
         replace_request(config_key(), timestamp, "/x", "2"), {});
     check(!patched && Json::parse(read_bytes(
@@ -1289,26 +1349,29 @@ void test_create_config_transaction_concurrency_cancellation_and_cleanup()
 
     std::stop_source cancelled;
     cancelled.request_stop();
+    bool cancelled_claim_called{};
     const auto pre_cancelled = store.create_config(
-        "cancelled", "日服", cancelled.get_token());
-    check(pre_cancelled.error == adapters::ConfigCommandError::cancelled,
-          "pre-commit cancellation performs no create mutation");
+        "cancelled", "日服", cancelled.get_token(),
+        [&](const std::string_view) {
+            cancelled_claim_called = true;
+            return true;
+        });
+    check(pre_cancelled.error == adapters::ConfigCommandError::cancelled
+              && !cancelled_claim_called
+              && !std::filesystem::exists(project.root / "config" / "7002"),
+          "pre-commit cancellation wins create without invoking its claim or mutating");
 
     std::stop_source late_stop;
-    std::optional<std::thread> canceller;
     const auto committed = store.create_config(
         "committed", "日服", late_stop.get_token(),
         [&](const std::string_view) {
-            canceller.emplace([&] {
-                static_cast<void>(late_stop.request_stop());
-            });
+            static_cast<void>(late_stop.request_stop());
             return true;
         });
-    if (canceller) canceller->join();
     check(committed && late_stop.stop_requested()
               && std::filesystem::is_directory(
                   project.root / "config" / committed.serial),
-          "commit claim linearizes before a concurrent late cancellation");
+          "a successful create claim can synchronously request stop without deadlock and still commits");
 
     TempProject failed_project;
     std::filesystem::create_directory(
@@ -1485,10 +1548,868 @@ void test_create_config_transaction_concurrency_cancellation_and_cleanup()
     }
 }
 
+void test_cross_store_pull_preserves_refresh_publication_baseline()
+{
+    {
+        TempProject project;
+        project.add_pair("alpha", R"({"value":"old"})");
+        project.add_globals();
+        adapters::FileResourceStore writer(project.root, dependencies());
+        adapters::FileResourceStore reader(project.root, dependencies());
+
+        const auto old = reader.pull(config_key(), {});
+        std::vector<channels::ResourceUpdate> updates;
+        auto subscription = reader.subscribe_updates(
+            [&updates](channels::ResourceUpdate update) {
+                updates.push_back(std::move(update));
+            });
+        const auto writer_timestamp = timestamp_of(writer, config_key());
+        const auto replaced = writer.apply_patch(
+            replace_request(
+                config_key(), writer_timestamp, "/value", R"("new")"),
+            {});
+        const auto fresh = reader.pull(config_key(), {});
+        const auto refreshed = reader.refresh(config_key(), "filesystem");
+
+        check(old && subscription && replaced
+                  && replaced->disposition
+                         == channels::ResourcePatchDisposition::applied
+                  && fresh && Json::parse(fresh->data_json)["value"] == "new"
+                  && refreshed.disposition
+                         == adapters::ResourceRefreshDisposition::updated
+                  && refreshed.published && updates.size() == 1,
+              "a fresh pull after a second store replacement preserves exactly one refresh publication");
+        if (updates.size() == 1) {
+            const auto operations = Json::parse(updates.front().operations_json);
+            check(operations.size() == 1
+                      && operations[0]["op"] == "replace"
+                      && operations[0]["path"] == ""
+                      && operations[0]["value"]["value"] == "new",
+                  "the preserved replacement baseline publishes the new root snapshot");
+        }
+        const auto unchanged = reader.refresh(config_key(), "filesystem");
+        check(unchanged.disposition
+                      == adapters::ResourceRefreshDisposition::unchanged
+                  && !unchanged.published && updates.size() == 1,
+              "the replacement is not published again after refresh advances the baseline");
+    }
+
+    {
+        TempProject project;
+        project.add_pair("remove-me", R"({"value":"old"})");
+        project.add_pair("keep-me", R"({"value":"keep"})");
+        project.add_globals();
+        adapters::FileResourceStore writer(project.root, dependencies());
+        adapters::FileResourceStore reader(project.root, dependencies());
+
+        const auto old = reader.pull(config_key("remove-me"), {});
+        std::vector<channels::ResourceUpdate> updates;
+        auto subscription = reader.subscribe_updates(
+            [&updates](channels::ResourceUpdate update) {
+                updates.push_back(std::move(update));
+            });
+        const auto removed = writer.remove_config("remove-me", {}, [] {
+            return true;
+        });
+        const auto missing = reader.pull(config_key("remove-me"), {});
+        const auto refreshed = reader.refresh(
+            config_key("remove-me"), "filesystem");
+
+        check(old && subscription && removed && !missing
+                  && missing.error == channels::ResourceStoreError::not_found
+                  && refreshed.disposition
+                         == adapters::ResourceRefreshDisposition::removed
+                  && refreshed.published && updates.size() == 1,
+              "a not-found pull after a second store removal preserves exactly one refresh publication");
+        if (updates.size() == 1) {
+            check(Json::parse(updates.front().operations_json)
+                      == Json::array({
+                          Json{{"op", "remove"}, {"path", ""}}}),
+                  "the preserved removal baseline publishes one root remove");
+        }
+        const auto absent = reader.refresh(
+            config_key("remove-me"), "filesystem");
+        check(absent.disposition
+                      == adapters::ResourceRefreshDisposition::not_found
+                  && !absent.published && updates.size() == 1,
+              "the removal is not published again after refresh clears the baseline");
+    }
+}
+
+void test_config_archive_export_and_python_compatible_import()
+{
+    TempProject export_project;
+    export_project.add_pair(
+        "source",
+        R"({"name":"  bad<name>:\"/\\|?*  ","server":"日服"})");
+    std::string binary_payload{"\0\x01", 2};
+    binary_payload += "archive";
+    binary_payload.push_back(static_cast<char>(0xff));
+    write_bytes(
+        export_project.root / "config" / "source" / "assets" / "blob.bin",
+        binary_payload);
+    write_bytes(
+        export_project.root / "config" / "source" / "display.json",
+        R"({"transient":true})");
+    adapters::FileResourceStore export_store(export_project.root, dependencies());
+    const auto exported = export_store.export_config("source", {});
+    check(exported && exported.filename == "bad_name________.zip"
+              && !exported.content.empty(),
+          "export uses the stripped Python-compatible sanitized filename");
+    const auto decoded = archive::decode(exported.content, {});
+    bool binary_preserved{};
+    bool display_exported{};
+    if (decoded) {
+        for (const auto& entry : decoded.entries) {
+            if (entry.path == "assets/blob.bin") {
+                binary_preserved = entry.bytes == byte_vector(binary_payload);
+            }
+            display_exported = display_exported || entry.path == "display.json";
+        }
+    }
+    check(decoded && binary_preserved && display_exported,
+          "export recursively preserves attached binary and compatibility files");
+
+    TempProject project;
+    project.add_pair(
+        "old-a", R"({"name":"Archive Name","server":"日服","old":1})");
+    project.add_pair(
+        "old-b", R"({"name":"  Archive Name  ","server":"日服","old":2})");
+    project.add_pair(
+        "other", R"({"name":"Other","server":"日服","keep":true})");
+    adapters::FileResourceStoreDependencies import_dependencies;
+    import_dependencies.clock = [] { return 20'000.9; };
+    adapters::FileResourceStore store(
+        project.root, std::move(import_dependencies));
+    check(store.pull(config_key("old-a"), {})
+              && store.pull(config_key("old-b"), {})
+              && store.pull(config_key("other"), {})
+              && store.config_list({}),
+          "archive replacement fixture primes config and list caches");
+
+    const std::string imported_binary{"A\0B\xff", 4};
+    const auto input = archive_bytes({
+        {"config.json",
+         R"({"name":"  Archive Name  ","server":"日服","autostart":true,"future":"drop","create_item_holding_quantity":{"unknown":9}})"},
+        {"event.json",
+         R"([{"func_name":"restart","enabled":false,"daily_reset":[[1,2]],"future":9}])"},
+        {"switch.json", R"({"sentinel":true})"},
+        {"display.json", R"({"must":"disappear"})"},
+        {"assets/blob.bin", imported_binary},
+    });
+    bool claim_seen{};
+    const auto imported = store.import_config(
+        {input.data(), input.size()}, {},
+        [&](const std::string_view serial, const std::string_view name) {
+            claim_seen = serial == "20000" && name == "Archive Name";
+            return true;
+        });
+    const auto target = project.root / "config" / "20000";
+    const auto pulled_config = store.pull(config_key("20000"), {});
+    const auto pulled_event = store.pull(event_key("20000"), {});
+    const auto listed = store.config_list({});
+    bool migrated_event{};
+    if (pulled_event) {
+        const auto event = Json::parse(pulled_event->data_json);
+        const auto restart = std::find_if(
+            event.begin(), event.end(), [](const Json& item) {
+                return item.value("func_name", std::string{}) == "restart";
+            });
+        migrated_event = restart != event.end()
+            && (*restart)["enabled"] == false
+            && (*restart)["daily_reset"] == Json::array({Json::array({0, 0, 0})})
+            && (*restart)["future"] == 9
+            && restart->contains("priority");
+    }
+    bool migrated_config{};
+    if (pulled_config) {
+        const auto config = Json::parse(pulled_config->data_json);
+        migrated_config = config["name"] == "  Archive Name  "
+            && config["autostart"] == true && config.contains("then")
+            && !config.contains("future")
+            && !config["create_item_holding_quantity"].contains("unknown");
+    }
+    const auto migrated_switch = Json::parse(read_bytes(target / "switch.json"));
+    check(imported && imported.serial == "20000"
+              && imported.name == "Archive Name" && claim_seen,
+          "root archive import claims and returns the trimmed Python-compatible identity");
+    check(migrated_config,
+          "root archive import migrates config defaults and removes unknown keys");
+    check(migrated_event,
+          "root archive import migrates event fields and malformed reset triples");
+    check(migrated_switch.is_array() && !migrated_switch.empty()
+              && migrated_switch.front().value("config", std::string{})
+                     == "cafeInvite",
+          "root archive import replaces archived switches with current defaults");
+    check(read_bytes(target / "assets" / "blob.bin") == imported_binary
+              && !std::filesystem::exists(target / "display.json"),
+          "root archive import preserves binary attachments and deletes display metadata");
+    check(!std::filesystem::exists(project.root / "config" / "old-a")
+              && !std::filesystem::exists(project.root / "config" / "old-b")
+              && std::filesystem::is_directory(project.root / "config" / "other")
+              && !store.pull(config_key("old-a"), {})
+              && !store.pull(config_key("old-b"), {})
+              && store.pull(config_key("other"), {})
+              && listed
+              && Json::parse(listed->data_json)
+                     == Json::array({"20000", "other"})
+              && !has_private_config_artifact(project.root),
+          "import atomically replaces every complete same-name pair, preserves other pairs, and invalidates caches");
+
+    TempProject prefixed_project;
+    adapters::FileResourceStoreDependencies prefixed_dependencies;
+    prefixed_dependencies.clock = [] { return 21'000.0; };
+    adapters::FileResourceStore prefixed_store(
+        prefixed_project.root, std::move(prefixed_dependencies));
+    const auto prefixed = archive_bytes({
+        {"bundle/config.json", R"({"name":"Prefix","server":"官服"})"},
+        {"bundle/nested/keep.bin", std::string_view{"x\0y", 3}},
+    });
+    const auto prefixed_import = prefixed_store.import_config(
+        {prefixed.data(), prefixed.size()}, {});
+    check(prefixed_import && prefixed_import.serial == "21000"
+              && prefixed_import.name == "Prefix"
+              && read_bytes(prefixed_project.root / "config" / "21000"
+                            / "nested" / "keep.bin")
+                     == std::string{"x\0y", 3}
+              && prefixed_store.pull(config_key("21000"), {})
+              && prefixed_store.pull(event_key("21000"), {})
+              && Json::parse(prefixed_store.config_list({})->data_json)
+                     == Json::array({"21000"}),
+          "a Python-compatible single top-level directory archive imports as one complete visible pair");
+}
+
+void test_copy_and_remove_claim_self_cancel_linearization()
+{
+    TempProject copy_project;
+    copy_project.add_pair(
+        "source", R"({"name":"Source","server":"日服"})");
+    adapters::FileResourceStoreDependencies copy_dependencies;
+    copy_dependencies.clock = [] { return 31'000.0; };
+    adapters::FileResourceStore copy_store(
+        copy_project.root, std::move(copy_dependencies));
+
+    std::stop_source copy_stop;
+    bool copy_claim_called{};
+    std::string claimed_copy_serial;
+    std::string claimed_copy_name;
+    const auto copied = copy_store.copy_config(
+        "source", copy_stop.get_token(),
+        [&](const std::string_view serial, const std::string_view name) {
+            copy_claim_called = true;
+            claimed_copy_serial = serial;
+            claimed_copy_name = name;
+            static_cast<void>(copy_stop.request_stop());
+            return true;
+        });
+    check(copied && copy_claim_called && copy_stop.stop_requested()
+              && copied.serial == "31000"
+              && copied.serial == claimed_copy_serial
+              && copied.name == claimed_copy_name
+              && std::filesystem::is_directory(
+                  copy_project.root / "config" / copied.serial)
+              && copy_store.pull(config_key(copied.serial), {})
+              && copy_store.pull(event_key(copied.serial), {})
+              && !has_private_config_artifact(copy_project.root),
+          "a successful copy claim can synchronously request stop without deadlock and still commits");
+
+    std::stop_source copy_cancelled;
+    copy_cancelled.request_stop();
+    bool cancelled_copy_claim_called{};
+    const auto uncopied = copy_store.copy_config(
+        "source", copy_cancelled.get_token(),
+        [&](const std::string_view, const std::string_view) {
+            cancelled_copy_claim_called = true;
+            return true;
+        });
+    check(uncopied.error == adapters::ConfigCommandError::cancelled
+              && !cancelled_copy_claim_called
+              && !std::filesystem::exists(
+                  copy_project.root / "config" / "31001")
+              && Json::parse(copy_store.config_list({})->data_json)
+                     == Json::array({"31000", "source"})
+              && !has_private_config_artifact(copy_project.root),
+          "pre-cancelled copy wins without invoking its claim or publishing another pair");
+
+    TempProject remove_project;
+    remove_project.add_pair(
+        "remove-me", R"({"name":"Remove","server":"日服"})");
+    remove_project.add_pair(
+        "keep-me", R"({"name":"Keep","server":"日服"})");
+    adapters::FileResourceStore remove_store(remove_project.root, dependencies());
+    check(remove_store.pull(config_key("remove-me"), {})
+              && remove_store.pull(event_key("remove-me"), {}),
+          "remove self-cancel fixture primes the retiring pair cache");
+    std::stop_source remove_stop;
+    bool remove_claim_called{};
+    const auto removed = remove_store.remove_config(
+        "remove-me", remove_stop.get_token(), [&] {
+            remove_claim_called = true;
+            static_cast<void>(remove_stop.request_stop());
+            return true;
+        });
+    const auto removed_pull = remove_store.pull(config_key("remove-me"), {});
+    check(removed && remove_claim_called && remove_stop.stop_requested()
+              && !std::filesystem::exists(
+                  remove_project.root / "config" / "remove-me")
+              && !removed_pull
+              && removed_pull.error == channels::ResourceStoreError::not_found
+              && Json::parse(remove_store.config_list({})->data_json)
+                     == Json::array({"keep-me"})
+              && !has_private_config_artifact(remove_project.root),
+          "a successful remove claim can synchronously request stop without deadlock and still commits");
+
+    std::stop_source remove_cancelled;
+    remove_cancelled.request_stop();
+    bool cancelled_remove_claim_called{};
+    const auto kept = remove_store.remove_config(
+        "keep-me", remove_cancelled.get_token(), [&] {
+            cancelled_remove_claim_called = true;
+            return true;
+        });
+    check(kept.error == adapters::ConfigCommandError::cancelled
+              && !cancelled_remove_claim_called
+              && std::filesystem::is_directory(
+                  remove_project.root / "config" / "keep-me")
+              && remove_store.pull(config_key("keep-me"), {})
+              && Json::parse(remove_store.config_list({})->data_json)
+                     == Json::array({"keep-me"})
+              && !has_private_config_artifact(remove_project.root),
+          "pre-cancelled remove wins without invoking its claim or retiring the pair");
+}
+
+void test_config_archive_import_claim_cancellation_and_rollback()
+{
+    const auto input = archive_bytes({
+        {"config.json", R"({"name":"Atomic","server":"日服"})"},
+        {"payload.bin", "new"},
+    });
+
+    TempProject rejected_project;
+    rejected_project.add_pair(
+        "old", R"({"name":"Atomic","server":"日服","sentinel":"old"})");
+    adapters::FileResourceStoreDependencies rejected_dependencies;
+    rejected_dependencies.clock = [] { return 22'000.0; };
+    adapters::FileResourceStore rejected_store(
+        rejected_project.root, std::move(rejected_dependencies));
+    check(rejected_store.pull(config_key("old"), {})
+              && rejected_store.config_list({}),
+          "claim rejection fixture primes the old cached pair");
+    bool claim_seen{};
+    const auto rejected = rejected_store.import_config(
+        {input.data(), input.size()}, {},
+        [&](const std::string_view serial, const std::string_view name) {
+            claim_seen = serial == "22000" && name == "Atomic";
+            return false;
+        });
+    const auto old_after_rejection = rejected_store.pull(config_key("old"), {});
+    check(rejected.error == adapters::ConfigCommandError::cancelled && claim_seen
+              && old_after_rejection
+              && Json::parse(old_after_rejection->data_json)["sentinel"] == "old"
+              && Json::parse(rejected_store.config_list({})->data_json)
+                     == Json::array({"old"})
+              && !std::filesystem::exists(
+                  rejected_project.root / "config" / "22000")
+              && !has_private_config_artifact(rejected_project.root),
+          "a rejected response claim publishes nothing and reclaims import staging");
+
+    std::stop_source stopped;
+    stopped.request_stop();
+    bool cancelled_import_claim_called{};
+    const auto cancelled = rejected_store.import_config(
+        {input.data(), input.size()}, stopped.get_token(),
+        [&](const std::string_view, const std::string_view) {
+            cancelled_import_claim_called = true;
+            return true;
+        });
+    check(cancelled.error == adapters::ConfigCommandError::cancelled
+              && !cancelled_import_claim_called
+              && Json::parse(rejected_store.config_list({})->data_json)
+                     == Json::array({"old"})
+              && !has_private_config_artifact(rejected_project.root),
+          "pre-cancelled import does not decode, retire, or publish filesystem state");
+
+    for (const std::string step : {"before_retire", "before_target_commit"}) {
+        TempProject project;
+        project.add_pair(
+            "old", R"({"name":"Atomic","server":"日服","sentinel":"old"})");
+        project.add_pair(
+            "other", R"({"name":"Other","server":"日服","sentinel":"keep"})");
+        adapters::FileResourceStoreDependencies fault_dependencies;
+        fault_dependencies.clock = [] { return 23'000.0; };
+        fault_dependencies.config_archive_fault_injector =
+            [step](const std::string_view candidate) { return candidate == step; };
+        adapters::FileResourceStore store(
+            project.root, std::move(fault_dependencies));
+        check(store.pull(config_key("old"), {})
+                  && store.pull(config_key("other"), {})
+                  && store.config_list({}),
+              "archive fault fixture primes all affected caches");
+        const auto failed = store.import_config(
+            {input.data(), input.size()}, {},
+            [](const std::string_view, const std::string_view) { return true; });
+        const auto old = store.pull(config_key("old"), {});
+        const auto other = store.pull(config_key("other"), {});
+        const auto list = store.config_list({});
+        check(failed.error == adapters::ConfigCommandError::internal_error
+                  && old && other
+                  && Json::parse(old->data_json)["sentinel"] == "old"
+                  && Json::parse(other->data_json)["sentinel"] == "keep"
+                  && list
+                  && Json::parse(list->data_json) == Json::array({"old", "other"})
+                  && !std::filesystem::exists(project.root / "config" / "23000")
+                  && !has_private_config_artifact(project.root),
+              "archive fault " + step
+                  + " rolls back retirement and leaves disk/list/pull caches unchanged");
+    }
+}
+
+void test_config_archive_claim_self_cancel_and_crash_recovery()
+{
+    const auto input = archive_bytes({
+        {"config.json", R"({"name":"Claim Wins","server":"日服"})"},
+    });
+    TempProject claim_project;
+    adapters::FileResourceStoreDependencies claim_dependencies;
+    claim_dependencies.clock = [] { return 26'000.0; };
+    adapters::FileResourceStore claim_store(
+        claim_project.root, std::move(claim_dependencies));
+    std::stop_source self_cancel;
+    const auto claimed = claim_store.import_config(
+        {input.data(), input.size()}, self_cancel.get_token(),
+        [&](const std::string_view, const std::string_view) {
+            static_cast<void>(self_cancel.request_stop());
+            return true;
+        });
+    check(claimed && claimed.serial == "26000"
+              && self_cancel.stop_requested()
+              && std::filesystem::is_directory(
+                  claim_project.root / "config" / "26000")
+              && !has_private_config_artifact(claim_project.root),
+          "a claim that synchronously requests stop must not self-deadlock and wins the commit gate");
+
+    TempProject rollback_project;
+    rollback_project.add_pair(
+        "old-a", R"({"name":"Atomic","server":"日服"})");
+    rollback_project.add_pair(
+        "old-b", R"({"name":"Atomic","server":"日服"})");
+    const auto rollback_root = rollback_project.root / "config";
+    const std::string rollback_transaction = "123-27000-1";
+    const std::string rollback_journal_name =
+        ".baas-import-journal-" + rollback_transaction + ".json";
+    const std::string rollback_staging_name =
+        ".baas-import-" + rollback_transaction;
+    const std::string rollback_tomb_a =
+        ".baas-import-retired-" + rollback_transaction + "-0";
+    const std::string rollback_tomb_b =
+        ".baas-import-retired-" + rollback_transaction + "-1";
+    std::filesystem::rename(
+        rollback_root / "old-a", rollback_root / rollback_tomb_a);
+    std::filesystem::create_directory(rollback_root / rollback_staging_name);
+    write_bytes(
+        rollback_root / rollback_staging_name / "config.json",
+        R"({"name":"Atomic","server":"日服"})");
+    write_bytes(
+        rollback_root / rollback_staging_name / ".baas-import-commit",
+        rollback_journal_name);
+    write_bytes(
+        rollback_root / rollback_journal_name,
+        Json{{"version", 1},
+             {"staging", rollback_staging_name},
+             {"target", "27000"},
+             {"retired",
+              Json::array({
+                  Json{{"source", "old-a"}, {"tombstone", rollback_tomb_a}},
+                  Json{{"source", "old-b"}, {"tombstone", rollback_tomb_b}},
+              })}}
+            .dump());
+    adapters::FileResourceStore recovered_rollback(rollback_project.root);
+    const auto rolled_back_list = recovered_rollback.config_list({});
+    check(rolled_back_list
+              && Json::parse(rolled_back_list->data_json)
+                  == Json::array({"old-a", "old-b"})
+              && std::filesystem::is_directory(rollback_root / "old-a")
+              && std::filesystem::is_directory(rollback_root / "old-b")
+              && !std::filesystem::exists(rollback_root / "27000")
+              && !has_private_config_artifact(rollback_project.root),
+          "startup recovery must restore every retired profile after a pre-publication crash");
+
+    TempProject committed_project;
+    committed_project.add_pair(
+        "old", R"({"name":"Atomic","server":"日服"})");
+    const auto committed_root = committed_project.root / "config";
+    const std::string committed_transaction = "123-28000-2";
+    const std::string committed_journal_name =
+        ".baas-import-journal-" + committed_transaction + ".json";
+    const std::string committed_staging_name =
+        ".baas-import-" + committed_transaction;
+    const std::string committed_tomb =
+        ".baas-import-retired-" + committed_transaction + "-0";
+    std::filesystem::rename(
+        committed_root / "old", committed_root / committed_tomb);
+    std::filesystem::create_directory(committed_root / "28000");
+    write_bytes(
+        committed_root / "28000" / "config.json",
+        R"({"name":"Atomic","server":"日服"})");
+    write_bytes(committed_root / "28000" / "event.json", "[]");
+    write_bytes(
+        committed_root / "28000" / ".baas-import-commit",
+        committed_journal_name);
+    write_bytes(
+        committed_root / committed_journal_name,
+        Json{{"version", 1},
+             {"staging", committed_staging_name},
+             {"target", "28000"},
+             {"retired",
+              Json::array({
+                  Json{{"source", "old"}, {"tombstone", committed_tomb}},
+              })}}
+            .dump());
+    adapters::FileResourceStore recovered_commit(committed_project.root);
+    const auto committed_list = recovered_commit.config_list({});
+    check(committed_list
+              && Json::parse(committed_list->data_json)
+                  == Json::array({"28000"})
+              && !std::filesystem::exists(committed_root / "old")
+              && !std::filesystem::exists(committed_root / committed_tomb)
+              && !std::filesystem::exists(
+                  committed_root / "28000" / ".baas-import-commit")
+              && !has_private_config_artifact(committed_project.root),
+          "startup recovery must finish tombstone cleanup after a published import crash");
+}
+
+void test_config_archive_root_lock_and_journal_binding()
+{
+    const auto input = archive_bytes({
+        {"config.json", R"({"name":"Serialized","server":"日服"})"},
+    });
+    TempProject live_project;
+    live_project.add_pair(
+        "old", R"({"name":"Serialized","server":"日服"})");
+    std::mutex gate_mutex;
+    std::condition_variable gate_condition;
+    bool before_retire{};
+    bool release_import{};
+    adapters::FileResourceStoreDependencies dependencies;
+    dependencies.clock = [] { return 29'000.0; };
+    dependencies.config_archive_fault_injector =
+        [&](const std::string_view step) {
+            if (step != "before_retire") return false;
+            std::unique_lock lock(gate_mutex);
+            before_retire = true;
+            gate_condition.notify_all();
+            gate_condition.wait(lock, [&] { return release_import; });
+            return false;
+        };
+    adapters::FileResourceStore live_store(
+        live_project.root, std::move(dependencies));
+    std::atomic<bool> import_succeeded{};
+    std::thread importer([&] {
+        const auto imported = live_store.import_config(
+            {input.data(), input.size()}, {});
+        import_succeeded.store(
+            imported && imported.serial == "29000", std::memory_order_release);
+    });
+    bool reached_gate{};
+    {
+        std::unique_lock lock(gate_mutex);
+        reached_gate = gate_condition.wait_for(
+            lock, 5s, [&] { return before_retire; });
+    }
+    bool competing_store_rejected{};
+    if (reached_gate) {
+        try {
+            adapters::FileResourceStore competing(live_project.root);
+        } catch (const std::invalid_argument&) {
+            competing_store_rejected = true;
+        }
+    }
+    const bool active_transaction_intact =
+        reached_gate && has_private_config_artifact(live_project.root)
+        && std::filesystem::is_directory(
+            live_project.root / "config" / "old");
+    {
+        std::lock_guard lock(gate_mutex);
+        release_import = true;
+    }
+    gate_condition.notify_all();
+    importer.join();
+    check(reached_gate && competing_store_rejected && active_transaction_intact
+              && import_succeeded.load(std::memory_order_acquire)
+              && std::filesystem::is_directory(
+                  live_project.root / "config" / "29000")
+              && !std::filesystem::exists(
+                  live_project.root / "config" / "old")
+              && !has_private_config_artifact(live_project.root),
+          "a second store cannot recover or delete another live import transaction");
+
+    TempProject shared_cache_project;
+    shared_cache_project.add_pair(
+        "old", R"({"name":"Shared Cache","server":"日服","value":"old"})");
+    adapters::FileResourceStoreDependencies writer_dependencies;
+    writer_dependencies.clock = [] { return 29'500.0; };
+    adapters::FileResourceStore writer(
+        shared_cache_project.root, std::move(writer_dependencies));
+    adapters::FileResourceStore reader(shared_cache_project.root);
+    const auto cached_old = reader.pull(config_key("old"), {});
+    const auto shared_input = archive_bytes({
+        {"config.json",
+         R"({"name":"Shared Cache","server":"日服","value":"new"})"},
+    });
+    const auto shared_import = writer.import_config(
+        {shared_input.data(), shared_input.size()}, {});
+    const auto stale_old = reader.pull(config_key("old"), {});
+    const auto visible_new = reader.pull(config_key("29500"), {});
+    check(cached_old && shared_import && shared_import.serial == "29500"
+              && !stale_old
+              && stale_old.error == channels::ResourceStoreError::not_found
+              && visible_new
+              && Json::parse(visible_new->data_json)["name"] == "Shared Cache"
+              && Json::parse(reader.config_list({})->data_json)
+                     == Json::array({"29500"}),
+          "separately constructed stores revalidate cached pulls after a structural transaction");
+
+    TempProject mismatch_project;
+    mismatch_project.add_pair(
+        "safe", R"({"name":"Safe","server":"日服"})");
+    const auto mismatch_root = mismatch_project.root / "config";
+    const std::string transaction = "123-30000-1";
+    const std::string journal_name =
+        ".baas-import-journal-" + transaction + ".json";
+    const std::string staging_name = ".baas-import-" + transaction;
+    const std::string unrelated_tombstone =
+        ".baas-import-retired-999-30000-1-0";
+    std::filesystem::create_directory(mismatch_root / staging_name);
+    std::filesystem::create_directory(mismatch_root / unrelated_tombstone);
+    write_bytes(
+        mismatch_root / journal_name,
+        Json{{"version", 1},
+             {"staging", staging_name},
+             {"target", "30000"},
+             {"retired",
+              Json::array({
+                  Json{{"source", "safe"},
+                       {"tombstone", unrelated_tombstone}},
+              })}}
+            .dump());
+    bool mismatched_journal_rejected{};
+    try {
+        adapters::FileResourceStore rejected(mismatch_project.root);
+    } catch (const std::invalid_argument&) {
+        mismatched_journal_rejected = true;
+    }
+    check(mismatched_journal_rejected
+              && std::filesystem::is_directory(
+                  mismatch_root / "safe")
+              && std::filesystem::is_directory(
+                  mismatch_root / staging_name)
+              && std::filesystem::is_directory(
+                  mismatch_root / unrelated_tombstone)
+              && std::filesystem::is_regular_file(
+                  mismatch_root / journal_name),
+          "a journal whose tombstone is not derived from its filename fails closed without touching unrelated paths");
+
+#if defined(_WIN32)
+    TempProject pending_delete_project;
+    pending_delete_project.add_pair(
+        "31000", R"({"name":"Committed","server":"日服"})");
+    const auto pending_root = pending_delete_project.root / "config";
+    const std::string pending_transaction = "777-31000-1";
+    const std::string pending_journal_name =
+        ".baas-import-journal-" + pending_transaction + ".json";
+    const auto pending_journal = pending_root / pending_journal_name;
+    write_bytes(
+        pending_root / "31000" / ".baas-import-commit",
+        pending_journal_name);
+    write_bytes(
+        pending_journal,
+        Json{{"version", 1},
+             {"staging", ".baas-import-" + pending_transaction},
+             {"target", "31000"},
+             {"retired", Json::array()}}
+            .dump());
+    const HANDLE held_journal = CreateFileW(
+        pending_journal.c_str(), GENERIC_READ,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    bool pending_delete_rejected{};
+    if (held_journal != INVALID_HANDLE_VALUE) {
+        try {
+            adapters::FileResourceStore blocked(pending_delete_project.root);
+        } catch (const std::invalid_argument&) {
+            pending_delete_rejected = true;
+        }
+    }
+    const bool recovery_evidence_preserved =
+        std::filesystem::is_regular_file(pending_journal)
+        && std::filesystem::is_regular_file(
+            pending_root / "31000" / ".baas-import-commit");
+    if (held_journal != INVALID_HANDLE_VALUE) {
+        static_cast<void>(CloseHandle(held_journal));
+    }
+    bool retried_recovery_succeeded{};
+    try {
+        adapters::FileResourceStore recovered(pending_delete_project.root);
+        retried_recovery_succeeded =
+            Json::parse(recovered.config_list({})->data_json)
+            == Json::array({"31000"});
+    } catch (...) {
+    }
+    check(held_journal != INVALID_HANDLE_VALUE
+              && pending_delete_rejected && recovery_evidence_preserved
+              && retried_recovery_succeeded
+              && !std::filesystem::exists(pending_journal)
+              && !std::filesystem::exists(
+                  pending_root / "31000" / ".baas-import-commit"),
+          "Windows recovery retains its journal and final marker while another process can delay delete-on-close");
+#endif
+}
+
+void test_config_archive_cross_process_lock_and_crash_recovery()
+{
+    TempProject project;
+    project.add_pair(
+        "old", R"({"name":"Crash Lock","server":"日服"})");
+    const auto ready = project.root / "child-import-ready";
+    bool child_started{};
+#if defined(_WIN32)
+    std::array<wchar_t, 32'768> executable_buffer{};
+    const auto executable_size = GetModuleFileNameW(
+        nullptr, executable_buffer.data(),
+        static_cast<DWORD>(executable_buffer.size()));
+    PROCESS_INFORMATION process{};
+    if (executable_size > 0 && executable_size < executable_buffer.size()) {
+        const std::wstring executable{
+            executable_buffer.data(), executable_size};
+        std::wstring command = L"\"" + executable
+            + L"\" --import-crash-child \""
+            + project.root.native() + L"\"";
+        std::vector<wchar_t> mutable_command(command.begin(), command.end());
+        mutable_command.push_back(L'\0');
+        STARTUPINFOW startup{};
+        startup.cb = sizeof(startup);
+        child_started = CreateProcessW(
+            nullptr, mutable_command.data(), nullptr, nullptr, FALSE,
+            CREATE_NO_WINDOW, nullptr, nullptr, &startup, &process) != FALSE;
+        if (child_started) CloseHandle(process.hThread);
+    }
+#else
+    const pid_t child = ::fork();
+    if (child == 0) {
+        ::_exit(run_import_crash_child(project.root));
+    }
+    child_started = child > 0;
+#endif
+
+    bool child_ready{};
+    for (std::size_t attempt{}; child_started && attempt < 250; ++attempt) {
+        if (std::filesystem::is_regular_file(ready)) {
+            child_ready = true;
+            break;
+        }
+        std::this_thread::sleep_for(20ms);
+    }
+    bool competing_store_rejected{};
+    if (child_ready) {
+        try {
+            adapters::FileResourceStore competing(project.root);
+        } catch (const std::invalid_argument&) {
+            competing_store_rejected = true;
+        }
+    }
+    const bool retired_state_observed =
+        child_ready
+        && !std::filesystem::exists(project.root / "config" / "old")
+        && has_private_config_artifact(project.root);
+
+#if defined(_WIN32)
+    if (child_started) {
+        static_cast<void>(TerminateProcess(process.hProcess, 137));
+        static_cast<void>(WaitForSingleObject(process.hProcess, 10'000));
+        CloseHandle(process.hProcess);
+    }
+#else
+    if (child_started) {
+        static_cast<void>(::kill(child, SIGKILL));
+        int status{};
+        static_cast<void>(::waitpid(child, &status, 0));
+    }
+#endif
+    std::error_code ready_error;
+    static_cast<void>(std::filesystem::remove(ready, ready_error));
+
+    bool recovered_after_crash{};
+    try {
+        adapters::FileResourceStore recovered(project.root);
+        const auto listed = recovered.config_list({});
+        recovered_after_crash = listed
+            && Json::parse(listed->data_json) == Json::array({"old"})
+            && recovered.pull(config_key("old"), {});
+    } catch (...) {
+    }
+    check(child_started && child_ready && competing_store_rejected
+              && retired_state_observed && recovered_after_crash
+              && std::filesystem::is_directory(
+                  project.root / "config" / "old")
+              && !std::filesystem::exists(
+                  project.root / "config" / "32000")
+              && !has_private_config_artifact(project.root),
+          "a second process cannot recover a live import, and kernel lock release after a crash permits deterministic rollback");
+}
+
+void test_config_archive_import_invalid_and_capacity_inputs()
+{
+    TempProject project;
+    adapters::FileResourceStoreDependencies archive_dependencies;
+    archive_dependencies.clock = [] { return 24'000.0; };
+    adapters::FileResourceStore store(
+        project.root, std::move(archive_dependencies));
+    const auto no_config = archive_bytes({{"notes.txt", "missing"}});
+    const auto bad_config = archive_bytes({{"config.json", "{"}});
+    const std::array<std::byte, 4> corrupt{
+        std::byte{'B'}, std::byte{'A'}, std::byte{'D'}, std::byte{'!'}};
+    const auto missing = store.import_config(
+        {no_config.data(), no_config.size()}, {});
+    const auto malformed = store.import_config(
+        {bad_config.data(), bad_config.size()}, {});
+    const auto invalid_zip = store.import_config(corrupt, {});
+    check(missing.error == adapters::ConfigCommandError::invalid_data
+              && malformed.error == adapters::ConfigCommandError::invalid_data
+              && invalid_zip.error == adapters::ConfigCommandError::invalid_data
+              && Json::parse(store.config_list({})->data_json).empty()
+              && !has_private_config_artifact(project.root),
+          "missing config.json, bad config JSON, and invalid ZIP fail before staging");
+
+    TempProject full_project;
+    full_project.add_pair(
+        "only", R"({"name":"Keep","server":"日服"})");
+    channels::ResourceStoreLimits one_pair;
+    one_pair.max_resources = 1;
+    adapters::FileResourceStoreDependencies full_dependencies;
+    full_dependencies.clock = [] { return 25'000.0; };
+    adapters::FileResourceStore full_store(
+        full_project.root, std::move(full_dependencies), one_pair);
+    const auto distinct = archive_bytes({
+        {"config.json", R"({"name":"New","server":"日服"})"},
+    });
+    const auto full = full_store.import_config(
+        {distinct.data(), distinct.size()}, {});
+    check(full.error == adapters::ConfigCommandError::capacity
+              && Json::parse(full_store.config_list({})->data_json)
+                     == Json::array({"only"})
+              && !std::filesystem::exists(full_project.root / "config" / "25000")
+              && !std::filesystem::exists(full_project.root / "config" / "static.json")
+              && !has_private_config_artifact(full_project.root),
+          "import capacity admission rejects a new pair before static or staging side effects");
+}
+
 }  // namespace
 
-int main()
+int main(const int argc, char** argv)
 {
+    if (argc == 3 && std::string_view{argv[1]} == "--import-crash-child") {
+        return run_import_crash_child(std::filesystem::path{argv[2]});
+    }
     try {
         test_list_pull_and_resource_shapes();
         test_path_traversal_and_symlink_rejection();
@@ -1514,7 +2435,15 @@ int main()
         test_setup_toml_eof_insertion_keeps_valid_line_boundaries();
         test_setup_toml_scalar_table_conflicts_fail_closed();
         test_create_config_transaction_concurrency_cancellation_and_cleanup();
+        test_config_archive_export_and_python_compatible_import();
+        test_copy_and_remove_claim_self_cancel_linearization();
+        test_config_archive_import_claim_cancellation_and_rollback();
+        test_config_archive_claim_self_cancel_and_crash_recovery();
+        test_config_archive_root_lock_and_journal_binding();
+        test_config_archive_cross_process_lock_and_crash_recovery();
+        test_config_archive_import_invalid_and_capacity_inputs();
         test_refresh_and_publish();
+        test_cross_store_pull_preserves_refresh_publication_baseline();
     } catch (const std::exception& error) {
         ++failures;
         std::cerr << "UNCAUGHT: " << error.what() << '\n';

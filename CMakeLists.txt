@@ -561,6 +561,10 @@ if(BUILD_SERVICE_SYNC_HANDLER OR BUILD_SERVICE_REMOTE_HANDLER
     baas_request_dependencies(nlohmann_json)
 endif()
 
+if(BUILD_SERVICE_FILE_RESOURCE_STORE)
+    baas_request_dependencies(miniz)
+endif()
+
 baas_load_requested_dependencies()
 
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)

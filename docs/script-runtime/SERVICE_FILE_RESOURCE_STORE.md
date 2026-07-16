@@ -60,12 +60,14 @@ before filesystem or mutation work. `setup.toml` must already exist as an
 anchored regular file; creation remains the launcher/installer's responsibility
 so a racing pull can never replace a newly created user file with defaults.
 
-Configuration-tree copy additionally limits the actual traversal to 4,096
-entries across regular files and directories, 64 MiB of file data, and 32
-directory levels. Each entry is charged before its destination is created, so
-wide trees of empty directories cannot consume unbounded enumeration, inode,
-or disk capacity. Capacity and cancellation failures remove private staging
-without publishing a partial configuration.
+Configuration-tree copy and archive processing additionally limit the actual
+traversal/decoded set to 4,096 entries across regular files and directories,
+64 MiB of file data, and 32 directory levels. Archives additionally allow at
+most 64 MiB of ZIP input, 16 MiB per file, 1,024-byte portable paths, and a
+1,024:1 compression ratio. Each entry is charged before its destination is
+created, so wide trees of empty directories cannot consume unbounded
+enumeration, inode, or disk capacity. Capacity and cancellation failures remove
+private staging without publishing a partial configuration.
 
 ## Patch and commit boundary
 
@@ -130,7 +132,8 @@ than this durable adapter.
 
 ## Configuration command operations
 
-The production `add_config*`, `copy_config`, and `remove_config*` trigger
+The production `add_config*`, `copy_config`, `remove_config*`, `export_config`,
+and `import_config` trigger
 registrations use explicit structural operations on this store. They share the patch mutation
 gate, use bounded auth-protected siblings under `config/` plus same-volume rename,
 and invalidate affected config/event cache entries on every successful outcome;
@@ -145,9 +148,40 @@ creation verifies `O_NOFOLLOW`/mode `0700` and syncs the parent directory.
 Create initializes user, event, and switch documents from the same embedded
 Python vectors used by copy, assigns `name`/`server`, rebuilds the server-specific
 manufacturing quantities, and makes the private staging directory visible with
-one durable rename. Millisecond id selection and commit-claim/cancellation
-ordering are serialized by the mutation gate; failed claims, invalid static
+one durable rename. Millisecond id selection is serialized by the mutation gate,
+while one atomic open/cancelled/claimed phase gives cancellation and the
+irreversible response claim an exact winner; failed claims, invalid static
 targets, and initialization failures reclaim all `.baas-create-*` siblings.
+
+Export holds the mutation gate for a coherent snapshot, recursively reads only
+anchored regular files, sorts normalized forward-slash member names, and
+returns a bounded in-memory ZIP. Import validates and decodes ZIP bytes before
+the mutation gate, but performs every filesystem write within it. Portable path
+validation rejects traversal, absolute/drive/UNC/ADS spellings, invalid UTF-8,
+reserved or trailing-dot/space components, normalized duplicates, symlinks,
+special/encrypted/unsupported entries, invalid CRCs, excessive compression,
+and all declared size/count/path/depth ceilings.
+
+Import builds the migrated user/event/switch files and preserved auxiliary
+regular files under an anchored `.baas-import-*` staging directory. Complete
+existing config/event pairs with the same Python-stripped name are renamed to
+private tombstones only after a durable `.baas-import-journal-*` records the
+staging, target, and complete rename set and the response sink claims the
+irreversible terminal. Failure before target publication rolls those renames
+back in reverse order and removes staging; success atomically publishes the new
+id, invalidates new/retired config and event cache entries plus static metadata,
+and lets the watcher observe only the final pair set. A marker that travels with
+staging distinguishes a published target from an unrelated directory. The
+journal filename's canonical transaction is required to match its target,
+staging, ordered tombstones, and marker byte-for-byte. A project-root
+`.baas-config-import.lock` serializes recovery and live imports across store
+instances and processes. On the next store construction, a strictly bound
+journal deterministically restores
+all old trees when publication did not happen, or finishes tombstone cleanup
+when it did. The journal is removed before the commit marker only after cleanup,
+so process exit or power loss at any rename/cleanup boundary remains recoverable.
+Windows create, rename, and delete barriers explicitly close the mutated handle
+and flush the anchored parent-directory metadata through the native NT flush API.
 
 The `config/` root is a production precondition: `create_config` never creates
 an unprotected root. `ServiceApplication`'s auth owner creates and tightens that
@@ -175,13 +209,15 @@ watcher that needs a subscription update calls `refresh_and_publish` after
 observing the committed change, using that method's validation and publication
 barrier. See
 `SERVICE_CONFIGURATION_TRIGGERS.md` for
-the Python parity boundary and deferred commands.
+the Python parity boundary, adjacent-binary archive protocol, and remaining
+deferred command.
 
 ## Build and verification
 
 Enable `BUILD_SERVICE_FILE_RESOURCE_STORE` for the static adapter target or
 `BUILD_SERVICE_FILE_RESOURCE_STORE_TESTS` for the adapter plus
-`BAAS_service_file_resource_store_tests`. The native suite covers safe listing
+`BAAS_service_file_resource_store_tests` and
+`BAAS_service_config_archive_codec_tests`. The native suites cover safe listing
 and pulls, traversal/reparse-point rejection, malformed and capacity-bounded
 JSON, setup alias/proxy projection, canonical null/global identity, replayable
 committed publications, quoted-key/comment/multiline-preserving TOML commits, patch
@@ -189,7 +225,10 @@ conflicts, pre-commit writer failure, post-commit durability
 uncertainty, concurrent patches, subscription barriers and self-unsubscription,
 callback exception isolation, external refresh, Windows physical aliases,
 anchored-handle rename blocking, and Windows/POSIX ancestor-swap fail-closed
-behavior.
+behavior. They also cover bounded deterministic ZIP round trips,
+path/case/separator collisions, encrypted/symlink/unsupported entries, CRC
+corruption, compression ratio, archive/entry/total/path/depth/count limits, and
+cancellation.
 
 The implementation is excluded from the legacy `BAAS_CORE_SOURCES` glob and is
 compiled only through `cmake/ServiceFileResourceStore.cmake`.
