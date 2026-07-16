@@ -318,6 +318,88 @@ void test_budget_failure_cache_and_exception_translation()
               std::string(first.what()).find("effect_state=unknown") != std::string::npos,
           "Host failure cache must avoid repeated effects and retain safe identity/effect state");
 
+    runtime::SynchronousEvaluator caught_host_error(
+        {{"main",
+          "import \"baas/log\" as log;\n"
+          "let code = \"\"; let origin = \"\"; let frame_kind = \"\";\n"
+          "let frame_module = \"\"; let frame_function = \"\";\n"
+          "let host_code = \"\"; let effect = \"\"; let retryable = false;\n"
+          "let detached_detail = \"\";\n"
+          "try { log.emit(\"i\", \"m\"); } catch (error) {\n"
+          "  code = error.code; origin = error.origin;\n"
+          "  frame_kind = error.stack[0].kind;\n"
+          "  frame_module = error.stack[0].module;\n"
+          "  frame_function = error.stack[0].function;\n"
+          "  let first = error.details;\n"
+          "  host_code = first.host_code; effect = first.effect_state;\n"
+          "  retryable = first.retryable;\n"
+          "  first.host_details.deadline_scope = \"mutated\";\n"
+          "  detached_detail = error.details.host_details.deadline_scope;\n"
+          "}\n"}},
+        log_options(timeout_bindings));
+    static_cast<void>(caught_host_error.execute("main"));
+    const auto read_string = [&](const std::string_view name) {
+        return caught_host_error.heap().string_copy(
+            caught_host_error.module_export("main", name).as_heap_ref());
+    };
+    check(read_string("code") == "Timeout" && read_string("origin") == "host"
+              && read_string("frame_kind") == "host"
+              && read_string("frame_module") == "baas/log"
+              && read_string("frame_function") == "emit"
+              && read_string("host_code") == "HOST004_DEADLINE_EXCEEDED"
+              && read_string("effect") == "unknown"
+              && caught_host_error.module_export("main", "retryable").as_boolean()
+              && read_string("detached_detail") == "call",
+          "Host failures must expose allowlisted metadata and detached read-only detail projections");
+
+    struct RejectedDetailCase {
+        runtime::HostErrorCode code;
+        runtime::JsonObject details;
+    };
+    const std::vector<RejectedDetailCase> rejected_details{
+        {runtime::HostErrorCode::DeadlineExceeded,
+         {{"deadline_scope", runtime::JsonValue(runtime::JsonObject{
+              {"secret", runtime::JsonValue("nested")}})}}},
+        {runtime::HostErrorCode::DeadlineExceeded,
+         {{"deadline_scope", runtime::JsonValue("later")},
+          {"secret", runtime::JsonValue(runtime::JsonObject{
+              {"token", runtime::JsonValue("hidden")}})}}},
+        {runtime::HostErrorCode::Internal,
+         {{"deadline_scope", runtime::JsonValue("call")},
+          {"secret", runtime::JsonValue("hidden")}}},
+    };
+    for (const auto& rejected : rejected_details) {
+        auto binding = runtime::make_in_memory_log_binding(host);
+        binding.callback = [rejected](const runtime::HostCallContext&,
+                                      const runtime::HostArguments&) {
+            return runtime::HostResult::failure({
+                rejected.code,
+                "safe failure",
+                false,
+                runtime::HostEffectState::Unknown,
+                runtime::JsonValue(rejected.details)});
+        };
+        auto rejected_bindings =
+            std::make_shared<const runtime::SynchronousNativeBindingSet>(
+                std::vector<runtime::SynchronousNativeBinding>{std::move(binding)});
+        runtime::SynchronousEvaluator rejected_evaluator(
+            {{"main",
+              "import \"baas/log\" as log;\n"
+              "let code = \"\"; let has_host_details = true;\n"
+              "try { log.emit(\"i\", \"m\"); } catch (error) {\n"
+              "  code = error.code;\n"
+              "  has_host_details = \"host_details\" in error.details;\n"
+              "}\n"}},
+            log_options(rejected_bindings));
+        static_cast<void>(rejected_evaluator.execute("main"));
+        check(rejected_evaluator.heap().string_copy(
+                  rejected_evaluator.module_export("main", "code").as_heap_ref())
+                      == "HostInternal"
+                  && !rejected_evaluator.module_export(
+                          "main", "has_host_details").as_boolean(),
+              "undeclared, wrong-type, unknown, or irrelevant Host details must be omitted");
+    }
+
     auto bad_alloc_binding = runtime::make_in_memory_log_binding(host);
     bad_alloc_binding.callback = [](const runtime::HostCallContext&,
                                     const runtime::HostArguments&) -> runtime::HostResult {
