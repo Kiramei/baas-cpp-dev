@@ -6,7 +6,6 @@ get_filename_component(BAAS_PROJECT_PATH "${CMAKE_CURRENT_LIST_DIR}" ABSOLUTE)
 
 include("${CMAKE_CURRENT_LIST_DIR}/cmake/utils.cmake")
 include("${CMAKE_CURRENT_LIST_DIR}/cmake/platform.cmake")
-include("${CMAKE_CURRENT_LIST_DIR}/cmake/BAASResources.cmake")
 
 BAAS_hr_LOG("PROJECT BAAS")
 
@@ -74,6 +73,7 @@ message(STATUS "Build time  : ${BUILD_TIME}")
 # app options
 option(BUILD_APP_BAAS               "Build BAAS app          "  OFF)
 option(BUILD_APP_ISA                "Build ISA  app          "  OFF)
+option(BAAS_FETCH_RESOURCES         "Download legacy BAAS runtime resources during configure" OFF)
 
 # other
 option(BUILD_BAAS_OCR           "build the ocr server app"               OFF)
@@ -569,6 +569,15 @@ check_app_options(
         BUILD_BAAS_AW_CHECKER
 )
 
+# Configure-time download/copy tooling belongs only to the legacy applications.
+# Keep one shared registry and one final install pass so each supported legacy
+# entry point continues to receive the union of its requested resources.
+set(_baas_legacy_resource_tooling_enabled OFF)
+if(BUILD_APP_BAAS OR BUILD_APP_ISA OR BUILD_BAAS_OCR OR BUILD_BAAS_AW_CHECKER)
+    set(_baas_legacy_resource_tooling_enabled ON)
+    include("${CMAKE_CURRENT_LIST_DIR}/cmake/BAASResources.cmake")
+endif()
+
 if(BUILD_BAAS_NMS_BENCHMARK)
     baas_request_dependencies(benchmark opencv_dnn)
 endif()
@@ -862,4 +871,6 @@ if(NOT TARGET_OS_NAME STREQUAL "Android")
     )
 endif()
 
-baas_install_required_runtime_resources()
+if(_baas_legacy_resource_tooling_enabled)
+    baas_install_required_runtime_resources()
+endif()

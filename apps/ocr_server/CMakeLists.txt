@@ -20,11 +20,7 @@ configure_file(
 option(BAAS_OCR_SERVER_USE_CUDA      "Ocr Server Use CUDA"       OFF)
 option(BAAS_OCR_SERVER_ANDROID_BUILD "Build Android Application" OFF)
 
-baas_require_runtime_resources(
-        global_config
-        static_config
-        ocr_models
-)
+include("${CMAKE_CURRENT_LIST_DIR}/cmake/RuntimeResources.cmake")
 
 if (MSVC)
     add_compile_options("$<$<C_COMPILER_ID:MSVC>:/utf-8>")

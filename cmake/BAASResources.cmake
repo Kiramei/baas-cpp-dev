@@ -1,6 +1,5 @@
 include_guard(GLOBAL)
 
-option(BAAS_FETCH_RESOURCES "Download BAAS runtime resources during configure" ON)
 set(BAAS_RESOURCE_DOWNLOAD_ROOT "${CMAKE_BINARY_DIR}/baas-resource-downloads" CACHE PATH "BAAS resource download cache")
 set(BAAS_RESOURCE_OUTPUT_ROOT "${CMAKE_BINARY_DIR}/baas-resources" CACHE PATH "BAAS fetched resource output root")
 set(BAAS_FETCHED_RESOURCE_ROOT "${BAAS_RESOURCE_OUTPUT_ROOT}/resource")

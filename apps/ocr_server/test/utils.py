@@ -7,7 +7,7 @@ from pathlib import Path
 
 TEST_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
-DEFAULT_TEST_RESOURCE_ROOT = TEST_DIR
+DEFAULT_TEST_RESOURCE_ROOT = PROJECT_ROOT / "build" / "ocr-test-resources"
 DEFAULT_RESOURCE_DOWNLOAD_ROOT = PROJECT_ROOT / "build" / "baas-resource-downloads"
 
 REQUIRED_TEST_IMAGES = [
