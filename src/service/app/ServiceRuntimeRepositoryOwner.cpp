@@ -75,6 +75,15 @@ ServiceRuntimeRepositoryOwner::pin() const noexcept
     return pin_;
 }
 
+std::shared_ptr<const runtime::repository::RuntimeRepositoryReadBundle>
+ServiceRuntimeRepositoryOwner::open_read_bundle(
+    const runtime::repository::RuntimeRepositoryReadLimits limits,
+    const std::stop_token stop_token) const
+{
+    if (!pin_) return {};
+    return pin_->open_read_bundle(limits, stop_token);
+}
+
 ServiceRuntimeRepositoryOpenResult open_service_runtime_repository_owner(
     const std::filesystem::path& project_root,
     const std::string_view expected_generation) noexcept

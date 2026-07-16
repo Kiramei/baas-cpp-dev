@@ -4,6 +4,7 @@
 
 #include <filesystem>
 #include <memory>
+#include <stop_token>
 #include <string>
 #include <string_view>
 
@@ -43,6 +44,9 @@ public:
     [[nodiscard]] const std::string& generation() const noexcept;
     [[nodiscard]] std::shared_ptr<const runtime::repository::RuntimeRepositorySnapshot>
         pin() const noexcept;
+    [[nodiscard]] std::shared_ptr<const runtime::repository::RuntimeRepositoryReadBundle>
+        open_read_bundle(runtime::repository::RuntimeRepositoryReadLimits limits = {},
+                         std::stop_token stop_token = {}) const;
 
 private:
     std::shared_ptr<const runtime::repository::RuntimeRepositorySnapshot> pin_;
