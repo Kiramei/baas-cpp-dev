@@ -20,6 +20,7 @@ on:
       - 'cmake/ServiceTriggerHandler.cmake'
       - 'cmake/ServiceProviderBackend.cmake'
       - 'cmake/ServiceRemoteBackend.cmake'
+      - 'cmake/ServiceFileResourceStore.cmake'
       - 'cmake/ServiceRemoteHandler.cmake'
       - 'cmake/ServiceAdbTransport.cmake'
       - 'cmake/ServiceAdbSync.cmake'
@@ -62,6 +63,9 @@ on:
       - 'tests/docs/test_service_provider_backend.py'
       - 'include/service/app/ProductionRemoteBackend.h'
       - 'src/service/app/ProductionRemoteBackend.cpp'
+      - 'include/service/adapters/FileResourceStore.h'
+      - 'src/service/adapters/FileResourceStore.cpp'
+      - 'src/service/adapters/ConfigurationDefaults.h'
       - 'include/service/channels/RemoteHandler.h'
       - 'src/service/channels/RemoteHandler.cpp'
       - 'include/service/channels/SyncHandler.h'
@@ -70,6 +74,7 @@ on:
       - 'include/service/adb/ServiceAdbSync.h'
       - 'src/service/adb/ServiceAdbSync.cpp'
       - 'tests/service/ProductionRemoteBackendTests.cpp'
+      - 'tests/service/ProductionRemoteBackendLiveSmoke.cpp'
       - 'tests/service/ServiceRemoteHandlerTests.cpp'
       - 'tests/service/ServiceAdbTransportTests.cpp'
       - 'tests/service/ServiceAdbSyncTests.cpp'
@@ -121,6 +126,7 @@ on:
       - 'cmake/ServiceTriggerHandler.cmake'
       - 'cmake/ServiceProviderBackend.cmake'
       - 'cmake/ServiceRemoteBackend.cmake'
+      - 'cmake/ServiceFileResourceStore.cmake'
       - 'cmake/ServiceRemoteHandler.cmake'
       - 'cmake/ServiceAdbTransport.cmake'
       - 'cmake/ServiceAdbSync.cmake'
@@ -163,6 +169,9 @@ on:
       - 'tests/docs/test_service_provider_backend.py'
       - 'include/service/app/ProductionRemoteBackend.h'
       - 'src/service/app/ProductionRemoteBackend.cpp'
+      - 'include/service/adapters/FileResourceStore.h'
+      - 'src/service/adapters/FileResourceStore.cpp'
+      - 'src/service/adapters/ConfigurationDefaults.h'
       - 'include/service/channels/RemoteHandler.h'
       - 'src/service/channels/RemoteHandler.cpp'
       - 'include/service/channels/SyncHandler.h'
@@ -171,6 +180,7 @@ on:
       - 'include/service/adb/ServiceAdbSync.h'
       - 'src/service/adb/ServiceAdbSync.cpp'
       - 'tests/service/ProductionRemoteBackendTests.cpp'
+      - 'tests/service/ProductionRemoteBackendLiveSmoke.cpp'
       - 'tests/service/ServiceRemoteHandlerTests.cpp'
       - 'tests/service/ServiceAdbTransportTests.cpp'
       - 'tests/service/ServiceAdbSyncTests.cpp'
@@ -314,6 +324,7 @@ jobs:
           -DBUILD_SERVICE_TRIGGER_HANDLER_TESTS=ON
           -DBUILD_SERVICE_PROVIDER_BACKEND_TESTS=ON
           -DBUILD_SERVICE_REMOTE_BACKEND_TESTS=ON
+          -DBUILD_SERVICE_REMOTE_BACKEND_LIVE_SMOKE=ON
           -DBUILD_SERVICE_REMOTE_HANDLER_TESTS=ON
           -DBUILD_SERVICE_ADB_TRANSPORT_TESTS=ON
           -DBUILD_SERVICE_ADB_SYNC_TESTS=ON
@@ -337,6 +348,7 @@ jobs:
           BAAS_service_trigger_handler_tests
           BAAS_service_provider_backend_tests
           BAAS_service_remote_backend_tests
+          BAAS_service_remote_backend_live_smoke
           BAAS_service_remote_handler_tests
           BAAS_service_adb_transport_tests
           BAAS_service_adb_sync_tests
