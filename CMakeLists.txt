@@ -139,6 +139,8 @@ option(BUILD_SERVICE_TRIGGER_HANDLER "Build the production trigger business hand
 option(BUILD_SERVICE_TRIGGER_HANDLER_TESTS "Build deterministic trigger-handler tests" OFF)
 option(BUILD_SERVICE_STATUS_TRIGGER "Build the production status trigger registration" OFF)
 option(BUILD_SERVICE_STATUS_TRIGGER_TESTS "Build deterministic status trigger registration tests" OFF)
+option(BUILD_SERVICE_ADB_DISCOVERY_TRIGGER "Build the production detect_adb trigger registration" OFF)
+option(BUILD_SERVICE_ADB_DISCOVERY_TRIGGER_TESTS "Build deterministic detect_adb trigger tests" OFF)
 option(BUILD_SERVICE_CONFIGURATION_TRIGGERS "Build production configuration trigger registrations" OFF)
 option(BUILD_SERVICE_CONFIGURATION_TRIGGER_TESTS "Build configuration trigger production tests" OFF)
 option(BUILD_SERVICE_COMMAND_LINE "Build the bounded service command-line contract" OFF)
@@ -162,6 +164,7 @@ if(BUILD_SERVICE_APP)
     set(BUILD_SERVICE_REMOTE_BACKEND ON CACHE BOOL "Build the production ws-scrcpy remote backend" FORCE)
     set(BUILD_SERVICE_TRIGGER_HANDLER ON CACHE BOOL "Build the production trigger business handler" FORCE)
     set(BUILD_SERVICE_STATUS_TRIGGER ON CACHE BOOL "Build the production status trigger registration" FORCE)
+    set(BUILD_SERVICE_ADB_DISCOVERY_TRIGGER ON CACHE BOOL "Build the production detect_adb trigger registration" FORCE)
     set(BUILD_SERVICE_CONFIGURATION_TRIGGERS ON CACHE BOOL "Build production configuration trigger registrations" FORCE)
 endif()
 
@@ -338,6 +341,18 @@ endif()
 
 if(BUILD_SERVICE_STATUS_TRIGGER_TESTS AND NOT BUILD_SERVICE_STATUS_TRIGGER)
     set(BUILD_SERVICE_STATUS_TRIGGER ON CACHE BOOL "Build the production status trigger registration" FORCE)
+endif()
+
+if(BUILD_SERVICE_ADB_DISCOVERY_TRIGGER_TESTS AND NOT BUILD_SERVICE_ADB_DISCOVERY_TRIGGER)
+    set(BUILD_SERVICE_ADB_DISCOVERY_TRIGGER ON CACHE BOOL "Build the production detect_adb trigger registration" FORCE)
+endif()
+
+if(BUILD_SERVICE_ADB_DISCOVERY_TRIGGER AND NOT BUILD_SERVICE_TRIGGER_DISPATCH)
+    set(BUILD_SERVICE_TRIGGER_DISPATCH ON CACHE BOOL "Build the transport-independent trigger dispatcher" FORCE)
+endif()
+
+if(BUILD_SERVICE_ADB_DISCOVERY_TRIGGER_TESTS AND NOT BUILD_SERVICE_TRIGGER_EXECUTOR)
+    set(BUILD_SERVICE_TRIGGER_EXECUTOR ON CACHE BOOL "Build the bounded trigger execution owner" FORCE)
 endif()
 
 if(BUILD_SERVICE_STATUS_TRIGGER AND NOT BUILD_SERVICE_TRIGGER_DISPATCH)
@@ -644,6 +659,10 @@ endif()
 
 if(BUILD_SERVICE_STATUS_TRIGGER)
     include("${CMAKE_CURRENT_LIST_DIR}/cmake/ServiceStatusTrigger.cmake")
+endif()
+
+if(BUILD_SERVICE_ADB_DISCOVERY_TRIGGER)
+    include("${CMAKE_CURRENT_LIST_DIR}/cmake/ServiceAdbDiscoveryTrigger.cmake")
 endif()
 
 if(BUILD_SERVICE_CONFIGURATION_TRIGGERS)
