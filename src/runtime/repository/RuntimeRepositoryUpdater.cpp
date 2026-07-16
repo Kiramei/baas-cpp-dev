@@ -2168,6 +2168,9 @@ RuntimeRepositoryUpdateResult RuntimeRepositoryUpdater::update(
             RepositoryStageResult stage;
             try {
                 stage = fetch_backend.stage_exact(spec, directory, stop_token);
+            } catch (const RuntimeRepositoryFetchCancelled&) {
+                fail(RuntimeRepositoryUpdateErrorCode::Cancelled,
+                     "repository fetch observed cancellation");
             } catch (const UpdateFailure&) {
                 throw;
             } catch (const std::exception& error) {

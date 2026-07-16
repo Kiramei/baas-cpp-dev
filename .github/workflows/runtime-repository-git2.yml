@@ -9,28 +9,44 @@ on:
       - 'CMakeLists.txt'
       - 'cmake/BAASDependency.cmake'
       - 'cmake/RuntimeRepositoryGit2.cmake'
+      - 'cmake/RuntimeRepositoryUpdater.cmake'
       - 'deploy/conan/conanfile.py'
       - 'deploy/conan/profiles/dependency-versions-default'
       - 'deploy/conan/recipes/baas-libgit2/**'
+      - 'deploy/conan/recipes/baas-miniz/**'
       - 'deploy/conan/scripts/manage_recipes.py'
       - 'docs/script-runtime/RUNTIME_REPOSITORY_GIT2_DEPENDENCY.md'
       - 'src/runtime/repository/RuntimeRepositoryGit2.cpp'
+      - 'src/runtime/repository/RuntimeRepositoryUpdater.cpp'
+      - 'include/runtime/repository/RuntimeRepositoryGit2.h'
+      - 'include/runtime/repository/RuntimeRepositoryUpdater.h'
       - 'tests/docs/test_libgit2_dependency.py'
       - 'tests/runtime/RuntimeRepositoryGit2LinkTests.cpp'
+      - 'tests/runtime/RuntimeRepositoryGit2BackendTests.cpp'
+      - 'tests/runtime/RuntimeRepositoryGit2TestHooks.h'
+      - 'tests/runtime/RuntimeRepositoryUpdaterTests.cpp'
   pull_request:
     paths:
       - '.github/workflows/runtime-repository-git2.yml'
       - 'CMakeLists.txt'
       - 'cmake/BAASDependency.cmake'
       - 'cmake/RuntimeRepositoryGit2.cmake'
+      - 'cmake/RuntimeRepositoryUpdater.cmake'
       - 'deploy/conan/conanfile.py'
       - 'deploy/conan/profiles/dependency-versions-default'
       - 'deploy/conan/recipes/baas-libgit2/**'
+      - 'deploy/conan/recipes/baas-miniz/**'
       - 'deploy/conan/scripts/manage_recipes.py'
       - 'docs/script-runtime/RUNTIME_REPOSITORY_GIT2_DEPENDENCY.md'
       - 'src/runtime/repository/RuntimeRepositoryGit2.cpp'
+      - 'src/runtime/repository/RuntimeRepositoryUpdater.cpp'
+      - 'include/runtime/repository/RuntimeRepositoryGit2.h'
+      - 'include/runtime/repository/RuntimeRepositoryUpdater.h'
       - 'tests/docs/test_libgit2_dependency.py'
       - 'tests/runtime/RuntimeRepositoryGit2LinkTests.cpp'
+      - 'tests/runtime/RuntimeRepositoryGit2BackendTests.cpp'
+      - 'tests/runtime/RuntimeRepositoryGit2TestHooks.h'
+      - 'tests/runtime/RuntimeRepositoryUpdaterTests.cpp'
 
 permissions:
   contents: read
@@ -79,6 +95,24 @@ jobs:
       - name: Verify dependency declarations
         run: python -B tests/docs/test_libgit2_dependency.py -v
 
+      - name: Verify optional backend remains dependency-free by default
+        run: >-
+          cmake -S . -B build/runtime-repository-default-off
+          -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
+          -DBUILD_RUNTIME_REPOSITORY_GIT2=OFF
+          -DBUILD_RUNTIME_REPOSITORY_GIT2_TESTS=OFF
+          -DBUILD_APP_BAAS=OFF
+          -DBUILD_APP_ISA=OFF
+          -DBUILD_BAAS_OCR=OFF
+          -DBAAS_FETCH_RESOURCES=OFF
+
+      - name: Build default-off dependency smoke
+        run: >-
+          cmake --build build/runtime-repository-default-off
+          --config ${{ matrix.build_type }}
+          --parallel 4
+          --target BAAS_ipc
+
       - name: Detect build profile
         run: conan profile detect --force
 
@@ -91,9 +125,19 @@ jobs:
           --build=missing
           --no-remote
 
+      - name: Build pinned static miniz preflight dependency offline
+        run: >-
+          conan create deploy/conan/recipes/baas-miniz
+          -s:h build_type=${{ matrix.build_type }}
+          -s:b build_type=Release
+          ${{ matrix.conan_settings }}
+          --build=missing
+          --no-remote
+
       - name: Generate optional CMake dependency
         run: >-
           conan install --requires=baas-libgit2/1.9.3
+          --requires=baas-miniz/3.1.2
           -of build/conan/runtime-repository-git2
           -s:h build_type=${{ matrix.build_type }}
           -s:b build_type=Release
@@ -109,7 +153,8 @@ jobs:
           "-DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}/build/conan/runtime-repository-git2/conan_toolchain.cmake"
           -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
           -DBUILD_TESTING=ON
-          -DBUILD_RUNTIME_REPOSITORY_GIT2=ON
+          -DBUILD_RUNTIME_REPOSITORY_GIT2_TESTS=ON
+          -DBUILD_RUNTIME_REPOSITORY_UPDATER_TESTS=ON
           -DBUILD_APP_BAAS=OFF
           -DBUILD_APP_ISA=OFF
           -DBUILD_BAAS_OCR=OFF
@@ -122,11 +167,11 @@ jobs:
           cmake --build build/runtime-repository-git2
           --config ${{ matrix.build_type }}
           --parallel 4
-          --target BAAS_runtime_repository_git2 BAAS_runtime_repository_git2_link_tests
+          --target BAAS_runtime_repository_git2_backend_tests BAAS_runtime_repository_git2_link_tests BAAS_runtime_repository_updater_tests
 
       - name: Run real static link check
         run: >-
           ctest --test-dir build/runtime-repository-git2
           --build-config ${{ matrix.build_type }}
           --output-on-failure
-          -R "^BAAS_runtime_repository_git2_link_tests$"
+          -R "^BAAS_runtime_repository_(git2_(backend|link)_tests|updater_tests)$"

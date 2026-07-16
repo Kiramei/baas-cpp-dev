@@ -89,6 +89,7 @@ option(BUILD_RUNTIME_REPOSITORY_TESTS "Build runtime repository activation tests
 option(BUILD_RUNTIME_REPOSITORY_UPDATER "Build the transport-independent runtime repository updater" OFF)
 option(BUILD_RUNTIME_REPOSITORY_UPDATER_TESTS "Build runtime repository updater tests" OFF)
 option(BUILD_RUNTIME_REPOSITORY_GIT2 "Build the optional libgit2 repository dependency boundary" OFF)
+option(BUILD_RUNTIME_REPOSITORY_GIT2_TESTS "Build real optional libgit2 repository backend tests" OFF)
 option(BUILD_SCRIPT_RESOURCE_HOST "Build baas/resource script Host adapter" OFF)
 option(BUILD_SCRIPT_RESOURCE_HOST_TESTS "Build baas/resource script Host tests" OFF)
 option(BUILD_SERVICE_PROTOCOL   "Build the standalone BAAS service protocol library" OFF)
@@ -201,6 +202,14 @@ if(BUILD_RUNTIME_REPOSITORY_TESTS AND NOT BUILD_RUNTIME_REPOSITORY)
 endif()
 
 if(BUILD_RUNTIME_REPOSITORY_UPDATER_TESTS AND NOT BUILD_RUNTIME_REPOSITORY_UPDATER)
+    set(BUILD_RUNTIME_REPOSITORY_UPDATER ON CACHE BOOL "Build the transport-independent runtime repository updater" FORCE)
+endif()
+
+if(BUILD_RUNTIME_REPOSITORY_GIT2_TESTS AND NOT BUILD_RUNTIME_REPOSITORY_GIT2)
+    set(BUILD_RUNTIME_REPOSITORY_GIT2 ON CACHE BOOL "Build the optional libgit2 repository backend" FORCE)
+endif()
+
+if(BUILD_RUNTIME_REPOSITORY_GIT2 AND NOT BUILD_RUNTIME_REPOSITORY_UPDATER)
     set(BUILD_RUNTIME_REPOSITORY_UPDATER ON CACHE BOOL "Build the transport-independent runtime repository updater" FORCE)
 endif()
 
@@ -600,7 +609,7 @@ if(BUILD_SERVICE_FILE_RESOURCE_STORE)
 endif()
 
 if(BUILD_RUNTIME_REPOSITORY_GIT2)
-    baas_request_dependencies(libgit2)
+    baas_request_dependencies(libgit2 miniz)
 endif()
 
 baas_load_requested_dependencies()
