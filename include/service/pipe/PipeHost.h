@@ -172,6 +172,16 @@ struct PipeHandlerResult {
 class PipeChannelHandler {
 public:
     virtual ~PipeChannelHandler() = default;
+    // Invoked exactly once after open_ok has been written successfully and
+    // before any coalesced business frame is delivered.  A channel that owns
+    // server-initiated state (for example provider snapshots) starts it here.
+    // The default keeps request-driven channels source-compatible.
+    [[nodiscard]] virtual PipeHandlerResult on_open(
+        PipeConnectionWriter&,
+        std::stop_token)
+    {
+        return {};
+    }
     // Errors are propagated to the host. A transport-poisoned writer always
     // forces a direct close with no second write, regardless of this result.
     [[nodiscard]] virtual PipeHandlerResult on_frame(

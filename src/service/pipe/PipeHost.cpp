@@ -977,6 +977,17 @@ PipeHostError PipeHost::process_frame(
     std::unique_ptr<PipeChannelHandler>& handler,
     PipeConnectionWriter& writer)
 {
+    const auto apply_handler_result = [&](const PipeHandlerResult& result) {
+        if (writer.transport_poisoned()) return PipeHostError::write_failed;
+        if (result.error != PipeHostError::none) return result.error;
+        if (result.action == PipeHandlerAction::close_connection) {
+            const auto write = writer.write_frame(bpip::FrameKind::close, {});
+            if (write != PipeHostError::none) return write;
+            continue_connection = false;
+        }
+        return PipeHostError::none;
+    };
+
     if (!opened) {
         if (frame.kind != bpip::kind_value(bpip::FrameKind::json))
             return PipeHostError::first_frame_not_json;
@@ -995,7 +1006,12 @@ PipeHostError PipeHost::process_frame(
              response.bytes.size() - bpip::header_size});
         if (write != PipeHostError::none) return write;
         opened = true;
-        return PipeHostError::none;
+        try {
+            return apply_handler_result(handler->on_open(
+                writer, stop_source_.get_token()));
+        } catch (...) {
+            return PipeHostError::handler_failed;
+        }
     }
 
     if (frame.kind == bpip::kind_value(bpip::FrameKind::close)) {
@@ -1012,19 +1028,11 @@ PipeHostError PipeHost::process_frame(
         return PipeHostError::unsupported_frame_kind;
     }
     try {
-        const auto result = handler->on_frame(
-            frame, writer, stop_source_.get_token());
-        if (writer.transport_poisoned()) return PipeHostError::write_failed;
-        if (result.error != PipeHostError::none) return result.error;
-        if (result.action == PipeHandlerAction::close_connection) {
-            const auto write = writer.write_frame(bpip::FrameKind::close, {});
-            if (write != PipeHostError::none) return write;
-            continue_connection = false;
-        }
+        return apply_handler_result(handler->on_frame(
+            frame, writer, stop_source_.get_token()));
     } catch (...) {
         return PipeHostError::handler_failed;
     }
-    return PipeHostError::none;
 }
 
 }  // namespace baas::service::pipe

@@ -217,8 +217,9 @@ incremental BPIP decoder with an injected channel factory. A dedicated
 pre-open header gate rejects declared payloads above the open limit before
 generic decoder allocation; post-open declared payloads and outbound atomic
 batches reserve host-wide retained-byte budgets. Its deterministic tests use
-fake streams; real provider/sync/remote handler wiring and live
-cross-process endpoint tests remain pending.
+fake streams. The provider/sync/remote business adapter now reuses the existing
+transport-independent handlers after `open_ok`, while application installation
+and live cross-process endpoint tests remain pending.
 
 ### 5.5 Close and error
 
