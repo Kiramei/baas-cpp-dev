@@ -443,6 +443,30 @@ void append_ofs_distance(std::vector<unsigned char>& bytes, std::uintmax_t dista
     return pack;
 }
 
+[[nodiscard]] std::vector<unsigned char> ofs_delta_interior_base_pack() {
+    std::vector<unsigned char> pack{'P', 'A', 'C', 'K'};
+    append_big_endian_u32(pack, 2);
+    append_big_endian_u32(pack, 3);
+
+    append_pack_header(pack, 3, 1);
+    const auto first = compressed(std::vector<unsigned char>{'a'});
+    pack.insert(pack.end(), first.begin(), first.end());
+
+    const auto second_start = pack.size();
+    append_pack_header(pack, 3, 1);
+    const auto second = compressed(std::vector<unsigned char>{'b'});
+    pack.insert(pack.end(), second.begin(), second.end());
+
+    const std::vector<unsigned char> delta{1, 1, 0x90U, 1};
+    const auto third_start = pack.size();
+    append_pack_header(pack, 6, delta.size());
+    append_ofs_distance(pack, third_start - (second_start - 1));
+    const auto compressed_delta = compressed(delta);
+    pack.insert(pack.end(), compressed_delta.begin(), compressed_delta.end());
+    pack.insert(pack.end(), GIT_OID_SHA1_SIZE, 0);
+    return pack;
+}
+
 void test_delta_result_bomb_is_rejected_before_libgit2() {
     repository::Libgit2RuntimeRepositoryFetchLimits limits;
     std::vector<unsigned char> delta;
@@ -572,6 +596,8 @@ void test_delta_dependency_depth_and_base_validation() {
           "delta chain beyond the configured depth must be rejected before libgit2");
     check(!repository::testing::pack_is_safe(ofs_delta_chain_pack(1, 1), limits),
           "OFS_DELTA base must identify an earlier object start");
+    check(!repository::testing::pack_is_safe(ofs_delta_interior_base_pack(), limits),
+          "OFS_DELTA base must not resolve an interior offset to the next object start");
     check(!repository::testing::pack_is_safe(ofs_delta_chain_pack(1, 0), limits),
           "OFS_DELTA must not form a self-cycle");
     check(!repository::testing::pack_is_safe(ref_delta_pack({1, 1, 0x90U, 1}), limits),

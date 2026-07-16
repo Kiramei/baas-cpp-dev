@@ -743,7 +743,8 @@ struct InflatedObject final {
             const auto base_offset = object_offset - static_cast<std::size_t>(distance);
             const auto base = std::ranges::lower_bound(
                 object_depths, base_offset, {}, &std::pair<std::size_t, std::size_t>::first);
-            if (base == object_depths.end() || base->second == limits.max_delta_depth)
+            if (base == object_depths.end() || base->first != base_offset ||
+                base->second == limits.max_delta_depth)
                 return reject("missing or over-depth OFS_DELTA base");
             delta_depth = base->second + 1U;
         } else if (type == 7) {
