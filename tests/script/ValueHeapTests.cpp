@@ -1,5 +1,6 @@
 #include "script/runtime/ValueHeap.h"
 
+#include <algorithm>
 #include <atomic>
 #include <cmath>
 #include <cstdlib>
@@ -15,6 +16,9 @@ using namespace baas::script::runtime;
 namespace {
 
 int failures = 0;
+
+static_assert(static_cast<unsigned>(ValueKind::HostHandle) == 12);
+static_assert(static_cast<unsigned>(ValueKind::Bytes) == 13);
 
 void check(const bool condition, const std::string_view message)
 {
@@ -148,6 +152,51 @@ void test_ordered_map_and_transactional_mutation()
     check(map_limited.map_entries(limited_map.as_heap_ref()).empty() &&
               map_limited.stats().live_bytes == map_limited_before.live_bytes,
           "failed map growth must preserve order, content, and accounting");
+}
+
+void test_immutable_bytes_value_semantics()
+{
+    Heap heap(generous_limits());
+    const auto before = heap.stats();
+    const std::vector<std::byte> payload{
+        std::byte{0x00}, std::byte{0x7f}, std::byte{0xff}};
+    const auto value = heap.allocate_bytes(payload);
+
+    check(heap.kind(value) == ValueKind::Bytes &&
+              heap.bytes_size(value.as_heap_ref()) == payload.size() &&
+              std::ranges::equal(heap.bytes_view(value.as_heap_ref()), payload),
+          "immutable byte cell should expose its exact binary payload");
+    auto copy = heap.bytes_copy(value.as_heap_ref());
+    copy[0] = std::byte{0x55};
+    check(heap.bytes_view(value.as_heap_ref())[0] == std::byte{0x00},
+          "copying bytes must not expose mutable heap storage");
+    check(heap.stats().live_bytes > before.live_bytes &&
+              heap.stats().string_bytes == before.string_bytes,
+          "byte capacity must count as live memory but not UTF-8 string memory");
+
+    const auto same = heap.allocate_bytes(payload);
+    const auto different = heap.allocate_bytes(
+        {std::byte{0x00}, std::byte{0x7f}, std::byte{0xfe}});
+    const auto empty = heap.allocate_bytes({});
+    check(heap.equals(value, same) && !heap.equals(value, different),
+          "bytes equality must compare payload values, not heap identity");
+    check(heap.truthy(value) && !heap.truthy(empty),
+          "bytes truthiness must follow payload emptiness");
+    check_error(RuntimeErrorCode::JsonUnsupported,
+                [&] { heap.validate_json_safe(value); },
+                "bytes must never be JSON-safe");
+
+    auto bounded = generous_limits();
+    bounded.max_single_allocation = 64;
+    Heap bounded_heap(bounded);
+    const auto bounded_before = bounded_heap.stats();
+    check_error(RuntimeErrorCode::SingleAllocationExceeded,
+                [&] { (void)bounded_heap.allocate_bytes(
+                    std::vector<std::byte>(1'024)); },
+                "byte cells must obey the single-allocation budget");
+    check(bounded_heap.stats().live_cells == bounded_before.live_cells &&
+              bounded_heap.stats().live_bytes == bounded_before.live_bytes,
+          "rejected byte allocation must leave heap accounting unchanged");
 }
 
 void test_roots_cycles_collection_and_generations()
@@ -418,6 +467,7 @@ int main()
 {
     test_primitives_and_every_cell_kind();
     test_ordered_map_and_transactional_mutation();
+    test_immutable_bytes_value_semantics();
     test_roots_cycles_collection_and_generations();
     test_cross_heap_and_kind_validation();
     test_exact_budgets_and_collect_retry();

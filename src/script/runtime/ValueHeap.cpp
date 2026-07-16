@@ -81,6 +81,7 @@ constexpr std::array error_code_descriptors{
 }
 
 struct StringCell { std::string value; };
+struct ByteCell { std::vector<std::byte> value; };
 struct ListCell { std::vector<Value> values; };
 struct MapCell { std::vector<std::pair<std::string, Value>> entries; };
 struct FunctionCell { FunctionMetadata metadata; };
@@ -90,7 +91,7 @@ struct TaskCell { TaskMetadata metadata; };
 struct HostCell { HostHandleMetadata metadata; };
 
 using CellData = std::variant<StringCell, ListCell, MapCell, FunctionCell, ModuleCell,
-                              ErrorCell, TaskCell, HostCell>;
+                               ErrorCell, TaskCell, HostCell, ByteCell>;
 
 struct Cell {
     explicit Cell(CellData value, const std::size_t bytes, const std::size_t strings,
@@ -176,6 +177,9 @@ void add_optional_source_charge(Charge& charge, const std::optional<SourceRefere
         using T = std::decay_t<decltype(cell)>;
         if constexpr (std::is_same_v<T, StringCell>) {
             add_string(cell.value);
+        } else if constexpr (std::is_same_v<T, ByteCell>) {
+            charged_add(charge.bytes,
+                        vector_bytes(cell.value.capacity(), sizeof(std::byte)));
         } else if constexpr (std::is_same_v<T, ListCell>) {
             charged_add(charge.bytes, vector_bytes(cell.values.capacity(), sizeof(Value)));
         } else if constexpr (std::is_same_v<T, MapCell>) {
@@ -239,7 +243,8 @@ void add_optional_source_charge(Charge& charge, const std::optional<SourceRefere
         else if constexpr (std::is_same_v<T, ModuleCell>) return ValueKind::Module;
         else if constexpr (std::is_same_v<T, ErrorCell>) return ValueKind::Error;
         else if constexpr (std::is_same_v<T, TaskCell>) return ValueKind::Task;
-        else return ValueKind::HostHandle;
+        else if constexpr (std::is_same_v<T, HostCell>) return ValueKind::HostHandle;
+        else return ValueKind::Bytes;
     }, data);
 }
 
@@ -1007,6 +1012,11 @@ Value Heap::allocate_string(std::string value)
     return impl_->allocate(StringCell{std::move(value)});
 }
 
+Value Heap::allocate_bytes(std::vector<std::byte> value)
+{
+    return impl_->allocate(ByteCell{std::move(value)});
+}
+
 Value Heap::allocate_list(std::vector<Value> values)
 {
     auto roots = root_scope();
@@ -1265,6 +1275,21 @@ std::size_t Heap::string_scalar_count(const HeapRef reference) const
     }
     return result;
 }
+std::vector<std::byte> Heap::bytes_copy(const HeapRef reference) const
+{
+    return std::get<ByteCell>(
+        impl_->expected(reference, ValueKind::Bytes).data).value;
+}
+std::span<const std::byte> Heap::bytes_view(const HeapRef reference) const
+{
+    return std::get<ByteCell>(
+        impl_->expected(reference, ValueKind::Bytes).data).value;
+}
+std::size_t Heap::bytes_size(const HeapRef reference) const
+{
+    return std::get<ByteCell>(
+        impl_->expected(reference, ValueKind::Bytes).data).value.size();
+}
 std::size_t Heap::list_size(const HeapRef reference) const { return std::get<ListCell>(impl_->expected(reference, ValueKind::List).data).values.size(); }
 Value Heap::list_value_at(const HeapRef reference, const std::size_t index) const
 {
@@ -1450,6 +1475,7 @@ bool Heap::truthy(const Value value) const
         case ValueKind::Integer: return value.as_integer() != 0;
         case ValueKind::Float: return value.as_float() != 0.0;
         case ValueKind::String: return !std::get<StringCell>(impl_->dereference(value.as_heap_ref()).data).value.empty();
+        case ValueKind::Bytes: return !std::get<ByteCell>(impl_->dereference(value.as_heap_ref()).data).value.empty();
         case ValueKind::List: return !std::get<ListCell>(impl_->dereference(value.as_heap_ref()).data).values.empty();
         case ValueKind::OrderedMap: return !std::get<MapCell>(impl_->dereference(value.as_heap_ref()).data).entries.empty();
         default: return true;
@@ -1488,6 +1514,12 @@ bool Heap::equals(const Value left, const Value right) const
             case ValueKind::Integer: if (pair.left.as_integer() != pair.right.as_integer()) return false; break;
             case ValueKind::Float: if (pair.left.as_float() != pair.right.as_float()) return false; break;
             case ValueKind::String: if (string_copy(pair.left.as_heap_ref()) != string_copy(pair.right.as_heap_ref())) return false; break;
+            case ValueKind::Bytes: {
+                const auto a = bytes_view(pair.left.as_heap_ref());
+                const auto b = bytes_view(pair.right.as_heap_ref());
+                if (!std::ranges::equal(a, b)) return false;
+                break;
+            }
             case ValueKind::List:
             case ValueKind::OrderedMap: {
                 const RefPair refs{pair.left.as_heap_ref(), pair.right.as_heap_ref()};

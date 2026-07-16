@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <memory>
 #include <optional>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -76,6 +77,7 @@ enum class ValueKind {
     Error,
     Task,
     HostHandle,
+    Bytes,
 };
 
 class Value {
@@ -395,6 +397,7 @@ public:
     bool remove_root(RootId id) noexcept;
 
     [[nodiscard]] Value allocate_string(std::string value);
+    [[nodiscard]] Value allocate_bytes(std::vector<std::byte> value);
     [[nodiscard]] Value allocate_list(std::vector<Value> values = {});
     [[nodiscard]] Value allocate_map(std::vector<std::pair<std::string, Value>> entries = {});
     [[nodiscard]] Value allocate_function(FunctionMetadata metadata);
@@ -420,6 +423,11 @@ public:
     [[nodiscard]] std::string_view string_view(HeapRef reference) const;
     [[nodiscard]] std::size_t string_byte_size(HeapRef reference) const;
     [[nodiscard]] std::size_t string_scalar_count(HeapRef reference) const;
+    [[nodiscard]] std::vector<std::byte> bytes_copy(HeapRef reference) const;
+    // Immutable allocation-free view with the same lifetime constraints as
+    // string_view(). The underlying byte cell has no mutation API.
+    [[nodiscard]] std::span<const std::byte> bytes_view(HeapRef reference) const;
+    [[nodiscard]] std::size_t bytes_size(HeapRef reference) const;
     [[nodiscard]] std::size_t list_size(HeapRef reference) const;
     [[nodiscard]] Value list_value_at(HeapRef reference, std::size_t index) const;
     [[nodiscard]] std::size_t map_size(HeapRef reference) const;

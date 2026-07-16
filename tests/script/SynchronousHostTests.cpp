@@ -14,6 +14,17 @@ namespace {
 
 int failures = 0;
 
+class TestCancellationProbe final : public HostCancellationProbe {
+public:
+    [[nodiscard]] bool cancelled() const noexcept override { return cancel; }
+    [[nodiscard]] bool deadline_exceeded() const noexcept override { return deadline; }
+    bool cancel{};
+    bool deadline{};
+};
+
+static_assert(static_cast<unsigned>(HostValueType::HostDevice) == 10);
+static_assert(static_cast<unsigned>(HostValueType::Bytes) == 11);
+
 void check(const bool condition, const std::string_view message)
 {
     if (!condition) { std::cerr << "FAIL: " << message << '\n'; ++failures; }
@@ -178,9 +189,14 @@ void test_immutable_binding_set_validation()
         "synchronous slice must reject strand execution rather than faking affinity");
     auto cooperative = log_binding(callback);
     cooperative.contract.cancellation = HostCancellationMode::Cooperative;
+    SynchronousNativeBindingSet cooperative_set({cooperative});
+    check(cooperative_set.find(cooperative.binding_id) != nullptr,
+          "synchronous callbacks must accept cooperative contracts with an injected probe");
+    auto invalid_cancellation = log_binding(callback);
+    invalid_cancellation.contract.cancellation = static_cast<HostCancellationMode>(99);
     check_binding_error(HostBindingErrorCode::UnsupportedCancellationMode,
-        [&] { SynchronousNativeBindingSet ignored({cooperative}); },
-        "synchronous slice must reject cooperative blocking calls");
+        [&] { SynchronousNativeBindingSet ignored({invalid_cancellation}); },
+        "out-of-range cancellation modes must be rejected");
     auto duplicate_parameter = log_binding(callback);
     duplicate_parameter.contract.parameters.push_back(
         {"level", HostValueType::String, false});
@@ -227,6 +243,86 @@ void test_owning_scalar_and_json_conversion()
         check(error.code() == RuntimeErrorCode::JsonUnsupported,
               "identity-bearing values must be rejected by JSON conversion");
     }
+}
+
+void test_owning_bytes_conversion_and_measurement()
+{
+    Heap heap;
+    const std::vector<std::byte> payload{
+        std::byte{0x00}, std::byte{0x80}, std::byte{0xff}};
+    const auto bytes = heap.allocate_bytes(payload);
+    const auto host = heap_to_host_value(heap, bytes, HostValueType::Bytes);
+    check(host.type() == HostValueType::Bytes &&
+              std::get<std::vector<std::byte>>(host.storage()) == payload,
+          "Host byte arguments must own an exact binary copy");
+
+    const auto round_trip = host_to_heap_value(heap, host, HostValueType::Bytes);
+    check(heap.kind(round_trip) == ValueKind::Bytes && round_trip != bytes &&
+              heap.bytes_copy(round_trip.as_heap_ref()) == payload,
+          "Host byte results must materialize as fresh immutable byte cells");
+
+    const auto metrics = measure_host_value(host);
+    check(metrics.nodes == 1 && metrics.work == 1 &&
+              metrics.string_bytes == 0 && metrics.total_bytes == payload.size() + 1,
+          "Host byte measurement must charge one kind byte plus payload bytes");
+
+    JsonBridgeLimits tight;
+    tight.max_total_bytes = payload.size();
+    try {
+        (void)measure_host_value(host, tight);
+        check(false, "Host byte measurement must enforce total-byte limits");
+    } catch (const RuntimeError& error) {
+        check(error.code() == RuntimeErrorCode::JsonByteLimitExceeded,
+              "oversized Host bytes must use the stable aggregate-byte failure");
+    }
+    try {
+        (void)host_to_heap_value(heap, host, HostValueType::Bytes, tight);
+        check(false, "Host byte result conversion must preflight aggregate bytes");
+    } catch (const RuntimeError& error) {
+        check(error.code() == RuntimeErrorCode::JsonByteLimitExceeded,
+              "Host byte result conversion must fail before heap allocation");
+    }
+    try {
+        (void)heap_to_host_value(heap, bytes, HostValueType::Bytes, tight);
+        check(false, "Host byte argument conversion must preflight aggregate bytes");
+    } catch (const RuntimeError& error) {
+        check(error.code() == RuntimeErrorCode::JsonByteLimitExceeded,
+              "Host byte argument conversion must fail before callback entry");
+    }
+
+    auto binding = SynchronousNativeBinding{
+        "host.resource.echo_bytes.v1",
+        {{{"payload", HostValueType::Bytes, true}}, HostValueType::Bytes,
+         "resource_bytes", HostExecutionMode::ThreadSafe,
+         HostCancellationMode::Preflight},
+        [&](const HostCallContext&, const HostArguments& arguments) {
+            check(arguments.size() == 1 && arguments[0] &&
+                      arguments[0]->type() == HostValueType::Bytes &&
+                      std::get<std::vector<std::byte>>(
+                          arguments[0]->storage()) == payload,
+                  "guarded Host callback must receive owning bytes");
+            return HostResult::success(HostValue(payload));
+        }};
+    SynchronousNativeBindingSet bindings({binding});
+    check(bindings.find(binding.binding_id) != nullptr,
+          "binding validation must accept appended Bytes contracts");
+    const HostCallContext context{
+        "baas/resource", "echo_bytes", binding.binding_id, {1, 0}, 1};
+    const auto callback_result = invoke_host_callback(
+        binding, context, {HostValue(payload)}, SynchronousHostLimits{});
+    check(callback_result.ok() && callback_result.value().type() == HostValueType::Bytes &&
+              std::get<std::vector<std::byte>>(
+                  callback_result.value().storage()) == payload,
+          "guarded Host callback must return owning bytes");
+
+    SynchronousHostLimits callback_limits;
+    callback_limits.json_limits.max_total_bytes = payload.size();
+    const auto rejected = invoke_host_callback(
+        binding, context, {HostValue(payload)}, callback_limits);
+    check(!rejected.ok() && !rejected.has_error() &&
+              rejected.boundary_failure() ==
+                  HostResult::BoundaryFailure::CallbackException,
+          "guarded Host callback must reject an oversized byte result");
 }
 
 void test_guarded_callback_result_and_exception_redaction()
@@ -279,6 +375,42 @@ void test_guarded_callback_result_and_exception_redaction()
           "oversized adapter messages must be replaced, not forwarded");
 }
 
+void test_preflight_and_cooperative_cancellation()
+{
+    auto probe = std::make_shared<TestCancellationProbe>();
+    std::size_t calls{};
+    auto cooperative = log_binding([&](const HostCallContext& context,
+                                       const HostArguments&) {
+        ++calls;
+        check(context.cancellation == probe && !context.cancelled() &&
+                  !context.deadline_exceeded(),
+              "cooperative callback must observe the exact immutable probe");
+        return HostResult::success();
+    });
+    cooperative.contract.cancellation = HostCancellationMode::Cooperative;
+    const HostArguments arguments{
+        HostValue("info"), HostValue("message"), std::nullopt};
+    HostCallContext context{
+        "baas/log", "emit", cooperative.binding_id, {1, 0}, 1, probe};
+    check(invoke_host_callback(cooperative, context, arguments, {}).ok() && calls == 1,
+          "cooperative callback must run when its probe is clear");
+
+    probe->cancel = true;
+    const auto cancelled = invoke_host_callback(
+        cooperative, context, arguments, {});
+    check(cancelled.has_error() &&
+              cancelled.error().code == HostErrorCode::Cancelled && calls == 1,
+          "cancelled work must fail before callback entry");
+
+    probe->deadline = true;
+    const auto deadline = invoke_host_callback(
+        cooperative, context, arguments, {});
+    check(deadline.has_error() &&
+              deadline.error().code == HostErrorCode::DeadlineExceeded && calls == 1 &&
+              translate_host_error(deadline.error()).code == LanguageErrorCode::Timeout,
+          "call deadline must take deterministic precedence and retain its scope detail");
+}
+
 void test_contract_shapes_utf8_and_strict_string_limit()
 {
     Heap heap;
@@ -328,7 +460,9 @@ int main()
     test_result_runtime_error_translation();
     test_immutable_binding_set_validation();
     test_owning_scalar_and_json_conversion();
+    test_owning_bytes_conversion_and_measurement();
     test_guarded_callback_result_and_exception_redaction();
+    test_preflight_and_cooperative_cancellation();
     test_contract_shapes_utf8_and_strict_string_limit();
     if (failures != 0) {
         std::cerr << failures << " synchronous Host test(s) failed\n";

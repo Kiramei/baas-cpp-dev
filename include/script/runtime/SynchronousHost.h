@@ -60,6 +60,7 @@ enum class HostValueType : std::uint8_t {
     HostImage,
     HostOcrModel,
     HostDevice,
+    Bytes,
 };
 
 class HostReleaseDispatcher;
@@ -145,7 +146,7 @@ class HostValue final {
 public:
     using Storage = std::variant<
         std::monostate, bool, std::int64_t, double, std::string, JsonValue,
-        HostHandleValue>;
+        HostHandleValue, std::vector<std::byte>>;
 
     HostValue() noexcept = default;
     explicit HostValue(bool value) : storage_(value) {}
@@ -155,6 +156,7 @@ public:
     explicit HostValue(const char* value) : storage_(std::string(value)) {}
     explicit HostValue(JsonValue value) : storage_(std::move(value)) {}
     explicit HostValue(HostHandleValue value) : storage_(std::move(value)) {}
+    explicit HostValue(std::vector<std::byte> value) : storage_(std::move(value)) {}
 
     [[nodiscard]] HostValueType type() const noexcept;
     [[nodiscard]] const Storage& storage() const noexcept { return storage_; }
@@ -288,6 +290,13 @@ enum class HostExecutionMode : std::uint8_t {
 
 enum class HostCancellationMode : std::uint8_t { Preflight, Cooperative };
 
+class HostCancellationProbe {
+public:
+    virtual ~HostCancellationProbe() = default;
+    [[nodiscard]] virtual bool cancelled() const noexcept = 0;
+    [[nodiscard]] virtual bool deadline_exceeded() const noexcept = 0;
+};
+
 struct HostCallContract {
     std::vector<HostParameterContract> parameters;
     HostValueType result{HostValueType::Null};
@@ -302,6 +311,19 @@ struct HostCallContext {
     std::string_view binding_id;
     HostApiVersion selected_version;
     std::size_t call_index{};
+    // Appended for aggregate source compatibility. Cooperative callbacks must
+    // poll this probe while doing bounded work; every mode is also checked at
+    // callback entry by invoke_host_callback.
+    std::shared_ptr<const HostCancellationProbe> cancellation;
+
+    [[nodiscard]] bool cancelled() const noexcept
+    {
+        return cancellation && cancellation->cancelled();
+    }
+    [[nodiscard]] bool deadline_exceeded() const noexcept
+    {
+        return cancellation && cancellation->deadline_exceeded();
+    }
 };
 
 using HostArguments = std::vector<std::optional<HostValue>>;

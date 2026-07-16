@@ -153,7 +153,7 @@ std::atomic<std::uint64_t> next_handle_authentication_secret{1};
 
 [[nodiscard]] bool valid_value_type(const HostValueType type) noexcept
 {
-    return type >= HostValueType::Null && type <= HostValueType::HostDevice;
+    return type >= HostValueType::Null && type <= HostValueType::Bytes;
 }
 
 [[nodiscard]] bool valid_utf8(const std::string_view value) noexcept
@@ -1357,6 +1357,7 @@ HostValueType HostValue::type() const noexcept
             }
             return HostValueType::HostResource;
         }
+        case 7: return HostValueType::Bytes;
         default: return HostValueType::Null;
     }
 }
@@ -1441,8 +1442,10 @@ SynchronousNativeBindingSet::SynchronousNativeBindingSet(
             throw HostBindingError(HostBindingErrorCode::MissingCallback, "synchronous Host callback is absent");
         if (binding.contract.execution != HostExecutionMode::ThreadSafe)
             throw HostBindingError(HostBindingErrorCode::UnsupportedExecutionMode, "synchronous Host supports thread_safe bindings only");
-        if (binding.contract.cancellation != HostCancellationMode::Preflight)
-            throw HostBindingError(HostBindingErrorCode::UnsupportedCancellationMode, "synchronous Host supports preflight cancellation only");
+        if (binding.contract.cancellation != HostCancellationMode::Preflight &&
+            binding.contract.cancellation != HostCancellationMode::Cooperative)
+            throw HostBindingError(HostBindingErrorCode::UnsupportedCancellationMode,
+                                   "synchronous Host cancellation mode is invalid");
         if (!valid_value_type(binding.contract.result))
             throw HostBindingError(HostBindingErrorCode::InvalidParameter, "invalid synchronous Host result type");
         if (binding.contract.budget_scope.empty())
@@ -1609,6 +1612,10 @@ HostValueMetrics measure_host_value(
                 visit_payload(bytes);
                 break;
             }
+            case HostValueType::Bytes:
+                visit_payload(std::get<std::vector<std::byte>>(
+                    value.storage()).size());
+                break;
             case HostValueType::HostResource:
             case HostValueType::HostImage:
             case HostValueType::HostOcrModel:
@@ -1706,6 +1713,13 @@ HostValue heap_to_host_value(
                 return HostValue(std::move(string));
             }
             break;
+        case HostValueType::Bytes:
+            if (kind == ValueKind::Bytes) {
+                HostValue result(heap.bytes_copy(value.as_heap_ref()));
+                (void)measure_host_value(result, limits);
+                return result;
+            }
+            break;
         case HostValueType::Json:
             return HostValue(heap_value_to_json(heap, value, limits));
         case HostValueType::OrderedStringJsonMap: {
@@ -1738,6 +1752,10 @@ Value host_to_heap_value(
         case HostValueType::Integer: return Value(std::get<std::int64_t>(value.storage()));
         case HostValueType::Float: return Value(std::get<double>(value.storage()));
         case HostValueType::String: return heap.allocate_string(std::get<std::string>(value.storage()));
+        case HostValueType::Bytes:
+            (void)measure_host_value(value, limits);
+            return heap.allocate_bytes(
+                std::get<std::vector<std::byte>>(value.storage()));
         case HostValueType::Json: return json_to_heap_value(heap, std::get<JsonValue>(value.storage()), limits);
         case HostValueType::OrderedStringJsonMap:
             return json_to_heap_value(heap, std::get<JsonValue>(value.storage()), limits);
@@ -1779,8 +1797,18 @@ HostResult invoke_host_callback(
     } boundary{arguments, handles, 0};
     try {
         if (binding.contract.execution != HostExecutionMode::ThreadSafe ||
-            binding.contract.cancellation != HostCancellationMode::Preflight)
+            (binding.contract.cancellation != HostCancellationMode::Preflight &&
+             binding.contract.cancellation != HostCancellationMode::Cooperative))
             return HostResult::boundary_failure(HostResult::BoundaryFailure::CallbackException);
+        if (context.deadline_exceeded())
+            return HostResult::failure({
+                HostErrorCode::DeadlineExceeded, "Host call deadline exceeded", true,
+                HostEffectState::NotStarted,
+                JsonValue(JsonObject{{"deadline_scope", JsonValue("call")}})});
+        if (context.cancelled())
+            return HostResult::failure({
+                HostErrorCode::Cancelled, "Host call cancelled", false,
+                HostEffectState::NotStarted, std::nullopt});
         if (handles) boundary.scope = handles->begin_callback_scope();
         auto result = binding.callback(context, arguments);
         if (result.ok()) {
@@ -1788,6 +1816,10 @@ HostResult invoke_host_callback(
                     result.value(), binding.contract.result, effective_host_json_limits(limits))) {
                 boundary.finish(nullptr);
                 return HostResult::boundary_failure(HostResult::BoundaryFailure::CallbackException);
+            }
+            if (result.value().type() == HostValueType::Bytes) {
+                (void)measure_host_value(
+                    result.value(), effective_host_json_limits(limits));
             }
             const HostHandleValue* retained{};
             if (is_host_handle_type(binding.contract.result))

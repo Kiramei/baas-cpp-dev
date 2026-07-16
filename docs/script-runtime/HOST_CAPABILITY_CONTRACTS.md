@@ -182,7 +182,8 @@ for security or external cleanup. Release records follow ADR-0002 bounds.
 
 The checked synchronous ABI fixes v1 type ids to `Resource=1`, `Image=2`,
 `OcrModel=3`, and `Device=4`; earlier scalar `HostValueType` ordinals are not
-renumbered. Adapter id, exact type, generation, context, immutable snapshot,
+renumbered, and the owning `Bytes` ABI value is appended after all v1 handle
+types. Adapter id, exact type, generation, context, immutable snapshot,
 external-byte charge, and authentication token are validated before callback
 entry. Producer grants and callback borrows are distinct transfer roles: a
 borrow cannot be returned as a result, copied borrows are revoked together at
@@ -356,9 +357,13 @@ all registry state is immutable and every call owns its scratch state.
 by binding ID. It is intentionally separate from `HostModuleRegistry`, so the
 metadata registry still contains no callback, adapter object, pointer, native
 descriptor, or device handle. Published bindings are bounded and accept only
-`thread_safe` execution with `preflight` cancellation. Parameters are ordered,
+`thread_safe` execution with `preflight` or `cooperative` cancellation.
+Cooperative bindings receive a context-owned cancellation/deadline probe and
+MUST poll it between bounded work chunks. Parameters are ordered,
 required parameters cannot follow optional ones, and callbacks receive owning
-null/boolean/integer/finite-float/string/JSON-safe values only.
+null/boolean/integer/finite-float/string/bytes/JSON-safe values only. Bytes are
+not JSON-safe and are charged as one kind byte plus their payload against the
+aggregate Host conversion byte limit.
 
 `SynchronousEvaluator` deduplicates Host imports from validated source, resolves
 their exact versions with empty export sets, then calls `resolve` lazily for one
@@ -447,8 +452,8 @@ normative in `host-capabilities.v1.json`.
 The production adapter set and metadata registry do not define or invoke
 `ProcessHost`, `HttpHost`, `SocketHost`, `ServiceHost`, or the other real named
 adapters. `QueuedLogHost` and `BAASLoggerLogSink` are implemented foundations,
-but live package/task composition is not. Bytes, real adapter integrations for
-the checked `host<T>` foundation, async completion, cooperative cancellation,
-bounded pools, keyed strands, production VM registration, full manifest
+but live package/task composition is not. Real adapter integrations for
+the checked `host<T>` foundation, async completion, bounded pools, keyed
+strands, production VM registration, full manifest
 activation, ERR-003 unwinding, and Python-versus-C++ parity remain pending until
 their production code and tests exist.

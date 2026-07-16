@@ -121,18 +121,18 @@ class ValueSemanticsSpecificationTests(unittest.TestCase):
             (
                 "Null", "Boolean", "Integer", "Float", "HeapReference",
                 "String", "List", "OrderedMap", "Function", "Module",
-                "Error", "Task", "HostHandle",
+                "Error", "Task", "HostHandle", "Bytes",
             ),
         )
         language_rows = {
             "null": "Null", "bool": "Boolean", "int": "Integer", "float": "Float",
             "string": "String", "list": "List", "ordered-map": "OrderedMap",
             "function": "Function", "module": "Module", "error": "Error",
-            "task": "Task", "host-handle": "HostHandle",
+            "task": "Task", "host-handle": "HostHandle", "bytes": "Bytes",
         }
         for language_kind, runtime_kind in language_rows.items():
             self.assertIn(f"| `{language_kind}` | `{runtime_kind}` |", self.spec)
-        self.assertIn("not a thirteenth language\nkind", self.spec)
+        self.assertIn("not a fourteenth language\nkind", self.spec)
 
     def test_stable_error_table_exactly_matches_runtime(self) -> None:
         enum_match = re.search(

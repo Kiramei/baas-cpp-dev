@@ -175,6 +175,12 @@ void test_cycles_nonfinite_and_identity_values()
                                                    generous_bridge_limits()); },
                     "every identity-bearing cell kind must be rejected");
     }
+    const auto bytes = heap.allocate_bytes(
+        {std::byte{0x00}, std::byte{0xff}});
+    check_error(RuntimeErrorCode::JsonUnsupported,
+                [&] { (void)heap_value_to_json(
+                    heap, bytes, generous_bridge_limits()); },
+                "arbitrary bytes must be rejected rather than encoded as JSON");
     check(heap.remove_root(cycle_root), "cycle root should be removable");
 }
 
