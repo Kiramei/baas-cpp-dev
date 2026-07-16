@@ -11,8 +11,11 @@ on:
       - 'apps/BAAS_service/**'
       - 'include/service/**'
       - 'src/service/**'
+      - 'src/service/adapters/ConfigArchiveCodec.h'
+      - 'src/service/adapters/ConfigArchiveCodec.cpp'
       - 'tests/service/ServiceApplicationTests.cpp'
       - 'tests/service/FileResourceStoreTests.cpp'
+      - 'tests/service/ConfigArchiveCodecTests.cpp'
       - 'tests/service/ConfigurationTriggerRegistrationTests.cpp'
       - 'tests/service/AdbDiscoveryTriggerRegistrationTests.cpp'
       - 'tests/service/ServiceRuntimeProviderBridgeTests.cpp'
@@ -22,6 +25,7 @@ on:
       - 'deploy/conan/recipes/baas-libsodium/**'
       - 'deploy/conan/recipes/baas-cpp-httplib/**'
       - 'deploy/conan/recipes/baas-nlohmann-json/**'
+      - 'deploy/conan/recipes/baas-miniz/**'
       - 'docs/script-runtime/SERVICE_APPLICATION.md'
       - 'docs/script-runtime/SERVICE_FILE_RESOURCE_STORE.md'
       - 'docs/script-runtime/SERVICE_COMMAND_LINE.md'
@@ -38,8 +42,11 @@ on:
       - 'apps/BAAS_service/**'
       - 'include/service/**'
       - 'src/service/**'
+      - 'src/service/adapters/ConfigArchiveCodec.h'
+      - 'src/service/adapters/ConfigArchiveCodec.cpp'
       - 'tests/service/ServiceApplicationTests.cpp'
       - 'tests/service/FileResourceStoreTests.cpp'
+      - 'tests/service/ConfigArchiveCodecTests.cpp'
       - 'tests/service/ConfigurationTriggerRegistrationTests.cpp'
       - 'tests/service/AdbDiscoveryTriggerRegistrationTests.cpp'
       - 'tests/service/ServiceRuntimeProviderBridgeTests.cpp'
@@ -49,6 +56,7 @@ on:
       - 'deploy/conan/recipes/baas-libsodium/**'
       - 'deploy/conan/recipes/baas-cpp-httplib/**'
       - 'deploy/conan/recipes/baas-nlohmann-json/**'
+      - 'deploy/conan/recipes/baas-miniz/**'
       - 'docs/script-runtime/SERVICE_APPLICATION.md'
       - 'docs/script-runtime/SERVICE_FILE_RESOURCE_STORE.md'
       - 'docs/script-runtime/SERVICE_COMMAND_LINE.md'
@@ -128,11 +136,18 @@ jobs:
           -s:h build_type=${{ matrix.build_type }} -s:b build_type=Release
           ${{ matrix.conan_settings }} --build=missing --no-remote
 
+      - name: Build pinned miniz recipe
+        run: >-
+          conan create deploy/conan/recipes/baas-miniz
+          -s:h build_type=${{ matrix.build_type }} -s:b build_type=Release
+          ${{ matrix.conan_settings }} --build=missing --no-remote
+
       - name: Generate application CMake dependencies
         run: >-
           conan install --requires=baas-libsodium/1.0.22
           --requires=baas-cpp-httplib/0.50.1
           --requires=baas-nlohmann-json/3.11.3
+          --requires=baas-miniz/3.1.2
           -of build/conan/service-application
           -s:h build_type=${{ matrix.build_type }} -s:b build_type=Release
           ${{ matrix.conan_settings }}
@@ -159,6 +174,7 @@ jobs:
           --config ${{ matrix.build_type }} --parallel 4
           --target BAAS_service BAAS_service_application_tests
           BAAS_service_file_resource_store_tests
+          BAAS_service_config_archive_codec_tests
           BAAS_service_configuration_trigger_tests BAAS_service_auth_owner_tests
           BAAS_service_adb_discovery_trigger_tests
           BAAS_service_runtime_provider_bridge_tests
@@ -167,4 +183,4 @@ jobs:
         run: >-
           ctest --test-dir build/service-application
           --build-config ${{ matrix.build_type }} --output-on-failure --timeout 90
-          -R "^BAAS_service_(application_tests|file_resource_store_tests|configuration_trigger_tests|adb_discovery_trigger_tests|auth_owner_tests|runtime_provider_bridge_tests|version_cli|help_cli)$"
+          -R "^BAAS_service_(application_tests|file_resource_store_tests|config_archive_codec_tests|configuration_trigger_tests|adb_discovery_trigger_tests|auth_owner_tests|runtime_provider_bridge_tests|version_cli|help_cli)$"

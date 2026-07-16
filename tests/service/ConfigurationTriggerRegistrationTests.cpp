@@ -3,6 +3,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -12,6 +13,7 @@
 #include <iterator>
 #include <memory>
 #include <optional>
+#include <span>
 #include <stop_token>
 #include <string>
 #include <string_view>
@@ -104,11 +106,13 @@ public:
 
 [[nodiscard]] std::shared_ptr<const trigger::TriggerDispatcher> dispatcher(
     const std::shared_ptr<adapters::FileResourceStore>& store,
-    const app::ConfigurationTriggerLimits limits = {})
+    const app::ConfigurationTriggerLimits limits = {},
+    const trigger::TriggerDispatchLimits dispatch_limits = {})
 {
     auto made = app::make_configuration_trigger_registrations(store, limits);
     if (!made) throw std::runtime_error("registration failed");
-    auto built = trigger::TriggerDispatcher::create(std::move(made.registrations));
+    auto built = trigger::TriggerDispatcher::create(
+        std::move(made.registrations), dispatch_limits);
     if (!built) throw std::runtime_error("dispatcher failed");
     return std::make_shared<const trigger::TriggerDispatcher>(
         std::move(*built.dispatcher));
@@ -142,6 +146,8 @@ bool wait_until(Predicate predicate)
 struct Response {
     protocol::ResponseStatus status{protocol::ResponseStatus::error};
     std::string json;
+    bool has_binary{};
+    std::vector<std::byte> binary;
 };
 
 [[nodiscard]] bool has_private_config_transaction(
@@ -179,9 +185,60 @@ Response execute(
     }
     auto begun = session->begin_send();
     if (!begun) throw std::runtime_error("lease failed");
-    Response response{begun.lease->batch().status(), begun.lease->batch().json()};
+    Response response{
+        begun.lease->batch().status(), begun.lease->batch().json(),
+        begun.lease->batch().has_binary(), begun.lease->batch().binary()};
     if (!connection.complete_send(*begun.lease)) {
         throw std::runtime_error("complete failed");
+    }
+    return response;
+}
+
+Response execute_binary(
+    const std::shared_ptr<trigger::TriggerExecutor>& executor,
+    const std::string_view command,
+    const protocol::Timestamp timestamp,
+    const std::string_view payload,
+    const std::span<const std::byte> binary)
+{
+    auto session = std::make_shared<protocol::TriggerSession>();
+    auto connection = executor->connect(session);
+    const auto json = std::string{"{\"type\":\"command\",\"command\":"}
+        + Json(std::string{command}).dump() + ",\"timestamp\":"
+        + std::to_string(timestamp) + ",\"payload\":"
+        + std::string{payload} + "}";
+    protocol::TriggerIngress owner;
+    const auto waiting = owner.receive_json_frame(json);
+    if (!waiting
+        || waiting.outcome != protocol::TriggerIngressOutcome::awaiting_binary) {
+        throw std::runtime_error(
+            "binary ingress declaration failed: " + std::string{command});
+    }
+    const auto received = owner.receive_binary_frame(binary);
+    if (!received) {
+        throw std::runtime_error(
+            "binary ingress failed: " + std::string{command});
+    }
+    auto item = owner.take_ready();
+    if (!item) {
+        throw std::runtime_error(
+            "binary ingress not ready: " + std::string{command});
+    }
+    const auto submitted = connection.submit(std::move(*item));
+    if (!submitted) {
+        throw std::runtime_error(
+            "binary submit failed: " + std::string{command});
+    }
+    if (!wait_until([&] { return session->stats().queued_batches == 1; })) {
+        throw std::runtime_error("binary response timeout");
+    }
+    auto begun = session->begin_send();
+    if (!begun) throw std::runtime_error("binary response lease failed");
+    Response response{
+        begun.lease->batch().status(), begun.lease->batch().json(),
+        begun.lease->batch().has_binary(), begun.lease->batch().binary()};
+    if (!connection.complete_send(*begun.lease)) {
+        throw std::runtime_error("binary response complete failed");
     }
     return response;
 }
@@ -245,6 +302,85 @@ void test_copy_and_remove_exact_python_envelopes()
         executor, "remove_configuration", 9, R"({"id":"already-absent"})");
     check(absent.status == protocol::ResponseStatus::ok,
           "removing an absent config must remain idempotent like Python");
+    executor->shutdown();
+}
+
+void test_export_import_binary_round_trip_and_errors()
+{
+    TempProject project;
+    project.add("source", "Alpha");
+    auto store = std::make_shared<adapters::FileResourceStore>(project.root);
+    auto executor = std::make_shared<trigger::TriggerExecutor>(dispatcher(store));
+
+    const auto exported = execute(
+        executor, "export_config", 40, R"({"id":"source"})");
+    const auto export_envelope = Json::parse(exported.json);
+    const bool valid_export = exported.status == protocol::ResponseStatus::ok
+        && exported.has_binary && !exported.binary.empty()
+        && export_envelope.value("command", "") == "export_config"
+        && export_envelope.value("timestamp", 0) == 40
+        && export_envelope.contains("data")
+        && export_envelope.at("data").value("filename", "") == "Alpha.zip"
+        && export_envelope.at("data").contains("binary")
+        && export_envelope.at("data").at("binary").value("size", 0U)
+            == exported.binary.size();
+    check(valid_export,
+          "export_config must return the Python filename and an adjacent ZIP frame");
+    if (!valid_export) {
+        executor->shutdown();
+        return;
+    }
+
+    const auto imported = execute_binary(
+        executor, "import_config", 41, R"({"binary":true})",
+        exported.binary);
+    const auto import_envelope = Json::parse(imported.json);
+    const bool valid_import = imported.status == protocol::ResponseStatus::ok
+        && !imported.has_binary
+        && import_envelope.value("command", "") == "import_config"
+        && import_envelope.value("timestamp", 0) == 41
+        && import_envelope.contains("data")
+        && import_envelope.at("data").value("name", "") == "Alpha"
+        && import_envelope.at("data").contains("serial")
+        && import_envelope.at("data").at("serial").is_string();
+    check(valid_import,
+          "import_config must consume the adjacent ZIP and return serial/name data");
+    if (valid_import) {
+        const auto serial = import_envelope.at("data").at("serial")
+            .get<std::string>();
+        check(serial != "source"
+                  && !std::filesystem::exists(project.root / "config" / "source")
+                  && std::filesystem::is_regular_file(
+                      project.root / "config" / serial / "nested" / "kept.txt"),
+              "same-name import must atomically replace the old complete profile");
+    }
+
+    const auto absent = execute(
+        executor, "export_config", 42, R"({"id":"missing"})");
+    check(absent.status == protocol::ResponseStatus::error
+              && absent.json.find("config_not_found") != std::string::npos
+              && !absent.has_binary,
+          "export store failures must map through the configuration error policy");
+
+    const std::array invalid_archive{
+        std::byte{'n'}, std::byte{'o'}, std::byte{'t'}, std::byte{'-'},
+        std::byte{'z'}, std::byte{'i'}, std::byte{'p'},
+    };
+    const auto invalid = execute_binary(
+        executor, "import_config", 43, R"({"binary":true})",
+        invalid_archive);
+    check(invalid.status == protocol::ResponseStatus::error
+              && invalid.json.find("config_invalid_data") != std::string::npos,
+          "invalid import archives must fail closed with a stable mapped error");
+
+    protocol::TriggerIngress missing_binary;
+    const auto missing = missing_binary.receive_json_frame(
+        R"({"type":"command","command":"import_config","timestamp":44,"payload":{}})");
+    check(!missing
+              && missing.error == protocol::TriggerIngressError::binary_marker_required
+              && missing.command_rejection
+              && missing.command_rejection->command == "import_config",
+          "import_config without a declared adjacent binary must be explicitly rejected");
     executor->shutdown();
 }
 
@@ -338,6 +474,22 @@ void test_validation_bounds_and_fail_closed_paths()
     check(oversized.status == protocol::ResponseStatus::error
               && oversized.json.find("config_payload_capacity") != std::string::npos,
           "configuration handlers must enforce a local payload byte ceiling");
+    const auto oversized_export = execute(
+        bounded, "export_config", 13,
+        R"({"id":"source","padding":"01234567890123456789"})");
+    check(oversized_export.status == protocol::ResponseStatus::error
+              && oversized_export.json.find("config_payload_capacity")
+                  != std::string::npos,
+          "export_config must enforce the same local payload byte ceiling");
+    const std::array one_byte{std::byte{0}};
+    const auto oversized_import = execute_binary(
+        bounded, "import_config", 14,
+        R"({"binary":true,"padding":"01234567890123456789"})",
+        one_byte);
+    check(oversized_import.status == protocol::ResponseStatus::error
+              && oversized_import.json.find("config_payload_capacity")
+                  != std::string::npos,
+          "import_config must bound its JSON payload before decoding the archive");
 
     std::stop_source cancelled;
     cancelled.request_stop();
@@ -347,6 +499,11 @@ void test_validation_bounds_and_fail_closed_paths()
                      "name", "日服", cancelled.get_token()).error
                   == adapters::ConfigCommandError::cancelled
               && store->remove_config("source", cancelled.get_token()).error
+                  == adapters::ConfigCommandError::cancelled
+              && store->export_config("source", cancelled.get_token()).error
+                  == adapters::ConfigCommandError::cancelled
+              && store->import_config(
+                     one_byte, cancelled.get_token()).error
                   == adapters::ConfigCommandError::cancelled,
           "filesystem operations must observe cancellation before mutation");
 
@@ -739,8 +896,10 @@ void test_registration_scope_and_limits()
     auto made = app::make_configuration_trigger_registrations(store);
     check(made && made.registrations[0].descriptor_name == "add_config*"
               && made.registrations[1].descriptor_name == "copy_config"
-              && made.registrations[2].descriptor_name == "remove_config*",
-          "registration must install exactly the coherent three-command slice");
+              && made.registrations[2].descriptor_name == "remove_config*"
+              && made.registrations[3].descriptor_name == "export_config"
+              && made.registrations[4].descriptor_name == "import_config",
+          "registration must install exactly the coherent five-command slice");
 }
 
 void test_add_irrevocable_claim_is_corrected_after_commit_failure()
@@ -767,6 +926,72 @@ void test_add_irrevocable_claim_is_corrected_after_commit_failure()
         {channels::SyncResource::static_data, std::nullopt}, {});
     check(static_data && Json::parse(static_data->data_json).size() == 25,
           "independent static metadata upgrade remains provider-visible after create failure");
+    executor->shutdown();
+}
+
+void test_import_irrevocable_claim_is_corrected_after_commit_failure()
+{
+    TempProject project;
+    project.add("source", "Alpha");
+    adapters::FileResourceStoreDependencies dependencies;
+    dependencies.clock = [] { return 93'000.0; };
+    dependencies.config_archive_fault_injector =
+        [](const std::string_view step) { return step == "before_retire"; };
+    auto store = std::make_shared<adapters::FileResourceStore>(
+        project.root, std::move(dependencies));
+    const auto archive = store->export_config("source", {});
+    check(static_cast<bool>(archive),
+          "post-claim import failure fixture must first export a valid archive");
+    if (!archive) return;
+
+    auto executor = std::make_shared<trigger::TriggerExecutor>(dispatcher(store));
+    const auto response = execute_binary(
+        executor, "import_config", 45, R"({"binary":true})",
+        archive.content);
+    const auto listed = store->config_list({});
+    check(response.status == protocol::ResponseStatus::error
+              && response.json.find("config_internal_error") != std::string::npos
+              && listed && Json::parse(listed->data_json) == Json::array({"source"})
+              && std::filesystem::is_regular_file(
+                  project.root / "config" / "source" / "config.json")
+              && !has_private_config_transaction(project.root / "config"),
+          "post-claim import failure must correct success and preserve the old profile");
+    executor->shutdown();
+}
+
+void test_archive_response_rejection_remains_reversible()
+{
+    TempProject project;
+    const std::string long_name(512, 'x');
+    project.add("source", long_name);
+    auto store = std::make_shared<adapters::FileResourceStore>(project.root);
+    const auto archive = store->export_config("source", {});
+    check(static_cast<bool>(archive),
+          "response rejection fixture must create a valid archive");
+    if (!archive) return;
+
+    trigger::TriggerDispatchLimits dispatch_limits;
+    dispatch_limits.response_envelope.max_output_json_bytes = 256;
+    auto executor = std::make_shared<trigger::TriggerExecutor>(
+        dispatcher(store, {}, dispatch_limits));
+    const auto rejected_export = execute(
+        executor, "export_config", 46, R"({"id":"source"})");
+    check(rejected_export.status == protocol::ResponseStatus::error
+              && rejected_export.json.find("config_response_rejected")
+                  != std::string::npos
+              && !rejected_export.has_binary,
+          "an oversized export response must recover to one bounded error terminal");
+
+    const auto rejected_import = execute_binary(
+        executor, "import_config", 47, R"({"binary":true})",
+        archive.content);
+    const auto listed = store->config_list({});
+    check(rejected_import.status == protocol::ResponseStatus::error
+              && rejected_import.json.find("config_response_rejected")
+                  != std::string::npos
+              && listed && Json::parse(listed->data_json) == Json::array({"source"})
+              && !has_private_config_transaction(project.root / "config"),
+          "a rejected import success must decline the claim and publish no mutation");
     executor->shutdown();
 }
 
@@ -880,6 +1105,7 @@ int main()
 {
     try {
         test_copy_and_remove_exact_python_envelopes();
+        test_export_import_binary_round_trip_and_errors();
         test_add_config_prefix_exact_python_envelope_and_defaults();
         test_validation_bounds_and_fail_closed_paths();
         test_wide_tree_entry_budget_and_cancellation_cleanup();
@@ -889,6 +1115,8 @@ int main()
         test_all_python_server_mappings_and_invalid_servers();
         test_registration_scope_and_limits();
         test_add_irrevocable_claim_is_corrected_after_commit_failure();
+        test_import_irrevocable_claim_is_corrected_after_commit_failure();
+        test_archive_response_rejection_remains_reversible();
         test_copy_static_upgrade_is_independent_of_directory_claim();
         test_directory_commit_never_replaces_concurrent_target();
         test_backpressure_retries_terminal_without_repeating_copy();
