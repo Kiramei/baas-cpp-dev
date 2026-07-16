@@ -69,9 +69,10 @@ struct FileResourceStoreDependencies {
     PostCommitDurabilityCheck post_commit_durability_check;
 };
 
-// Production ResourceStore for the JSON resources owned by the BAAS project
-// root. setup.toml is deliberately not interpreted here: its projected schema
-// is application-owned and will be supplied by the service composition layer.
+// Production ResourceStore for resources owned by the BAAS project root.
+// JSON files retain their full document. setup.toml exposes the bounded
+// Python/Tauri general-settings projection while patches merge canonical keys
+// back into the anchored TOML source without discarding unrelated fields.
 class FileResourceStore final : public channels::ResourceStore {
 public:
     explicit FileResourceStore(

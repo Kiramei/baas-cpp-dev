@@ -1,4 +1,5 @@
 import pathlib
+import tomllib
 import unittest
 
 
@@ -33,10 +34,33 @@ class ServiceFileResourceStoreDocsTests(unittest.TestCase):
             workflow.count("docs/script-runtime/SERVICE_FILE_RESOURCE_STORE.md"), 2
         )
         self.assertIn("setup_toml", spec)
-        self.assertIn("dedicated TOML projection adapter", spec)
+        self.assertIn("seven-field Python", spec)
+        self.assertIn("unknown TOML", spec)
+        self.assertIn("scalar/table redefinition", spec)
         self.assertIn("committed_durability_uncertain", spec)
         self.assertIn("entry barrier", spec)
         self.assertIn("refresh_and_publish", spec)
+
+    def test_preserved_setup_toml_shape_is_tomllib_readable(self) -> None:
+        merged = '''
+schema_version = 1
+["general"]
+"transport" = "pipe" # keep transport comment
+channel = "dev"
+unknown_future = """keep-me
+[this.is.not.a.table]
+# nor is this a comment
+still-keep-me"""
+get_remote_sha_method = "gitee"
+mirrorc_cdk = "new-cdk"
+
+[[plugins]]
+name = "future-plugin"
+'''
+        parsed = tomllib.loads(merged)
+        self.assertEqual(parsed["general"]["transport"], "pipe")
+        self.assertIn("[this.is.not.a.table]", parsed["general"]["unknown_future"])
+        self.assertEqual(parsed["plugins"][0]["name"], "future-plugin")
 
 
 if __name__ == "__main__":

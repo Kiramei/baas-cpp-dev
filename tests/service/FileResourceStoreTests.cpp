@@ -2,6 +2,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -168,9 +169,21 @@ void test_list_pull_and_resource_shapes()
     check(static_data && Json::parse(static_data->data_json)["version"] == 3,
           "static pull resolves config/static.json");
 
-    auto setup = store.pull({channels::SyncResource::setup_toml, std::nullopt}, {});
-    check(!setup && setup.error == channels::ResourceStoreError::not_found,
-          "setup TOML is explicitly unsupported rather than misparsed as JSON");
+    auto setup = store.pull(
+        {channels::SyncResource::setup_toml, std::string{"global"}}, {});
+    check(static_cast<bool>(setup),
+          "setup TOML global projection pulls successfully");
+    if (setup) {
+        const auto projection = Json::parse(setup->data_json);
+        check(projection == Json{{"transport", "websocket"},
+                                 {"channel", "stable"},
+                                 {"updateMethod", "github"},
+                                 {"repoUrl", "https://github.com/pur1fying/blue_archive_auto_script.git"},
+                                 {"shaMethod", ""},
+                                 {"mirrorcCdk", ""},
+                                 {"gitBackend", "auto"}},
+              "setup TOML exposes the Python-compatible bounded projection");
+    }
     auto no_id = store.pull({channels::SyncResource::config, std::nullopt}, {});
     check(!no_id && no_id.error == channels::ResourceStoreError::invalid_data,
           "config pull requires a resource id");
@@ -178,6 +191,11 @@ void test_list_pull_and_resource_shapes()
         {channels::SyncResource::gui, std::string{"alpha"}}, {});
     check(!global_id && global_id.error == channels::ResourceStoreError::invalid_data,
           "global resources reject a resource id");
+    auto invalid_setup_id = store.pull(
+        {channels::SyncResource::setup_toml, std::string{"not-global"}}, {});
+    check(!invalid_setup_id
+              && invalid_setup_id.error == channels::ResourceStoreError::invalid_data,
+          "setup pull validates before canonicalizing its compatibility id");
     auto missing = store.pull(config_key("missing"), {});
     check(!missing && missing.error == channels::ResourceStoreError::not_found,
           "missing safe resource is not found");
@@ -462,10 +480,11 @@ void test_patch_conflict_and_durable_commit()
         {{channels::SyncResource::static_data, std::nullopt}, "0", {}}, {});
     check(!immutable && immutable.error == channels::ResourceStoreError::invalid_data,
           "static resource cannot be patched");
-    auto setup = store.apply_patch(
-        {{channels::SyncResource::setup_toml, std::nullopt}, "0", {}}, {});
-    check(!setup && setup.error == channels::ResourceStoreError::not_found,
-          "setup TOML patch is explicitly not found");
+    auto invalid_setup_id = store.apply_patch(
+        {{channels::SyncResource::setup_toml, std::string{"not-global"}}, "0", {}}, {});
+    check(!invalid_setup_id
+              && invalid_setup_id.error == channels::ResourceStoreError::invalid_data,
+          "setup TOML rejects non-global resource identifiers");
 
     bool temporary_found{};
     for (const auto& entry : std::filesystem::directory_iterator(
@@ -836,6 +855,146 @@ void test_self_unsubscribe_does_not_deadlock()
           "self-unsubscription closes admission before the next publication");
 }
 
+void test_setup_toml_projection_patch_and_unknown_retention()
+{
+    TempProject project;
+    project.add_pair("alpha", "{}");
+    write_bytes(project.root / "config" / "gui.json", "{}");
+    write_bytes(project.root / "config" / "static.json", "{}");
+    const auto setup_path = project.root / "setup.toml";
+    write_bytes(setup_path,
+        "schema_version = 1\r\n"
+        "# an unrelated top-level comment must survive\r\n"
+        "[\"general\"]\r\n"
+        "\"transport\" = \"websocket\" # keep transport comment\r\n"
+        "mirrorcCdk = 'abc'\r\n"
+        "channel = \"stable\"\r\n"
+        "getRemoteShaMethod = \"github\"\r\n"
+        "git_backend = \"auto\"\r\n"
+        "unknown_future = \"\"\"keep-me\r\n"
+        "[this.is.not.a.table]\r\n"
+        "# nor is this a comment\r\n"
+        "still-keep-me\"\"\"\r\n"
+        "\r\n"
+        "[paths]\r\n"
+        "baas_root_path = \"D:/BAAS\"\r\n"
+        "\r\n"
+        "[[plugins]]\r\n"
+        "name = \"future-plugin\"\r\n"
+        "\r\n"
+        "[General]\r\n"
+        "git_backend = \"git2\"\r\n");
+
+    adapters::FileResourceStore store(project.root, dependencies());
+    const channels::ResourceKey null_key{
+        channels::SyncResource::setup_toml, std::nullopt};
+    const channels::ResourceKey key{
+        channels::SyncResource::setup_toml, std::string{"global"}};
+    auto initial = store.pull(null_key, {});
+    check(static_cast<bool>(initial),
+          "legacy and camel-case setup TOML projects successfully");
+    if (!initial) return;
+    auto canonical_pull = store.pull(key, {});
+    check(canonical_pull
+              && canonical_pull->timestamp_json == initial->timestamp_json
+              && canonical_pull->data_json == initial->data_json,
+          "null and global setup keys share one canonical cache entry");
+    const auto projected = Json::parse(initial->data_json);
+    check(projected["mirrorcCdk"] == "abc"
+              && projected["gitBackend"] == "git2"
+              && projected["updateMethod"] == "github",
+          "setup projection applies Python alias and legacy precedence");
+
+    std::vector<channels::ResourceUpdate> updates;
+    auto subscription = store.subscribe_updates(
+        [&updates](channels::ResourceUpdate update) {
+            updates.push_back(std::move(update));
+        });
+    channels::ResourcePatchRequest patch{
+        null_key,
+        initial->timestamp_json,
+        {{"replace", "/transport", "\"pipe\""},
+         {"replace", "/channel", "\"dev\""},
+         {"replace", "/updateMethod", "\"gitee\""},
+         {"replace", "/mirrorcCdk", "\"new-cdk\""},
+         {"replace", "/gitBackend", "\"git_cli\""}}};
+    auto applied = store.apply_patch(std::move(patch), {});
+    check(applied
+              && applied->disposition
+                     == channels::ResourcePatchDisposition::applied,
+          "setup projection patch commits");
+    if (applied) {
+        const auto visible = Json::parse(applied->snapshot.data_json);
+        check(visible["transport"] == "pipe" && visible["channel"] == "dev"
+                  && visible["updateMethod"] == "gitee"
+                  && visible["gitBackend"] == "git_cli",
+              "setup patch returns the committed projection");
+    }
+    const auto disk = read_bytes(setup_path);
+    check(disk.find("# an unrelated top-level comment must survive\r\n")
+                  != std::string::npos
+              && disk.find("unknown_future = \"\"\"keep-me\r\n")
+                  != std::string::npos
+              && disk.find("[this.is.not.a.table]\r\n"
+                           "# nor is this a comment\r\n"
+                           "still-keep-me\"\"\"\r\n") != std::string::npos
+              && disk.find("baas_root_path = \"D:/BAAS\"\r\n")
+                  != std::string::npos
+              && disk.find("[[plugins]]\r\nname = \"future-plugin\"\r\n")
+                  != std::string::npos,
+          "setup merge preserves unrelated TOML fields and CRLF text");
+    check(disk.find("\"transport\" = \"pipe\" # keep transport comment\r\n")
+                  != std::string::npos
+              && disk.find("channel = \"dev\"\r\n") != std::string::npos
+              && disk.find("get_remote_sha_method = \"gitee\"\r\n")
+                  != std::string::npos
+              && disk.find("mirrorc_cdk = \"new-cdk\"\r\n")
+                  != std::string::npos
+              && disk.find("git_backend = \"git_cli\"\r\n")
+                  != std::string::npos,
+          "setup merge writes canonical general keys");
+    check(updates.size() == 1 && updates.front().key == key
+              && updates.front().origin == "frontend",
+          "setup commit publishes exactly one canonical global update");
+    if (applied && !updates.empty()) {
+        const auto operations = Json::parse(updates.front().operations_json);
+        const auto replayed = projected.patch(operations);
+        auto pulled_after_patch = store.pull(key, {});
+        check(operations.size() == 1 && operations[0]["op"] == "replace"
+                  && operations[0]["path"] == ""
+                  && replayed == Json::parse(applied->snapshot.data_json)
+                  && pulled_after_patch
+                  && replayed == Json::parse(pulled_after_patch->data_json),
+              "setup publication replays exactly to the committed projection");
+    }
+
+    adapters::FileResourceStore reloaded(project.root, dependencies());
+    auto after_restart = reloaded.pull(key, {});
+    check(after_restart
+              && Json::parse(after_restart->data_json)["repoUrl"]
+                     == "https://gitee.com/kiramei/baas-dev.git",
+          "setup projection is stable after restart and channel-aware");
+
+    auto removed = reloaded.apply_patch(
+        {key, after_restart ? after_restart->timestamp_json : "0",
+         {{"remove", "/transport", std::nullopt}}}, {});
+    check(removed
+              && removed->disposition
+                     == channels::ResourcePatchDisposition::applied
+              && Json::parse(removed->snapshot.data_json)["transport"] == "pipe"
+              && read_bytes(setup_path) == disk,
+          "removing a projected field reprojects the retained full TOML value");
+
+    auto invalid = reloaded.apply_patch(
+        {key, removed ? removed->snapshot.timestamp_json : "0",
+         {{"add", "/transport", "\"invalid\""}}}, {});
+    check(!invalid, "invalid transport is rejected");
+    check(invalid.error == channels::ResourceStoreError::invalid_data,
+          "invalid transport has the stable invalid_data classification");
+    check(read_bytes(setup_path) == disk,
+          "invalid transport leaves setup.toml unchanged");
+}
+
 void test_refresh_and_publish()
 {
     TempProject project;
@@ -843,7 +1002,10 @@ void test_refresh_and_publish()
     project.add_globals();
     adapters::FileResourceStore store(project.root, dependencies());
     auto gui = store.pull({channels::SyncResource::gui, std::nullopt}, {});
+    auto setup = store.pull(
+        {channels::SyncResource::setup_toml, std::string{"global"}}, {});
     check(static_cast<bool>(gui), "refresh baseline is cached");
+    check(static_cast<bool>(setup), "setup refresh baseline is cached");
 
     std::vector<channels::ResourceUpdate> updates;
     auto subscription = store.subscribe_updates(
@@ -876,12 +1038,148 @@ void test_refresh_and_publish()
     check(preserved && Json::parse(preserved->data_json)["theme"] == "light"
               && updates.size() == 1,
           "invalid refresh leaves visible snapshot and publications unchanged");
-    check(!store.refresh_and_publish(
-              {channels::SyncResource::setup_toml, std::nullopt}, "filesystem"),
-          "setup TOML refresh remains unsupported");
+    write_bytes(project.root / "setup.toml",
+                "[general]\nchannel = 'dev'\nfuture = 'preserved'\n");
+    check(store.refresh_and_publish(
+              {channels::SyncResource::setup_toml, std::nullopt},
+              "filesystem"),
+          "null setup key refreshes the canonical projection and publishes");
+    auto refreshed_setup = store.pull(
+        {channels::SyncResource::setup_toml, std::string{"global"}}, {});
+    check(refreshed_setup
+              && Json::parse(refreshed_setup->data_json)["channel"] == "dev"
+              && updates.size() == 2
+              && updates.back().key
+                     == channels::ResourceKey{
+                         channels::SyncResource::setup_toml,
+                         std::string{"global"}},
+          "setup refresh and pull share one canonical global cache entry");
     check(!store.refresh_and_publish(
               {channels::SyncResource::gui, std::nullopt}, std::string(65, 'o')),
           "refresh origin is bounded");
+}
+
+void test_setup_toml_legacy_proxy_projection()
+{
+    struct Case {
+        bool dev;
+        std::string method;
+        std::string url;
+    };
+    const std::vector<Case> cases{
+        {false, "github", "https://github.com/pur1fying/blue_archive_auto_script.git"},
+        {false, "gitee", "https://gitee.com/pur1fy/blue_archive_auto_script.git"},
+        {false, "gitcode", "https://gitcode.com/m0_74686738/blue_archive_auto_script.git"},
+        {false, "github_proxy_v4", "https://v4.gh-proxy.org/https://github.com/pur1fying/blue_archive_auto_script.git"},
+        {false, "github_proxy_v6", "https://v6.gh-proxy.org/https://github.com/pur1fying/blue_archive_auto_script.git"},
+        {false, "github_proxy_cdn", "https://cdn.gh-proxy.org/https://github.com/pur1fying/blue_archive_auto_script.git"},
+        {false, "gh_proxy", "https://gh-proxy.org/https://github.com/pur1fying/blue_archive_auto_script.git"},
+        {false, "sevencdn", "https://gh.sevencdn.com/https://github.com/pur1fying/blue_archive_auto_script.git"},
+        {false, "githubfast", "https://githubfast.com/pur1fying/blue_archive_auto_script.git"},
+        {false, "baas_cdn", "https://baas-cdn.kiramei.workers.dev/https://github.com/pur1fying/blue_archive_auto_script.git"},
+        {true, "github", "https://github.com/Kiramei/baas-dev.git"},
+        {true, "gitee", "https://gitee.com/kiramei/baas-dev.git"},
+        {true, "github_proxy_v4", "https://v4.gh-proxy.org/https://github.com/Kiramei/baas-dev.git"},
+        {true, "github_proxy_v6", "https://v6.gh-proxy.org/https://github.com/Kiramei/baas-dev.git"},
+        {true, "github_proxy_cdn", "https://cdn.gh-proxy.org/https://github.com/Kiramei/baas-dev.git"},
+        {true, "gh_proxy", "https://gh-proxy.org/https://github.com/Kiramei/baas-dev.git"},
+        {true, "sevencdn", "https://gh.sevencdn.com/https://github.com/Kiramei/baas-dev.git"},
+        {true, "githubfast", "https://githubfast.com/Kiramei/baas-dev.git"},
+        {true, "baas_cdn", "https://baas-cdn.kiramei.workers.dev/https://github.com/Kiramei/baas-dev.git"},
+    };
+    for (const auto& item : cases) {
+        TempProject project;
+        write_bytes(project.root / "setup.toml",
+                    "[General]\ndev = "
+                        + std::string(item.dev ? "true" : "false")
+                        + "\n[URLs]\nREPO_URL_HTTP = \"" + item.url + "\"\n");
+        adapters::FileResourceStore store(project.root, dependencies());
+        auto pulled = store.pull(
+            {channels::SyncResource::setup_toml, std::nullopt}, {});
+        check(pulled
+                  && Json::parse(pulled->data_json)["updateMethod"] == item.method
+                  && Json::parse(pulled->data_json)["repoUrl"] == item.url,
+              "legacy setup proxy URL round-trips to its update method");
+    }
+}
+
+void test_setup_toml_eof_insertion_keeps_valid_line_boundaries()
+{
+    TempProject project;
+    const auto path = project.root / "setup.toml";
+    write_bytes(path, "[general]\ntransport = \"websocket\"");
+    adapters::FileResourceStore store(project.root, dependencies());
+    auto initial = store.pull(
+        {channels::SyncResource::setup_toml, std::nullopt}, {});
+    auto applied = store.apply_patch(
+        {{channels::SyncResource::setup_toml, std::string{"global"}},
+         initial ? initial->timestamp_json : "0",
+         {{"replace", "/channel", "\"dev\""}}}, {});
+    const auto disk = read_bytes(path);
+    check(applied
+              && disk.find("transport = \"websocket\"\nchannel = \"dev\"\n")
+                     != std::string::npos,
+          "setup additions after an unterminated EOF start on a new line");
+    adapters::FileResourceStore reloaded(project.root, dependencies());
+    auto after_restart = reloaded.pull(
+        {channels::SyncResource::setup_toml, std::nullopt}, {});
+    check(after_restart
+              && Json::parse(after_restart->data_json)["channel"] == "dev",
+          "setup merged at EOF remains readable after restart");
+}
+
+void test_setup_toml_scalar_table_conflicts_fail_closed()
+{
+    const std::array conflicting_sources{
+        std::string{"[general]\ntransport.kind = \"future\"\n"},
+        std::string{"[\"general\".\"transport\"]\nkind = \"future\"\n"},
+        std::string{"general.transport.kind = \"future\"\n"},
+        std::string{"[[general]]\nname = \"future\"\n"},
+    };
+    for (const auto& source : conflicting_sources) {
+        TempProject project;
+        const auto path = project.root / "setup.toml";
+        write_bytes(path, source);
+        adapters::FileResourceStore store(project.root, dependencies());
+        const channels::ResourceKey key{
+            channels::SyncResource::setup_toml, std::string{"global"}};
+        auto initial = store.pull(key, {});
+        check(static_cast<bool>(initial),
+              "valid dotted/table setup conflict fixture projects safely");
+        std::atomic_size_t publications{};
+        auto subscription = store.subscribe_updates(
+            [&publications](channels::ResourceUpdate) { ++publications; });
+        auto applied = store.apply_patch(
+            {key, initial ? initial->timestamp_json : "0",
+             {{"replace", "/transport", "\"pipe\""}}}, {});
+        check(!applied
+                  && applied.error
+                         == channels::ResourceStoreError::invalid_data,
+              "projected scalar never overwrites a dotted key or table");
+        check(read_bytes(path) == source && publications.load() == 0,
+              "scalar/table conflict leaves valid TOML and publications unchanged");
+    }
+
+    TempProject child_project;
+    const auto child_path = child_project.root / "setup.toml";
+    write_bytes(child_path,
+                "[[general.plugins]]\nname = \"future\"\n");
+    adapters::FileResourceStore child_store(child_project.root, dependencies());
+    const channels::ResourceKey child_key{
+        channels::SyncResource::setup_toml, std::string{"global"}};
+    auto child_initial = child_store.pull(child_key, {});
+    auto child_applied = child_store.apply_patch(
+        {child_key, child_initial ? child_initial->timestamp_json : "0",
+         {{"replace", "/channel", "\"dev\""}}}, {});
+    const auto child_disk = read_bytes(child_path);
+    adapters::FileResourceStore child_reloaded(child_project.root, dependencies());
+    auto child_after_restart = child_reloaded.pull(child_key, {});
+    check(child_applied
+              && child_disk.find("[general]\n") != std::string::npos
+              && child_disk.find("channel = \"dev\"\n") != std::string::npos
+              && child_after_restart
+              && Json::parse(child_after_restart->data_json)["channel"] == "dev",
+          "unrelated child arrays-of-tables do not block a projected scalar");
 }
 
 }  // namespace
@@ -908,6 +1206,10 @@ int main()
         test_cross_unsubscribe_and_store_self_destruction();
         test_subscriber_capacity();
         test_self_unsubscribe_does_not_deadlock();
+        test_setup_toml_projection_patch_and_unknown_retention();
+        test_setup_toml_legacy_proxy_projection();
+        test_setup_toml_eof_insertion_keeps_valid_line_boundaries();
+        test_setup_toml_scalar_table_conflicts_fail_closed();
         test_refresh_and_publish();
     } catch (const std::exception& error) {
         ++failures;
