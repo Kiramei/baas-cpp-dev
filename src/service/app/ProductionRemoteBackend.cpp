@@ -44,7 +44,10 @@ constexpr std::size_t owner_token_bytes = 32;
 
 struct ServerOwnership final {
     std::string token;
-    std::optional<unsigned> pid;
+    unsigned supervisor_pid{};
+    std::uint64_t supervisor_start_time{};
+    unsigned child_pid{};
+    std::uint64_t child_start_time{};
 };
 
 std::optional<std::string> make_owner_token()
@@ -71,11 +74,6 @@ bool valid_owner_token(const std::string_view token) noexcept
             return (value >= '0' && value <= '9')
                 || (value >= 'a' && value <= 'f');
         });
-}
-
-std::string owner_marker_path(const std::string_view token)
-{
-    return "/data/local/tmp/baas-ws-scrcpy." + std::string{token} + ".pid";
 }
 
 class ConcreteAdbClient final : public RemoteAdbClient {
@@ -267,26 +265,63 @@ std::optional<unsigned> parse_pid(const std::string_view text)
     return pid;
 }
 
-std::optional<unsigned> parse_owner_marker(
-    const std::string_view text, const std::string_view token)
+std::optional<std::uint64_t> parse_u64(const std::string_view token)
 {
-    const auto pid = parse_pid(text);
-    if (!pid) return std::nullopt;
-    const auto begin = text.find_first_not_of(" \t\r\n");
-    const auto pid_end = text.find_first_of(" \t\r\n", begin);
-    if (pid_end == std::string_view::npos) return std::nullopt;
-    const auto token_begin = text.find_first_not_of(" \t\r\n", pid_end);
-    if (token_begin == std::string_view::npos) return std::nullopt;
-    const auto token_end = text.find_first_of(" \t\r\n", token_begin);
-    if (text.substr(token_begin, token_end == std::string_view::npos
-            ? text.size() - token_begin : token_end - token_begin) != token) {
+    std::uint64_t value{};
+    const auto [end, error] = std::from_chars(
+        token.data(), token.data() + token.size(), value);
+    if (error != std::errc{} || end != token.data() + token.size() || value == 0)
         return std::nullopt;
+    return value;
+}
+
+std::optional<std::uint64_t> parse_process_start_time(
+    const std::string_view stat)
+{
+    const auto comm_end = stat.rfind(") ");
+    if (comm_end == std::string_view::npos) return std::nullopt;
+    auto rest = stat.substr(comm_end + 2);
+    for (unsigned field = 3; field <= 22; ++field) {
+        const auto begin = rest.find_first_not_of(' ');
+        if (begin == std::string_view::npos) return std::nullopt;
+        const auto end = rest.find(' ', begin);
+        const auto token = rest.substr(begin, end == std::string_view::npos
+            ? rest.size() - begin : end - begin);
+        if (field == 22) return parse_u64(token);
+        if (end == std::string_view::npos) return std::nullopt;
+        rest.remove_prefix(end + 1);
     }
-    if (token_end != std::string_view::npos
-        && text.find_first_not_of(" \t\r\n", token_end) != std::string_view::npos) {
-        return std::nullopt;
+    return std::nullopt;
+}
+
+std::optional<ServerOwnership> parse_lease_record(
+    const std::string_view text, const std::string_view expected_token)
+{
+    std::array<std::string_view, 6> fields;
+    std::size_t count{};
+    std::size_t offset{};
+    while (offset < text.size()) {
+        offset = text.find_first_not_of(" \t\r\n", offset);
+        if (offset == std::string_view::npos) break;
+        const auto end = text.find_first_of(" \t\r\n", offset);
+        if (count == fields.size()) return std::nullopt;
+        fields[count++] = text.substr(offset, end == std::string_view::npos
+            ? text.size() - offset : end - offset);
+        if (end == std::string_view::npos) break;
+        offset = end;
     }
-    return pid;
+    if (count != fields.size() || fields[0] != "OWNED"
+        || fields[1] != expected_token) return std::nullopt;
+    const auto supervisor_pid = parse_u64(fields[2]);
+    const auto supervisor_start = parse_u64(fields[3]);
+    const auto child_pid = parse_u64(fields[4]);
+    const auto child_start = parse_u64(fields[5]);
+    if (!supervisor_pid || *supervisor_pid > std::numeric_limits<unsigned>::max()
+        || !child_pid || *child_pid > std::numeric_limits<unsigned>::max()
+        || !supervisor_start || !child_start) return std::nullopt;
+    return ServerOwnership{
+        std::string{expected_token}, static_cast<unsigned>(*supervisor_pid),
+        *supervisor_start, static_cast<unsigned>(*child_pid), *child_start};
 }
 
 bool expected_owner_environment(
@@ -301,6 +336,122 @@ bool expected_owner_environment(
         offset = end + 1;
     }
     return false;
+}
+
+void replace_token(std::string& command, const std::string_view token)
+{
+    constexpr std::string_view placeholder = "__BAAS_OWNER_TOKEN__";
+    for (auto offset = command.find(placeholder); offset != std::string::npos;
+         offset = command.find(placeholder, offset + token.size())) {
+        command.replace(offset, placeholder.size(), token);
+    }
+}
+
+std::string lease_probe_command()
+{
+    return R"SH(# BAAS_WS_LEASE_PROBE
+lease=/data/local/tmp/baas-ws-scrcpy.lease
+proc_start() { value=$(cat "/proc/$1/stat" 2>/dev/null) || return 1; value=${value##*) }; set -- $value; [ "$#" -ge 20 ] || return 1; printf "%s" "${20}"; }
+if [ ! -L "$lease" ]; then echo NONE; exit 0; fi
+target=$(readlink "$lease" 2>/dev/null) || { echo BUSY; exit 0; }
+case "$target" in baas-ws-scrcpy.owner.*) ;; *) echo BUSY; exit 0;; esac
+path_token=${target#baas-ws-scrcpy.owner.}
+[ "${#path_token}" -eq 64 ] || { echo BUSY; exit 0; }
+case "$path_token" in *[!0-9a-f]*) echo BUSY; exit 0;; esac
+dir=/data/local/tmp/$target
+read token supervisor supervisor_start < "$dir/init" 2>/dev/null || token=
+ [ "$token" = "$path_token" ] || { echo BUSY; exit 0; }
+actual_start=$(proc_start "$supervisor" 2>/dev/null) || actual_start=
+if [ "${#token}" -eq 64 ] && [ "$actual_start" = "$supervisor_start" ] && tr '\000' '\n' < "/proc/$supervisor/environ" 2>/dev/null | grep -Fqx "BAAS_WS_SCRCPY_OWNER=$token"; then echo BUSY; exit 0; fi
+if [ "$(readlink "$lease" 2>/dev/null)" = "$target" ]; then rm -f "$lease"; fi
+rm -rf "$dir"
+echo STALE
+)SH";
+}
+
+std::string supervisor_launch_command(const std::string_view owner_token)
+{
+    std::string command = R"SH(# BAAS_WS_SUPERVISOR_LAUNCH
+token=__BAAS_OWNER_TOKEN__
+lease=/data/local/tmp/baas-ws-scrcpy.lease
+name=baas-ws-scrcpy.owner.$token
+dir=/data/local/tmp/$name
+umask 077
+mkdir "$dir" 2>/dev/null || { echo ERROR; exit 0; }
+printf "%s\n" "$token" > "$dir/token.tmp" && mv "$dir/token.tmp" "$dir/token" || { rm -rf "$dir"; echo ERROR; exit 0; }
+BAAS_WS_SCRCPY_OWNER="$token" /system/bin/sh -c '
+dir=$1; lease=$2; token=$3; name=$4
+proc_start() { value=$(cat "/proc/$1/stat" 2>/dev/null) || return 1; value=${value##*) }; set -- $value; [ "$#" -ge 20 ] || return 1; printf "%s" "${20}"; }
+cleanup() { if [ "$(readlink "$lease" 2>/dev/null)" = "$name" ]; then rm -f "$lease"; fi; rm -rf "$dir"; }
+supervisor=$$
+supervisor_start=$(proc_start "$supervisor") || { cleanup; exit 1; }
+printf "%s %s %s\n" "$token" "$supervisor" "$supervisor_start" > "$dir/init.tmp" && mv "$dir/init.tmp" "$dir/init" || { cleanup; exit 1; }
+i=0
+while [ "$(readlink "$lease" 2>/dev/null)" != "$name" ]; do [ -f "$dir/stop" ] && { cleanup; exit 0; }; i=$((i+1)); [ "$i" -ge 200 ] && { cleanup; exit 1; }; sleep 0.05; done
+(
+  i=0
+  while [ "$(cat "$dir/run" 2>/dev/null)" != "$token" ]; do i=$((i+1)); [ "$i" -ge 200 ] && exit 1; sleep 0.05; done
+  export BAAS_WS_SCRCPY_OWNER="$token"
+  export CLASSPATH=/data/local/tmp/baas-ws-scrcpy-server.jar
+  exec app_process / com.genymobile.scrcpy.Server 1.19-ws7 web ERROR 8886 true
+) > /data/local/tmp/ws_scrcpy.log 2>&1 &
+child=$!
+child_start=$(proc_start "$child") || { kill "$child" 2>/dev/null; wait "$child" 2>/dev/null; cleanup; exit 1; }
+printf "%s %s %s %s %s\n" "$token" "$supervisor" "$supervisor_start" "$child" "$child_start" > "$dir/meta.tmp" && mv "$dir/meta.tmp" "$dir/meta" || { kill "$child" 2>/dev/null; wait "$child" 2>/dev/null; cleanup; exit 1; }
+printf "%s\n" "$token" > "$dir/run.tmp" && mv "$dir/run.tmp" "$dir/run" || { kill "$child" 2>/dev/null; wait "$child" 2>/dev/null; cleanup; exit 1; }
+while :; do
+  current_start=$(proc_start "$child" 2>/dev/null) || { wait "$child" 2>/dev/null; break; }
+  [ "$current_start" = "$child_start" ] || break
+  if [ "$(cat "$dir/stop" 2>/dev/null)" = "$token" ]; then
+    if tr '\000' '\n' < "/proc/$child/environ" 2>/dev/null | grep -Fqx "BAAS_WS_SCRCPY_OWNER=$token" && [ "$(proc_start "$child" 2>/dev/null)" = "$child_start" ]; then kill "$child" 2>/dev/null; fi
+    wait "$child" 2>/dev/null
+    break
+  fi
+  value=$(cat "/proc/$child/stat" 2>/dev/null) || { wait "$child" 2>/dev/null; break; }
+  value=${value##*) }; set -- $value
+  [ "$1" = Z ] && { wait "$child" 2>/dev/null; break; }
+  sleep 0.1
+done
+cleanup
+' baas-supervisor "$dir" "$lease" "$token" "$name" >/data/local/tmp/baas-ws-scrcpy-supervisor.log 2>&1 &
+supervisor=$!
+i=0
+while [ ! -f "$dir/init" ]; do kill -0 "$supervisor" 2>/dev/null || { rm -rf "$dir"; echo ERROR; exit 0; }; i=$((i+1)); [ "$i" -ge 200 ] && { printf "%s\n" "$token" > "$dir/stop"; echo ERROR; exit 0; }; sleep 0.05; done
+ln -s "$name" "$lease" 2>/dev/null || { printf "%s\n" "$token" > "$dir/stop"; echo BUSY; exit 0; }
+i=0
+while [ ! -f "$dir/meta" ]; do kill -0 "$supervisor" 2>/dev/null || { echo ERROR; exit 0; }; i=$((i+1)); [ "$i" -ge 200 ] && { printf "%s\n" "$token" > "$dir/stop"; echo ERROR; exit 0; }; sleep 0.05; done
+printf "OWNED "; cat "$dir/meta"
+)SH";
+    replace_token(command, owner_token);
+    return command;
+}
+
+std::string supervisor_stop_command(const std::string_view owner_token)
+{
+    std::string command = R"SH(# BAAS_WS_SUPERVISOR_STOP
+expected=__BAAS_OWNER_TOKEN__
+lease=/data/local/tmp/baas-ws-scrcpy.lease
+proc_start() { value=$(cat "/proc/$1/stat" 2>/dev/null) || return 1; value=${value##*) }; set -- $value; [ "$#" -ge 20 ] || return 1; printf "%s" "${20}"; }
+if [ ! -L "$lease" ]; then echo GONE; exit 0; fi
+target=$(readlink "$lease" 2>/dev/null) || { echo OTHER; exit 0; }
+case "$target" in baas-ws-scrcpy.owner.*) ;; *) echo OTHER; exit 0;; esac
+path_token=${target#baas-ws-scrcpy.owner.}
+[ "${#path_token}" -eq 64 ] || { echo OTHER; exit 0; }
+case "$path_token" in *[!0-9a-f]*) echo OTHER; exit 0;; esac
+dir=/data/local/tmp/$target
+read token supervisor supervisor_start < "$dir/init" 2>/dev/null || token=
+[ "$token" = "$path_token" ] && [ "$token" = "$expected" ] || { echo OTHER; exit 0; }
+actual_start=$(proc_start "$supervisor" 2>/dev/null) || actual_start=
+if [ "$actual_start" = "$supervisor_start" ] && tr '\000' '\n' < "/proc/$supervisor/environ" 2>/dev/null | grep -Fqx "BAAS_WS_SCRCPY_OWNER=$token"; then
+  printf "%s\n" "$token" > "$dir/stop.tmp" && mv "$dir/stop.tmp" "$dir/stop" && echo REQUESTED || echo ERROR
+  exit 0
+fi
+if [ "$(readlink "$lease" 2>/dev/null)" = "$target" ]; then rm -f "$lease"; fi
+rm -rf "$dir"
+echo STALE
+)SH";
+    replace_token(command, owner_token);
+    return command;
 }
 
 bool expected_cmdline(const std::string_view bytes)
@@ -726,6 +877,13 @@ public:
         if (!state) return fail(map_adb_error(state.error));
         if (*state.value != "device") return fail(RemoteBackendError::not_found);
 
+        const auto lease = dependencies_.adb->shell(
+            config->serial, lease_probe_command(), stop);
+        if (!lease) return fail(map_adb_error(lease.error));
+        if (lease->starts_with("BUSY")) return fail(RemoteBackendError::capacity);
+        if (!lease->starts_with("NONE") && !lease->starts_with("STALE"))
+            return fail(RemoteBackendError::internal_error);
+
         std::optional<ServerOwnership> ownership;
         auto server = find_server(config->serial, stop);
         if (server.error != RemoteBackendError::none)
@@ -736,43 +894,33 @@ public:
             catch (...) { return fail(RemoteBackendError::internal_error); }
             if (!token || !valid_owner_token(*token))
                 return fail(RemoteBackendError::internal_error);
-            ServerOwnership launched{std::move(*token), std::nullopt};
-            const auto marker = owner_marker_path(launched.token);
+            ServerOwnership launched{std::move(*token)};
             const auto pushed = dependencies_.adb->push_file(
                 config->serial, remote_jar, dependencies_.server_jar, stop);
             if (!pushed) return fail(map_adb_error(pushed.error));
             const auto started = dependencies_.adb->shell(
-                config->serial,
-                "rm -f " + marker + "; "
-                "(" + std::string{owner_environment} + launched.token + " "
-                "CLASSPATH=/data/local/tmp/baas-ws-scrcpy-server.jar app_process / "
-                "com.genymobile.scrcpy.Server 1.19-ws7 web ERROR 8886 true "
-                "> /data/local/tmp/ws_scrcpy.log 2>&1 & pid=$!; "
-                "echo \"$pid " + launched.token + "\" > " + marker
-                + "; echo \"$pid " + launched.token + "\")", stop);
+                config->serial, supervisor_launch_command(launched.token), stop);
             if (!started) {
-                // The device shell may have launched the process and written
-                // the marker even when its response is lost. Re-read both and
-                // only kill an exact ws-scrcpy identity; never infer ownership
-                // from an uncertain response alone.
+                // The device supervisor may own the lease even when the host
+                // response is lost. Request token-bound stop; never kill a PID
+                // inferred from an uncertain transport response.
                 cleanup_owned(config->serial, launched);
                 return fail(map_adb_error(started.error));
             }
-            const auto launched_pid = parse_owner_marker(
-                *started.value, launched.token);
-            if (!launched_pid) {
+            if (started->starts_with("BUSY"))
+                return fail(RemoteBackendError::capacity);
+            const auto record = parse_lease_record(*started.value, launched.token);
+            if (!record) {
                 cleanup_owned(config->serial, launched);
                 return fail(RemoteBackendError::internal_error);
             }
-            launched.pid = launched_pid;
+            launched = *record;
+            pending.ownership = launched;
             const auto ready = wait_for_owned_server(
                 config->serial, launched, stop);
-            if (!ready) {
-                cleanup(config->serial, 0, false, launched);
+            if (!ready)
                 return fail(RemoteBackendError::internal_error);
-            }
             ownership = launched;
-            pending.ownership = launched;
         }
 
         std::uint16_t local_port{};
@@ -912,6 +1060,12 @@ private:
         const unsigned pid, const std::stop_token stop)
     {
         if (!is_expected_pid(serial, pid, stop)) return false;
+        const auto stat = dependencies_.adb->shell(
+            serial, "cat /proc/" + std::to_string(pid) + "/stat", stop);
+        if (!stat || parse_process_start_time(*stat.value)
+                != std::optional<std::uint64_t>{ownership.child_start_time}) {
+            return false;
+        }
         const auto result = dependencies_.adb->shell(
             serial, "cat /proc/" + std::to_string(pid) + "/environ", stop);
         return result && expected_owner_environment(
@@ -943,17 +1097,12 @@ private:
         const std::string& serial, const ServerOwnership& ownership,
         const std::stop_token stop)
     {
-        if (!ownership.pid) return false;
+        if (ownership.child_pid == 0 || ownership.child_start_time == 0)
+            return false;
         const auto deadline = dependencies_.clock() + limits_.startup_timeout;
         while (!stop.stop_requested() && dependencies_.clock() < deadline) {
-            const auto result = dependencies_.adb->shell(
-                serial, "cat " + owner_marker_path(ownership.token), stop);
-            if (result) {
-                const auto pid = parse_owner_marker(
-                    *result.value, ownership.token);
-                if (pid && pid == ownership.pid
-                    && is_owned_process(serial, ownership, *pid, stop)) return true;
-            }
+            if (is_owned_process(
+                    serial, ownership, ownership.child_pid, stop)) return true;
             dependencies_.sleep(limits_.startup_poll_interval);
         }
         return false;
@@ -1012,21 +1161,15 @@ private:
         const std::string& serial, const ServerOwnership& ownership) noexcept
     {
         try {
-            const auto path = owner_marker_path(ownership.token);
-            const auto marker = dependencies_.adb->shell(
-                serial, "cat " + path, {});
-            if (!marker) return;
-            const auto pid = parse_owner_marker(*marker.value, ownership.token);
-            if (!pid || (ownership.pid && pid != ownership.pid)
-                || !is_owned_process(serial, ownership, *pid, {})) return;
-            static_cast<void>(dependencies_.adb->shell(
-                serial, "kill " + std::to_string(*pid), {}));
-            const auto after = dependencies_.adb->shell(
-                serial, "cat " + path, {});
-            if (after && parse_owner_marker(*after.value, ownership.token) == pid
-                && !is_owned_process(serial, ownership, *pid, {})) {
-                static_cast<void>(dependencies_.adb->shell(
-                    serial, "rm -f " + path, {}));
+            const auto deadline = dependencies_.clock() + limits_.startup_timeout;
+            for (;;) {
+                const auto result = dependencies_.adb->shell(
+                    serial, supervisor_stop_command(ownership.token), {});
+                if (result && (result->starts_with("GONE")
+                    || result->starts_with("STALE")
+                    || result->starts_with("OTHER"))) return;
+                if (dependencies_.clock() >= deadline) return;
+                dependencies_.sleep(limits_.startup_poll_interval);
             }
         }
         catch (...) {}

@@ -55,9 +55,6 @@ constexpr std::string_view owner_token =
 constexpr std::string_view other_owner_token =
     "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210";
 
-std::string marker_path(const std::string_view token)
-{ return "/data/local/tmp/baas-ws-scrcpy." + std::string{token} + ".pid"; }
-
 std::string owner_environ(const std::string_view token)
 {
     std::string value{"PATH=/system/bin"};
@@ -97,11 +94,20 @@ public:
 
 class FakeAdb final : public app::RemoteAdbClient {
 public:
+    struct Lease final {
+        std::string token;
+        unsigned supervisor_pid{201};
+        std::uint64_t supervisor_start{1001};
+        unsigned child_pid{202};
+        std::uint64_t child_start{1002};
+    };
     std::string device_state{"device"};
     std::string ps;
     std::unordered_map<unsigned, std::string> cmdlines;
     std::unordered_map<unsigned, std::string> environments;
-    std::unordered_map<std::string, std::string> markers;
+    std::unordered_map<unsigned, std::uint64_t> start_times;
+    std::optional<Lease> lease;
+    std::optional<std::string> malicious_lease_target;
     std::vector<adb::AdbForwardItem> forwards;
     std::vector<std::string> commands;
     std::vector<unsigned> killed;
@@ -113,6 +119,7 @@ public:
     bool fail_forward{};
     adb::AdbTransportError start_error{adb::AdbTransportError::none};
     bool matching_start_environment{true};
+    bool fail_gate{};
     std::optional<std::string> start_output_override;
     bool block_state{};
     bool state_entered{};
@@ -135,49 +142,108 @@ public:
     {
         std::lock_guard lock{mutex};
         commands.emplace_back(std::string{serial} + ':' + std::string{command});
+        if (lease && !cmdlines.contains(lease->child_pid)) lease.reset();
+        if (command.starts_with("# BAAS_WS_LEASE_PROBE")) {
+            if (malicious_lease_target) return ok(std::string{"BUSY\n"});
+            if (!lease) return ok(std::string{"NONE\n"});
+            const auto start = start_times.find(lease->supervisor_pid);
+            const auto environment = environments.find(lease->supervisor_pid);
+            if (start != start_times.end() && start->second == lease->supervisor_start
+                && environment != environments.end()
+                && environment->second == owner_environ(lease->token)) {
+                return ok(std::string{"BUSY\n"});
+            }
+            lease.reset();
+            return ok(std::string{"STALE\n"});
+        }
+        if (command.starts_with("# BAAS_WS_SUPERVISOR_LAUNCH")) {
+            constexpr std::string_view prefix = "token=";
+            const auto begin = command.find(prefix);
+            CHECK(begin != std::string_view::npos);
+            const auto token_begin = begin + prefix.size();
+            const auto token_end = command.find('\n', token_begin);
+            const auto token = std::string{command.substr(
+                token_begin, token_end - token_begin)};
+            if (malicious_lease_target || lease) return ok(std::string{"BUSY\n"});
+            if (fail_gate) return ok(std::string{"ERROR\n"});
+            lease = Lease{token};
+            cmdlines[lease->child_pid] = expected_cmdline();
+            environments[lease->child_pid] = owner_environ(token);
+            environments[lease->supervisor_pid] = owner_environ(
+                matching_start_environment ? token : other_owner_token);
+            start_times[lease->supervisor_pid] = lease->supervisor_start;
+            start_times[lease->child_pid] = lease->child_start;
+            if (start_error != adb::AdbTransportError::none)
+                return fail<std::string>(start_error);
+            if (start_output_override) return ok(*start_output_override);
+            return ok("OWNED " + token + " "
+                + std::to_string(lease->supervisor_pid) + " "
+                + std::to_string(lease->supervisor_start) + " "
+                + std::to_string(lease->child_pid) + " "
+                + std::to_string(lease->child_start) + "\n");
+        }
+        if (command.starts_with("# BAAS_WS_SUPERVISOR_STOP")) {
+            constexpr std::string_view prefix = "expected=";
+            const auto begin = command.find(prefix);
+            CHECK(begin != std::string_view::npos);
+            const auto token_begin = begin + prefix.size();
+            const auto token_end = command.find('\n', token_begin);
+            const auto token = command.substr(token_begin, token_end - token_begin);
+            if (malicious_lease_target) return ok(std::string{"OTHER\n"});
+            if (!lease) return ok(std::string{"GONE\n"});
+            if (lease->token != token) return ok(std::string{"OTHER\n"});
+            const auto start = start_times.find(lease->supervisor_pid);
+            const auto environment = environments.find(lease->supervisor_pid);
+            if (start == start_times.end() || start->second != lease->supervisor_start
+                || environment == environments.end()
+                || environment->second != owner_environ(lease->token)) {
+                lease.reset();
+                return ok(std::string{"STALE\n"});
+            }
+            const auto child_start = start_times.find(lease->child_pid);
+            const auto child_environment = environments.find(lease->child_pid);
+            if (child_start != start_times.end()
+                && child_start->second == lease->child_start
+                && child_environment != environments.end()
+                && child_environment->second == owner_environ(lease->token)) {
+                killed.emplace_back(lease->child_pid);
+                cmdlines.erase(lease->child_pid);
+                environments.erase(lease->child_pid);
+                start_times.erase(lease->child_pid);
+            }
+            environments.erase(lease->supervisor_pid);
+            start_times.erase(lease->supervisor_pid);
+            lease.reset();
+            return ok(std::string{"REQUESTED\n"});
+        }
         if (command == "ps -A -o PID,ARGS") return ok(ps);
         constexpr std::string_view proc_prefix = "cat /proc/";
         constexpr std::string_view cmdline_suffix = "/cmdline";
         constexpr std::string_view environ_suffix = "/environ";
+        constexpr std::string_view stat_suffix = "/stat";
         if (command.starts_with(proc_prefix)
             && (command.ends_with(cmdline_suffix)
-                || command.ends_with(environ_suffix))) {
+                || command.ends_with(environ_suffix)
+                || command.ends_with(stat_suffix))) {
             const auto suffix = command.ends_with(cmdline_suffix)
-                ? cmdline_suffix : environ_suffix;
+                ? cmdline_suffix : command.ends_with(environ_suffix)
+                    ? environ_suffix : stat_suffix;
             const auto token = command.substr(
                 proc_prefix.size(), command.size() - proc_prefix.size() - suffix.size());
             unsigned pid{};
             std::from_chars(token.data(), token.data() + token.size(), pid);
+            if (suffix == stat_suffix) {
+                const auto found = start_times.find(pid);
+                if (found == start_times.end())
+                    return fail<std::string>(adb::AdbTransportError::adb_fail);
+                return ok(std::to_string(pid) + " (fake process) S 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 "
+                    + std::to_string(found->second));
+            }
             const auto& values = suffix == cmdline_suffix ? cmdlines : environments;
             const auto found = values.find(pid);
             return found == values.end()
                 ? fail<std::string>(adb::AdbTransportError::adb_fail)
                 : ok(found->second);
-        }
-        constexpr std::string_view cat_prefix = "cat /data/local/tmp/baas-ws-scrcpy.";
-        if (command.starts_with(cat_prefix) && command.ends_with(".pid")) {
-            const auto found = markers.find(std::string{command.substr(4)});
-            return found == markers.end()
-                ? fail<std::string>(adb::AdbTransportError::adb_fail)
-                : ok(found->second);
-        }
-        if (command.find("CLASSPATH=/data/local/tmp/baas-ws-scrcpy-server.jar")
-            != std::string_view::npos) {
-            constexpr std::string_view owner_prefix = "BAAS_WS_SCRCPY_OWNER=";
-            const auto begin = command.find(owner_prefix);
-            CHECK(begin != std::string_view::npos);
-            const auto token_begin = begin + owner_prefix.size();
-            const auto token_end = command.find(' ', token_begin);
-            CHECK(token_end != std::string_view::npos);
-            const auto token = command.substr(token_begin, token_end - token_begin);
-            markers[marker_path(token)] = "202 " + std::string{token};
-            cmdlines[202] = expected_cmdline();
-            environments[202] = owner_environ(
-                matching_start_environment ? token : other_owner_token);
-            if (start_error != adb::AdbTransportError::none)
-                return fail<std::string>(start_error);
-            return ok(start_output_override.value_or(
-                "202 " + std::string{token} + "\n"));
         }
         if (command.starts_with("kill ")) {
             unsigned pid{};
@@ -186,11 +252,6 @@ public:
             killed.emplace_back(pid);
             cmdlines.erase(pid);
             environments.erase(pid);
-            return ok(std::string{});
-        }
-        constexpr std::string_view rm_prefix = "rm -f ";
-        if (command.starts_with(rm_prefix)) {
-            markers.erase(std::string{command.substr(rm_prefix.size())});
             return ok(std::string{});
         }
         return ok(std::string{});
@@ -428,7 +489,7 @@ void owns_and_revalidates_cleanup()
         std::lock_guard lock{fixture.adb->mutex};
         CHECK(fixture.adb->removed == std::vector<std::uint16_t>{32123});
         CHECK(fixture.adb->killed == std::vector<unsigned>{202});
-        CHECK(!fixture.adb->markers.contains(marker_path(owner_token)));
+        CHECK(!fixture.adb->lease);
     }
     // The per-serial lease is released only after cleanup finishes.
     configure_existing(fixture);
@@ -446,12 +507,12 @@ void never_kills_reused_pid_identity()
     CHECK(opened);
     {
         std::lock_guard lock{fixture.adb->mutex};
-        fixture.adb->cmdlines[202] = std::string{"/system/bin/unrelated\0", 22};
+        fixture.adb->start_times[201] = 9'999;
     }
     opened.session->close();
     std::lock_guard lock{fixture.adb->mutex};
     CHECK(fixture.adb->killed.empty());
-    CHECK(fixture.adb->markers.contains(marker_path(owner_token)));
+    CHECK(!fixture.adb->lease);
 }
 
 void never_kills_pid_reused_with_a_different_owner_token()
@@ -464,36 +525,53 @@ void never_kills_pid_reused_with_a_different_owner_token()
     {
         std::lock_guard lock{fixture.adb->mutex};
         CHECK(fixture.adb->cmdlines[202] == expected_cmdline());
-        fixture.adb->environments[202] = owner_environ(other_owner_token);
+        fixture.adb->environments[201] = owner_environ(other_owner_token);
     }
     opened.session->close();
     std::lock_guard lock{fixture.adb->mutex};
     CHECK(fixture.adb->killed.empty());
-    CHECK(fixture.adb->markers.contains(marker_path(owner_token)));
+    CHECK(!fixture.adb->lease);
 }
 
-void unique_owner_markers_do_not_interfere()
+void supervisor_never_kills_a_reused_child_pid()
 {
     Fixture fixture;
-    {
-        std::lock_guard lock{fixture.adb->mutex};
-        fixture.adb->markers[marker_path(other_owner_token)] =
-            "303 " + std::string{other_owner_token};
-        fixture.adb->cmdlines[303] = expected_cmdline();
-        fixture.adb->environments[303] = owner_environ(other_owner_token);
-    }
     auto backend = fixture.backend();
     CallbackLog log;
     auto opened = backend->open(std::string{"alpha"}, log.callbacks(), {});
     CHECK(opened);
+    {
+        std::lock_guard lock{fixture.adb->mutex};
+        fixture.adb->start_times[202] = 9'999;
+        fixture.adb->environments[202] = owner_environ(other_owner_token);
+        fixture.adb->cmdlines[202] = expected_cmdline();
+    }
+    opened.session->close();
+    std::lock_guard lock{fixture.adb->mutex};
+    CHECK(fixture.adb->killed.empty());
+    CHECK(!fixture.adb->lease);
+    CHECK(fixture.adb->cmdlines.contains(202));
+}
+
+void second_backend_cannot_reuse_an_owned_server()
+{
+    Fixture fixture;
+    auto first_backend = fixture.backend();
+    auto second_backend = fixture.backend();
+    CallbackLog log;
+    auto opened = first_backend->open(std::string{"alpha"}, log.callbacks(), {});
+    CHECK(opened);
+    {
+        std::lock_guard lock{fixture.adb->mutex};
+        fixture.adb->ps =
+            "202 com.genymobile.scrcpy.Server 1.19-ws7 web ERROR 8886 true\n";
+    }
+    CHECK(second_backend->open(std::string{"alpha"}, log.callbacks(), {}).error
+          == channels::RemoteBackendError::capacity);
     opened.session->close();
     std::lock_guard lock{fixture.adb->mutex};
     CHECK(fixture.adb->killed == std::vector<unsigned>{202});
-    CHECK(!fixture.adb->markers.contains(marker_path(owner_token)));
-    CHECK(fixture.adb->markers.at(marker_path(other_owner_token))
-          == "303 " + std::string{other_owner_token});
-    CHECK(fixture.adb->cmdlines.contains(303));
-    CHECK(fixture.adb->environments.contains(303));
+    CHECK(!fixture.adb->lease);
 }
 
 void owner_token_failure_prevents_launch()
@@ -506,13 +584,83 @@ void owner_token_failure_prevents_launch()
           == channels::RemoteBackendError::internal_error);
     std::lock_guard lock{fixture.adb->mutex};
     CHECK(!fixture.adb->pushed);
-    CHECK(fixture.adb->markers.empty());
+    CHECK(!fixture.adb->lease);
     CHECK(std::none_of(
         fixture.adb->commands.begin(), fixture.adb->commands.end(),
         [](const std::string& command) {
             return command.find("CLASSPATH=/data/local/tmp/baas-ws-scrcpy-server.jar")
                 != std::string::npos;
         }));
+}
+
+void gate_write_failure_never_executes_server()
+{
+    Fixture fixture;
+    fixture.adb->fail_gate = true;
+    auto backend = fixture.backend();
+    CallbackLog log;
+    CHECK(backend->open(std::string{"alpha"}, log.callbacks(), {}).error
+          == channels::RemoteBackendError::internal_error);
+    std::lock_guard lock{fixture.adb->mutex};
+    CHECK(!fixture.adb->lease);
+    CHECK(!fixture.adb->cmdlines.contains(202));
+    CHECK(fixture.adb->killed.empty());
+}
+
+void natural_child_exit_cleans_lease_without_kill()
+{
+    Fixture fixture;
+    auto backend = fixture.backend();
+    CallbackLog log;
+    auto opened = backend->open(std::string{"alpha"}, log.callbacks(), {});
+    CHECK(opened);
+    {
+        std::lock_guard lock{fixture.adb->mutex};
+        fixture.adb->cmdlines.erase(202);
+        fixture.adb->environments.erase(202);
+        fixture.adb->start_times.erase(202);
+    }
+    opened.session->close();
+    std::lock_guard lock{fixture.adb->mutex};
+    CHECK(!fixture.adb->lease);
+    CHECK(fixture.adb->killed.empty());
+}
+
+void stale_lease_recovers_to_legacy_reuse()
+{
+    Fixture fixture;
+    fixture.adb->lease = FakeAdb::Lease{
+        std::string{other_owner_token}, 301, 3001, 303, 3003};
+    fixture.adb->cmdlines[303] = expected_cmdline();
+    fixture.adb->environments[303] = owner_environ(other_owner_token);
+    fixture.adb->start_times[303] = 3003;
+    fixture.adb->ps =
+        "303 com.genymobile.scrcpy.Server 1.19-ws7 web ERROR 8886 true\n";
+    fixture.adb->forwards.push_back(
+        {"127.0.0.1:5557", "tcp:31000", "tcp:8886"});
+    auto backend = fixture.backend();
+    CallbackLog log;
+    auto opened = backend->open(std::string{"alpha"}, log.callbacks(), {});
+    CHECK(opened);
+    opened.session->close();
+    std::lock_guard lock{fixture.adb->mutex};
+    CHECK(!fixture.adb->lease);
+    CHECK(fixture.adb->cmdlines.contains(303));
+    CHECK(fixture.adb->killed.empty());
+}
+
+void malicious_lease_symlink_fails_closed()
+{
+    Fixture fixture;
+    fixture.adb->malicious_lease_target = "../../unrelated";
+    auto backend = fixture.backend();
+    CallbackLog log;
+    CHECK(backend->open(std::string{"alpha"}, log.callbacks(), {}).error
+          == channels::RemoteBackendError::capacity);
+    std::lock_guard lock{fixture.adb->mutex};
+    CHECK(fixture.adb->malicious_lease_target == "../../unrelated");
+    CHECK(!fixture.adb->pushed);
+    CHECK(fixture.adb->killed.empty());
 }
 
 void serial_lease_and_close_barrier()
@@ -706,7 +854,7 @@ void retries_listener_and_cleans_invalid_start_marker()
           == channels::RemoteBackendError::internal_error);
     std::lock_guard lock{invalid.adb->mutex};
     CHECK(invalid.adb->killed == std::vector<unsigned>{202});
-    CHECK(invalid.adb->markers.empty());
+    CHECK(!invalid.adb->lease);
 }
 
 void startup_deadline_and_forward_failure_unwind_owned_process()
@@ -733,7 +881,7 @@ void startup_deadline_and_forward_failure_unwind_owned_process()
     {
         std::lock_guard lock{timeout.adb->mutex};
         CHECK(timeout.adb->killed == std::vector<unsigned>{202});
-        CHECK(timeout.adb->markers.empty());
+        CHECK(!timeout.adb->lease);
     }
 
     Fixture forward;
@@ -757,7 +905,7 @@ void lost_start_response_cleans_only_exact_owned_marker()
     {
         std::lock_guard lock{matching.adb->mutex};
         CHECK(matching.adb->killed == std::vector<unsigned>{202});
-        CHECK(!matching.adb->markers.contains(marker_path(owner_token)));
+        CHECK(!matching.adb->lease);
     }
 
     Fixture unrelated;
@@ -768,7 +916,7 @@ void lost_start_response_cleans_only_exact_owned_marker()
           == channels::RemoteBackendError::internal_error);
     std::lock_guard lock{unrelated.adb->mutex};
     CHECK(unrelated.adb->killed.empty());
-    CHECK(unrelated.adb->markers.contains(marker_path(owner_token)));
+    CHECK(!unrelated.adb->lease);
 }
 
 void oversize_and_failed_open_cleanup()
@@ -918,8 +1066,13 @@ int main()
         {"owns_and_revalidates_cleanup", owns_and_revalidates_cleanup},
         {"never_kills_reused_pid_identity", never_kills_reused_pid_identity},
         {"never_kills_pid_reused_with_a_different_owner_token", never_kills_pid_reused_with_a_different_owner_token},
-        {"unique_owner_markers_do_not_interfere", unique_owner_markers_do_not_interfere},
+        {"supervisor_never_kills_a_reused_child_pid", supervisor_never_kills_a_reused_child_pid},
+        {"second_backend_cannot_reuse_an_owned_server", second_backend_cannot_reuse_an_owned_server},
         {"owner_token_failure_prevents_launch", owner_token_failure_prevents_launch},
+        {"gate_write_failure_never_executes_server", gate_write_failure_never_executes_server},
+        {"natural_child_exit_cleans_lease_without_kill", natural_child_exit_cleans_lease_without_kill},
+        {"stale_lease_recovers_to_legacy_reuse", stale_lease_recovers_to_legacy_reuse},
+        {"malicious_lease_symlink_fails_closed", malicious_lease_symlink_fails_closed},
         {"serial_lease_and_close_barrier", serial_lease_and_close_barrier},
         {"device_callback_can_reenter_close", device_callback_can_reenter_close},
         {"ended_callback_can_reenter_close", ended_callback_can_reenter_close},

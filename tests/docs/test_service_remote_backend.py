@@ -48,7 +48,11 @@ class ProductionRemoteBackendContractTests(unittest.TestCase):
             "owner_token_factory",
             "BAAS_WS_SCRCPY_OWNER=",
             "/environ",
-            "parse_owner_marker",
+            "parse_lease_record",
+            "BAAS_WS_LEASE_PROBE",
+            "BAAS_WS_SUPERVISOR_LAUNCH",
+            "BAAS_WS_SUPERVISOR_STOP",
+            "baas-ws-scrcpy.owner.*",
             "send_mutex_",
             "close_mutex_",
             "opens_drained_",
@@ -61,6 +65,7 @@ class ProductionRemoteBackendContractTests(unittest.TestCase):
         self.assertIn("concurrent close callers wait", self.docs)
         self.assertIn("256-bit", self.docs)
         self.assertIn("PID reuse", self.docs)
+        self.assertIn("path-traversing lease targets fail closed", self.docs)
 
     def test_build_ci_and_test_gates_are_closed(self) -> None:
         self.assertIn("BAAS_service_remote_backend", self.cmake)

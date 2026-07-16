@@ -36,20 +36,36 @@ bounded `ps` candidate list, then validates the exact NUL-separated
 An existing matching server can be reused but is never considered owned and is
 never killed. Before each launch, libsodium generates a fresh 256-bit lowercase
 hexadecimal owner token; token generation or validation failure stops before
-the upload or launch. The token is carried in a unique marker pathname, in the
-marker's exact `PID TOKEN` content, and in the launched process environment as
-`BAAS_WS_SCRCPY_OWNER=TOKEN`. Ownership is a single structure containing that
-token and, once known, the PID. It follows the pending open into the live
-session and its final release cleanup.
+the upload or launch.
 
-A process can be killed only when the unique marker content, expected PID (when
-known), exact NUL-separated cmdline, and exact token field read from
-`/proc/<pid>/environ` all agree. This same proof is used for a successful launch,
-startup/readiness failure, session close, and a launch response that times out
-or is lost after the device acted. PID reuse and a matching ws-scrcpy process
-owned by another token both fail closed. Cleanup removes only this token's
-unique marker after the proven process is no longer that owner; markers and
-processes belonging to other opens are untouched.
+Each launch creates a token-named private owner directory and starts a small
+device-side supervisor. Only after that supervisor has atomically written its
+token, PID, and `/proc` start time may the launcher publish the global
+`baas-ws-scrcpy.lease` symlink. Symlink creation is the cross-process compare-
+and-set: if another live supervisor owns it, a second backend reports capacity
+and cannot reuse that backend's child by cmdline. A matching server with no
+lease remains a legacy, unowned server and may still be reused.
+
+The supervisor starts the child behind a private gate. It records the child PID
+and start time before atomically publishing the gate; any metadata or gate write
+failure kills only the still-waiting shell, so `app_process` has not executed.
+The child and supervisor both carry `BAAS_WS_SCRCPY_OWNER=TOKEN`. The resulting
+ownership record follows the pending open into the live session and release.
+
+Host cleanup never validates a PID in one ADB call and kills it in another. A
+single guarded device command verifies the lease target shape, path token,
+supervisor PID/start time, and exact environment field, then atomically writes a
+token-bound stop request. The supervisor owns the unreaped child and, immediately
+before killing it, rechecks the saved child start time and environment token.
+PID reuse therefore fails closed before the stop action.
+Natural child exit is reaped and removes the token directory and lease. A dead
+supervisor makes the lease stale: the next probe guardedly removes only that
+validated owner link/directory and leaves any uncertain orphan as a legacy
+server rather than risking a kill. The only remaining PID race is the very small
+in-device interval between the supervisor's final `/proc` check and its `kill`;
+there is no ADB round trip in that interval, and an unreaped child PID cannot be
+reused. Malformed or path-traversing lease targets fail closed and are never
+read as deletion targets.
 
 Existing exact-serial `tcp:* -> tcp:8886` forwards are reused without ownership.
 Otherwise the ADB server allocates a loopback port atomically with `tcp:0`.
@@ -63,7 +79,7 @@ backend does not guess at or remove a possibly unrelated forward.
 
 Production connects only to `ws://127.0.0.1:<owned-or-reused-port>/` through
 the pinned cpp-httplib client. Connection attempts are bounded by the startup
-deadline because the PID marker can precede listener readiness. cpp-httplib
+deadline because lease publication can precede listener readiness. cpp-httplib
 assembles fragments, handles ping/pong and close frames, and applies its global
 payload bound; the backend applies the tighter remote-frame limit after
 assembly. Both text and binary device messages are forwarded byte-exactly in a
@@ -82,8 +98,9 @@ external callers still wait for the complete join and cleanup barrier.
 
 Configure `BUILD_SERVICE_REMOTE_BACKEND_TESTS=ON`. Deterministic fake ADB,
 resource, clock, and WebSocket boundaries cover strict configuration, no device
-fallback, PID identity and ownership, marker failure cleanup, forward
-reuse/ownership, listener retry, ordered text/binary reads, oversize/error
+fallback, PID identity and ownership, cross-backend lease exclusion, gate
+failure rollback, stale recovery, natural-exit cleanup,
+forward reuse/ownership, listener retry, ordered text/binary reads, oversize/error
 termination, serialized sends, concurrent close, per-serial admission, failed
 open unwind, and the `stop()`/in-flight-open race. CI runs the native suite on
 Windows, Linux, and macOS in Debug and Release. No test invokes an adb executable
