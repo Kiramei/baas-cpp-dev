@@ -15,6 +15,7 @@ class ServiceAdbTransportDocumentationTests(unittest.TestCase):
             "127.0.0.1:5037",
             "AI_NUMERICHOST | AI_NUMERICSERV",
             "open_native_adb_stream",
+            "forward-allocation `OKAY`",
             "native I/O lease",
             "stop()",
             "never pushes",

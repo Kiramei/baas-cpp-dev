@@ -76,6 +76,39 @@ bool valid_owner_token(const std::string_view token) noexcept
         });
 }
 
+std::optional<std::string> encode_shell_script(
+    const std::string_view script)
+{
+    if (script.empty() || script.find('\0') != std::string_view::npos
+        || sodium_init() < 0) {
+        return std::nullopt;
+    }
+    std::string normalized;
+    normalized.reserve(script.size());
+    for (std::size_t index = 0; index < script.size(); ++index) {
+        if (script[index] != '\r') {
+            normalized.push_back(script[index]);
+            continue;
+        }
+        if (index + 1 >= script.size() || script[index + 1] != '\n') {
+            return std::nullopt;
+        }
+    }
+    const auto encoded_size = sodium_base64_encoded_len(
+        normalized.size(), sodium_base64_VARIANT_ORIGINAL);
+    if (encoded_size == 0) return std::nullopt;
+    std::string encoded(encoded_size, '\0');
+    if (sodium_bin2base64(
+            encoded.data(), encoded.size(),
+            reinterpret_cast<const unsigned char*>(normalized.data()),
+            normalized.size(), sodium_base64_VARIANT_ORIGINAL) == nullptr) {
+        return std::nullopt;
+    }
+    encoded.resize(std::char_traits<char>::length(encoded.c_str()));
+    return "printf %s '" + encoded
+        + "' | /system/bin/base64 -d | /system/bin/sh";
+}
+
 class ConcreteAdbClient final : public RemoteAdbClient {
 public:
     explicit ConcreteAdbClient(std::shared_ptr<adb::ServiceAdbTransport> transport)
@@ -89,7 +122,16 @@ public:
     adb::AdbTransportResult<std::string> shell(
         const std::string_view serial, const std::string_view command,
         const std::stop_token stop) override
-    { return transport_->shell_legacy(serial, command, stop); }
+    {
+        if (command.find_first_of("\r\n") == std::string_view::npos) {
+            return transport_->shell_legacy(serial, command, stop);
+        }
+        const auto encoded = encode_shell_script(command);
+        if (!encoded) {
+            return {std::nullopt, adb::AdbTransportError::internal_error, {}};
+        }
+        return transport_->shell_legacy(serial, *encoded, stop);
+    }
 
     adb::AdbTransportResult<std::uint64_t> push_file(
         const std::string_view serial, const std::string_view path,
@@ -379,8 +421,9 @@ dir=/data/local/tmp/$name
 umask 077
 mkdir "$dir" 2>/dev/null || { echo ERROR; exit 0; }
 printf "%s\n" "$token" > "$dir/token.tmp" && mv "$dir/token.tmp" "$dir/token" || { rm -rf "$dir"; echo ERROR; exit 0; }
-BAAS_WS_SCRCPY_OWNER="$token" /system/bin/sh -c '
+BAAS_WS_SCRCPY_OWNER="$token" /system/bin/setsid /system/bin/sh -c '
 dir=$1; lease=$2; token=$3; name=$4
+trap "" HUP
 proc_start() { value=$(cat "/proc/$1/stat" 2>/dev/null) || return 1; value=${value##*) }; set -- $value; [ "$#" -ge 20 ] || return 1; printf "%s" "${20}"; }
 cleanup() { if [ "$(readlink "$lease" 2>/dev/null)" = "$name" ]; then rm -f "$lease"; fi; rm -rf "$dir"; }
 supervisor=$$
@@ -388,22 +431,27 @@ supervisor_start=$(proc_start "$supervisor") || { cleanup; exit 1; }
 printf "%s %s %s\n" "$token" "$supervisor" "$supervisor_start" > "$dir/init.tmp" && mv "$dir/init.tmp" "$dir/init" || { cleanup; exit 1; }
 i=0
 while [ "$(readlink "$lease" 2>/dev/null)" != "$name" ]; do [ -f "$dir/stop" ] && { cleanup; exit 0; }; i=$((i+1)); [ "$i" -ge 200 ] && { cleanup; exit 1; }; sleep 0.05; done
-(
-  i=0
-  while [ "$(cat "$dir/run" 2>/dev/null)" != "$token" ]; do i=$((i+1)); [ "$i" -ge 200 ] && exit 1; sleep 0.05; done
-  export BAAS_WS_SCRCPY_OWNER="$token"
-  export CLASSPATH=/data/local/tmp/baas-ws-scrcpy-server.jar
-  exec app_process / com.genymobile.scrcpy.Server 1.19-ws7 web ERROR 8886 true
-) > /data/local/tmp/ws_scrcpy.log 2>&1 &
+BAAS_WS_SCRCPY_OWNER="$token" CLASSPATH=/data/local/tmp/baas-ws-scrcpy-server.jar \
+  /system/bin/sh -c "trap '' HUP; kill -STOP \$\$; exec app_process / com.genymobile.scrcpy.Server 1.19-ws7 web ERROR 8886 true" \
+  </dev/null > /data/local/tmp/ws_scrcpy.log 2>&1 &
 child=$!
-child_start=$(proc_start "$child") || { kill "$child" 2>/dev/null; wait "$child" 2>/dev/null; cleanup; exit 1; }
-printf "%s %s %s %s %s\n" "$token" "$supervisor" "$supervisor_start" "$child" "$child_start" > "$dir/meta.tmp" && mv "$dir/meta.tmp" "$dir/meta" || { kill "$child" 2>/dev/null; wait "$child" 2>/dev/null; cleanup; exit 1; }
-printf "%s\n" "$token" > "$dir/run.tmp" && mv "$dir/run.tmp" "$dir/run" || { kill "$child" 2>/dev/null; wait "$child" 2>/dev/null; cleanup; exit 1; }
+i=0
+while :; do
+  value=$(cat "/proc/$child/stat" 2>/dev/null) || { cleanup; exit 1; }
+  value=${value##*) }; set -- $value
+  [ "$1" = T ] && break
+  [ "$1" = Z ] && { wait "$child" 2>/dev/null; cleanup; exit 1; }
+  i=$((i+1)); [ "$i" -ge 200 ] && { kill -KILL "$child" 2>/dev/null; wait "$child" 2>/dev/null; cleanup; exit 1; }
+  sleep 0.05
+done
+child_start=$(proc_start "$child") || { kill -KILL "$child" 2>/dev/null; wait "$child" 2>/dev/null; cleanup; exit 1; }
+printf "%s %s %s %s %s\n" "$token" "$supervisor" "$supervisor_start" "$child" "$child_start" > "$dir/meta.tmp" && mv "$dir/meta.tmp" "$dir/meta" || { kill -KILL "$child" 2>/dev/null; wait "$child" 2>/dev/null; cleanup; exit 1; }
+kill -CONT "$child" 2>/dev/null || { kill -KILL "$child" 2>/dev/null; wait "$child" 2>/dev/null; cleanup; exit 1; }
 while :; do
   current_start=$(proc_start "$child" 2>/dev/null) || { wait "$child" 2>/dev/null; break; }
   [ "$current_start" = "$child_start" ] || break
   if [ "$(cat "$dir/stop" 2>/dev/null)" = "$token" ]; then
-    if tr '\000' '\n' < "/proc/$child/environ" 2>/dev/null | grep -Fqx "BAAS_WS_SCRCPY_OWNER=$token" && [ "$(proc_start "$child" 2>/dev/null)" = "$child_start" ]; then kill "$child" 2>/dev/null; fi
+    if tr "\000" "\n" < "/proc/$child/environ" 2>/dev/null | grep -Fqx "BAAS_WS_SCRCPY_OWNER=$token" && [ "$(proc_start "$child" 2>/dev/null)" = "$child_start" ]; then kill "$child" 2>/dev/null; fi
     wait "$child" 2>/dev/null
     break
   fi
@@ -413,7 +461,7 @@ while :; do
   sleep 0.1
 done
 cleanup
-' baas-supervisor "$dir" "$lease" "$token" "$name" >/data/local/tmp/baas-ws-scrcpy-supervisor.log 2>&1 &
+' baas-supervisor "$dir" "$lease" "$token" "$name" </dev/null >/data/local/tmp/baas-ws-scrcpy-supervisor.log 2>&1 &
 supervisor=$!
 i=0
 while [ ! -f "$dir/init" ]; do kill -0 "$supervisor" 2>/dev/null || { rm -rf "$dir"; echo ERROR; exit 0; }; i=$((i+1)); [ "$i" -ge 200 ] && { printf "%s\n" "$token" > "$dir/stop"; echo ERROR; exit 0; }; sleep 0.05; done
@@ -705,9 +753,15 @@ private:
                 reason = RemoteSessionEnd::capacity;
                 break;
             }
+            const auto message_kind = result.kind == RemoteWebSocketReadKind::binary
+                ? channels::RemoteDeviceMessageKind::binary
+                : channels::RemoteDeviceMessageKind::text;
             if (!enter_callback()) return;
             RemoteIoStatus delivered{RemoteIoStatus::internal_error};
-            try { delivered = callbacks_.device_bytes(std::move(result.payload)); }
+            try {
+                delivered = callbacks_.device_bytes(
+                    message_kind, std::move(result.payload));
+            }
             catch (...) { delivered = RemoteIoStatus::internal_error; }
             leave();
             if (delivered != RemoteIoStatus::accepted) {
