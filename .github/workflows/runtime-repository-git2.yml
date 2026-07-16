@@ -8,29 +8,57 @@ on:
       - '.github/workflows/runtime-repository-git2.yml'
       - 'CMakeLists.txt'
       - 'cmake/BAASDependency.cmake'
+      - 'cmake/RuntimeRepository.cmake'
       - 'cmake/RuntimeRepositoryGit2.cmake'
+      - 'cmake/RuntimeRepositoryUpdater.cmake'
       - 'deploy/conan/conanfile.py'
       - 'deploy/conan/profiles/dependency-versions-default'
       - 'deploy/conan/recipes/baas-libgit2/**'
+      - 'deploy/conan/recipes/baas-miniz/**'
+      - 'deploy/conan/recipes/baas-cpp-httplib/**'
       - 'deploy/conan/scripts/manage_recipes.py'
       - 'docs/script-runtime/RUNTIME_REPOSITORY_GIT2_DEPENDENCY.md'
       - 'src/runtime/repository/RuntimeRepositoryGit2.cpp'
+      - 'src/runtime/repository/RuntimeRepositorySnapshot.cpp'
+      - 'src/runtime/repository/RuntimeRepositoryUpdater.cpp'
+      - 'include/runtime/repository/RuntimeRepositoryGit2.h'
+      - 'include/runtime/repository/RuntimeRepositorySnapshot.h'
+      - 'include/runtime/repository/RuntimeRepositoryUpdater.h'
       - 'tests/docs/test_libgit2_dependency.py'
+      - 'tests/docs/test_httplib_upgrade.py'
+      - 'tests/runtime/RuntimeRepositorySnapshotTests.cpp'
       - 'tests/runtime/RuntimeRepositoryGit2LinkTests.cpp'
+      - 'tests/runtime/RuntimeRepositoryGit2BackendTests.cpp'
+      - 'tests/runtime/RuntimeRepositoryGit2TestHooks.h'
+      - 'tests/runtime/RuntimeRepositoryUpdaterTests.cpp'
   pull_request:
     paths:
       - '.github/workflows/runtime-repository-git2.yml'
       - 'CMakeLists.txt'
       - 'cmake/BAASDependency.cmake'
+      - 'cmake/RuntimeRepository.cmake'
       - 'cmake/RuntimeRepositoryGit2.cmake'
+      - 'cmake/RuntimeRepositoryUpdater.cmake'
       - 'deploy/conan/conanfile.py'
       - 'deploy/conan/profiles/dependency-versions-default'
       - 'deploy/conan/recipes/baas-libgit2/**'
+      - 'deploy/conan/recipes/baas-miniz/**'
+      - 'deploy/conan/recipes/baas-cpp-httplib/**'
       - 'deploy/conan/scripts/manage_recipes.py'
       - 'docs/script-runtime/RUNTIME_REPOSITORY_GIT2_DEPENDENCY.md'
       - 'src/runtime/repository/RuntimeRepositoryGit2.cpp'
+      - 'src/runtime/repository/RuntimeRepositorySnapshot.cpp'
+      - 'src/runtime/repository/RuntimeRepositoryUpdater.cpp'
+      - 'include/runtime/repository/RuntimeRepositoryGit2.h'
+      - 'include/runtime/repository/RuntimeRepositorySnapshot.h'
+      - 'include/runtime/repository/RuntimeRepositoryUpdater.h'
       - 'tests/docs/test_libgit2_dependency.py'
+      - 'tests/docs/test_httplib_upgrade.py'
+      - 'tests/runtime/RuntimeRepositorySnapshotTests.cpp'
       - 'tests/runtime/RuntimeRepositoryGit2LinkTests.cpp'
+      - 'tests/runtime/RuntimeRepositoryGit2BackendTests.cpp'
+      - 'tests/runtime/RuntimeRepositoryGit2TestHooks.h'
+      - 'tests/runtime/RuntimeRepositoryUpdaterTests.cpp'
 
 permissions:
   contents: read
@@ -60,6 +88,12 @@ jobs:
           - os: macos-latest
             build_type: Release
             conan_settings: ''
+          - os: ubuntu-latest
+            build_type: Debug
+            conan_settings: ''
+          - os: ubuntu-latest
+            build_type: Release
+            conan_settings: ''
 
     steps:
       - name: Check out source
@@ -73,14 +107,42 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Install pinned Conan client
-        run: python -m pip install --disable-pip-version-check conan==2.30.0 PyYAML==6.0.3
+      - name: Install pinned Conan client and Ninja
+        run: >-
+          python -m pip install --disable-pip-version-check
+          conan==2.30.0 PyYAML==6.0.3 ninja==1.11.1.1
 
       - name: Verify dependency declarations
-        run: python -B tests/docs/test_libgit2_dependency.py -v
+        run: python -B -m unittest tests.docs.test_libgit2_dependency tests.docs.test_httplib_upgrade -v
+
+      - name: Verify optional backend remains dependency-free by default
+        run: >-
+          cmake -S . -B build/runtime-repository-default-off
+          -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
+          -DBUILD_RUNTIME_REPOSITORY_GIT2=OFF
+          -DBUILD_RUNTIME_REPOSITORY_GIT2_TESTS=OFF
+          -DBUILD_APP_BAAS=OFF
+          -DBUILD_APP_ISA=OFF
+          -DBUILD_BAAS_OCR=OFF
+          -DBAAS_FETCH_RESOURCES=OFF
+
+      - name: Build default-off dependency smoke
+        run: >-
+          cmake --build build/runtime-repository-default-off
+          --config ${{ matrix.build_type }}
+          --parallel 4
+          --target BAAS_ipc
 
       - name: Detect build profile
         run: conan profile detect --force
+
+      - name: Build pinned cpp-httplib and static OpenSSL closure
+        run: >-
+          conan create deploy/conan/recipes/baas-cpp-httplib
+          -s:h build_type=${{ matrix.build_type }}
+          -s:b build_type=Release
+          ${{ matrix.conan_settings }}
+          --build=missing
 
       - name: Build and test pinned static libgit2 recipe offline
         run: >-
@@ -91,9 +153,20 @@ jobs:
           --build=missing
           --no-remote
 
+      - name: Build pinned static miniz preflight dependency offline
+        run: >-
+          conan create deploy/conan/recipes/baas-miniz
+          -s:h build_type=${{ matrix.build_type }}
+          -s:b build_type=Release
+          ${{ matrix.conan_settings }}
+          --build=missing
+          --no-remote
+
       - name: Generate optional CMake dependency
         run: >-
           conan install --requires=baas-libgit2/1.9.3
+          --requires=baas-miniz/3.1.2
+          --requires=baas-cpp-httplib/0.50.1
           -of build/conan/runtime-repository-git2
           -s:h build_type=${{ matrix.build_type }}
           -s:b build_type=Release
@@ -109,7 +182,8 @@ jobs:
           "-DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}/build/conan/runtime-repository-git2/conan_toolchain.cmake"
           -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
           -DBUILD_TESTING=ON
-          -DBUILD_RUNTIME_REPOSITORY_GIT2=ON
+          -DBUILD_RUNTIME_REPOSITORY_GIT2_TESTS=ON
+          -DBUILD_RUNTIME_REPOSITORY_UPDATER_TESTS=ON
           -DBUILD_APP_BAAS=OFF
           -DBUILD_APP_ISA=OFF
           -DBUILD_BAAS_OCR=OFF
@@ -122,11 +196,122 @@ jobs:
           cmake --build build/runtime-repository-git2
           --config ${{ matrix.build_type }}
           --parallel 4
-          --target BAAS_runtime_repository_git2 BAAS_runtime_repository_git2_link_tests
+          --target BAAS_runtime_repository_git2_backend_tests BAAS_runtime_repository_git2_link_tests BAAS_runtime_repository_updater_tests
 
       - name: Run real static link check
         run: >-
           ctest --test-dir build/runtime-repository-git2
           --build-config ${{ matrix.build_type }}
           --output-on-failure
-          -R "^BAAS_runtime_repository_git2_link_tests$"
+          -R "^BAAS_runtime_repository_(git2_(backend|link)_tests|updater_tests)$"
+
+  android-static:
+    name: Android ${{ matrix.abi }} / Release
+    needs: host-static
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - abi: arm64-v8a
+            profile: android-clang-arm64-v8a-release
+          - abi: x86_64
+            profile: android-clang-x86_64-release
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Android build tools
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes autoconf automake build-essential libtool ninja-build
+          android_sdk="${ANDROID_SDK_ROOT:-${ANDROID_HOME}}"
+          test -n "${android_sdk}"
+          sdkmanager 'ndk;29.0.13846066'
+          test -d "${android_sdk}/ndk/29.0.13846066"
+          echo "ANDROID_NDK_HOME=${android_sdk}/ndk/29.0.13846066" >> "$GITHUB_ENV"
+
+      - name: Install pinned Conan client
+        run: python -m pip install --disable-pip-version-check conan==2.30.0
+
+      - name: Detect build profile
+        run: conan profile detect --force
+
+      - name: Cross-build pinned cpp-httplib and static OpenSSL closure
+        shell: bash
+        run: >-
+          conan create deploy/conan/recipes/baas-cpp-httplib
+          -pr:h=deploy/conan/profiles/${{ matrix.profile }}
+          -pr:b=default
+          -c:h "tools.android:ndk_path=${ANDROID_NDK_HOME}"
+          --build=missing
+
+      - name: Cross-build pinned static libgit2 recipe offline
+        shell: bash
+        run: >-
+          conan create deploy/conan/recipes/baas-libgit2
+          -pr:h=deploy/conan/profiles/${{ matrix.profile }}
+          -pr:b=default
+          -c:h "tools.android:ndk_path=${ANDROID_NDK_HOME}"
+          --build=missing
+          --no-remote
+
+      - name: Cross-build pinned static miniz recipe offline
+        shell: bash
+        run: >-
+          conan create deploy/conan/recipes/baas-miniz
+          -pr:h=deploy/conan/profiles/${{ matrix.profile }}
+          -pr:b=default
+          -c:h "tools.android:ndk_path=${ANDROID_NDK_HOME}"
+          --build=missing
+          --no-remote
+
+      - name: Generate Android optional dependency closure
+        shell: bash
+        run: >-
+          conan install --requires=baas-libgit2/1.9.3
+          --requires=baas-miniz/3.1.2
+          --requires=baas-cpp-httplib/0.50.1
+          -of build/conan/runtime-repository-git2-android-${{ matrix.abi }}
+          -pr:h=deploy/conan/profiles/${{ matrix.profile }}
+          -pr:b=default
+          -c:h "tools.android:ndk_path=${ANDROID_NDK_HOME}"
+          -g CMakeDeps
+          -g CMakeToolchain
+          --build=missing
+          --no-remote
+
+      - name: Configure Android optional backend
+        shell: bash
+        run: >-
+          cmake -S . -B build/runtime-repository-git2-android-${{ matrix.abi }}
+          "-DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}/build/conan/runtime-repository-git2-android-${{ matrix.abi }}/conan_toolchain.cmake"
+          -DCMAKE_BUILD_TYPE=Release
+          -DBUILD_TESTING=OFF
+          -DBUILD_RUNTIME_REPOSITORY_GIT2=ON
+          -DBUILD_RUNTIME_REPOSITORY_GIT2_TESTS=OFF
+          -DBUILD_APP_BAAS=OFF
+          -DBUILD_APP_ISA=OFF
+          -DBUILD_BAAS_OCR=OFF
+          -DBUILD_BAAS_AW_CHECKER=OFF
+          -DBUILD_BAAS_NMS_BENCHMARK=OFF
+          -DBAAS_FETCH_RESOURCES=OFF
+
+      - name: Cross-build Android optional backend
+        shell: bash
+        run: >-
+          cmake --build build/runtime-repository-git2-android-${{ matrix.abi }}
+          --config Release
+          --parallel 4
+          --target BAAS_runtime_repository_git2

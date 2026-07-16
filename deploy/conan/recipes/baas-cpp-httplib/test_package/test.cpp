@@ -8,6 +8,10 @@
 #error "BAAS::httplib did not propagate its required configuration"
 #endif
 
+#if !defined(CPPHTTPLIB_OPENSSL_SUPPORT)
+#error "BAAS::httplib did not propagate its required OpenSSL configuration"
+#endif
+
 #if defined(BAAS_CPP_HTTPLIB_HAS_WEBSOCKET_INTERRUPT)
 static_assert(requires(httplib::ws::WebSocket& socket) {
     { socket.request_close() } noexcept -> std::same_as<bool>;
@@ -51,6 +55,9 @@ int main()
     request.method = "GET";
     request.path = "/";
     if (request.method != "GET" || request.path != "/") return EXIT_FAILURE;
+    httplib::SSLClient tls_client("localhost", 443);
+    tls_client.enable_server_certificate_verification(true);
+    static_cast<void>(tls_client.is_valid());
 #if defined(BAAS_CPP_HTTPLIB_HAS_WEBSOCKET_INTERRUPT)
     consume_websocket_extension_symbols(
         &httplib::ws::WebSocket::request_close,

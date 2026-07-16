@@ -36,10 +36,32 @@ class HttplibUpgradeContractTests(unittest.TestCase):
 
     def test_header_only_configuration_is_published_by_package_target(self) -> None:
         conanfile = (RECIPE / "conanfile.py").read_text(encoding="utf-8")
+        self.assertIn('self.requires("openssl/3.5.7")', conanfile)
+        self.assertIn('"openssl/*:shared": False', conanfile)
+        self.assertIn('"openssl/*:no_apps": True', conanfile)
+        self.assertIn('"openssl/*:no_zlib": True', conanfile)
+        self.assertIn('self.cpp_info.requires = ["openssl::openssl"]', conanfile)
+        self.assertIn('exports_sources = "patches/*", "LICENSE"', conanfile)
+        self.assertIn('copy(self, "LICENSE", self.source_folder', conanfile)
+        self.assertIn('Path(self.package_folder) / "licenses"', conanfile)
+        self.assertTrue((RECIPE / "LICENSE").is_file())
+        self.assertIn('"CPPHTTPLIB_OPENSSL_SUPPORT=1"', conanfile)
+        self.assertIn('"CPPHTTPLIB_WEBSOCKET_MAX_PAYLOAD_LENGTH=67108864"', conanfile)
+        self.assertIn('self.cpp_info.system_libs.append("crypt32")', conanfile)
         self.assertIn(
-            'self.cpp_info.defines = ["CPPHTTPLIB_WEBSOCKET_MAX_PAYLOAD_LENGTH=67108864"]',
+            'self.cpp_info.frameworks.extend(["Security", "CoreFoundation"])',
             conanfile,
         )
+        self.assertIn(
+            'self.cpp_info.defines.append("CPPHTTPLIB_USE_CERTS_FROM_MACOSX_KEYCHAIN=1")',
+            conanfile,
+        )
+        test_package = (RECIPE / "test_package" / "test.cpp").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("#if !defined(CPPHTTPLIB_OPENSSL_SUPPORT)", test_package)
+        self.assertIn('httplib::SSLClient tls_client("localhost", 443)', test_package)
+        self.assertIn("tls_client.is_valid()", test_package)
         self.assertIn(
             'self.cpp_info.defines.append("CPPHTTPLIB_HEADER_MAX_TOTAL_LENGTH=32768")',
             conanfile,

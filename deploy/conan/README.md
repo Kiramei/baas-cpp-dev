@@ -66,9 +66,11 @@ The recommended cpp-httplib dependency is `0.50.1`, fetched from its immutable
 GitHub tag with SHA-256
 `6aabb9750df0a779c7470f3a22753cee3dfeec580c44201aff1bf057aa91fcbc`.
 Older checked-in 0.18.0, 0.20.1, and 0.28.0 metadata remains selectable for
-reproduction. `conan create deploy/conan/recipes/baas-cpp-httplib --no-remote`
+reproduction. `conan create deploy/conan/recipes/baas-cpp-httplib --build=missing`
 also builds its `test_package`, which verifies that the public header is
-consumable and the BAAS target propagates its required WebSocket payload
-definition. The repository HTTP upgrade contract owns the exact 0.50.1 version
+consumable and the BAAS target propagates its required HTTPS and WebSocket
+definitions. The package pins static OpenSSL 3.5.7 with applications and zlib
+disabled; after that exact closure has been provisioned, downstream installs
+can remain offline. The repository HTTP upgrade contract owns the exact 0.50.1 version
 and multipart API assertions so generated legacy recipes remain reproducible
 with their older headers.

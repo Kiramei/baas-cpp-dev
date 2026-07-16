@@ -239,6 +239,15 @@ class ThrowingFetchBackend final : public repository::RuntimeRepositoryFetchBack
     std::string detail_;
 };
 
+class CancellingFetchBackend final : public repository::RuntimeRepositoryFetchBackend {
+  public:
+    [[nodiscard]] repository::RepositoryStageResult
+    stage_exact(const repository::RepositoryFetchSpec&, const std::filesystem::path&,
+                std::stop_token) override {
+        throw repository::RuntimeRepositoryFetchCancelled{};
+    }
+};
+
 class FakeTreeValidator final : public repository::RuntimeRepositoryTreeValidator {
   public:
     explicit FakeTreeValidator(EventLog& events) : events_(&events) {}
@@ -827,6 +836,27 @@ void test_cancelled_update_does_not_publish() {
                 "a pre-cancelled update must report cancellation");
     check(!std::filesystem::exists(state_root / "current.json"),
           "cancelled update must not publish current");
+}
+
+void test_backend_typed_cancellation_is_mapped_and_redacted() {
+    TempDirectory temporary;
+    const auto state_root = temporary.path() / "runtime-repositories";
+    EventLog events;
+    repository::RuntimeRepositoryUpdater updater(state_root);
+    FakePlanProvider provider(plan('1', '2', 'a', 'b'), events);
+    CancellingFetchBackend backend;
+    FakeTreeValidator validator(events);
+
+    const auto result = updater.update(provider, backend, validator,
+                                       repository::ExpectedCurrent::absent());
+    check_error(result, repository::RuntimeRepositoryUpdateErrorCode::Cancelled,
+                "typed backend cancellation must map to the stable Cancelled result");
+    check(result.error && result.error->message ==
+                              repository::runtime_repository_update_error_message(
+                                  repository::RuntimeRepositoryUpdateErrorCode::Cancelled),
+          "typed backend cancellation must expose only stable public text");
+    check(!std::filesystem::exists(state_root / "current.json"),
+          "typed backend cancellation must not publish current");
 }
 
 void test_second_repository_failure_cleans_all_staging() {
@@ -1958,6 +1988,7 @@ int main() {
         test_update_order_protocol_vector_and_pin();
         test_commit_oid_mismatch_fails_closed();
         test_cancelled_update_does_not_publish();
+        test_backend_typed_cancellation_is_mapped_and_redacted();
         test_second_repository_failure_cleans_all_staging();
         test_cancellation_after_first_stage_cleans_staging();
         test_path_escape_plan_is_rejected_before_fetch();

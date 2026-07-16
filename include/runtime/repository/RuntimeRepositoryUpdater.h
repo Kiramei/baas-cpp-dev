@@ -5,6 +5,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <exception>
 #include <filesystem>
 #include <memory>
 #include <optional>
@@ -37,6 +38,16 @@ class RuntimeRepositoryUpdatePlanProvider {
   public:
     virtual ~RuntimeRepositoryUpdatePlanProvider() = default;
     [[nodiscard]] virtual RuntimeRepositoryUpdatePlan trusted_plan() const = 0;
+};
+
+// Fetch backends use this typed signal when an in-flight operation observes
+// the supplied stop token. The updater maps it to Cancelled without exposing
+// backend diagnostics through the public result.
+class RuntimeRepositoryFetchCancelled final : public std::exception {
+  public:
+    [[nodiscard]] const char* what() const noexcept override {
+        return "runtime repository fetch cancelled";
+    }
 };
 
 struct RepositoryStageResult final {

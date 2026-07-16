@@ -66,9 +66,16 @@ class LibGit2DependencyContractTests(unittest.TestCase):
             'option(BUILD_RUNTIME_REPOSITORY_GIT2 "Build the optional libgit2 repository dependency boundary" OFF)',
             root_cmake,
         )
-        self.assertIn("baas_request_dependencies(libgit2)", root_cmake)
+        self.assertIn(
+            'option(BUILD_RUNTIME_REPOSITORY_GIT2_TESTS "Build real optional libgit2 repository backend tests" OFF)',
+            root_cmake,
+        )
+        self.assertIn("baas_request_dependencies(libgit2 miniz cpp_httplib)", root_cmake)
         self.assertIn("find_package(baas-libgit2 CONFIG QUIET)", dependency_cmake)
-        self.assertIn('target_link_libraries(BAAS_runtime_repository_git2 PRIVATE BAAS::libgit2)', target_cmake)
+        self.assertIn('PUBLIC BAAS_runtime_repository_updater', target_cmake)
+        self.assertIn('PRIVATE BAAS::libgit2', target_cmake)
+        self.assertIn('BAAS::miniz BAAS::httplib', target_cmake)
+        self.assertIn('BAAS_runtime_repository_git2_backend_tests', target_cmake)
         self.assertIn('use_libgit2=True', target_cmake)
 
     def test_recipe_is_exported_and_version_selected(self) -> None:
