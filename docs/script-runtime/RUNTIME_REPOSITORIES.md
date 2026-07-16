@@ -45,6 +45,13 @@ descriptors and remains unchanged if `current.json` later advances. Activation
 does not probe `objects`, open manifests, or turn external repository data into
 build inputs.
 
+Path validation and file reading operate on the same opened object. Windows
+opens every state component with reparse-point inspection, pins directory
+handles, validates the final handle path within the root, bounds size from that
+handle, and reads that handle. Unix walks from an opened root directory with
+`openat` plus `O_NOFOLLOW`, bounds with `fstat`, and reads the same final file
+descriptor. No validated pathname is reopened for content reads.
+
 ## Generation identity
 
 Generation is lowercase SHA-256. The hash input is the following ordered field

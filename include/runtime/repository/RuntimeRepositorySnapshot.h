@@ -79,4 +79,9 @@ private:
 [[nodiscard]] std::string runtime_repository_generation(
     const std::array<RuntimeRepository, 2>& repositories);
 
+#ifdef BAAS_RUNTIME_REPOSITORY_TESTING
+using RuntimeRepositoryReadHook = void (*)(const std::filesystem::path& path);
+void set_runtime_repository_read_hook(RuntimeRepositoryReadHook hook) noexcept;
+#endif
+
 }  // namespace baas::runtime::repository

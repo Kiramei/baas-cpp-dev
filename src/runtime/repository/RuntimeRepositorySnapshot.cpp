@@ -2,9 +2,11 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <bit>
+#include <cerrno>
 #include <cstdint>
-#include <fstream>
+#include <iterator>
 #include <span>
 #include <system_error>
 #include <thread>
@@ -15,6 +17,10 @@
 #ifdef _WIN32
 #define NOMINMAX
 #include <windows.h>
+#else
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
 #endif
 
 namespace baas::runtime::repository {
@@ -342,84 +348,295 @@ void exact_fields(const Json::Object& value, const std::span<const std::string_v
         });
 }
 
-[[nodiscard]] bool within(
-    const std::filesystem::path& root, const std::filesystem::path& candidate) noexcept
-{
-    const auto equal_component = [](const std::filesystem::path& left,
-                                    const std::filesystem::path& right) noexcept {
-#ifdef _WIN32
-        return CompareStringOrdinal(
-            left.c_str(), -1, right.c_str(), -1, TRUE) == CSTR_EQUAL;
-#else
-        return left == right;
-#endif
-    };
-    auto root_it = root.begin();
-    auto candidate_it = candidate.begin();
-    for (; root_it != root.end(); ++root_it, ++candidate_it)
-        if (candidate_it == candidate.end() ||
-            !equal_component(*candidate_it, *root_it)) return false;
-    return true;
-}
-
-void reject_symlink(const std::filesystem::path& path)
-{
-    std::error_code error;
-    const auto status = std::filesystem::symlink_status(path, error);
-    if (error || status.type() == std::filesystem::file_type::not_found)
-        throw RuntimeRepositoryError(RuntimeRepositoryErrorCode::Io, "repository state path is absent");
-    if (std::filesystem::is_symlink(status))
-        throw RuntimeRepositoryError(RuntimeRepositoryErrorCode::PathViolation, "repository state symlink is forbidden");
-#ifdef _WIN32
-    const auto attributes = GetFileAttributesW(path.c_str());
-    if (attributes == INVALID_FILE_ATTRIBUTES)
-        throw RuntimeRepositoryError(RuntimeRepositoryErrorCode::Io, "repository state attributes are unavailable");
-    if ((attributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0)
-        throw RuntimeRepositoryError(RuntimeRepositoryErrorCode::PathViolation, "repository state reparse point is forbidden");
-#endif
-}
-
-[[nodiscard]] std::filesystem::path checked_file(
-    const std::filesystem::path& root, const std::filesystem::path& relative)
+void validate_relative_path(const std::filesystem::path& relative)
 {
     if (relative.empty() || relative.is_absolute() || relative.has_root_name() ||
         relative.lexically_normal() != relative)
-        throw RuntimeRepositoryError(RuntimeRepositoryErrorCode::PathViolation, "repository state path is not canonical");
-    const auto candidate = root / relative;
-    auto current = root;
-    reject_symlink(current);
-    for (const auto& component : relative) {
-        current /= component;
-        reject_symlink(current);
-    }
-    std::error_code error;
-    const auto canonical_root = std::filesystem::weakly_canonical(root, error);
-    if (error) throw RuntimeRepositoryError(RuntimeRepositoryErrorCode::Io, "repository root cannot be canonicalized");
-    const auto canonical_candidate = std::filesystem::weakly_canonical(candidate, error);
-    if (error || !within(canonical_root, canonical_candidate))
-        throw RuntimeRepositoryError(RuntimeRepositoryErrorCode::PathViolation, "repository state path escaped its root");
-    if (!std::filesystem::is_regular_file(candidate, error) || error)
-        throw RuntimeRepositoryError(RuntimeRepositoryErrorCode::Io, "repository state file is not regular");
-    return candidate;
+        throw RuntimeRepositoryError(
+            RuntimeRepositoryErrorCode::PathViolation,
+            "repository state path is not canonical");
 }
 
-[[nodiscard]] std::string read_bounded(
-    const std::filesystem::path& path, const std::size_t maximum)
+#ifdef BAAS_RUNTIME_REPOSITORY_TESTING
+std::atomic<RuntimeRepositoryReadHook> read_hook{};
+
+void invoke_read_hook(const std::filesystem::path& path)
 {
-    std::ifstream input(path, std::ios::binary);
-    if (!input) throw RuntimeRepositoryError(RuntimeRepositoryErrorCode::Io, "repository state file cannot be opened");
+    if (const auto hook = read_hook.load(std::memory_order_acquire)) hook(path);
+}
+#else
+void invoke_read_hook(const std::filesystem::path&) noexcept {}
+#endif
+
+#ifdef _WIN32
+
+class UniqueHandle final {
+public:
+    UniqueHandle() noexcept = default;
+    explicit UniqueHandle(const HANDLE handle) noexcept : handle_(handle) {}
+    ~UniqueHandle() { reset(); }
+    UniqueHandle(const UniqueHandle&) = delete;
+    UniqueHandle& operator=(const UniqueHandle&) = delete;
+    UniqueHandle(UniqueHandle&& other) noexcept
+        : handle_(std::exchange(other.handle_, INVALID_HANDLE_VALUE)) {}
+    UniqueHandle& operator=(UniqueHandle&& other) noexcept
+    {
+        if (this != &other) {
+            reset();
+            handle_ = std::exchange(other.handle_, INVALID_HANDLE_VALUE);
+        }
+        return *this;
+    }
+    [[nodiscard]] HANDLE get() const noexcept { return handle_; }
+
+private:
+    void reset() noexcept
+    {
+        if (handle_ != INVALID_HANDLE_VALUE) CloseHandle(handle_);
+        handle_ = INVALID_HANDLE_VALUE;
+    }
+    HANDLE handle_{INVALID_HANDLE_VALUE};
+};
+
+[[noreturn]] void windows_io_error(const char* message)
+{
+    throw RuntimeRepositoryError(RuntimeRepositoryErrorCode::Io, message);
+}
+
+[[nodiscard]] UniqueHandle open_windows_object(
+    const std::filesystem::path& path, const bool directory)
+{
+    const auto sharing = directory
+        ? FILE_SHARE_READ | FILE_SHARE_WRITE
+        : FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE;
+    const auto handle = CreateFileW(
+        path.c_str(), directory ? FILE_READ_ATTRIBUTES | FILE_LIST_DIRECTORY : GENERIC_READ,
+        sharing, nullptr, OPEN_EXISTING,
+        FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT |
+            (directory ? 0U : FILE_FLAG_SEQUENTIAL_SCAN),
+        nullptr);
+    if (handle == INVALID_HANDLE_VALUE) windows_io_error("repository state handle cannot be opened");
+
+    FILE_ATTRIBUTE_TAG_INFO attributes{};
+    if (!GetFileInformationByHandleEx(
+            handle, FileAttributeTagInfo, &attributes, sizeof(attributes))) {
+        CloseHandle(handle);
+        windows_io_error("repository state handle attributes are unavailable");
+    }
+    if ((attributes.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0) {
+        CloseHandle(handle);
+        throw RuntimeRepositoryError(
+            RuntimeRepositoryErrorCode::PathViolation,
+            "repository state reparse point is forbidden");
+    }
+    const auto is_directory =
+        (attributes.FileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+    if (is_directory != directory || (!directory && GetFileType(handle) != FILE_TYPE_DISK)) {
+        CloseHandle(handle);
+        throw RuntimeRepositoryError(
+            RuntimeRepositoryErrorCode::PathViolation,
+            "repository state object has the wrong type");
+    }
+    return UniqueHandle(handle);
+}
+
+[[nodiscard]] std::filesystem::path final_handle_path(const HANDLE handle)
+{
+    constexpr DWORD flags = FILE_NAME_NORMALIZED | VOLUME_NAME_DOS;
+    const auto required = GetFinalPathNameByHandleW(handle, nullptr, 0, flags);
+    if (required == 0) windows_io_error("repository state final path is unavailable");
+    std::wstring buffer(required, L'\0');
+    const auto written = GetFinalPathNameByHandleW(
+        handle, buffer.data(), static_cast<DWORD>(buffer.size()), flags);
+    if (written == 0 || written >= buffer.size())
+        windows_io_error("repository state final path is unavailable");
+    buffer.resize(written);
+    return std::filesystem::path(std::move(buffer));
+}
+
+[[nodiscard]] bool within(
+    const std::filesystem::path& root, const std::filesystem::path& candidate) noexcept
+{
+    auto root_it = root.begin();
+    auto candidate_it = candidate.begin();
+    for (; root_it != root.end(); ++root_it, ++candidate_it) {
+        if (candidate_it == candidate.end() ||
+            CompareStringOrdinal(
+                root_it->c_str(), -1, candidate_it->c_str(), -1, TRUE) != CSTR_EQUAL)
+            return false;
+    }
+    return true;
+}
+
+[[nodiscard]] std::string read_bounded_state_file(
+    const std::filesystem::path& root, const std::filesystem::path& relative,
+    const std::size_t maximum)
+{
+    validate_relative_path(relative);
+    auto current_path = root;
+    std::vector<UniqueHandle> directories;
+    directories.push_back(open_windows_object(current_path, true));
+    const auto canonical_root = final_handle_path(directories.front().get());
+
+    UniqueHandle file;
+    std::size_t component_index{};
+    const auto component_count = static_cast<std::size_t>(
+        std::distance(relative.begin(), relative.end()));
+    for (const auto& component : relative) {
+        current_path /= component;
+        const auto final_component = ++component_index == component_count;
+        auto opened = open_windows_object(current_path, !final_component);
+        if (!within(canonical_root, final_handle_path(opened.get())))
+            throw RuntimeRepositoryError(
+                RuntimeRepositoryErrorCode::PathViolation,
+                "repository state handle escaped its root");
+        if (final_component) file = std::move(opened);
+        else directories.push_back(std::move(opened));
+    }
+
+    // The final file handle now pins the validated object. Releasing directory
+    // handles permits an atomic replacement of the pathname while this reader
+    // continues from the already validated file object.
+    directories.clear();
+
+    FILE_STANDARD_INFO information{};
+    if (!GetFileInformationByHandleEx(
+            file.get(), FileStandardInfo, &information, sizeof(information)))
+        windows_io_error("repository state file information is unavailable");
+    if (information.Directory || information.EndOfFile.QuadPart < 0 ||
+        static_cast<unsigned long long>(information.EndOfFile.QuadPart) > maximum)
+        throw RuntimeRepositoryError(
+            RuntimeRepositoryErrorCode::FileLimitExceeded,
+            "repository state file limit exceeded");
+
+    invoke_read_hook(current_path);
     std::string result;
+    result.reserve(static_cast<std::size_t>(information.EndOfFile.QuadPart));
     std::array<char, 4096> buffer{};
-    while (input) {
-        input.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
-        const auto count = static_cast<std::size_t>(input.gcount());
+    for (;;) {
+        DWORD count{};
+        if (!ReadFile(file.get(), buffer.data(), static_cast<DWORD>(buffer.size()), &count, nullptr))
+            windows_io_error("repository state file read failed");
+        if (count == 0) break;
         if (count > maximum - std::min(maximum, result.size()))
-            throw RuntimeRepositoryError(RuntimeRepositoryErrorCode::FileLimitExceeded, "repository state file limit exceeded");
+            throw RuntimeRepositoryError(
+                RuntimeRepositoryErrorCode::FileLimitExceeded,
+                "repository state file limit exceeded");
         result.append(buffer.data(), count);
     }
-    if (!input.eof()) throw RuntimeRepositoryError(RuntimeRepositoryErrorCode::Io, "repository state file read failed");
     return result;
 }
+
+#else
+
+class UniqueFd final {
+public:
+    UniqueFd() noexcept = default;
+    explicit UniqueFd(const int fd) noexcept : fd_(fd) {}
+    ~UniqueFd() { reset(); }
+    UniqueFd(const UniqueFd&) = delete;
+    UniqueFd& operator=(const UniqueFd&) = delete;
+    UniqueFd(UniqueFd&& other) noexcept : fd_(std::exchange(other.fd_, -1)) {}
+    UniqueFd& operator=(UniqueFd&& other) noexcept
+    {
+        if (this != &other) {
+            reset();
+            fd_ = std::exchange(other.fd_, -1);
+        }
+        return *this;
+    }
+    [[nodiscard]] int get() const noexcept { return fd_; }
+
+private:
+    void reset() noexcept
+    {
+        if (fd_ >= 0) close(fd_);
+        fd_ = -1;
+    }
+    int fd_{-1};
+};
+
+[[noreturn]] void unix_open_error(const char* message)
+{
+    const auto code = errno == ELOOP || errno == ENOTDIR
+        ? RuntimeRepositoryErrorCode::PathViolation
+        : RuntimeRepositoryErrorCode::Io;
+    throw RuntimeRepositoryError(code, message);
+}
+
+[[nodiscard]] UniqueFd open_unix_root(const std::filesystem::path& root)
+{
+    const auto fd = open(root.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+    if (fd < 0) unix_open_error("repository state root cannot be opened");
+    return UniqueFd(fd);
+}
+
+[[nodiscard]] UniqueFd open_unix_component(
+    const int parent, const std::filesystem::path& component, const bool directory)
+{
+    const auto flags = O_RDONLY | O_CLOEXEC | O_NOFOLLOW |
+        (directory ? O_DIRECTORY : O_NONBLOCK);
+    const auto fd = openat(parent, component.c_str(), flags);
+    if (fd < 0) unix_open_error("repository state component cannot be opened");
+    return UniqueFd(fd);
+}
+
+[[nodiscard]] std::string read_bounded_state_file(
+    const std::filesystem::path& root, const std::filesystem::path& relative,
+    const std::size_t maximum)
+{
+    validate_relative_path(relative);
+    auto parent = open_unix_root(root);
+    UniqueFd file;
+    std::size_t component_index{};
+    const auto component_count = static_cast<std::size_t>(
+        std::distance(relative.begin(), relative.end()));
+    for (const auto& component : relative) {
+        const auto final_component = ++component_index == component_count;
+        auto opened = open_unix_component(parent.get(), component, !final_component);
+        if (final_component) file = std::move(opened);
+        else parent = std::move(opened);
+    }
+
+    struct stat information{};
+    if (fstat(file.get(), &information) != 0)
+        throw RuntimeRepositoryError(
+            RuntimeRepositoryErrorCode::Io,
+            "repository state file information is unavailable");
+    if (!S_ISREG(information.st_mode))
+        throw RuntimeRepositoryError(
+            RuntimeRepositoryErrorCode::PathViolation,
+            "repository state object is not a regular file");
+    if (information.st_size < 0 ||
+        static_cast<std::uintmax_t>(information.st_size) > maximum)
+        throw RuntimeRepositoryError(
+            RuntimeRepositoryErrorCode::FileLimitExceeded,
+            "repository state file limit exceeded");
+
+    invoke_read_hook(root / relative);
+    std::string result;
+    result.reserve(static_cast<std::size_t>(information.st_size));
+    std::array<char, 4096> buffer{};
+    for (;;) {
+        const auto count = read(file.get(), buffer.data(), buffer.size());
+        if (count < 0) {
+            if (errno == EINTR) continue;
+            throw RuntimeRepositoryError(
+                RuntimeRepositoryErrorCode::Io,
+                "repository state file read failed");
+        }
+        if (count == 0) break;
+        const auto size = static_cast<std::size_t>(count);
+        if (size > maximum - std::min(maximum, result.size()))
+            throw RuntimeRepositoryError(
+                RuntimeRepositoryErrorCode::FileLimitExceeded,
+                "repository state file limit exceeded");
+        result.append(buffer.data(), size);
+    }
+    return result;
+}
+
+#endif
 
 [[nodiscard]] RuntimeRepository parse_repository(const Json& value)
 {
@@ -441,6 +658,13 @@ void reject_symlink(const std::filesystem::path& path)
 }
 
 }  // namespace
+
+#ifdef BAAS_RUNTIME_REPOSITORY_TESTING
+void set_runtime_repository_read_hook(const RuntimeRepositoryReadHook hook) noexcept
+{
+    read_hook.store(hook, std::memory_order_release);
+}
+#endif
 
 struct RuntimeRepositorySnapshot::Impl {
     std::string generation;
@@ -479,20 +703,28 @@ std::shared_ptr<const RuntimeRepositorySnapshot> RuntimeRepositorySnapshot::acti
         limits.max_json_depth < 3)
         throw RuntimeRepositoryError(RuntimeRepositoryErrorCode::FileLimitExceeded, "repository limits are invalid");
 
-    // Windows replacement can briefly invalidate a path-based open between
-    // metadata validation and opening the file. Retry that narrow I/O race;
-    // malformed content and every policy failure remain fail-closed.
+    // Windows replacement can briefly reject opening current.json. Retry only
+    // that narrow I/O class; malformed content and policy failures remain
+    // fail-closed. Unix openat pins old-or-new without a path reopen window.
     const auto load_current = [&] {
+#ifdef _WIN32
         for (std::size_t attempt = 0; ; ++attempt) {
             try {
-                const auto current_path = checked_file(state_root, "current.json");
                 return JsonParser(
-                    read_bounded(current_path, limits.max_current_bytes), limits).parse();
+                    read_bounded_state_file(
+                        state_root, "current.json", limits.max_current_bytes),
+                    limits).parse();
             } catch (const RuntimeRepositoryError& error) {
                 if (error.code() != RuntimeRepositoryErrorCode::Io || attempt == 63) throw;
                 std::this_thread::yield();
             }
         }
+#else
+        return JsonParser(
+            read_bounded_state_file(
+                state_root, "current.json", limits.max_current_bytes),
+            limits).parse();
+#endif
     };
     const auto current_document = load_current();
     const auto& current = object(current_document);
@@ -509,9 +741,10 @@ std::shared_ptr<const RuntimeRepositorySnapshot> RuntimeRepositorySnapshot::acti
     if (member(current, "snapshot") != expected_snapshot)
         throw RuntimeRepositoryError(RuntimeRepositoryErrorCode::PathViolation, "current snapshot path is invalid");
 
-    const auto snapshot_path = checked_file(state_root, std::filesystem::path(expected_snapshot));
     const auto snapshot_document = JsonParser(
-        read_bounded(snapshot_path, limits.max_snapshot_bytes), limits).parse();
+        read_bounded_state_file(
+            state_root, std::filesystem::path(expected_snapshot), limits.max_snapshot_bytes),
+        limits).parse();
     const auto& snapshot = object(snapshot_document);
     constexpr std::array snapshot_fields{
         std::string_view{"schema"}, std::string_view{"generation"},

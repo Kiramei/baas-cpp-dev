@@ -18,11 +18,19 @@ endif()
 
 if(BUILD_RUNTIME_REPOSITORY_TESTS)
     include(CTest)
+    target_compile_definitions(
+            BAAS_runtime_repository
+            PRIVATE BAAS_RUNTIME_REPOSITORY_TESTING
+    )
     add_executable(
             BAAS_runtime_repository_tests
             "${BAAS_PROJECT_PATH}/tests/runtime/RuntimeRepositorySnapshotTests.cpp"
     )
     target_compile_features(BAAS_runtime_repository_tests PRIVATE cxx_std_20)
+    target_compile_definitions(
+            BAAS_runtime_repository_tests
+            PRIVATE BAAS_RUNTIME_REPOSITORY_TESTING
+    )
     target_link_libraries(BAAS_runtime_repository_tests PRIVATE BAAS_runtime_repository)
     add_test(NAME BAAS_runtime_repository_tests COMMAND BAAS_runtime_repository_tests)
     set_tests_properties(BAAS_runtime_repository_tests PROPERTIES TIMEOUT 60)
