@@ -208,6 +208,31 @@ class RuntimeRepositoryUpdaterHooks {
     virtual void diagnostic(RuntimeRepositoryUpdateErrorCode, std::string_view) noexcept {}
 };
 
+// Optional bridge for callers that must close an external cancellation window
+// before mutable publication state is written. The callback runs after the
+// candidate objects and immutable snapshot are installed and after the final
+// stop-token check, but before the recovery journal or previous/current
+// pointers are changed. Returning false therefore leaves no durable commit
+// intent for crash recovery to replay. Once true is returned, the updater does
+// not observe cancellation again during the publication transaction; callers
+// must be prepared to report either committed success or an irrevocable error.
+class RuntimeRepositoryCommitClaim {
+  public:
+    virtual ~RuntimeRepositoryCommitClaim() = default;
+    [[nodiscard]] virtual bool claim(
+        std::string_view target_generation) noexcept = 0;
+};
+
+enum class RuntimeRepositoryRecoveryPolicy {
+    // Backward-compatible orchestration mode for startup and non-interactive
+    // callers. A durable journal is recovered before a new plan is processed.
+    RecoverPending,
+    // Interactive requests must use this after startup recovery. A pending
+    // journal fails closed instead of publishing an earlier request's intent
+    // outside this request's commit-claim/result boundary.
+    RequireClean,
+};
+
 class RuntimeRepositoryUpdater final {
   public:
     // state_root must be the caller-selected
@@ -223,7 +248,18 @@ class RuntimeRepositoryUpdater final {
            RuntimeRepositoryFetchBackend& fetch_backend,
            const RuntimeRepositoryTreeValidator& validator,
            ExpectedCurrent expected_current = ExpectedCurrent::any(),
-           std::stop_token stop_token = {});
+           std::stop_token stop_token = {},
+           RuntimeRepositoryCommitClaim* commit_claim = nullptr,
+           RuntimeRepositoryRecoveryPolicy recovery_policy =
+               RuntimeRepositoryRecoveryPolicy::RecoverPending);
+
+    // Complete crash recovery before accepting interactive update requests.
+    // No stop token or commit claim is accepted: the journal represents a
+    // commit decision made by the earlier transaction. The result reports
+    // Committed when a journal was replayed and NotCommitted when state was
+    // already clean.
+    [[nodiscard]] RuntimeRepositoryUpdateResult
+    recover(const RuntimeRepositoryTreeValidator& validator);
 
     [[nodiscard]] RuntimeRepositoryUpdateResult
     rollback(ExpectedCurrent expected_current = ExpectedCurrent::any(),

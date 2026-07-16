@@ -1858,9 +1858,17 @@ struct RuntimeRepositoryUpdater::Impl final {
 
     [[nodiscard]] RuntimeRepositoryUpdateResult
     transaction(Journal journal, std::shared_ptr<const RuntimeRepositorySnapshot> old_pin,
-                const std::stop_token stop_token) {
+                const std::stop_token stop_token,
+                RuntimeRepositoryCommitClaim* const commit_claim) {
         bool current_replaced = false;
         try {
+            if (commit_claim != nullptr) {
+                check_cancelled(stop_token);
+                if (!commit_claim->claim(journal.new_current.generation)) {
+                    fail(RuntimeRepositoryUpdateErrorCode::Cancelled,
+                         "repository commit claim rejected publication");
+                }
+            }
             hooks->before_file_operation(RuntimeRepositoryFileOperation::PreparedJournalReplace);
             write_atomically(root / ".publish-journal.json", journal_json(journal));
             checkpoint(RuntimeRepositoryUpdaterCheckpoint::JournalPrepared);
@@ -1871,7 +1879,8 @@ struct RuntimeRepositoryUpdater::Impl final {
                 RuntimeRepositoryFileOperation::PreviousPhaseJournalReplace);
             write_atomically(root / ".publish-journal.json", journal_json(journal));
             checkpoint(RuntimeRepositoryUpdaterCheckpoint::PreviousReplaced);
-            check_cancelled(stop_token);
+            if (commit_claim == nullptr)
+                check_cancelled(stop_token);
             checkpoint(RuntimeRepositoryUpdaterCheckpoint::BeforeCurrentReplace);
             hooks->before_file_operation(RuntimeRepositoryFileOperation::CurrentPointerReplace);
             write_atomically(root / "current.json", pointer_json(journal.new_current),
@@ -1966,7 +1975,9 @@ RuntimeRepositoryUpdater::~RuntimeRepositoryUpdater() = default;
 RuntimeRepositoryUpdateResult RuntimeRepositoryUpdater::update(
     const RuntimeRepositoryUpdatePlanProvider& plan_provider,
     RuntimeRepositoryFetchBackend& fetch_backend, const RuntimeRepositoryTreeValidator& validator,
-    ExpectedCurrent expected_current, const std::stop_token stop_token) {
+    ExpectedCurrent expected_current, const std::stop_token stop_token,
+    RuntimeRepositoryCommitClaim* const commit_claim,
+    const RuntimeRepositoryRecoveryPolicy recovery_policy) {
     auto old_pin = impl_->current_pin();
     std::unique_lock process_lock(impl_->writer, std::try_to_lock);
     if (!process_lock.owns_lock()) {
@@ -1978,7 +1989,17 @@ RuntimeRepositoryUpdateResult RuntimeRepositoryUpdater::update(
     std::vector<std::filesystem::path> staging;
     try {
         NativeWriterLock file_lock(impl_->root / ".writer.lock");
-        impl_->recover_pending(validator);
+        if (commit_claim != nullptr
+            && recovery_policy != RuntimeRepositoryRecoveryPolicy::RequireClean) {
+            fail(RuntimeRepositoryUpdateErrorCode::InvalidPlan,
+                 "commit claims require explicit startup recovery");
+        }
+        if (recovery_policy == RuntimeRepositoryRecoveryPolicy::RecoverPending) {
+            impl_->recover_pending(validator);
+        } else if (path_present(impl_->root / ".publish-journal.json")) {
+            fail(RuntimeRepositoryUpdateErrorCode::RecoveryFailed,
+                 "pending repository recovery must complete before an interactive update");
+        }
         impl_->set_pin(impl_->load_pin());
         old_pin = impl_->current_pin();
         check_cancelled(stop_token);
@@ -2055,7 +2076,8 @@ RuntimeRepositoryUpdateResult RuntimeRepositoryUpdater::update(
         check_cancelled(stop_token);
         const auto old_previous = read_pointer(impl_->root / "previous.json");
         Journal journal{"publish", "prepared", old_previous, old_current, old_current, pointer};
-        return impl_->transaction(std::move(journal), std::move(old_pin), stop_token);
+        return impl_->transaction(
+            std::move(journal), std::move(old_pin), stop_token, commit_claim);
     } catch (const UpdateFailure& error) {
         impl_->cleanup_staging(staging);
         if (error.disposition() != PublishDisposition::NotCommitted)
@@ -2065,6 +2087,39 @@ RuntimeRepositoryUpdateResult RuntimeRepositoryUpdater::update(
         impl_->cleanup_staging(staging);
         return unknown_error_result(error, PublishDisposition::NotCommitted, std::move(old_pin),
                                     *impl_->hooks);
+    }
+}
+
+RuntimeRepositoryUpdateResult RuntimeRepositoryUpdater::recover(
+    const RuntimeRepositoryTreeValidator& validator) {
+    auto old_pin = impl_->current_pin();
+    std::unique_lock process_lock(impl_->writer, std::try_to_lock);
+    if (!process_lock.owns_lock()) {
+        const UpdateFailure error(RuntimeRepositoryUpdateErrorCode::Busy,
+                                  "repository writer is busy");
+        return error_result(error, PublishDisposition::NotCommitted,
+                            std::move(old_pin), *impl_->hooks);
+    }
+    try {
+        NativeWriterLock file_lock(impl_->root / ".writer.lock");
+        const bool had_pending =
+            path_present(impl_->root / ".publish-journal.json");
+        impl_->recover_pending(validator);
+        auto pin = impl_->load_pin();
+        impl_->set_pin(pin);
+        return RuntimeRepositoryUpdateResult{
+            std::nullopt,
+            had_pending ? PublishDisposition::Committed
+                        : PublishDisposition::NotCommitted,
+            pin ? pin->generation() : std::string{}, std::move(pin)};
+    } catch (const UpdateFailure& error) {
+        if (error.disposition() != PublishDisposition::NotCommitted)
+            old_pin = impl_->current_pin();
+        return error_result(error, error.disposition(), std::move(old_pin),
+                            *impl_->hooks);
+    } catch (const std::exception& error) {
+        return unknown_error_result(error, PublishDisposition::NotCommitted,
+                                    std::move(old_pin), *impl_->hooks);
     }
 }
 
@@ -2096,7 +2151,8 @@ RuntimeRepositoryUpdateResult RuntimeRepositoryUpdater::rollback(ExpectedCurrent
         validate_pointer_objects(impl_->root, *current, validator, stop_token);
         validate_pointer_objects(impl_->root, *previous, validator, stop_token);
         Journal journal{"rollback", "prepared", previous, current, current, *previous};
-        return impl_->transaction(std::move(journal), std::move(old_pin), stop_token);
+        return impl_->transaction(
+            std::move(journal), std::move(old_pin), stop_token, nullptr);
     } catch (const UpdateFailure& error) {
         if (error.disposition() != PublishDisposition::NotCommitted)
             old_pin = impl_->current_pin();
