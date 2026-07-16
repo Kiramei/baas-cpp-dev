@@ -5,6 +5,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -14,6 +15,8 @@
 #include <vector>
 
 namespace baas::script::runtime {
+
+class HostReleaseDispatcher;
 
 enum class RuntimeErrorCode {
     TypeMismatch,
@@ -239,17 +242,43 @@ struct TaskMetadata {
     std::vector<Value> retained_values;
 };
 
+// Version-1 typed Host handle ids are fixed ABI values. Invalid exists only so
+// the pre-typed heap API remains source-compatible; checked Host contracts never
+// accept or publish it.
+enum class HostHandleTypeId : std::uint8_t {
+    Invalid = 0,
+    Resource = 1,
+    Image = 2,
+    OcrModel = 3,
+    Device = 4,
+};
+
 struct HostHandleMetadata {
     std::uint64_t handle_id{};
     std::uint64_t adapter_id{};
     std::size_t external_bytes{};
     bool closed{false};
+    HostHandleTypeId type_id{HostHandleTypeId::Invalid};
+    std::uint64_t generation{};
+    std::uint64_t context_id{};
+    std::uint64_t snapshot_id{};
+    std::uint64_t authentication{};
 };
 
 struct HostReleaseRecord {
     std::uint64_t handle_id{};
     std::uint64_t adapter_id{};
     std::size_t external_bytes{};
+    HostHandleTypeId type_id{HostHandleTypeId::Invalid};
+    std::uint64_t generation{};
+    std::uint64_t context_id{};
+    std::uint64_t snapshot_id{};
+    std::uint64_t authentication{};
+};
+
+struct HostReleaseLease {
+    std::uint64_t lease_id{};
+    HostReleaseRecord record;
 };
 
 struct HeapLimits {
@@ -280,8 +309,58 @@ struct HeapStats {
 };
 
 class Heap {
+    struct ExternalLedger;
+
 public:
     using RootId = std::uint64_t;
+
+    class ExternalReservation {
+    public:
+        ExternalReservation(const ExternalReservation&) = delete;
+        ExternalReservation& operator=(const ExternalReservation&) = delete;
+        ExternalReservation(ExternalReservation&& other) noexcept;
+        ExternalReservation& operator=(ExternalReservation&& other) noexcept;
+        ~ExternalReservation();
+
+        [[nodiscard]] std::size_t bytes() const noexcept { return bytes_; }
+        [[nodiscard]] bool active() const noexcept { return ledger_ != nullptr; }
+
+    private:
+        friend class Heap;
+        explicit ExternalReservation(
+            std::shared_ptr<ExternalLedger> ledger, std::size_t bytes) noexcept
+            : ledger_(std::move(ledger)), bytes_(bytes) {}
+        void commit() noexcept { ledger_.reset(); bytes_ = 0; }
+        std::shared_ptr<ExternalLedger> ledger_;
+        std::size_t bytes_{};
+    };
+
+    class DetachedHostReleases final {
+    public:
+        DetachedHostReleases() = default;
+        DetachedHostReleases(const DetachedHostReleases&) = delete;
+        DetachedHostReleases& operator=(const DetachedHostReleases&) = delete;
+        DetachedHostReleases(DetachedHostReleases&&) noexcept = default;
+        DetachedHostReleases& operator=(DetachedHostReleases&&) noexcept = delete;
+
+        [[nodiscard]] std::optional<HostReleaseLease> lease();
+        bool acknowledge(std::uint64_t lease_id) noexcept;
+        bool defer(std::uint64_t lease_id) noexcept;
+        [[nodiscard]] bool empty() const noexcept { return head_ >= records_.size(); }
+        [[nodiscard]] std::size_t size() const noexcept { return records_.size() - head_; }
+        [[nodiscard]] std::size_t external_bytes() const noexcept;
+
+    private:
+        friend class Heap;
+        std::vector<HostReleaseRecord> records_;
+        std::size_t head_{};
+        std::size_t cursor_{};
+        std::size_t active_index_{};
+        std::shared_ptr<ExternalLedger> ledger_;
+        std::uint64_t next_lease_id_{1};
+        std::uint64_t active_lease_id_{};
+        bool lease_active_{};
+    };
 
     class RootScope {
     public:
@@ -326,6 +405,11 @@ public:
     [[nodiscard]] Value derive_error(HeapRef primary, ErrorDerivation additions);
     [[nodiscard]] Value allocate_task(TaskMetadata metadata);
     [[nodiscard]] Value allocate_host_handle(HostHandleMetadata metadata);
+    [[nodiscard]] ExternalReservation reserve_host_external(
+        std::size_t external_bytes);
+    [[nodiscard]] Value allocate_host_handle(
+        HostHandleMetadata metadata, ExternalReservation&& reservation);
+    void ensure_host_release_capacity(std::size_t total_records);
 
     [[nodiscard]] ValueKind kind(Value value) const;
     [[nodiscard]] ValueKind kind(HeapRef reference) const;
@@ -365,11 +449,23 @@ public:
     // Returns true only for the first close. Closing and collection only queue
     // release records; host I/O belongs to the owning context/adapter strand.
     bool close_host_handle(HeapRef reference);
+    // At most one release may be leased at a time. External memory remains
+    // charged until the owning dispatcher acknowledges the lease. A failed
+    // ownership transfer retries the same immutable record without loss.
+    [[nodiscard]] std::optional<HostReleaseLease> lease_host_release();
+    bool acknowledge_host_release(std::uint64_t lease_id) noexcept;
+    bool retry_host_release(std::uint64_t lease_id) noexcept;
+    // Retains the immutable record and charge but rotates it behind other
+    // pending releases so a pinned/broken adapter cannot starve the queue.
+    bool defer_host_release(std::uint64_t lease_id) noexcept;
+    // Legacy eager ownership transfer. New typed dispatchers use leases and
+    // the friend-only teardown path below.
     [[nodiscard]] std::vector<HostReleaseRecord> drain_release_queue();
 
     void collect();
-    // Invalidates every reference and prevents further allocations/mutations.
-    // Leaked open handles are returned as queued release records.
+    // Invalidates every reference, prevents further allocations/mutations,
+    // and destructively transfers all queued release ownership to the returned
+    // vector. Typed dispatchers use the private reliable teardown path instead.
     [[nodiscard]] std::vector<HostReleaseRecord> teardown();
 
     [[nodiscard]] HeapStats stats() const noexcept;
@@ -377,11 +473,17 @@ public:
     [[nodiscard]] std::uint64_t identity() const noexcept;
 
 private:
+    friend class HostReleaseDispatcher;
     struct Impl;
     Impl* impl_;
 
     void add_temporary_root(Value value);
     void pop_temporary_roots(std::size_t marker) noexcept;
+    // Friend-only reliable ownership transfer. Application code cannot obtain
+    // or silently discard a non-empty detached release token.
+    [[nodiscard]] DetachedHostReleases detach_host_releases();
+    void teardown_for_dispatcher();
+    [[nodiscard]] std::size_t pending_host_release_count() const noexcept;
 };
 
 }  // namespace baas::script::runtime

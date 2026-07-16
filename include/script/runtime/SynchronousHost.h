@@ -56,11 +56,96 @@ enum class HostValueType : std::uint8_t {
     String,
     Json,
     OrderedStringJsonMap,
+    HostResource,
+    HostImage,
+    HostOcrModel,
+    HostDevice,
+};
+
+class HostReleaseDispatcher;
+class HostHandleCapability;
+
+enum class HostHandleTransferKind : std::uint8_t {
+    ProducedGrant,
+    BorrowedReference,
+};
+
+class HostHandleReservation final {
+public:
+    HostHandleReservation(const HostHandleReservation&) = delete;
+    HostHandleReservation& operator=(const HostHandleReservation&) = delete;
+    HostHandleReservation(HostHandleReservation&&) noexcept = default;
+    HostHandleReservation& operator=(HostHandleReservation&&) noexcept = default;
+    ~HostHandleReservation() = default;
+
+    [[nodiscard]] bool active() const noexcept { return control_ != nullptr; }
+
+private:
+    friend class HostReleaseDispatcher;
+    explicit HostHandleReservation(std::shared_ptr<void> control)
+        : control_(std::move(control)) {}
+    std::shared_ptr<void> control_;
+};
+
+// An owning ABI token for one checked host<T> borrow or result handoff. Only a
+// context-owned HostReleaseDispatcher can mint one; callbacks can inspect its
+// opaque key but cannot construct or alter it.
+class HostHandleValue final {
+public:
+    HostHandleValue(const HostHandleValue&) = default;
+    HostHandleValue& operator=(const HostHandleValue&) = default;
+    HostHandleValue(HostHandleValue&&) noexcept = default;
+    HostHandleValue& operator=(HostHandleValue&&) noexcept = default;
+
+    [[nodiscard]] HostHandleTypeId type_id() const;
+    [[nodiscard]] std::uint64_t handle_id() const;
+    [[nodiscard]] std::uint64_t adapter_id() const;
+    [[nodiscard]] std::uint64_t generation() const;
+    [[nodiscard]] std::uint64_t context_id() const;
+    [[nodiscard]] std::uint64_t snapshot_id() const;
+    [[nodiscard]] std::size_t external_bytes() const;
+    [[nodiscard]] HostHandleTransferKind transfer_kind() const noexcept { return transfer_kind_; }
+    [[nodiscard]] bool usable() const noexcept;
+    // Callback boundary cleanup. Produced grants ignore this operation.
+    void revoke_callback_borrow() const noexcept;
+
+    friend bool operator==(const HostHandleValue& left, const HostHandleValue& right) noexcept
+    {
+        return left.usable() && right.usable() &&
+            left.metadata_.handle_id == right.metadata_.handle_id &&
+            left.metadata_.adapter_id == right.metadata_.adapter_id &&
+            left.metadata_.external_bytes == right.metadata_.external_bytes &&
+            left.metadata_.closed == right.metadata_.closed &&
+            left.metadata_.type_id == right.metadata_.type_id &&
+            left.metadata_.generation == right.metadata_.generation &&
+            left.metadata_.context_id == right.metadata_.context_id &&
+            left.metadata_.snapshot_id == right.metadata_.snapshot_id &&
+            left.metadata_.authentication == right.metadata_.authentication &&
+            left.transfer_kind_ == right.transfer_kind_;
+    }
+
+private:
+    friend class HostReleaseDispatcher;
+    friend class HostValue;
+    explicit HostHandleValue(
+        HostHandleMetadata metadata, HostHandleTransferKind transfer_kind,
+        std::shared_ptr<HostHandleCapability> capability = {})
+        : metadata_(std::move(metadata)), transfer_kind_(transfer_kind),
+          capability_(std::move(capability)) {}
+
+    void require_usable() const;
+    void consume() const noexcept;
+
+    HostHandleMetadata metadata_;
+    HostHandleTransferKind transfer_kind_{HostHandleTransferKind::ProducedGrant};
+    std::shared_ptr<HostHandleCapability> capability_;
 };
 
 class HostValue final {
 public:
-    using Storage = std::variant<std::monostate, bool, std::int64_t, double, std::string, JsonValue>;
+    using Storage = std::variant<
+        std::monostate, bool, std::int64_t, double, std::string, JsonValue,
+        HostHandleValue>;
 
     HostValue() noexcept = default;
     explicit HostValue(bool value) : storage_(value) {}
@@ -69,6 +154,7 @@ public:
     explicit HostValue(std::string value) : storage_(std::move(value)) {}
     explicit HostValue(const char* value) : storage_(std::string(value)) {}
     explicit HostValue(JsonValue value) : storage_(std::move(value)) {}
+    explicit HostValue(HostHandleValue value) : storage_(std::move(value)) {}
 
     [[nodiscard]] HostValueType type() const noexcept;
     [[nodiscard]] const Storage& storage() const noexcept { return storage_; }
@@ -76,6 +162,94 @@ public:
 
 private:
     Storage storage_;
+};
+
+[[nodiscard]] bool is_host_handle_type(HostValueType type) noexcept;
+[[nodiscard]] HostValueType host_value_type(HostHandleTypeId type);
+[[nodiscard]] HostHandleTypeId host_handle_type(HostValueType type);
+
+using HostReleaseCallback = std::function<bool(const HostHandleValue&)>;
+
+struct HostReleaseAdapter {
+    std::uint64_t adapter_id{};
+    HostReleaseCallback release;
+};
+
+struct HostReleaseDispatcherStats {
+    std::size_t issued{};
+    std::size_t borrowed{};
+    std::size_t released{};
+    std::size_t retried{};
+    std::size_t rejected_records{};
+    std::size_t pending_releases{};
+    std::size_t pending_external_bytes{};
+    bool teardown_complete{};
+};
+
+// One dispatcher belongs to exactly one execution context and immutable
+// snapshot. It authenticates native keys, pins borrows across callback entry,
+// and owns reliable Heap release lease/ACK/retry processing. Adapter callbacks
+// run only here, never in Heap collection.
+class HostReleaseDispatcher final {
+public:
+    HostReleaseDispatcher(
+        std::uint64_t snapshot_id, std::vector<HostReleaseAdapter> adapters);
+    ~HostReleaseDispatcher();
+
+    HostReleaseDispatcher(const HostReleaseDispatcher&) = delete;
+    HostReleaseDispatcher& operator=(const HostReleaseDispatcher&) = delete;
+    HostReleaseDispatcher(HostReleaseDispatcher&&) = delete;
+    HostReleaseDispatcher& operator=(HostReleaseDispatcher&&) = delete;
+
+    void attach_context(Heap& heap);
+    // Reserve the Heap external-memory charge and a generational native key
+    // before adapter-side allocation. adopt() is allocation-free with respect
+    // to the handle table; abandoning a reservation rolls both reservations back.
+    [[nodiscard]] HostHandleReservation reserve(
+        HostHandleTypeId type_id, std::uint64_t adapter_id,
+        std::size_t external_bytes);
+    [[nodiscard]] HostHandleValue adopt(HostHandleReservation&& reservation);
+    [[nodiscard]] HostHandleValue borrow(
+        const Heap& heap, Value value, HostHandleTypeId expected_type);
+    [[nodiscard]] Value publish(
+        Heap& heap, const HostHandleValue& value, HostHandleTypeId expected_type);
+    // Marks an unpublished produced grant for reliable release at the next
+    // dispatcher safe point. It is idempotent and never performs adapter I/O.
+    void abandon(const HostHandleValue& value) noexcept;
+
+    // The checked callback entry point brackets every invocation with these
+    // methods so copied borrows are revoked and unreturned grants are abandoned
+    // even if callback code stores token copies or throws.
+    [[nodiscard]] std::uint64_t begin_callback_scope();
+    void finish_callback_scope(
+        std::uint64_t scope_id, const HostHandleValue* retained_grant) noexcept;
+
+    // Returns false when no record can make progress. Invalid or forged queue
+    // records are retained for diagnosis/retry and never debit memory.
+    bool dispatch_one(Heap& heap) noexcept;
+    void dispatch_all(Heap& heap) noexcept;
+    // Retries records detached from a torn-down Heap. The dispatcher owns both
+    // records and their external-memory ledger, so no Heap lifetime is needed.
+    void retry_detached_releases() noexcept;
+    // Destruction fallback: performs only VM teardown and reliable ownership
+    // transfer. It never invokes an adapter and is safe without the owner strand
+    // when the evaluator is no longer executing.
+    [[nodiscard]] bool detach_context_for_destruction(Heap& heap) noexcept;
+    // False is explicit retry evidence: the owner must retain the dispatcher
+    // and call retry_detached_releases after the adapter becomes available;
+    // teardown has already transferred ownership away from the Heap.
+    [[nodiscard]] bool teardown(Heap& heap) noexcept;
+
+    [[nodiscard]] std::uint64_t context_id() const noexcept;
+    [[nodiscard]] std::uint64_t snapshot_id() const noexcept;
+    [[nodiscard]] HostReleaseDispatcherStats stats() const noexcept;
+    // Exposes the destructor invariant for embedders/tests. Destroying while
+    // false is a fail-fast programming error because native ownership remains.
+    [[nodiscard]] bool destruction_safe() const noexcept;
+
+private:
+    struct Impl;
+    Impl* impl_;
 };
 
 class HostResult final {
@@ -218,10 +392,10 @@ struct HostValueMetrics {
 // environment, raw pointer, or native descriptor is exposed to a callback.
 [[nodiscard]] HostValue heap_to_host_value(
     const Heap& heap, Value value, HostValueType expected,
-    JsonBridgeLimits limits = {});
+    JsonBridgeLimits limits = {}, HostReleaseDispatcher* handles = nullptr);
 [[nodiscard]] Value host_to_heap_value(
     Heap& heap, const HostValue& value, HostValueType expected,
-    JsonBridgeLimits limits = {});
+    JsonBridgeLimits limits = {}, HostReleaseDispatcher* handles = nullptr);
 
 // The only callback entry point. It redacts C++ exceptions, validates error
 // envelopes and successful results, and never throws.
@@ -229,7 +403,8 @@ struct HostValueMetrics {
     const SynchronousNativeBinding& binding,
     const HostCallContext& context,
     const HostArguments& arguments,
-    const SynchronousHostLimits& limits) noexcept;
+    const SynchronousHostLimits& limits,
+    HostReleaseDispatcher* handles = nullptr) noexcept;
 
 struct InMemoryLogEvent {
     std::string level;
