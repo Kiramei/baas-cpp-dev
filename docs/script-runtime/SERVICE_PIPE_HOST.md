@@ -111,11 +111,12 @@ delivered until the callback succeeds. A failed, throwing, closing, or
 write-poisoning callback follows the same terminal rules as `on_frame()`.
 Handlers receive only validated business JSON/BYTES frames and a bounded
 writer. The foundation target intentionally provides no built-in business
-handler. `BAAS_service_trigger_pipe_channel` now supplies the separately
-selectable production Trigger adapter; real provider, sync, and remote
-adapters remain pending. Neither target starts a listener in tests. Wiring the
-provider/sync owners, remote proxy, application-selected endpoint,
-observability, and live OS security/load tests remain pending.
+handler. `BAAS_service_trigger_pipe_channel` supplies the separately selectable
+production Trigger adapter, while `BAAS_service_business_pipe_channel` adapts
+the transport-independent provider, sync, and remote handlers and delegates
+Trigger to that implementation. None of these targets starts a listener in
+tests. Application ownership, a concrete remote backend, observability, and
+live OS security/load tests remain pending.
 
 `BAAS_service_pipe_host_tests` covers all four channels, bounded hostile open
 JSON, fragmented/coalesced BPIP, open ordering, atomic JSON+zero-byte-BYTES,

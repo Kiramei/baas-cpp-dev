@@ -126,9 +126,11 @@ class ServicePipeHostTests(unittest.TestCase):
             "absolute\nfirst-frame receive deadline that fragment progress cannot reset",
             "`PipeHost` is one-shot", "MUST observe it around any potentially blocking",
             "permanently poisons that\nconnection writer",
+            "invokes `PipeChannelHandler::on_open()` exactly once",
         ):
             self.assertIn(boundary, self.spec)
-        self.assertIn("real provider/sync/remote handler wiring", self.protocol)
+        self.assertIn("provider/sync/remote business adapter", self.protocol)
+        self.assertIn("application installation", self.protocol)
 
 
 if __name__ == "__main__":
