@@ -1,6 +1,7 @@
 #include "service/app/ServiceApplication.h"
 
 #include "service/adapters/FileResourceStore.h"
+#include "service/app/AdbDiscoveryTriggerRegistration.h"
 #include "service/app/ConfigurationTriggerRegistration.h"
 #include "service/app/ProductionProviderBackend.h"
 #include "service/app/ProductionRemoteBackend.h"
@@ -219,6 +220,13 @@ ServiceApplicationOpenResult ServiceApplication::open(
         }
         std::vector<trigger::TriggerHandlerRegistration> registrations;
         registrations.push_back(std::move(*registration.registration));
+        auto adb_discovery_source = make_production_adb_discovery_source();
+        auto adb_discovery = make_adb_discovery_trigger_registration(
+            std::move(adb_discovery_source));
+        if (!adb_discovery) {
+            return {nullptr, ServiceApplicationError::trigger_registration_failed, {}};
+        }
+        registrations.push_back(std::move(*adb_discovery.registration));
         auto configuration = make_configuration_trigger_registrations(
             impl->resources);
         if (!configuration) {

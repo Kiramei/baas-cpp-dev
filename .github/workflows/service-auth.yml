@@ -24,6 +24,7 @@ on:
       - 'cmake/ServiceRemoteHandler.cmake'
       - 'cmake/ServiceAdbTransport.cmake'
       - 'cmake/ServiceAdbSync.cmake'
+      - 'cmake/ServiceAdbDiscoveryTrigger.cmake'
       - 'cmake/ServiceProtocol.cmake'
       - 'cmake/ServiceTriggerCatalog.cmake'
       - 'cmake/ServiceTriggerDispatch.cmake'
@@ -73,6 +74,8 @@ on:
       - 'src/service/adb/ServiceAdbTransport.cpp'
       - 'include/service/adb/ServiceAdbSync.h'
       - 'src/service/adb/ServiceAdbSync.cpp'
+      - 'include/service/app/AdbDiscoveryTriggerRegistration.h'
+      - 'src/service/app/AdbDiscoveryTriggerRegistration.cpp'
       - 'tests/service/ProductionRemoteBackendTests.cpp'
       - 'tests/service/ProductionRemoteBackendLiveSmoke.cpp'
       - 'tests/service/ServiceRemoteHandlerTests.cpp'
@@ -104,6 +107,7 @@ on:
       - 'docs/script-runtime/SERVICE_REMOTE_BACKEND.md'
       - 'docs/script-runtime/SERVICE_WEBSOCKET_OWNER.md'
       - 'docs/script-runtime/SERVICE_PROTOCOL_V1.md'
+      - 'docs/script-runtime/SERVICE_ADB_DISCOVERY_TRIGGER.md'
   pull_request:
     branches:
       - main
@@ -130,6 +134,7 @@ on:
       - 'cmake/ServiceRemoteHandler.cmake'
       - 'cmake/ServiceAdbTransport.cmake'
       - 'cmake/ServiceAdbSync.cmake'
+      - 'cmake/ServiceAdbDiscoveryTrigger.cmake'
       - 'cmake/ServiceProtocol.cmake'
       - 'cmake/ServiceTriggerCatalog.cmake'
       - 'cmake/ServiceTriggerDispatch.cmake'
@@ -179,6 +184,8 @@ on:
       - 'src/service/adb/ServiceAdbTransport.cpp'
       - 'include/service/adb/ServiceAdbSync.h'
       - 'src/service/adb/ServiceAdbSync.cpp'
+      - 'include/service/app/AdbDiscoveryTriggerRegistration.h'
+      - 'src/service/app/AdbDiscoveryTriggerRegistration.cpp'
       - 'tests/service/ProductionRemoteBackendTests.cpp'
       - 'tests/service/ProductionRemoteBackendLiveSmoke.cpp'
       - 'tests/service/ServiceRemoteHandlerTests.cpp'
@@ -210,6 +217,7 @@ on:
       - 'docs/script-runtime/SERVICE_REMOTE_BACKEND.md'
       - 'docs/script-runtime/SERVICE_WEBSOCKET_OWNER.md'
       - 'docs/script-runtime/SERVICE_PROTOCOL_V1.md'
+      - 'docs/script-runtime/SERVICE_ADB_DISCOVERY_TRIGGER.md'
 
 permissions:
   contents: read
@@ -454,6 +462,7 @@ jobs:
           -DBUILD_SERVICE_CONTROL_SESSION_TESTS=OFF
           -DBUILD_SERVICE_BUSINESS_SESSION=ON
           -DBUILD_SERVICE_BUSINESS_SESSION_TESTS=OFF
+          -DBUILD_SERVICE_ADB_DISCOVERY_TRIGGER=ON
           -DBUILD_APP_BAAS=OFF
           -DBUILD_APP_ISA=OFF
           -DBUILD_BAAS_OCR=OFF
@@ -470,3 +479,4 @@ jobs:
           --target BAAS_service_auth_crypto BAAS_service_auth_owner
           BAAS_service_websocket BAAS_service_control_session
           BAAS_service_business_session
+          BAAS_service_adb_discovery_trigger

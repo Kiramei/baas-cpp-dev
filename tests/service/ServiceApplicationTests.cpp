@@ -48,6 +48,53 @@ void check(const bool condition, const std::string_view message)
     }
 }
 
+void set_environment(const char* name, const char* value)
+{
+#if defined(_WIN32)
+    if (_putenv_s(name, value == nullptr ? "" : value) != 0) {
+        throw std::runtime_error("environment update failed");
+    }
+#else
+    const int result = value == nullptr ? unsetenv(name) : setenv(name, value, 1);
+    if (result != 0) throw std::runtime_error("environment update failed");
+#endif
+}
+
+[[nodiscard]] std::optional<std::string> read_environment(const char* name)
+{
+#if defined(_WIN32)
+    char* value{};
+    std::size_t length{};
+    if (_dupenv_s(&value, &length, name) != 0 || value == nullptr) {
+        std::free(value);
+        return std::nullopt;
+    }
+    std::string copied(value, length == 0 ? 0 : length - 1);
+    std::free(value);
+    return copied;
+#else
+    const char* value = std::getenv(name);
+    return value == nullptr ? std::nullopt
+                            : std::optional<std::string>{value};
+#endif
+}
+
+class EnvironmentGuard final {
+public:
+    explicit EnvironmentGuard(const char* name) : name_(name), value_(read_environment(name)) {}
+    ~EnvironmentGuard()
+    {
+        try {
+            set_environment(name_.c_str(), value_ ? value_->c_str() : nullptr);
+        } catch (...) {
+        }
+    }
+
+private:
+    std::string name_;
+    std::optional<std::string> value_;
+};
+
 class TemporaryRoot final {
 public:
     explicit TemporaryRoot(const std::string_view suffix)
@@ -336,6 +383,35 @@ void test_real_loopback_lifecycle_trigger_and_persistence()
                   "status trigger must expose the production provider snapshot");
             check(static_cast<bool>(connection.complete_send(*lease)),
                   "status terminal must complete through executor ownership");
+        }
+    }
+
+    {
+        EnvironmentGuard android("BAAS_ANDROID");
+        EnvironmentGuard serial("BAAS_ANDROID_ADB_SERIAL");
+        set_environment("BAAS_ANDROID", "true");
+        set_environment("BAAS_ANDROID_ADB_SERIAL", "");
+        auto detect = ingress_item("detect_adb", 3);
+        check(detect.has_value(), "detect_adb production ingress fixture must parse");
+        if (detect) {
+            const auto submitted = connection.submit(std::move(*detect));
+            check(static_cast<bool>(submitted),
+                  "application dispatcher must install the real detect_adb handler");
+            std::optional<protocol::SendLease> lease;
+            check(wait_until([&] {
+                      auto begun = session->begin_send();
+                      if (!begun) return false;
+                      lease = std::move(*begun.lease);
+                      return true;
+                  }),
+                  "detect_adb must complete through the production executor");
+            if (lease) {
+                check(lease->batch().json()
+                          == R"({"type":"command_response","command":"detect_adb","status":"ok","data":{"addresses":["127.0.0.1:5555","localhost:5555"]},"timestamp":3})",
+                      "production detect_adb must preserve the Python Android envelope");
+                check(static_cast<bool>(connection.complete_send(*lease)),
+                      "detect_adb terminal must complete through executor ownership");
+            }
         }
     }
     static_cast<void>(connection.close());
