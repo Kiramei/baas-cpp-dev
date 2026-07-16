@@ -343,6 +343,7 @@ jobs:
           -s:b build_type=Release
           ${{ matrix.conan_settings }}
           --build=missing
+          --no-remote
 
       - name: Build and verify pinned cpp-httplib recipe
         run: >-
@@ -351,7 +352,6 @@ jobs:
           -s:b build_type=Release
           ${{ matrix.conan_settings }}
           --build=missing
-          --no-remote
 
       - name: Build and verify pinned nlohmann-json recipe
         run: >-
@@ -490,6 +490,7 @@ jobs:
           -pr:b=default
           -c:h "tools.android:ndk_path=${ANDROID_NDK_HOME}"
           --build=missing
+          --no-remote
 
       - name: Cross-build and verify pinned cpp-httplib recipe
         shell: bash
@@ -499,7 +500,6 @@ jobs:
           -pr:b=default
           -c:h "tools.android:ndk_path=${ANDROID_NDK_HOME}"
           --build=missing
-          --no-remote
 
       - name: Cross-build and verify pinned nlohmann-json recipe
         shell: bash
