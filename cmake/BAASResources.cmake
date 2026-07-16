@@ -193,6 +193,13 @@ function(baas_install_required_runtime_resources)
                     "${BAAS_FETCHED_RESOURCE_ROOT}/bin/scrcpy"
                     DESTINATION "${_runtime_resource_dir}/bin"
             )
+        elseif(_resource STREQUAL "ws_scrcpy_server")
+            baas_fetch_resources(ws_scrcpy_server)
+            file(
+                    COPY
+                    "${BAAS_FETCHED_RESOURCE_ROOT}/bin/ws-scrcpy"
+                    DESTINATION "${_runtime_resource_dir}/bin"
+            )
         elseif(_resource STREQUAL "ocr_models")
             baas_fetch_resources(ocr_models)
             file(

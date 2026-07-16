@@ -51,7 +51,7 @@
 +        0, CPPHTTPLIB_WEBSOCKET_INTERRUPT_POLL_INTERVAL_MICROSECONDS);
      start_heartbeat();
    }
- 
+
 @@ -3903,6 +3918,8 @@ private:
        : strm_(*owned_strm), owned_strm_(std::move(owned_strm)), req_(req),
          is_server_(is_server), ping_interval_sec_(ping_interval_sec),
@@ -61,6 +61,15 @@
      start_heartbeat();
    }
  
+@@ -3941,5 +3958,8 @@ public:
+   void close(CloseStatus status = CloseStatus::Normal,
+              const std::string &reason = "");
++  bool request_close(CloseStatus status = CloseStatus::Normal,
++                     std::string_view reason = {}) noexcept;
++  void interrupt() noexcept;
+   bool is_open() const;
+   const std::string &subprotocol() const;
+   void set_read_timeout(time_t sec, time_t usec = 0);
 @@ -4009,7 +4026,8 @@ namespace impl {
  bool is_valid_utf8(const std::string &s);
  
@@ -226,3 +235,16 @@
 +
  inline WebSocket::~WebSocket() {
    {
+@@ -20657,2 +20721,12 @@ inline void WebSocketClient::close(CloseStatus status,
+   if (ws_) { ws_->close(status, reason); }
+ }
++
++inline bool WebSocketClient::request_close(CloseStatus status,
++                                           std::string_view reason) noexcept {
++  return !ws_ || ws_->request_close(status, reason);
++}
++
++inline void WebSocketClient::interrupt() noexcept {
++  if (ws_) { ws_->interrupt(); }
++}
++

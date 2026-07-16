@@ -18,7 +18,8 @@ This foundation implements only smart-socket operations needed to compose
 that chain safely:
 
 - `host:devices-l` and exact-serial `get-state` diagnostics;
-- `host:list-forward` and exact-serial forward creation;
+- `host:list-forward`, exact-serial forward creation, atomic `tcp:0` port
+  allocation, and exact-serial owned-forward removal;
 - exact `host:transport:<serial>` selection followed by bounded legacy
   `shell:<command>`;
 - exact transport selection followed by `tcp:<port>`, returned as a move-only
@@ -31,6 +32,12 @@ strings: a future orchestrator must supply policy-approved shell commands.
 Shell-v2 parsing is also outside this minimal compatibility slice; the audited
 Python chain uses legacy shell output. No method in this library deploys a jar,
 starts a process, kills a process, or creates a forward implicitly.
+
+`forward_tcp_zero` uses ADB's resolved-port response instead of probing and
+releasing an ephemeral host port, so a local process cannot win a bind race
+between selection and forward installation. `remove_tcp_forward` is only a
+primitive: the higher-level lease owner must call it exclusively for forwards
+that lease created, never for a matching forward discovered in `list_forwards`.
 
 ## Wire and ownership contract
 

@@ -173,6 +173,17 @@ public:
         std::string_view local,
         std::string_view remote,
         std::stop_token stop = {});
+    // Atomically asks the ADB server to bind an unused loopback TCP port.
+    // The resolved port is returned by the ADB protocol; callers never probe
+    // and release a host port before forwarding it.
+    [[nodiscard]] AdbTransportResult<std::uint16_t> forward_tcp_zero(
+        std::string_view exact_serial,
+        std::uint16_t device_port,
+        std::stop_token stop = {});
+    [[nodiscard]] AdbTransportResult<bool> remove_tcp_forward(
+        std::string_view exact_serial,
+        std::uint16_t local_port,
+        std::stop_token stop = {});
     [[nodiscard]] AdbTransportResult<std::string> shell_legacy(
         std::string_view exact_serial,
         std::string_view command,

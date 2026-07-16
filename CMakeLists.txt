@@ -132,6 +132,8 @@ option(BUILD_SERVICE_PRODUCTION_HTTP_HOST "Build the production HTTP host compos
 option(BUILD_SERVICE_PRODUCTION_HTTP_HOST_TESTS "Build production HTTP host composition tests" OFF)
 option(BUILD_SERVICE_REMOTE_HANDLER "Build the transport-independent remote handler" OFF)
 option(BUILD_SERVICE_REMOTE_HANDLER_TESTS "Build deterministic remote-handler tests" OFF)
+option(BUILD_SERVICE_REMOTE_BACKEND "Build the production ws-scrcpy remote backend" OFF)
+option(BUILD_SERVICE_REMOTE_BACKEND_TESTS "Build deterministic ws-scrcpy backend tests" OFF)
 option(BUILD_SERVICE_TRIGGER_HANDLER "Build the production trigger business handler" OFF)
 option(BUILD_SERVICE_TRIGGER_HANDLER_TESTS "Build deterministic trigger-handler tests" OFF)
 option(BUILD_SERVICE_STATUS_TRIGGER "Build the production status trigger registration" OFF)
@@ -302,6 +304,17 @@ if(BUILD_SERVICE_BUSINESS_PIPE_CHANNEL_TESTS)
     set(BUILD_SERVICE_PROVIDER_BACKEND ON CACHE BOOL "Build the production provider state backend" FORCE)
     set(BUILD_SERVICE_SYNC_HANDLER ON CACHE BOOL "Build the transport-independent sync handler" FORCE)
     set(BUILD_SERVICE_REMOTE_HANDLER ON CACHE BOOL "Build the transport-independent remote handler" FORCE)
+endif()
+
+if(BUILD_SERVICE_REMOTE_BACKEND_TESTS AND NOT BUILD_SERVICE_REMOTE_BACKEND)
+    set(BUILD_SERVICE_REMOTE_BACKEND ON CACHE BOOL "Build the production ws-scrcpy remote backend" FORCE)
+endif()
+
+if(BUILD_SERVICE_REMOTE_BACKEND)
+    set(BUILD_SERVICE_REMOTE_HANDLER ON CACHE BOOL "Build the transport-independent remote handler" FORCE)
+    set(BUILD_SERVICE_BUSINESS_SESSION ON CACHE BOOL "Build authenticated business WebSocket drivers" FORCE)
+    set(BUILD_SERVICE_ADB_SYNC ON CACHE BOOL "Build the bounded production ADB SYNC client" FORCE)
+    set(BUILD_SERVICE_ADB_TRANSPORT ON CACHE BOOL "Build the standalone ADB smart-socket transport" FORCE)
 endif()
 
 if(BUILD_SERVICE_TRIGGER_HANDLER_TESTS AND NOT BUILD_SERVICE_TRIGGER_HANDLER)
@@ -510,7 +523,7 @@ if(BUILD_BAAS_AW_CHECKER)
     baas_request_dependencies(opencv nlohmann_json spdlog simdutf)
 endif()
 
-if(BUILD_SERVICE_HTTP OR BUILD_SERVICE_WEBSOCKET)
+if(BUILD_SERVICE_HTTP OR BUILD_SERVICE_WEBSOCKET OR BUILD_SERVICE_REMOTE_BACKEND)
     baas_request_dependencies(cpp_httplib)
 endif()
 
@@ -689,6 +702,10 @@ endif()
 
 if(BUILD_SERVICE_BUSINESS_PIPE_CHANNEL)
     include("${CMAKE_CURRENT_LIST_DIR}/cmake/ServiceBusinessPipeChannel.cmake")
+endif()
+
+if(BUILD_SERVICE_REMOTE_BACKEND)
+    include("${CMAKE_CURRENT_LIST_DIR}/cmake/ServiceRemoteBackend.cmake")
 endif()
 
 if(BUILD_SERVICE_TRIGGER_HANDLER)
