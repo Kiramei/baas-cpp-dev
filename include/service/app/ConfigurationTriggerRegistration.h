@@ -38,12 +38,13 @@ struct ConfigurationTriggerRegistrationResult {
     [[nodiscard]] explicit operator bool() const noexcept
     {
         return error == ConfigurationTriggerRegistrationError::none
-            && registrations.size() == 3;
+            && registrations.size() == 5;
     }
 };
 
 // Registers Python's add_config* and remove_config* prefix families plus the
-// exact copy_config command. No export/import/TOML placeholder is installed.
+// exact copy_config, export_config, and import_config commands. TOML updater
+// commands remain outside this configuration-profile slice.
 [[nodiscard]] ConfigurationTriggerRegistrationResult
 make_configuration_trigger_registrations(
     std::shared_ptr<adapters::FileResourceStore> store,

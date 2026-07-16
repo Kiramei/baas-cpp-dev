@@ -16,8 +16,12 @@ class ServiceFileResourceStoreDocsTests(unittest.TestCase):
         spec = (ROOT / "docs/script-runtime/SERVICE_FILE_RESOURCE_STORE.md").read_text()
 
         self.assertIn("committed_durability_uncertain", header)
-        self.assertIn("FlushFileBuffers", source)
+        self.assertIn("NtFlushBuffersFileEx", source)
+        self.assertIn("flush_windows_metadata", source)
         self.assertIn("NtSetInformationFile", source)
+        self.assertIn("RootImportTransactionLock", source)
+        self.assertIn("parse_import_journal_filename", source)
+        self.assertIn("CommitPhase::claimed", source)
         self.assertIn("openat", source)
         self.assertIn("O_NOFOLLOW", source)
         self.assertIn("::fsync(file)", source)

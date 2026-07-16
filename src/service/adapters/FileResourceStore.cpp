@@ -1,4 +1,5 @@
 #include "service/adapters/FileResourceStore.h"
+#include "ConfigArchiveCodec.h"
 #include "ConfigurationDefaults.h"
 
 #include <nlohmann/json.hpp>
@@ -34,6 +35,7 @@
 #else
 #include <cerrno>
 #include <fcntl.h>
+#include <sys/file.h>
 #include <sys/stat.h>
 #if defined(__linux__)
 #include <sys/syscall.h>
@@ -1170,6 +1172,23 @@ std::string filename_utf8(const std::filesystem::path& path)
     return {reinterpret_cast<const char*>(encoded.data()), encoded.size()};
 }
 
+std::string generic_path_utf8(const std::filesystem::path& path)
+{
+    const auto encoded = path.generic_u8string();
+    return {reinterpret_cast<const char*>(encoded.data()), encoded.size()};
+}
+
+std::filesystem::path path_from_utf8(const std::string_view value)
+{
+    std::u8string encoded;
+    encoded.reserve(value.size());
+    for (const auto byte : value) {
+        encoded.push_back(
+            static_cast<char8_t>(static_cast<unsigned char>(byte)));
+    }
+    return std::filesystem::path{encoded};
+}
+
 #if defined(_WIN32)
 class WindowsHandle {
 public:
@@ -1192,6 +1211,11 @@ public:
         return *this;
     }
     [[nodiscard]] HANDLE get() const noexcept { return value_; }
+    [[nodiscard]] bool close() noexcept
+    {
+        const auto value = std::exchange(value_, INVALID_HANDLE_VALUE);
+        return value == INVALID_HANDLE_VALUE || CloseHandle(value) != FALSE;
+    }
     [[nodiscard]] explicit operator bool() const noexcept
     {
         return value_ != INVALID_HANDLE_VALUE;
@@ -1210,6 +1234,9 @@ using NtCreateFileFunction = NTSTATUS(NTAPI*)(
     ULONG, ULONG, ULONG, ULONG, PVOID, ULONG);
 using NtSetInformationFileFunction = NTSTATUS(NTAPI*)(
     HANDLE, PIO_STATUS_BLOCK, PVOID, ULONG, FILE_INFORMATION_CLASS);
+using NtFlushBuffersFileExFunction = NTSTATUS(NTAPI*)(
+    HANDLE, ULONG, PVOID, ULONG, PIO_STATUS_BLOCK);
+using NtFlushBuffersFileFunction = NTSTATUS(NTAPI*)(HANDLE, PIO_STATUS_BLOCK);
 
 NtCreateFileFunction nt_create_file() noexcept
 {
@@ -1223,6 +1250,35 @@ NtSetInformationFileFunction nt_set_information_file() noexcept
     static const auto function = reinterpret_cast<NtSetInformationFileFunction>(
         GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtSetInformationFile"));
     return function;
+}
+
+NtFlushBuffersFileExFunction nt_flush_buffers_file_ex() noexcept
+{
+    static const auto function = reinterpret_cast<NtFlushBuffersFileExFunction>(
+        GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtFlushBuffersFileEx"));
+    return function;
+}
+
+NtFlushBuffersFileFunction nt_flush_buffers_file() noexcept
+{
+    static const auto function = reinterpret_cast<NtFlushBuffersFileFunction>(
+        GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtFlushBuffersFile"));
+    return function;
+}
+
+[[nodiscard]] bool flush_windows_metadata(const HANDLE handle) noexcept
+{
+    IO_STATUS_BLOCK status{};
+    if (const auto flush_ex = nt_flush_buffers_file_ex(); flush_ex) {
+        const auto result = flush_ex(handle, 0, nullptr, 0, &status);
+        if (result >= 0 && status.Status >= 0) return true;
+    }
+    status = {};
+    if (const auto flush = nt_flush_buffers_file(); flush) {
+        const auto result = flush(handle, &status);
+        return result >= 0 && status.Status >= 0;
+    }
+    return false;
 }
 
 WindowsHandle open_relative_windows(
@@ -1260,6 +1316,72 @@ WindowsHandle open_relative_windows(
                 result, FileDispositionInfo, &delete_on_close,
                 sizeof(delete_on_close)));
         }
+        CloseHandle(result);
+        return {};
+    }
+    return WindowsHandle(result);
+}
+
+WindowsHandle open_relative_windows_lock(
+    const HANDLE parent, const std::wstring_view name) noexcept
+{
+    if (name.empty() || name.size() > USHRT_MAX / sizeof(wchar_t)) return {};
+    const auto create_file = nt_create_file();
+    if (!create_file) return {};
+    UNICODE_STRING unicode{};
+    unicode.Buffer = const_cast<PWSTR>(name.data());
+    unicode.Length = static_cast<USHORT>(name.size() * sizeof(wchar_t));
+    unicode.MaximumLength = unicode.Length;
+    OBJECT_ATTRIBUTES attributes{};
+    InitializeObjectAttributes(&attributes, &unicode, 0, parent, nullptr);
+    IO_STATUS_BLOCK status{};
+    HANDLE result = INVALID_HANDLE_VALUE;
+    const auto nt_status = create_file(
+        &result, GENERIC_READ | GENERIC_WRITE | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+        &attributes, &status, nullptr, FILE_ATTRIBUTE_HIDDEN,
+        FILE_SHARE_READ | FILE_SHARE_WRITE, FILE_OPEN_IF,
+        FILE_SYNCHRONOUS_IO_NONALERT | FILE_OPEN_REPARSE_POINT
+            | FILE_NON_DIRECTORY_FILE,
+        nullptr, 0);
+    if (nt_status < 0) return {};
+    FILE_ATTRIBUTE_TAG_INFO tag{};
+    if (!GetFileInformationByHandleEx(
+            result, FileAttributeTagInfo, &tag, sizeof(tag))
+        || (tag.FileAttributes & (FILE_ATTRIBUTE_REPARSE_POINT
+                                  | FILE_ATTRIBUTE_DIRECTORY)) != 0) {
+        CloseHandle(result);
+        return {};
+    }
+    return WindowsHandle(result);
+}
+
+WindowsHandle open_relative_windows_exclusive_file(
+    const HANDLE parent, const std::wstring_view name,
+    const ACCESS_MASK access) noexcept
+{
+    if (name.empty() || name.size() > USHRT_MAX / sizeof(wchar_t)) return {};
+    const auto create_file = nt_create_file();
+    if (!create_file) return {};
+    UNICODE_STRING unicode{};
+    unicode.Buffer = const_cast<PWSTR>(name.data());
+    unicode.Length = static_cast<USHORT>(name.size() * sizeof(wchar_t));
+    unicode.MaximumLength = unicode.Length;
+    OBJECT_ATTRIBUTES attributes{};
+    InitializeObjectAttributes(&attributes, &unicode, 0, parent, nullptr);
+    IO_STATUS_BLOCK status{};
+    HANDLE result = INVALID_HANDLE_VALUE;
+    const auto nt_status = create_file(
+        &result, access | SYNCHRONIZE, &attributes, &status, nullptr,
+        FILE_ATTRIBUTE_NORMAL, 0, FILE_OPEN,
+        FILE_SYNCHRONOUS_IO_NONALERT | FILE_OPEN_REPARSE_POINT
+            | FILE_NON_DIRECTORY_FILE,
+        nullptr, 0);
+    if (nt_status < 0) return {};
+    FILE_ATTRIBUTE_TAG_INFO tag{};
+    if (!GetFileInformationByHandleEx(
+            result, FileAttributeTagInfo, &tag, sizeof(tag))
+        || (tag.FileAttributes & (FILE_ATTRIBUTE_REPARSE_POINT
+                                  | FILE_ATTRIBUTE_DIRECTORY)) != 0) {
         CloseHandle(result);
         return {};
     }
@@ -1585,6 +1707,110 @@ bool posix_regular_resource_exists(
 }
 #endif
 
+std::shared_ptr<std::mutex> root_import_mutex(
+    const std::filesystem::path& root)
+{
+    static std::mutex registry_mutex;
+    static std::unordered_map<std::string, std::weak_ptr<std::mutex>> registry;
+    auto key = generic_path_utf8(root.lexically_normal());
+#if defined(_WIN32)
+    std::transform(key.begin(), key.end(), key.begin(), [](const unsigned char value) {
+        return static_cast<char>(std::tolower(value));
+    });
+#endif
+    std::lock_guard lock(registry_mutex);
+    auto& slot = registry[key];
+    auto result = slot.lock();
+    if (!result) {
+        result = std::make_shared<std::mutex>();
+        slot = result;
+    }
+    return result;
+}
+
+class RootImportTransactionLock final {
+public:
+#if defined(_WIN32)
+    RootImportTransactionLock(
+        const std::filesystem::path& root,
+        const std::shared_ptr<WindowsRootAnchor>& anchor)
+        : local_mutex_(root_import_mutex(root)),
+          local_lock_(*local_mutex_, std::try_to_lock)
+    {
+        if (!local_lock_.owns_lock() || !anchor) return;
+        auto file = open_relative_windows_lock(
+            anchor->handle.get(), L".baas-config-import.lock");
+        if (!file) return;
+        if (!LockFileEx(
+                file.get(),
+                LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY,
+                0, 1, 0, &overlapped_)) {
+            return;
+        }
+        file_ = std::move(file);
+        locked_ = true;
+    }
+#else
+    RootImportTransactionLock(
+        const std::filesystem::path& root,
+        const std::shared_ptr<PosixRootAnchor>& anchor)
+        : local_mutex_(root_import_mutex(root)),
+          local_lock_(*local_mutex_, std::try_to_lock)
+    {
+        if (!local_lock_.owns_lock() || !anchor) return;
+        PosixFd file(::openat(
+            anchor->fd.get(), ".baas-config-import.lock",
+            O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW, 0600));
+        if (!file) return;
+        struct stat status {};
+        if (::fstat(file.get(), &status) != 0 || !S_ISREG(status.st_mode)
+            || (status.st_mode & (S_IRWXG | S_IRWXO)) != 0
+            || ::flock(file.get(), LOCK_EX | LOCK_NB) != 0) {
+            return;
+        }
+        file_ = std::move(file);
+        locked_ = true;
+    }
+#endif
+
+    RootImportTransactionLock(const RootImportTransactionLock&) = delete;
+    RootImportTransactionLock& operator=(const RootImportTransactionLock&) = delete;
+
+    ~RootImportTransactionLock()
+    {
+        if (!locked_) return;
+#if defined(_WIN32)
+        static_cast<void>(UnlockFileEx(file_.get(), 0, 1, 0, &overlapped_));
+#else
+        static_cast<void>(::flock(file_.get(), LOCK_UN));
+#endif
+    }
+
+    [[nodiscard]] explicit operator bool() const noexcept { return locked_; }
+
+private:
+    std::shared_ptr<std::mutex> local_mutex_;
+    std::unique_lock<std::mutex> local_lock_;
+#if defined(_WIN32)
+    OVERLAPPED overlapped_{};
+    WindowsHandle file_;
+#else
+    PosixFd file_;
+#endif
+    bool locked_{};
+};
+
+enum class CommitPhase : std::uint8_t { open, cancelled, claimed };
+
+[[nodiscard]] bool acquire_commit_phase(
+    std::atomic<CommitPhase>& phase) noexcept
+{
+    auto expected = CommitPhase::open;
+    return phase.compare_exchange_strong(
+        expected, CommitPhase::claimed,
+        std::memory_order_acq_rel, std::memory_order_acquire);
+}
+
 AtomicWriteResult checked_post_commit_durability(
     const std::filesystem::path& parent,
     const FileResourceStoreDependencies::PostCommitDurabilityCheck& check) noexcept
@@ -1648,7 +1874,7 @@ AtomicWriteResult durable_atomic_write(const std::filesystem::path& target,
             }
             offset += written;
         }
-        if (ok && !FlushFileBuffers(file.get())) ok = false;
+        if (ok && !flush_windows_metadata(file.get())) ok = false;
         if (ok) {
             IO_STATUS_BLOCK rename_status{};
             const auto set_information = nt_set_information_file();
@@ -1663,8 +1889,13 @@ AtomicWriteResult durable_atomic_write(const std::filesystem::path& target,
             static_cast<void>(SetFileInformationByHandle(
                 file.get(), FileDispositionInfo, &disposition,
                 sizeof(disposition)));
+            static_cast<void>(file.close());
+            static_cast<void>(flush_windows_metadata(directory.get()));
+            return AtomicWriteResult::not_committed;
         }
-        if (!ok) return AtomicWriteResult::not_committed;
+        if (!file.close() || !flush_windows_metadata(directory.get())) {
+            return AtomicWriteResult::committed_durability_uncertain;
+        }
         return checked_post_commit_durability(parent, check);
     }
     return AtomicWriteResult::not_committed;
@@ -1761,13 +1992,30 @@ bool durable_create_new(const std::filesystem::path& target,
         }
         offset += written;
     }
-    if (ok && !FlushFileBuffers(file.get())) ok = false;
+    if (ok && !flush_windows_metadata(file.get())) ok = false;
     if (!ok) {
         FILE_DISPOSITION_INFO disposition{TRUE};
         static_cast<void>(SetFileInformationByHandle(
             file.get(), FileDispositionInfo, &disposition, sizeof(disposition)));
+        static_cast<void>(file.close());
+        static_cast<void>(flush_windows_metadata(directory.get()));
+        return false;
     }
-    return ok;
+    if (!file.close()) return false;
+    if (flush_windows_metadata(directory.get())) return true;
+
+    auto cleanup = open_relative_windows(
+        directory.get(), target.filename().native(),
+        DELETE | FILE_READ_ATTRIBUTES, FILE_OPEN, false);
+    if (cleanup && windows_handle_has_exact_path(cleanup.get(), target)) {
+        FILE_DISPOSITION_INFO disposition{TRUE};
+        static_cast<void>(SetFileInformationByHandle(
+            cleanup.get(), FileDispositionInfo, &disposition,
+            sizeof(disposition)));
+        static_cast<void>(cleanup.close());
+        static_cast<void>(flush_windows_metadata(directory.get()));
+    }
+    return false;
 }
 #else
 bool durable_create_new(const std::filesystem::path& target,
@@ -1828,6 +2076,37 @@ struct ConfigTreeStats {
     std::size_t entries{};
     std::uintmax_t bytes{};
 };
+
+[[nodiscard]] ConfigCommandError archive_command_error(
+    const config_archive::Error error) noexcept
+{
+    using enum config_archive::Error;
+    switch (error) {
+        case none: return ConfigCommandError::none;
+        case cancelled: return ConfigCommandError::cancelled;
+        case capacity: return ConfigCommandError::capacity;
+        case invalid_archive:
+        case unsafe_path:
+        case unsupported_entry:
+        case duplicate_path: return ConfigCommandError::invalid_data;
+        case internal_error: return ConfigCommandError::internal_error;
+    }
+    return ConfigCommandError::internal_error;
+}
+
+[[nodiscard]] bool ascii_case_equal(
+    const std::string_view left, const std::string_view right) noexcept
+{
+    if (left.size() != right.size()) return false;
+    for (std::size_t index{}; index < left.size(); ++index) {
+        const auto lhs = static_cast<unsigned char>(left[index]);
+        const auto rhs = static_cast<unsigned char>(right[index]);
+        const auto folded_left = lhs >= 'A' && lhs <= 'Z' ? lhs + 0x20U : lhs;
+        const auto folded_right = rhs >= 'A' && rhs <= 'Z' ? rhs + 0x20U : rhs;
+        if (folded_left != folded_right) return false;
+    }
+    return true;
+}
 
 [[nodiscard]] std::string trim_config_name(std::string value)
 {
@@ -2190,6 +2469,7 @@ struct ConfigIdentifiersResult {
         }
         const auto relative = iterator->path().lexically_relative(source);
         if (relative.empty()) return ConfigCommandError::invalid_data;
+        if (generic_path_utf8(relative) == ".baas-import-commit") continue;
         const auto destination = target / relative;
         const auto kind = path_kind(iterator->path());
         if (kind == PathKind::directory) {
@@ -2261,7 +2541,10 @@ enum class DirectoryRenameResult { not_committed, committed, committed_uncertain
                    static_cast<FILE_INFORMATION_CLASS>(10)) < 0) {
             return DirectoryRenameResult::not_committed;
         }
-        return DirectoryRenameResult::committed;
+        const bool closed = directory.close();
+        return closed && flush_windows_metadata(parent.get())
+            ? DirectoryRenameResult::committed
+            : DirectoryRenameResult::committed_uncertain;
     } catch (...) {
         return DirectoryRenameResult::not_committed;
     }
@@ -2306,6 +2589,50 @@ enum class DirectoryRenameResult { not_committed, committed, committed_uncertain
 }
 #endif
 
+[[nodiscard]] bool durable_remove_regular_file(
+    const std::filesystem::path& path,
+#if defined(_WIN32)
+    const std::shared_ptr<WindowsRootAnchor>& anchor) noexcept
+#else
+    const std::shared_ptr<PosixRootAnchor>& anchor) noexcept
+#endif
+{
+    try {
+#if defined(_WIN32)
+        if (!anchor) return false;
+        auto parent = open_windows_resource_parent(*anchor, path, true);
+        if (!parent) return false;
+        auto file = open_relative_windows_exclusive_file(
+            parent.get(), path.filename().native(),
+            DELETE | FILE_READ_ATTRIBUTES);
+        if (!file || !windows_handle_has_exact_path(file.get(), path)) {
+            return false;
+        }
+        FILE_DISPOSITION_INFO disposition{TRUE};
+        if (!SetFileInformationByHandle(
+                file.get(), FileDispositionInfo, &disposition,
+                sizeof(disposition))) {
+            return false;
+        }
+        if (!file.close() || windows_regular_resource_exists(*anchor, path)) {
+            return false;
+        }
+        return flush_windows_metadata(parent.get());
+#else
+        if (!anchor) return false;
+        auto parent = open_posix_resource_parent(*anchor, path);
+        if (!parent) return false;
+        const auto name = path.filename().native();
+        if (::unlinkat(parent.get(), name.c_str(), 0) != 0 && errno != ENOENT) {
+            return false;
+        }
+        return ::fsync(parent.get()) == 0;
+#endif
+    } catch (...) {
+        return false;
+    }
+}
+
 void remove_tree_best_effort(const std::filesystem::path& path) noexcept
 {
     std::error_code ignored;
@@ -2333,6 +2660,273 @@ private:
     const std::filesystem::path* path_;
     bool active_{true};
 };
+
+class JournalCleanup final {
+public:
+    JournalCleanup(
+        const std::filesystem::path& path,
+#if defined(_WIN32)
+        std::shared_ptr<WindowsRootAnchor> anchor) noexcept
+#else
+        std::shared_ptr<PosixRootAnchor> anchor) noexcept
+#endif
+        : path_(std::addressof(path)), anchor_(std::move(anchor))
+    {
+    }
+
+    JournalCleanup(const JournalCleanup&) = delete;
+    JournalCleanup& operator=(const JournalCleanup&) = delete;
+
+    ~JournalCleanup()
+    {
+        if (active_) static_cast<void>(durable_remove_regular_file(*path_, anchor_));
+    }
+
+    void release() noexcept { active_ = false; }
+
+private:
+    const std::filesystem::path* path_;
+#if defined(_WIN32)
+    std::shared_ptr<WindowsRootAnchor> anchor_;
+#else
+    std::shared_ptr<PosixRootAnchor> anchor_;
+#endif
+    bool active_{true};
+};
+
+struct ImportRecoveryItem {
+    std::string source;
+    std::string tombstone;
+};
+
+struct ImportRecoveryRecord {
+    std::string staging;
+    std::string target;
+    std::vector<ImportRecoveryItem> retired;
+};
+
+struct ImportTransactionName {
+    std::string transaction;
+    std::string target;
+};
+
+[[nodiscard]] bool canonical_decimal(const std::string_view value) noexcept
+{
+    return !value.empty() && (value.size() == 1 || value.front() != '0')
+        && std::all_of(value.begin(), value.end(), [](const unsigned char byte) {
+            return std::isdigit(byte) != 0;
+        });
+}
+
+[[nodiscard]] std::optional<ImportTransactionName>
+parse_import_journal_filename(const std::string_view journal_name)
+{
+    constexpr std::string_view prefix{".baas-import-journal-"};
+    constexpr std::string_view suffix{".json"};
+    if (!journal_name.starts_with(prefix) || !journal_name.ends_with(suffix)
+        || journal_name.size() <= prefix.size() + suffix.size()
+        || journal_name.size() > 1'024) {
+        return std::nullopt;
+    }
+    const auto transaction = journal_name.substr(
+        prefix.size(), journal_name.size() - prefix.size() - suffix.size());
+    const auto first = transaction.find('-');
+    const auto second = first == std::string_view::npos
+        ? std::string_view::npos : transaction.find('-', first + 1);
+    if (first == std::string_view::npos || second == std::string_view::npos
+        || transaction.find('-', second + 1) != std::string_view::npos) {
+        return std::nullopt;
+    }
+    const auto pid = transaction.substr(0, first);
+    const auto target = transaction.substr(first + 1, second - first - 1);
+    const auto sequence = transaction.substr(second + 1);
+    if (!canonical_decimal(pid) || !canonical_decimal(target)
+        || !canonical_decimal(sequence)) {
+        return std::nullopt;
+    }
+    return ImportTransactionName{
+        std::string{transaction}, std::string{target}};
+}
+
+[[nodiscard]] std::optional<ImportRecoveryRecord> import_recovery_record(
+    const std::string_view bytes, const std::string_view journal_name)
+{
+    const auto transaction = parse_import_journal_filename(journal_name);
+    if (!transaction) return std::nullopt;
+    const auto parsed = parse_json(bytes, {64U * 1'024U, 8, 16'384});
+    if (!parsed || !parsed->is_object()
+        || parsed->size() != 4
+        || parsed->value("version", 0) != 1
+        || !parsed->contains("staging") || !parsed->at("staging").is_string()
+        || !parsed->contains("target") || !parsed->at("target").is_string()
+        || !parsed->contains("retired") || !parsed->at("retired").is_array()
+        || parsed->at("retired").size() > config_copy_max_entries) {
+        return std::nullopt;
+    }
+    ImportRecoveryRecord record;
+    record.staging = parsed->at("staging").get<std::string>();
+    record.target = parsed->at("target").get<std::string>();
+    if (record.staging != ".baas-import-" + transaction->transaction
+        || record.target != transaction->target
+        || !valid_resource_id(record.target, 1'024)) {
+        return std::nullopt;
+    }
+    std::unordered_set<std::string> sources;
+    std::unordered_set<std::string> tombstones;
+    record.retired.reserve(parsed->at("retired").size());
+    for (const auto& item : parsed->at("retired")) {
+        if (!item.is_object() || item.size() != 2 || !item.contains("source")
+            || !item.at("source").is_string() || !item.contains("tombstone")
+            || !item.at("tombstone").is_string()) {
+            return std::nullopt;
+        }
+        ImportRecoveryItem recovered{
+            item.at("source").get<std::string>(),
+            item.at("tombstone").get<std::string>()};
+        const auto expected_tombstone = ".baas-import-retired-"
+            + transaction->transaction + "-"
+            + std::to_string(record.retired.size());
+        if (!valid_resource_id(recovered.source, 1'024)
+            || recovered.source == record.target
+            || recovered.tombstone != expected_tombstone
+            || !sources.insert(recovered.source).second
+            || !tombstones.insert(recovered.tombstone).second) {
+            return std::nullopt;
+        }
+        record.retired.push_back(std::move(recovered));
+    }
+    return record;
+}
+
+[[nodiscard]] bool recover_import_transactions(
+    const std::filesystem::path& config_root,
+#if defined(_WIN32)
+    const std::shared_ptr<WindowsRootAnchor>& anchor)
+#else
+    const std::shared_ptr<PosixRootAnchor>& anchor)
+#endif
+{
+    try {
+        if (path_kind(config_root) == PathKind::missing) return true;
+        if (path_kind(config_root) != PathKind::directory || !anchor) return false;
+        std::vector<std::filesystem::path> journals;
+        std::error_code iteration_error;
+        std::filesystem::directory_iterator iterator(
+            config_root,
+            std::filesystem::directory_options::skip_permission_denied,
+            iteration_error);
+        const std::filesystem::directory_iterator end;
+        for (; !iteration_error && iterator != end; iterator.increment(iteration_error)) {
+            const auto name = filename_utf8(iterator->path());
+            if (!name.starts_with(".baas-import-journal-")
+                || !name.ends_with(".json")) {
+                continue;
+            }
+            if (journals.size() >= 1'024
+                || path_kind(iterator->path()) != PathKind::regular_file) {
+                return false;
+            }
+            journals.push_back(iterator->path());
+        }
+        if (iteration_error) return false;
+        std::sort(journals.begin(), journals.end());
+        for (const auto& journal : journals) {
+#if defined(_WIN32)
+            auto read = read_windows_resource(*anchor, journal, 64U * 1'024U);
+#else
+            auto read = read_posix_resource(*anchor, journal, 64U * 1'024U);
+#endif
+            if (read.error != ResourceStoreError::none) return false;
+            const auto record = import_recovery_record(
+                read.bytes, filename_utf8(journal));
+            if (!record) return false;
+            const auto staging = config_root / path_from_utf8(record->staging);
+            const auto target = config_root / path_from_utf8(record->target);
+            const auto marker = target / ".baas-import-commit";
+            bool committed{};
+            if (path_kind(target) == PathKind::directory
+                && path_kind(marker) == PathKind::regular_file) {
+#if defined(_WIN32)
+                auto marker_read = read_windows_resource(*anchor, marker, 1'024);
+#else
+                auto marker_read = read_posix_resource(*anchor, marker, 1'024);
+#endif
+                committed = marker_read.error == ResourceStoreError::none
+                    && marker_read.bytes == filename_utf8(journal);
+            }
+            if (committed) {
+                for (const auto& item : record->retired) {
+                    const auto tombstone =
+                        config_root / path_from_utf8(item.tombstone);
+                    const auto kind = path_kind(tombstone);
+                    if (kind == PathKind::directory) {
+                        remove_tree_best_effort(tombstone);
+                    } else if (kind != PathKind::missing) {
+                        return false;
+                    }
+                    if (path_kind(tombstone) != PathKind::missing) return false;
+                }
+                if (!durable_remove_regular_file(journal, anchor)) return false;
+                if (!durable_remove_regular_file(marker, anchor)) return false;
+                continue;
+            }
+            for (auto item = record->retired.rbegin();
+                 item != record->retired.rend(); ++item) {
+                const auto source = config_root / path_from_utf8(item->source);
+                const auto tombstone =
+                    config_root / path_from_utf8(item->tombstone);
+                const auto source_kind = path_kind(source);
+                const auto tombstone_kind = path_kind(tombstone);
+                if (tombstone_kind == PathKind::directory
+                    && source_kind == PathKind::missing) {
+                    if (durable_directory_rename(tombstone, source, anchor)
+                        == DirectoryRenameResult::not_committed) {
+                        return false;
+                    }
+                } else if (tombstone_kind == PathKind::missing
+                           && source_kind == PathKind::directory) {
+                    continue;
+                } else {
+                    return false;
+                }
+            }
+            const auto staging_kind = path_kind(staging);
+            if (staging_kind == PathKind::directory) {
+                remove_tree_best_effort(staging);
+            } else if (staging_kind != PathKind::missing) {
+                return false;
+            }
+            if (path_kind(staging) != PathKind::missing
+                || !durable_remove_regular_file(journal, anchor)) {
+                return false;
+            }
+        }
+
+        std::error_code cleanup_error;
+        std::filesystem::directory_iterator cleanup(
+            config_root,
+            std::filesystem::directory_options::skip_permission_denied,
+            cleanup_error);
+        for (; !cleanup_error && cleanup != end; cleanup.increment(cleanup_error)) {
+            std::string id;
+            try { id = filename_utf8(cleanup->path()); } catch (...) { continue; }
+            if (!valid_resource_id(id, 1'024)
+                || path_kind(cleanup->path()) != PathKind::directory) {
+                continue;
+            }
+            const auto marker = cleanup->path() / ".baas-import-commit";
+            const auto marker_kind = path_kind(marker);
+            if (marker_kind == PathKind::regular_file) {
+                if (!durable_remove_regular_file(marker, anchor)) return false;
+            } else if (marker_kind != PathKind::missing) {
+                return false;
+            }
+        }
+        return !cleanup_error;
+    } catch (...) {
+        return false;
+    }
+}
 
 }  // namespace
 
@@ -2426,9 +3020,29 @@ public:
         }
 #endif
         config_root = root / "config";
+        RootImportTransactionLock recovery_lock(
+            root,
+#if defined(_WIN32)
+            windows_root
+#else
+            posix_root
+#endif
+        );
+        if (!recovery_lock) {
+            throw std::invalid_argument(
+                "config import transaction lock is already owned");
+        }
         const auto config_kind = path_kind(config_root);
         if (config_kind != PathKind::missing && config_kind != PathKind::directory) {
             throw std::invalid_argument("config root must be a safe directory");
+        }
+#if defined(_WIN32)
+        if (!recover_import_transactions(config_root, windows_root)) {
+#else
+        if (!recover_import_transactions(config_root, posix_root)) {
+#endif
+            throw std::invalid_argument(
+                "config import transaction recovery failed closed");
         }
         clock = dependencies.clock ? std::move(dependencies.clock) : system_clock_ms;
         if (dependencies.atomic_writer) {
@@ -2461,6 +3075,8 @@ public:
         }
         config_create_fault_injector =
             std::move(dependencies.config_create_fault_injector);
+        config_archive_fault_injector =
+            std::move(dependencies.config_archive_fault_injector);
         subscribers->maximum = limits.max_subscribers;
     }
 
@@ -2707,6 +3323,8 @@ public:
     FileResourceStoreDependencies::AtomicWriter atomic_writer;
     FileResourceStoreDependencies::ConfigCreateFaultInjector
         config_create_fault_injector;
+    FileResourceStoreDependencies::ConfigArchiveFaultInjector
+        config_archive_fault_injector;
     channels::ResourceStoreLimits limits;
     std::mutex state_mutex;
     std::mutex mutation_mutex;
@@ -2771,16 +3389,24 @@ channels::ResourceStoreResult<ResourceSnapshot> FileResourceStore::pull(
     const auto canonical_key = impl->canonical_key(key);
     std::lock_guard mutation_lock(impl->mutation_mutex);
     std::lock_guard lock(impl->state_mutex);
-    const auto found = impl->resources.find(canonical_key);
-    if (found != impl->resources.end()) return {found->second, ResourceStoreError::none};
     auto loaded = impl->load(canonical_key);
-    if (!loaded.value) return {std::nullopt, loaded.error};
-    if (impl->resources.size() >= impl->limits.max_resources) {
+    const auto found = impl->resources.find(canonical_key);
+    if (!loaded.value) {
+        return {std::nullopt, loaded.error};
+    }
+    if (found == impl->resources.end()
+        && impl->resources.size() >= impl->limits.max_resources) {
         return {std::nullopt, ResourceStoreError::capacity};
     }
-    ResourceSnapshot result = loaded.value->snapshot;
+    ResourceSnapshot result = found != impl->resources.end()
+            && found->second.data_json == loaded.value->snapshot.data_json
+        ? found->second
+        : loaded.value->snapshot;
     try {
-        impl->resources.emplace(canonical_key, std::move(loaded.value->snapshot));
+        if (found == impl->resources.end()) {
+            impl->resources.emplace(
+                canonical_key, std::move(loaded.value->snapshot));
+        }
     } catch (...) {
         return {std::nullopt, ResourceStoreError::internal_error};
     }
@@ -3224,7 +3850,12 @@ const std::filesystem::path& FileResourceStore::project_root() const noexcept
         FILE_DISPOSITION_INFO remove{TRUE};
         static_cast<void>(SetFileInformationByHandle(
             directory.get(), FileDispositionInfo, &remove, sizeof(remove)));
+        static_cast<void>(directory.close());
+        static_cast<void>(flush_windows_metadata(parent.get()));
         return ConfigCommandError::invalid_data;
+    }
+    if (!directory.close() || !flush_windows_metadata(parent.get())) {
+        return ConfigCommandError::internal_error;
     }
     return ConfigCommandError::none;
 }
@@ -3440,30 +4071,28 @@ ConfigCreateResult FileResourceStore::create_config(
             ResourceKey{SyncResource::static_data, std::nullopt});
     }
 
-    std::mutex commit_mutex;
-    bool cancellation_observed = stop.stop_requested();
+    std::atomic<CommitPhase> commit_phase{CommitPhase::open};
     std::stop_callback cancellation(stop, [&] {
-        std::lock_guard lock(commit_mutex);
-        cancellation_observed = true;
+        auto expected = CommitPhase::open;
+        static_cast<void>(commit_phase.compare_exchange_strong(
+            expected, CommitPhase::cancelled,
+            std::memory_order_acq_rel, std::memory_order_acquire));
     });
+    if (!acquire_commit_phase(commit_phase)) {
+        remove_tree_best_effort(staging);
+        return {{}, ConfigCommandError::cancelled};
+    }
+    if (claim && !claim(target_id)) {
+        remove_tree_best_effort(staging);
+        return {{}, ConfigCommandError::cancelled};
+    }
     DirectoryRenameResult renamed{DirectoryRenameResult::not_committed};
-    {
-        std::lock_guard commit_lock(commit_mutex);
-        if (cancellation_observed || stop.stop_requested()) {
-            remove_tree_best_effort(staging);
-            return {{}, ConfigCommandError::cancelled};
-        }
-        if (claim && !claim(target_id)) {
-            remove_tree_best_effort(staging);
-            return {{}, ConfigCommandError::cancelled};
-        }
-        if (!injected_failure("before_directory_commit")) {
+    if (!injected_failure("before_directory_commit")) {
 #if defined(_WIN32)
-            renamed = durable_directory_rename(staging, target, impl->windows_root);
+        renamed = durable_directory_rename(staging, target, impl->windows_root);
 #else
-            renamed = durable_directory_rename(staging, target, impl->posix_root);
+        renamed = durable_directory_rename(staging, target, impl->posix_root);
 #endif
-        }
     }
     if (renamed == DirectoryRenameResult::not_committed) {
         remove_tree_best_effort(staging);
@@ -3773,29 +4402,27 @@ ConfigCopyResult FileResourceStore::copy_config(
         std::lock_guard state_lock(impl->state_mutex);
         impl->resources.erase(static_key);
     }
-    std::mutex commit_mutex;
-    bool cancellation_observed = stop.stop_requested();
+    std::atomic<CommitPhase> commit_phase{CommitPhase::open};
     std::stop_callback cancellation(stop, [&] {
-        std::lock_guard lock(commit_mutex);
-        cancellation_observed = true;
+        auto expected = CommitPhase::open;
+        static_cast<void>(commit_phase.compare_exchange_strong(
+            expected, CommitPhase::cancelled,
+            std::memory_order_acq_rel, std::memory_order_acquire));
     });
-    DirectoryRenameResult renamed{DirectoryRenameResult::not_committed};
-    {
-        std::lock_guard commit_lock(commit_mutex);
-        if (cancellation_observed || stop.stop_requested()) {
-            remove_tree_best_effort(staging);
-            return {{}, {}, ConfigCommandError::cancelled};
-        }
-        if (claim && !claim(target_id, copy_name)) {
-            remove_tree_best_effort(staging);
-            return {{}, {}, ConfigCommandError::cancelled};
-        }
-#if defined(_WIN32)
-        renamed = durable_directory_rename(staging, target, impl->windows_root);
-#else
-        renamed = durable_directory_rename(staging, target, impl->posix_root);
-#endif
+    if (!acquire_commit_phase(commit_phase)) {
+        remove_tree_best_effort(staging);
+        return {{}, {}, ConfigCommandError::cancelled};
     }
+    if (claim && !claim(target_id, copy_name)) {
+        remove_tree_best_effort(staging);
+        return {{}, {}, ConfigCommandError::cancelled};
+    }
+    DirectoryRenameResult renamed{DirectoryRenameResult::not_committed};
+#if defined(_WIN32)
+    renamed = durable_directory_rename(staging, target, impl->windows_root);
+#else
+    renamed = durable_directory_rename(staging, target, impl->posix_root);
+#endif
     if (renamed == DirectoryRenameResult::not_committed) {
         remove_tree_best_effort(staging);
         return {{}, {}, path_kind(target) == PathKind::missing
@@ -3809,6 +4436,656 @@ ConfigCopyResult FileResourceStore::copy_config(
         impl->resources.erase(static_key);
     }
     return {std::move(target_id), std::move(copy_name), ConfigCommandError::none};
+} catch (...) {
+    return {{}, {}, ConfigCommandError::internal_error};
+}
+
+ConfigArchiveExportResult FileResourceStore::export_config(
+    const std::string_view config_id, const std::stop_token stop) try
+{
+    const auto impl = impl_;
+    if (stop.stop_requested()) {
+        return {{}, {}, ConfigCommandError::cancelled};
+    }
+    const std::string id{config_id};
+    if (!valid_resource_id(id, impl->limits.max_resource_id_bytes)) {
+        return {{}, {}, ConfigCommandError::invalid_id};
+    }
+
+    std::unique_lock mutation_lock(impl->mutation_mutex);
+    if (stop.stop_requested()) {
+        return {{}, {}, ConfigCommandError::cancelled};
+    }
+    const auto source = impl->config_root / id;
+    if (path_kind(source) == PathKind::missing) {
+        return {{}, {}, ConfigCommandError::not_found};
+    }
+    if (path_kind(source) != PathKind::directory) {
+        return {{}, {}, ConfigCommandError::invalid_data};
+    }
+    const ResourceKey config_key{SyncResource::config, id};
+    auto config = impl->load(config_key);
+    if (!config.value) {
+        const auto mapped = config.error == ResourceStoreError::not_found
+            ? ConfigCommandError::not_found
+            : config.error == ResourceStoreError::capacity
+                ? ConfigCommandError::capacity
+                : config.error == ResourceStoreError::invalid_data
+                    ? ConfigCommandError::invalid_data
+                    : ConfigCommandError::internal_error;
+        return {{}, {}, mapped};
+    }
+
+    std::string config_name = id;
+    if (const auto found = config.value->document.find("name");
+        found != config.value->document.end() && python_truthy(*found)) {
+        config_name = trim_config_name(python_string(*found));
+        if (config_name.empty()) config_name = id;
+    }
+    for (auto& byte : config_name) {
+        if (byte == '<' || byte == '>' || byte == ':' || byte == '"'
+            || byte == '/' || byte == '\\' || byte == '|'
+            || byte == '?' || byte == '*') {
+            byte = '_';
+        }
+    }
+    config_name = trim_config_name(std::move(config_name));
+    if (config_name.empty()) config_name = id;
+    if (impl->limits.max_json_bytes < 4U
+        || config_name.size() > impl->limits.max_json_bytes - 4U) {
+        return {{}, {}, ConfigCommandError::capacity};
+    }
+    std::string filename = config_name + ".zip";
+
+    const config_archive::Limits archive_limits{};
+    std::vector<config_archive::Entry> entries;
+    entries.reserve(std::min<std::size_t>(
+        config_copy_max_entries, static_cast<std::size_t>(128)));
+    ConfigTreeStats stats;
+    std::error_code iteration_error;
+    std::filesystem::recursive_directory_iterator iterator(
+        source, std::filesystem::directory_options::none, iteration_error);
+    const std::filesystem::recursive_directory_iterator end;
+    for (; !iteration_error && iterator != end; iterator.increment(iteration_error)) {
+        if (stop.stop_requested()) {
+            return {{}, {}, ConfigCommandError::cancelled};
+        }
+        if (iterator.depth() >= static_cast<int>(archive_limits.max_depth)
+            || ++stats.entries > archive_limits.max_entries) {
+            return {{}, {}, ConfigCommandError::capacity};
+        }
+        const auto kind = path_kind(iterator->path());
+        if (kind == PathKind::directory) continue;
+        if (kind != PathKind::regular_file) {
+            return {{}, {}, ConfigCommandError::invalid_data};
+        }
+        const auto relative = iterator->path().lexically_relative(source);
+        if (relative.empty()) {
+            return {{}, {}, ConfigCommandError::invalid_data};
+        }
+        std::string path = generic_path_utf8(relative);
+        if (path == ".baas-import-commit") continue;
+#if defined(_WIN32)
+        auto read = read_windows_resource(
+            *impl->windows_root, iterator->path(), archive_limits.max_entry_bytes);
+#else
+        auto read = read_posix_resource(
+            *impl->posix_root, iterator->path(), archive_limits.max_entry_bytes);
+#endif
+        if (read.error == ResourceStoreError::capacity) {
+            return {{}, {}, ConfigCommandError::capacity};
+        }
+        if (read.error != ResourceStoreError::none) {
+            return {{}, {}, read.error == ResourceStoreError::invalid_data
+                    ? ConfigCommandError::invalid_data
+                    : ConfigCommandError::internal_error};
+        }
+        if (stats.bytes > archive_limits.max_total_bytes - read.bytes.size()) {
+            return {{}, {}, ConfigCommandError::capacity};
+        }
+        stats.bytes += read.bytes.size();
+        config_archive::Entry entry;
+        entry.path = std::move(path);
+        entry.bytes.resize(read.bytes.size());
+        if (!read.bytes.empty()) {
+            std::memcpy(entry.bytes.data(), read.bytes.data(), read.bytes.size());
+        }
+        entries.push_back(std::move(entry));
+    }
+    if (iteration_error) {
+        return {{}, {}, ConfigCommandError::internal_error};
+    }
+    std::sort(entries.begin(), entries.end(), [](const auto& left, const auto& right) {
+        return left.path < right.path;
+    });
+    const auto encoded = config_archive::encode(entries, stop, archive_limits);
+    if (!encoded) {
+        return {{}, {}, archive_command_error(encoded.error)};
+    }
+    return {std::move(filename), std::move(encoded.bytes),
+            ConfigCommandError::none};
+} catch (const std::bad_alloc&) {
+    return {{}, {}, ConfigCommandError::capacity};
+} catch (...) {
+    return {{}, {}, ConfigCommandError::internal_error};
+}
+
+ConfigArchiveImportResult FileResourceStore::import_config(
+    const std::span<const std::byte> content, const std::stop_token stop,
+    ConfigArchiveImportCommitClaim claim) try
+{
+    const auto impl = impl_;
+    const auto injected_failure = [impl](const std::string_view step) noexcept {
+        if (!impl->config_archive_fault_injector) return false;
+        try {
+            return impl->config_archive_fault_injector(step);
+        } catch (...) {
+            return true;
+        }
+    };
+    if (stop.stop_requested()) {
+        return {{}, {}, ConfigCommandError::cancelled};
+    }
+    const config_archive::Limits archive_limits{};
+    auto decoded = config_archive::decode(content, stop, archive_limits);
+    if (!decoded) {
+        return {{}, {}, archive_command_error(decoded.error)};
+    }
+    if (stop.stop_requested()) {
+        return {{}, {}, ConfigCommandError::cancelled};
+    }
+
+    std::string prefix;
+    const auto root_config = std::find_if(
+        decoded.entries.begin(), decoded.entries.end(), [](const auto& entry) {
+            return entry.path == "config.json";
+        });
+    if (root_config == decoded.entries.end()) {
+        std::unordered_set<std::string> top_levels;
+        for (const auto& entry : decoded.entries) {
+            const auto slash = entry.path.find('/');
+            if (slash != std::string::npos) {
+                top_levels.insert(entry.path.substr(0, slash));
+            }
+        }
+        if (top_levels.size() != 1) {
+            return {{}, {}, ConfigCommandError::invalid_data};
+        }
+        prefix = *top_levels.begin() + "/";
+        const auto nested_config = std::find_if(
+            decoded.entries.begin(), decoded.entries.end(), [&](const auto& entry) {
+                return entry.path == prefix + "config.json";
+            });
+        if (nested_config == decoded.entries.end()) {
+            return {{}, {}, ConfigCommandError::invalid_data};
+        }
+    }
+
+    std::vector<const config_archive::Entry*> imported_entries;
+    imported_entries.reserve(decoded.entries.size());
+    const config_archive::Entry* config_entry{};
+    const config_archive::Entry* event_entry{};
+    for (const auto& entry : decoded.entries) {
+        if (!entry.path.starts_with(prefix)) continue;
+        const std::string_view relative{entry.path.data() + prefix.size(),
+                                        entry.path.size() - prefix.size()};
+        if (relative.empty()) continue;
+        for (const auto reserved : {std::string_view{"config.json"},
+                                    std::string_view{"event.json"},
+                                    std::string_view{"switch.json"},
+                                    std::string_view{"display.json"},
+                                    std::string_view{".baas-import-commit"}}) {
+            if (ascii_case_equal(relative, reserved) && relative != reserved) {
+                return {{}, {}, ConfigCommandError::invalid_data};
+            }
+        }
+        if (relative == ".baas-import-commit") {
+            return {{}, {}, ConfigCommandError::invalid_data};
+        }
+        imported_entries.push_back(&entry);
+        if (relative == "config.json") config_entry = &entry;
+        else if (relative == "event.json") event_entry = &entry;
+    }
+    if (!config_entry) {
+        return {{}, {}, ConfigCommandError::invalid_data};
+    }
+    const auto entry_text = [](const config_archive::Entry& entry) {
+        static constexpr char empty_byte{};
+        return std::string_view{
+            entry.bytes.empty()
+                ? &empty_byte
+                : reinterpret_cast<const char*>(entry.bytes.data()),
+            entry.bytes.size()};
+    };
+    auto user_document = parse_json(entry_text(*config_entry), impl->bounds());
+    if (!user_document || !user_document->is_object()) {
+        return {{}, {}, ConfigCommandError::invalid_data};
+    }
+    const auto found_name = user_document->find("name");
+    if (found_name == user_document->end() || !python_truthy(*found_name)) {
+        return {{}, {}, ConfigCommandError::invalid_data};
+    }
+    std::string original_name = python_string(*found_name);
+    std::string config_name = trim_config_name(original_name);
+    if (config_name.empty() || config_name.size() > impl->limits.max_json_bytes) {
+        return {{}, {}, config_name.empty() ? ConfigCommandError::invalid_data
+                                           : ConfigCommandError::capacity};
+    }
+    auto migrated_user = migrated_user_config(
+        std::move(*user_document), original_name);
+    if (!migrated_user) {
+        return {{}, {}, ConfigCommandError::invalid_data};
+    }
+    std::optional<Json> source_event;
+    if (event_entry) {
+        source_event = parse_json(entry_text(*event_entry), impl->bounds());
+    }
+    auto migrated_event = migrated_event_config(source_event, *migrated_user);
+    auto switch_document = Json::parse(config_defaults::switches);
+    std::string user_bytes = migrated_user->dump(2);
+    std::string event_bytes = migrated_event.dump(2);
+    std::string switch_bytes = switch_document.dump(2);
+    if (user_bytes.size() > impl->limits.max_json_bytes
+        || event_bytes.size() > impl->limits.max_json_bytes
+        || switch_bytes.size() > impl->limits.max_json_bytes) {
+        return {{}, {}, ConfigCommandError::capacity};
+    }
+
+    RootImportTransactionLock transaction_lock(
+        impl->root,
+#if defined(_WIN32)
+        impl->windows_root
+#else
+        impl->posix_root
+#endif
+    );
+    if (!transaction_lock) {
+        return {{}, {}, ConfigCommandError::conflict};
+    }
+    std::unique_lock mutation_lock(impl->mutation_mutex);
+    if (stop.stop_requested()) {
+        return {{}, {}, ConfigCommandError::cancelled};
+    }
+#if defined(_WIN32)
+    if (!recover_import_transactions(impl->config_root, impl->windows_root)) {
+#else
+    if (!recover_import_transactions(impl->config_root, impl->posix_root)) {
+#endif
+        return {{}, {}, ConfigCommandError::internal_error};
+    }
+    if (path_kind(impl->config_root) != PathKind::directory) {
+        return {{}, {}, ConfigCommandError::invalid_data};
+    }
+#if defined(_WIN32)
+    auto enumerated = enumerate_config_identifiers(
+        impl->config_root, impl->limits, stop, impl->windows_root);
+#else
+    auto enumerated = enumerate_config_identifiers(
+        impl->config_root, impl->limits, stop, impl->posix_root);
+#endif
+    if (stop.stop_requested()) {
+        return {{}, {}, ConfigCommandError::cancelled};
+    }
+    if (enumerated.error != ResourceStoreError::none) {
+        return {{}, {}, enumerated.error == ResourceStoreError::capacity
+                ? ConfigCommandError::capacity
+                : enumerated.error == ResourceStoreError::invalid_data
+                    ? ConfigCommandError::invalid_data
+                    : ConfigCommandError::internal_error};
+    }
+    std::vector<std::string> replaced_ids;
+    replaced_ids.reserve(enumerated.identifiers.size());
+    for (const auto& id : enumerated.identifiers) {
+        auto existing = impl->load({SyncResource::config, id});
+        if (!existing.value) continue;
+        const auto name = existing.value->document.find("name");
+        if (name == existing.value->document.end() || !python_truthy(*name)) {
+            continue;
+        }
+        if (trim_config_name(python_string(*name)) == config_name) {
+            replaced_ids.push_back(id);
+        }
+    }
+    const auto remaining_pairs =
+        enumerated.identifiers.size() - replaced_ids.size();
+#if defined(_WIN32)
+    const bool admission_fits = config_pair_admission_fits(
+        impl->config_root, remaining_pairs, impl->limits, impl->windows_root);
+#else
+    const bool admission_fits = config_pair_admission_fits(
+        impl->config_root, remaining_pairs, impl->limits, impl->posix_root);
+#endif
+    if (!admission_fits) {
+        return {{}, {}, ConfigCommandError::capacity};
+    }
+
+    double now{};
+    try {
+        now = impl->clock();
+    } catch (...) {
+        return {{}, {}, ConfigCommandError::internal_error};
+    }
+    if (!std::isfinite(now) || now < 0
+        || now > static_cast<double>(
+            std::numeric_limits<std::int64_t>::max() - 1'024)) {
+        return {{}, {}, ConfigCommandError::internal_error};
+    }
+    const auto initial = static_cast<std::int64_t>(now);
+    std::string target_id;
+    std::filesystem::path target;
+    for (std::size_t attempt{}; attempt < 1'024; ++attempt) {
+        target_id = std::to_string(initial + static_cast<std::int64_t>(attempt));
+        target = impl->config_root / target_id;
+        if (path_kind(target) == PathKind::missing) break;
+        target_id.clear();
+    }
+    if (target_id.empty()) {
+        return {{}, {}, ConfigCommandError::conflict};
+    }
+    const ResourceKey target_config_key{SyncResource::config, target_id};
+    const ResourceKey target_event_key{SyncResource::event, target_id};
+    const ResourceKey static_key{SyncResource::static_data, std::nullopt};
+
+    struct RetiredConfig {
+        std::filesystem::path source;
+        std::filesystem::path tombstone;
+        ResourceKey config_key;
+        ResourceKey event_key;
+        bool moved{};
+    };
+    static std::atomic<std::uint64_t> import_sequence{};
+    const auto sequence = import_sequence.fetch_add(1, std::memory_order_relaxed);
+    const auto transaction = std::to_string(process_id()) + "-" + target_id
+        + "-" + std::to_string(sequence);
+    const auto staging = impl->config_root /
+        (".baas-import-" + transaction);
+    const auto journal = impl->config_root /
+        (".baas-import-journal-" + transaction + ".json");
+    const auto staging_marker = staging / ".baas-import-commit";
+    const auto target_marker = target / ".baas-import-commit";
+    std::vector<RetiredConfig> retired;
+    retired.reserve(replaced_ids.size());
+    for (std::size_t index{}; index < replaced_ids.size(); ++index) {
+        auto tombstone = impl->config_root /
+            (".baas-import-retired-" + transaction + "-"
+             + std::to_string(index));
+        if (path_kind(tombstone) != PathKind::missing) {
+            return {{}, {}, ConfigCommandError::conflict};
+        }
+        retired.push_back({impl->config_root / replaced_ids[index],
+                           std::move(tombstone),
+                           {SyncResource::config, replaced_ids[index]},
+                           {SyncResource::event, replaced_ids[index]}, false});
+    }
+    if (path_kind(staging) != PathKind::missing
+        || path_kind(journal) != PathKind::missing) {
+        return {{}, {}, ConfigCommandError::conflict};
+    }
+    Json journal_document{
+        {"version", 1},
+        {"staging", filename_utf8(staging)},
+        {"target", target_id},
+        {"retired", Json::array()},
+    };
+    for (const auto& item : retired) {
+        journal_document["retired"].push_back({
+            {"source", filename_utf8(item.source)},
+            {"tombstone", filename_utf8(item.tombstone)},
+        });
+    }
+    const auto journal_bytes = journal_document.dump();
+    if (journal_bytes.size() > 64U * 1'024U) {
+        return {{}, {}, ConfigCommandError::capacity};
+    }
+#if defined(_WIN32)
+    const bool journal_created =
+        durable_create_new(journal, journal_bytes, impl->windows_root);
+#else
+    const bool journal_created =
+        durable_create_new(journal, journal_bytes, impl->posix_root);
+#endif
+    if (!journal_created) {
+        return {{}, {}, ConfigCommandError::internal_error};
+    }
+#if defined(_WIN32)
+    JournalCleanup journal_cleanup(journal, impl->windows_root);
+#else
+    JournalCleanup journal_cleanup(journal, impl->posix_root);
+#endif
+#if defined(_WIN32)
+    const auto staging_created =
+        create_private_directory_anchored(staging, impl->windows_root);
+#else
+    const auto staging_created =
+        create_private_directory_anchored(staging, impl->posix_root);
+#endif
+    if (staging_created != ConfigCommandError::none) {
+        return {{}, {}, staging_created};
+    }
+    StagingCleanup staging_cleanup(staging);
+    if (!
+#if defined(_WIN32)
+        durable_create_new(
+            staging_marker, filename_utf8(journal), impl->windows_root)
+#else
+        durable_create_new(
+            staging_marker, filename_utf8(journal), impl->posix_root)
+#endif
+    ) {
+        return {{}, {}, ConfigCommandError::internal_error};
+    }
+    if (injected_failure("before_staging_write")) {
+        return {{}, {}, ConfigCommandError::internal_error};
+    }
+
+    ConfigTreeStats tree_stats;
+    std::unordered_set<std::string> created_directories;
+    const auto create_directory = [impl](const std::filesystem::path& path) {
+#if defined(_WIN32)
+        return create_private_directory_anchored(path, impl->windows_root);
+#else
+        return create_private_directory_anchored(path, impl->posix_root);
+#endif
+    };
+    const auto create_file = [impl](const std::filesystem::path& path,
+                                    const std::string_view bytes) {
+#if defined(_WIN32)
+        return durable_create_new(path, bytes, impl->windows_root);
+#else
+        return durable_create_new(path, bytes, impl->posix_root);
+#endif
+    };
+    for (const auto* imported : imported_entries) {
+        const std::string_view relative{imported->path.data() + prefix.size(),
+                                        imported->path.size() - prefix.size()};
+        if (relative == "config.json" || relative == "event.json"
+            || relative == "switch.json" || relative == "display.json") {
+            continue;
+        }
+        if (++tree_stats.entries > archive_limits.max_entries
+            || imported->bytes.size() > archive_limits.max_entry_bytes
+            || tree_stats.bytes
+                > archive_limits.max_total_bytes - imported->bytes.size()) {
+            return {{}, {}, ConfigCommandError::capacity};
+        }
+        tree_stats.bytes += imported->bytes.size();
+        const auto relative_path = path_from_utf8(relative);
+        auto current = staging;
+        for (const auto& component : relative_path.parent_path()) {
+            current /= component;
+            const auto key = generic_path_utf8(current.lexically_relative(staging));
+            if (!created_directories.insert(key).second) continue;
+            const auto kind = path_kind(current);
+            if (kind == PathKind::directory) continue;
+            if (kind != PathKind::missing
+                || create_directory(current) != ConfigCommandError::none) {
+                return {{}, {}, ConfigCommandError::invalid_data};
+            }
+        }
+        const auto* bytes = reinterpret_cast<const char*>(imported->bytes.data());
+        static constexpr char empty_byte{};
+        if (!create_file(
+                staging / relative_path,
+                {imported->bytes.empty() ? &empty_byte : bytes,
+                 imported->bytes.size()})) {
+            return {{}, {}, ConfigCommandError::internal_error};
+        }
+    }
+    const auto write_generated = [&](const std::filesystem::path& path,
+                                     const std::string_view bytes) {
+        if (++tree_stats.entries > archive_limits.max_entries
+            || tree_stats.bytes > archive_limits.max_total_bytes - bytes.size()) {
+            return ConfigCommandError::capacity;
+        }
+        tree_stats.bytes += bytes.size();
+        return create_file(path, bytes) ? ConfigCommandError::none
+                                        : ConfigCommandError::internal_error;
+    };
+    for (const auto& [path, bytes] :
+         std::array<std::pair<std::filesystem::path, std::string_view>, 3>{
+             std::pair{staging / "config.json", std::string_view{user_bytes}},
+             std::pair{staging / "event.json", std::string_view{event_bytes}},
+             std::pair{staging / "switch.json", std::string_view{switch_bytes}}}) {
+        const auto written = write_generated(path, bytes);
+        if (written != ConfigCommandError::none) {
+            return {{}, {}, written};
+        }
+    }
+
+    const auto static_path = impl->config_root / "static.json";
+    const auto static_upgrade = ensure_current_static(
+        static_path, config_defaults::static_json(), impl->bounds(),
+        [impl, &static_path] {
+#if defined(_WIN32)
+            auto current = read_windows_resource(
+                *impl->windows_root, static_path, impl->limits.max_json_bytes);
+#else
+            auto current = read_posix_resource(
+                *impl->posix_root, static_path, impl->limits.max_json_bytes);
+#endif
+            return std::pair{current.error, std::move(current.bytes)};
+        },
+        impl->atomic_writer);
+    if (static_upgrade.error != ConfigCommandError::none) {
+        return {{}, {}, static_upgrade.error};
+    }
+    if (static_upgrade.committed) {
+        std::lock_guard state_lock(impl->state_mutex);
+        impl->resources.erase(static_key);
+    }
+
+    const auto rename_directory = [impl](const std::filesystem::path& source_path,
+                                         const std::filesystem::path& target_path) {
+#if defined(_WIN32)
+        return durable_directory_rename(
+            source_path, target_path, impl->windows_root);
+#else
+        return durable_directory_rename(
+            source_path, target_path, impl->posix_root);
+#endif
+    };
+    const auto rollback_retired = [&] {
+        bool restored = true;
+        for (auto iterator = retired.rbegin(); iterator != retired.rend(); ++iterator) {
+            if (!iterator->moved) continue;
+            if (rename_directory(iterator->tombstone, iterator->source)
+                == DirectoryRenameResult::not_committed) {
+                restored = false;
+            } else {
+                iterator->moved = false;
+            }
+        }
+        return restored;
+    };
+
+    std::atomic<CommitPhase> commit_phase{CommitPhase::open};
+    std::stop_callback cancellation(stop, [&] {
+        auto expected = CommitPhase::open;
+        static_cast<void>(commit_phase.compare_exchange_strong(
+            expected, CommitPhase::cancelled,
+            std::memory_order_acq_rel, std::memory_order_acquire));
+    });
+    ConfigCommandError commit_error{ConfigCommandError::none};
+    bool recovery_required{};
+    DirectoryRenameResult published{DirectoryRenameResult::not_committed};
+    if (!acquire_commit_phase(commit_phase)) {
+        return {{}, {}, ConfigCommandError::cancelled};
+    }
+    if (claim && !claim(target_id, config_name)) {
+        return {{}, {}, ConfigCommandError::cancelled};
+    }
+    if (injected_failure("before_retire")) {
+        commit_error = ConfigCommandError::internal_error;
+    } else {
+        for (auto& item : retired) {
+            if (rename_directory(item.source, item.tombstone)
+                == DirectoryRenameResult::not_committed) {
+                commit_error = ConfigCommandError::internal_error;
+                break;
+            }
+            item.moved = true;
+        }
+        if (commit_error == ConfigCommandError::none
+            && injected_failure("before_target_commit")) {
+            commit_error = ConfigCommandError::internal_error;
+        }
+        if (commit_error == ConfigCommandError::none) {
+            published = rename_directory(staging, target);
+            if (published == DirectoryRenameResult::not_committed) {
+                commit_error = path_kind(target) == PathKind::missing
+                    ? ConfigCommandError::internal_error
+                    : ConfigCommandError::conflict;
+            }
+        }
+        if (commit_error != ConfigCommandError::none) {
+            if (!rollback_retired()) {
+                commit_error = ConfigCommandError::internal_error;
+                recovery_required = true;
+            }
+        }
+    }
+    if (commit_error != ConfigCommandError::none) {
+        if (recovery_required) journal_cleanup.release();
+        return {{}, {}, commit_error};
+    }
+    staging_cleanup.release();
+    journal_cleanup.release();
+    {
+        std::lock_guard state_lock(impl->state_mutex);
+        impl->resources.erase(target_config_key);
+        impl->resources.erase(target_event_key);
+        impl->resources.erase(static_key);
+        for (const auto& item : retired) {
+            impl->resources.erase(item.config_key);
+            impl->resources.erase(item.event_key);
+        }
+    }
+    mutation_lock.unlock();
+    bool retired_removed = true;
+    for (const auto& item : retired) {
+        remove_tree_best_effort(item.tombstone);
+        retired_removed = retired_removed
+            && path_kind(item.tombstone) == PathKind::missing;
+    }
+    if (retired_removed
+#if defined(_WIN32)
+        && durable_remove_regular_file(journal, impl->windows_root)
+#else
+        && durable_remove_regular_file(journal, impl->posix_root)
+#endif
+    ) {
+#if defined(_WIN32)
+        static_cast<void>(
+            durable_remove_regular_file(target_marker, impl->windows_root));
+#else
+        static_cast<void>(
+            durable_remove_regular_file(target_marker, impl->posix_root));
+#endif
+    }
+    return {std::move(target_id), std::move(config_name),
+            ConfigCommandError::none};
+} catch (const std::bad_alloc&) {
+    return {{}, {}, ConfigCommandError::capacity};
 } catch (...) {
     return {{}, {}, ConfigCommandError::internal_error};
 }
@@ -3847,25 +5124,23 @@ ConfigRemoveResult FileResourceStore::remove_config(
     if (path_kind(tombstone) != PathKind::missing) {
         return {ConfigCommandError::conflict};
     }
-    std::mutex commit_mutex;
-    bool cancellation_observed = stop.stop_requested();
+    std::atomic<CommitPhase> commit_phase{CommitPhase::open};
     std::stop_callback cancellation(stop, [&] {
-        std::lock_guard lock(commit_mutex);
-        cancellation_observed = true;
+        auto expected = CommitPhase::open;
+        static_cast<void>(commit_phase.compare_exchange_strong(
+            expected, CommitPhase::cancelled,
+            std::memory_order_acq_rel, std::memory_order_acquire));
     });
-    DirectoryRenameResult renamed{DirectoryRenameResult::not_committed};
-    {
-        std::lock_guard commit_lock(commit_mutex);
-        if (cancellation_observed || stop.stop_requested()) {
-            return {ConfigCommandError::cancelled};
-        }
-        if (claim && !claim()) return {ConfigCommandError::cancelled};
-#if defined(_WIN32)
-        renamed = durable_directory_rename(target, tombstone, impl->windows_root);
-#else
-        renamed = durable_directory_rename(target, tombstone, impl->posix_root);
-#endif
+    if (!acquire_commit_phase(commit_phase)) {
+        return {ConfigCommandError::cancelled};
     }
+    if (claim && !claim()) return {ConfigCommandError::cancelled};
+    DirectoryRenameResult renamed{DirectoryRenameResult::not_committed};
+#if defined(_WIN32)
+    renamed = durable_directory_rename(target, tombstone, impl->windows_root);
+#else
+    renamed = durable_directory_rename(target, tombstone, impl->posix_root);
+#endif
     if (renamed == DirectoryRenameResult::not_committed) {
         if (path_kind(target) != PathKind::missing) {
             return {ConfigCommandError::internal_error};

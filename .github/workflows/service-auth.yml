@@ -37,6 +37,7 @@ on:
       - 'deploy/conan/recipes/baas-libsodium/**'
       - 'deploy/conan/recipes/baas-cpp-httplib/**'
       - 'deploy/conan/recipes/baas-nlohmann-json/**'
+      - 'deploy/conan/recipes/baas-miniz/**'
       - 'deploy/conan/scripts/manage_recipes.py'
       - 'include/service/auth/**'
       - 'src/service/auth/**'
@@ -67,6 +68,9 @@ on:
       - 'src/service/app/ProductionRemoteBackend.cpp'
       - 'include/service/adapters/FileResourceStore.h'
       - 'src/service/adapters/FileResourceStore.cpp'
+      - 'src/service/adapters/ConfigArchiveCodec.h'
+      - 'src/service/adapters/ConfigArchiveCodec.cpp'
+      - 'tests/service/ConfigArchiveCodecTests.cpp'
       - 'src/service/adapters/ConfigurationDefaults.h'
       - 'include/service/channels/RemoteHandler.h'
       - 'src/service/channels/RemoteHandler.cpp'
@@ -152,6 +156,7 @@ on:
       - 'deploy/conan/recipes/baas-libsodium/**'
       - 'deploy/conan/recipes/baas-cpp-httplib/**'
       - 'deploy/conan/recipes/baas-nlohmann-json/**'
+      - 'deploy/conan/recipes/baas-miniz/**'
       - 'deploy/conan/scripts/manage_recipes.py'
       - 'include/service/auth/**'
       - 'src/service/auth/**'
@@ -182,6 +187,9 @@ on:
       - 'src/service/app/ProductionRemoteBackend.cpp'
       - 'include/service/adapters/FileResourceStore.h'
       - 'src/service/adapters/FileResourceStore.cpp'
+      - 'src/service/adapters/ConfigArchiveCodec.h'
+      - 'src/service/adapters/ConfigArchiveCodec.cpp'
+      - 'tests/service/ConfigArchiveCodecTests.cpp'
       - 'src/service/adapters/ConfigurationDefaults.h'
       - 'include/service/channels/RemoteHandler.h'
       - 'src/service/channels/RemoteHandler.cpp'
@@ -313,11 +321,21 @@ jobs:
           --build=missing
           --no-remote
 
+      - name: Build and verify pinned miniz recipe
+        run: >-
+          conan create deploy/conan/recipes/baas-miniz
+          -s:h build_type=${{ matrix.build_type }}
+          -s:b build_type=Release
+          ${{ matrix.conan_settings }}
+          --build=missing
+          --no-remote
+
       - name: Generate control-auth CMake dependencies
         run: >-
           conan install --requires=baas-libsodium/1.0.22
           --requires=baas-cpp-httplib/0.50.1
           --requires=baas-nlohmann-json/3.11.3
+          --requires=baas-miniz/3.1.2
           -of build/conan/service-auth
           -s:h build_type=${{ matrix.build_type }}
           -s:b build_type=Release
@@ -453,12 +471,23 @@ jobs:
           --build=missing
           --no-remote
 
+      - name: Cross-build and verify pinned miniz recipe
+        shell: bash
+        run: >-
+          conan create deploy/conan/recipes/baas-miniz
+          -pr:h=deploy/conan/profiles/${{ matrix.profile }}
+          -pr:b=default
+          -c:h "tools.android:ndk_path=${ANDROID_NDK_HOME}"
+          --build=missing
+          --no-remote
+
       - name: Generate Android control-auth CMake dependencies
         shell: bash
         run: >-
           conan install --requires=baas-libsodium/1.0.22
           --requires=baas-cpp-httplib/0.50.1
           --requires=baas-nlohmann-json/3.11.3
+          --requires=baas-miniz/3.1.2
           -of build/conan/service-auth-android-${{ matrix.abi }}
           -pr:h=deploy/conan/profiles/${{ matrix.profile }}
           -pr:b=default

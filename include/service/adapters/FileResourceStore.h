@@ -2,12 +2,15 @@
 
 #include "service/channels/SyncHandler.h"
 
+#include <cstddef>
 #include <filesystem>
 #include <functional>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace baas::service::adapters {
 
@@ -58,6 +61,28 @@ struct ConfigRemoveResult {
     }
 };
 
+struct ConfigArchiveExportResult {
+    std::string filename;
+    std::vector<std::byte> content;
+    ConfigCommandError error{ConfigCommandError::none};
+
+    [[nodiscard]] explicit operator bool() const noexcept
+    {
+        return error == ConfigCommandError::none;
+    }
+};
+
+struct ConfigArchiveImportResult {
+    std::string serial;
+    std::string name;
+    ConfigCommandError error{ConfigCommandError::none};
+
+    [[nodiscard]] explicit operator bool() const noexcept
+    {
+        return error == ConfigCommandError::none;
+    }
+};
+
 enum class ResourceRefreshDisposition {
     unchanged,
     updated,
@@ -84,6 +109,8 @@ using ConfigCopyCommitClaim =
     std::function<bool(std::string_view serial, std::string_view name)>;
 using ConfigCreateCommitClaim = std::function<bool(std::string_view serial)>;
 using ConfigRemoveCommitClaim = std::function<bool()>;
+using ConfigArchiveImportCommitClaim =
+    std::function<bool(std::string_view serial, std::string_view name)>;
 
 struct FileResourceStoreDependencies {
     using Clock = std::function<double()>;
@@ -101,11 +128,14 @@ struct FileResourceStoreDependencies {
     // fails before the named create-config commit step; production leaves this
     // empty.
     using ConfigCreateFaultInjector = std::function<bool(std::string_view step)>;
+    using ConfigArchiveFaultInjector =
+        std::function<bool(std::string_view step)>;
 
     Clock clock;
     AtomicWriter atomic_writer;
     PostCommitDurabilityCheck post_commit_durability_check;
     ConfigCreateFaultInjector config_create_fault_injector;
+    ConfigArchiveFaultInjector config_archive_fault_injector;
 };
 
 // Production ResourceStore for resources owned by the BAAS project root.
@@ -174,6 +204,13 @@ public:
         std::string_view config_id,
         std::stop_token stop,
         ConfigRemoveCommitClaim claim = {});
+    [[nodiscard]] ConfigArchiveExportResult export_config(
+        std::string_view config_id,
+        std::stop_token stop);
+    [[nodiscard]] ConfigArchiveImportResult import_config(
+        std::span<const std::byte> content,
+        std::stop_token stop,
+        ConfigArchiveImportCommitClaim claim = {});
 
 private:
     class Impl;

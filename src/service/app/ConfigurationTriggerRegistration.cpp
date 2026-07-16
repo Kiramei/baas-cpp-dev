@@ -186,7 +186,7 @@ ConfigurationTriggerRegistrationResult make_configuration_trigger_registrations(
     }
     try {
         std::vector<trigger::TriggerHandlerRegistration> registrations;
-        registrations.reserve(3);
+        registrations.reserve(5);
         registrations.push_back({
             "add_config*",
             [store, limits](const trigger::AdmittedTriggerRequest& request,
@@ -314,6 +314,85 @@ ConfigurationTriggerRegistrationResult make_configuration_trigger_registrations(
                 if (!sink.success("{}")) {
                     stage_error(sink, "config_response_rejected");
                 }
+            },
+        });
+        registrations.push_back({
+            "export_config",
+            [store, limits](const trigger::AdmittedTriggerRequest& request,
+                            trigger::TriggerResponseSink& sink,
+                            const std::stop_token stop) {
+                if (stop.stop_requested()) return stage_cancelled(sink);
+                const auto parsed = parse_id(request.payload_json(), limits);
+                if (parsed.error != PayloadError::none) {
+                    validate_or_error(parsed, sink);
+                    return;
+                }
+                auto result = store->export_config(parsed.id, stop);
+                if (stop.stop_requested()
+                    || result.error == adapters::ConfigCommandError::cancelled) {
+                    return stage_cancelled(sink);
+                }
+                if (!result) return stage_error(sink, command_error(result.error));
+                std::string data;
+                try {
+                    data = Json{{"filename", result.filename}}.dump();
+                } catch (...) {
+                    return stage_error(sink, "config_response_capacity");
+                }
+                const auto published = sink.success(
+                    std::move(data), std::move(result.content));
+                if (!published) stage_error(sink, "config_response_rejected");
+            },
+        });
+        registrations.push_back({
+            "import_config",
+            [store, limits](const trigger::AdmittedTriggerRequest& request,
+                            trigger::TriggerResponseSink& sink,
+                            const std::stop_token stop) {
+                if (stop.stop_requested()) return stage_cancelled(sink);
+                const auto payload_error = parse_payload(
+                    request.payload_json(), limits,
+                    [](const Json&) { return PayloadError::none; });
+                if (payload_error != PayloadError::none) {
+                    validate_or_error(ParsedId{{}, payload_error}, sink);
+                    return;
+                }
+                if (!request.binary()) {
+                    return stage_error(sink, "config_archive_binary_required");
+                }
+                bool claim_attempted{};
+                const auto result = store->import_config(
+                    *request.binary(), stop,
+                    [&](const std::string_view serial,
+                        const std::string_view name) {
+                        claim_attempted = true;
+                        std::string data;
+                        try {
+                            data = Json{{"serial", serial}, {"name", name}}.dump();
+                        } catch (...) {
+                            stage_error(sink, "config_response_capacity");
+                            return false;
+                        }
+                        const auto prepared =
+                            sink.irrevocable_success(std::move(data));
+                        if (!prepared && !sink.irrevocable_terminal_claimed()) {
+                            stage_error(sink, "config_response_rejected");
+                        }
+                        return sink.irrevocable_terminal_claimed();
+                    });
+                if (claim_attempted) {
+                    if (!result && sink.irrevocable_terminal_claimed()) {
+                        static_cast<void>(sink.irrevocable_error(
+                            std::string{command_error(result.error)}));
+                    }
+                    return;
+                }
+                if (stop.stop_requested()
+                    || result.error == adapters::ConfigCommandError::cancelled) {
+                    return stage_cancelled(sink);
+                }
+                if (!result) return stage_error(sink, command_error(result.error));
+                stage_error(sink, "config_internal_error");
             },
         });
         return {std::move(registrations),

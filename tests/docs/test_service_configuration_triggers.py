@@ -63,6 +63,8 @@ class ServiceConfigurationTriggerDocsTests(unittest.TestCase):
         self.assertIn('"copy_config"', source)
         self.assertIn('"remove_config*"', source)
         self.assertIn('"add_config*"', source)
+        self.assertIn('"export_config"', source)
+        self.assertIn('"import_config"', source)
         self.assertIn("make_configuration_trigger_registrations", app)
         self.assertIn("BAAS_service_configuration_trigger_tests", cmake)
         self.assertIn("BUILD_SERVICE_CONFIGURATION_TRIGGER_TESTS", root_cmake)
@@ -71,13 +73,19 @@ class ServiceConfigurationTriggerDocsTests(unittest.TestCase):
         self.assertIn("-DBUILD_SERVICE_CONFIGURATION_TRIGGERS=ON", android_workflow)
         self.assertIn("BAAS_service_configuration_triggers", android_workflow)
         self.assertIn("--requires=baas-nlohmann-json/3.11.3", android_workflow)
+        self.assertIn("--requires=baas-miniz/3.1.2", workflow)
+        self.assertIn("--requires=baas-miniz/3.1.2", android_workflow)
+        self.assertIn("BAAS_service_config_archive_codec_tests", workflow)
         self.assertIn("arm64-v8a", android_workflow)
         self.assertIn("x86_64", android_workflow)
         for anchor in (
             "service/api/commands.py",
             "ServiceRuntime._copy_config_sync",
             "ServiceRuntime.remove_config",
-            "`export_config`, `import_config`, and `update_setup_toml` remain unregistered",
+            "`update_setup_toml` remains unregistered",
+            "one coherent five-command",
+            "1,024:1",
+            ".baas-import-journal-*",
             "ServiceRuntime.add_config",
             "config/.baas-create-*",
             "4,096 total tree entries",

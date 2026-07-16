@@ -31,14 +31,18 @@ setup `4`, composition `5`, HTTP start `6`, readiness `7`, and internal `8`.
   `ServiceRuntimeProviderBridge`/`FileResourceWatcher` lifecycle;
 - desktop `ProductionRemoteBackend`, `RemoteHandlerFactory`, and the same
   shared resource store/ADB smart-socket transport;
-- real `status`, `add_config*`, `copy_config`, and `remove_config*` registrations,
+- real `status`, `add_config*`, `copy_config`, `remove_config*`, `export_config`,
+  and `import_config` registrations,
   `TriggerDispatcher`, `TriggerExecutor`, and `TriggerHandlerFactory`;
 - file auth storage, system clock, system random, and sodium password deriver;
 - `ProductionHttpHost` on the exact CLI port.
 
 The status source reads the thread-safe production provider snapshot.
 Configuration triggers use the same durable `FileResourceStore` supplied to
-the sync and remote channels. Other catalog triggers remain unregistered. On
+the sync and remote channels. Archive export returns a JSON filename plus an
+adjacent binary ZIP response; archive import consumes the ingress-declared
+adjacent binary frame and returns JSON serial/name data after its atomic
+staging/replacement claim. Other catalog triggers remain unregistered. On
 desktop, remote policy is `desktop_only` and `/ws/remote` uses the production
 ws-scrcpy backend. The pinned resource is read from
 `<project-root>/service/remote/scrcpy-server.jar`; a missing file fails with
@@ -83,13 +87,14 @@ The executable is opt-in and excluded from the legacy `BAAS_CORE` glob:
 
 `BAAS_service_application_tests` links hook-free production targets. It covers
 real loopback `/version`, health `503` to ready `200`, auth routing, HTTP
-shutdown, fixed-port conflict, real status, `detect_adb`, durable `add_config*`, and `copy_config`,
+shutdown, fixed-port conflict, real status, `detect_adb`, and durable
+configuration create/copy commands,
 persistent auth restart and second-instance locking, and Pipe rejection before
 filesystem side effects. It also verifies desktop remote policy and missing
 ws-scrcpy-resource failure before composition. Separate CTest entries execute
 the actual binary for `--help` and `--version`. CI provisions pinned
-cpp-httplib, libsodium, and nlohmann-json recipes and runs Debug and Release on
-Windows, Linux, and macOS.
+cpp-httplib, libsodium, nlohmann-json, and miniz recipes, builds the bounded ZIP
+codec test, and runs Debug and Release on Windows, Linux, and macOS.
 
 This slice does not claim Pipe composition, packaged Tauri runtime resources,
 or an Android service executable.

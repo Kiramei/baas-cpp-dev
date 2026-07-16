@@ -1,0 +1,16 @@
+sources:
+  "3.1.2":
+    url: "https://github.com/richgel999/miniz/archive/refs/tags/3.1.2.tar.gz"
+    sha256: "98468f8924934b723276680f85238b6c78bf1f8b49b4459cc9b7214a20e2e9fb"
+    archive_type: "tar.gz"
+    strip_prefix: "miniz-3.1.2"
+build:
+  cmake_options:
+    AMALGAMATE_SOURCES: "OFF"
+    BUILD_EXAMPLES: "OFF"
+    BUILD_FUZZERS: "OFF"
+    BUILD_HEADER_ONLY: "OFF"
+    BUILD_NO_STDIO: "OFF"
+    BUILD_SHARED_LIBS: "OFF"
+    BUILD_TESTS: "OFF"
+    INSTALL_PROJECT: "ON"
