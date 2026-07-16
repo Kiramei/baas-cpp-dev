@@ -21,14 +21,18 @@ During `ServiceApplication::open`, the owner examines
   generation fails composition; the owner never re-reads `current.json` for
   this comparison.
 - A successful activation is retained as a
-  `shared_ptr<const RuntimeRepositorySnapshot>`. The owner has no reload API.
+  `shared_ptr<const RuntimeRepositorySnapshot>`. Before any later startup
+  dependency is composed, `ServiceApplication` opens and retains exactly one
+  resources/scripts read bundle from that snapshot. The owner has no reload
+  API.
 
-Activation pins pointer and snapshot metadata only. `activate()` deliberately
-does not open repository object directories or manifests, so `phase=pinned`
-does not itself claim payload readiness. Consumers call the owner's
-`open_read_bundle()` to obtain resources and scripts capabilities bound to the
-same retained generation. Those capabilities expose no native path and admit
-only manifest-listed bytes verified from anchored native handles.
+Activation itself pins pointer and snapshot metadata only. The application
+immediately calls the owner's `open_read_bundle()` during startup admission.
+Opening succeeds only after both complete repository trees, manifests, and
+payload digests validate from anchored native handles. The retained
+capabilities expose no native path and return only manifest-listed, reverified
+owned bytes. A failure occurs before remote-resource, signal, auth, worker, or
+socket effects.
 
 The absence check happens once. If a publisher creates or advances
 `current.json` later, a successfully started service remains pinned to its
@@ -51,11 +55,12 @@ route is installed.
 
 ## Lifecycle invariant
 
-One `ServiceRuntimeRepositoryOwner` belongs to one `ServiceApplication`.
-Readiness snapshots and all future repository consumers refer to that same
-owner. Removing or advancing the mutable activation files cannot change an
-already retained snapshot. A later hot-reload design must use a separate,
-explicit generation handoff protocol; it must not mutate this owner in place.
+One `ServiceRuntimeRepositoryOwner` and one read bundle belong to one
+`ServiceApplication`. Readiness snapshots and all repository consumers refer
+to that same generation. Removing or advancing the mutable activation files
+cannot replace the already retained snapshot or bundle. A later hot-reload
+design must use a separate, explicit generation handoff protocol; it must not
+mutate this owner in place.
 
 The publisher and service remain separate lifecycle stages. Only a completed
 publication's returned generation may be passed to a newly started service.

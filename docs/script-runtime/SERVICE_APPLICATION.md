@@ -17,12 +17,14 @@ readiness check requires `ok=true`, `api_version=1`, and the exact service
 literal `BAAS Service` before it accepts `/health` as ready.
 
 The runtime repository generation is a mandatory launch handoff from the
-publisher. Composition activates `current.json` once and starts only when the
-retained immutable snapshot has that exact generation. Missing state or a
-different valid generation returns the stable composition failure
-`runtime_repository_generation_mismatch`; malformed or tampered activation
-returns `runtime_repository_invalid`. These checks precede remote-resource,
-signal, auth, worker, and socket side effects.
+publisher. Composition activates `current.json` once, requires the retained
+immutable snapshot to have that exact generation, and opens both repository
+objects as one pathless read bundle. Their manifests, complete file sets, and
+payload digests are validated on anchored native handles. Missing state or a
+different valid generation returns `runtime_repository_generation_mismatch`;
+malformed or tampered activation or repository bytes return
+`runtime_repository_invalid`. These checks precede remote-resource, signal,
+auth, worker, and socket side effects.
 
 `--help` and `--version` succeed without constructing the service. Windows uses
 `wmain` and converts bounded UTF-16 arguments to UTF-8; other hosts use `main`.
@@ -38,7 +40,8 @@ setup `4`, composition `5`, HTTP start `6`, readiness `7`, and internal `8`.
 - `ProductionProviderBackend`, `FileResourceStore`, and the joined
   `ServiceRuntimeProviderBridge`/`FileResourceWatcher` lifecycle;
 - `ServiceRuntimeRepositoryOwner`, which retains the validated immutable
-  generation selected by the mandatory launch expectation;
+  generation selected by the mandatory launch expectation, plus the single
+  admitted resources/scripts read bundle retained by `ServiceApplication`;
 - desktop `ProductionRemoteBackend`, `RemoteHandlerFactory`, and the same
   shared resource store/ADB smart-socket transport;
 - real `status`, `add_config*`, `copy_config`, `remove_config*`, `export_config`,
@@ -68,16 +71,17 @@ Runtime repository ownership is independent of `FileResourceStore` and
 `ServiceRuntimeProviderBridge`. A missing pointer or a valid activation for a
 different generation fails with `runtime_repository_generation_mismatch`; an
 invalid activation fails with `runtime_repository_invalid`. Both occur before
-auth/config side effects. An exact activation is pinned for the entire service
-lifetime and `/health` exposes only `phase=pinned` and its generation. This
-phase describes immutable activation metadata; it does not claim that object
-payload bytes have been revalidated or admitted by a resource/script consumer.
+auth/config side effects. An exact activation and its validated, pathless
+resources/scripts bundle are pinned for the entire service lifetime. `/health`
+exposes only `phase=pinned` and its generation; it never exposes paths,
+manifests, or repository entries.
 
 ## Lifecycle
 
-After CLI validation, the process rejects Pipe and fixes the runtime repository
-activation before it blocks shutdown signals, publishes `starting`, constructs
-the production graph, and starts the loopback host. The listener initially
+After CLI validation, the process rejects Pipe, fixes the runtime repository
+activation, and admits its full resources/scripts read bundle before it checks
+the desktop remote payload, blocks shutdown signals, publishes `starting`,
+constructs the production graph, and starts the loopback host. The listener initially
 returns `503 health_starting`. After start, the
 runtime/provider bridge must complete its real config/static/setup scan;
 `ServiceApplication` then reads `AuthOwner::password_state()` and
@@ -115,8 +119,9 @@ ws-scrcpy-resource failure before composition. The dedicated runtime repository
 owner test covers exact generation matching, missing current,
 malformed/tampered activation, retained pin lifetime, and concurrent readers
 observing one startup generation. Application tests also verify that missing
-or mismatched generations fail before composition side effects and that health
-does not expose repository paths or metadata.
+or mismatched generations and invalid payload bytes fail before composition
+side effects, that the application retains both same-generation read
+capabilities, and that health does not expose repository paths or metadata.
 Separate CTest entries execute
 the actual binary for `--help` and `--version`. CI provisions pinned
 cpp-httplib, libsodium, nlohmann-json, and miniz recipes, builds the bounded ZIP

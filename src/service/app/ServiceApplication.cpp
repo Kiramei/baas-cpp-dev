@@ -129,6 +129,8 @@ public:
     std::shared_ptr<ProductionProviderBackend> provider;
     std::shared_ptr<adapters::FileResourceStore> resources;
     std::unique_ptr<ServiceRuntimeRepositoryOwner> runtime_repository;
+    std::shared_ptr<const runtime::repository::RuntimeRepositoryReadBundle>
+        runtime_repository_read_bundle;
     std::unique_ptr<ServiceRuntimeProviderBridge> runtime_provider;
     std::shared_ptr<ProductionRemoteBackend> remote_backend;
     std::shared_ptr<trigger::TriggerExecutor> executor;
@@ -208,6 +210,27 @@ ServiceApplicationOpenResult ServiceApplication::open(
         }
         return {nullptr, error, {}};
     }
+    std::shared_ptr<const runtime::repository::RuntimeRepositoryReadBundle>
+        runtime_repository_read_bundle;
+    try {
+        runtime_repository_read_bundle =
+            runtime_repository.owner->open_read_bundle();
+        if (!runtime_repository_read_bundle
+            || runtime_repository_read_bundle->generation()
+                != runtime_repository.owner->generation()) {
+            return {nullptr, ServiceApplicationError::runtime_repository_invalid, {}};
+        }
+    } catch (const runtime::repository::RuntimeRepositoryReadError& error) {
+        const auto application_error = error.code()
+                == runtime::repository::RuntimeRepositoryReadErrorCode::resource_exhausted
+            ? ServiceApplicationError::internal_failure
+            : ServiceApplicationError::runtime_repository_invalid;
+        return {nullptr, application_error, {}};
+    } catch (const std::bad_alloc&) {
+        return {nullptr, ServiceApplicationError::internal_failure, {}};
+    } catch (...) {
+        return {nullptr, ServiceApplicationError::internal_failure, {}};
+    }
 #if !defined(__ANDROID__)
     const auto remote_server_jar =
         options.project_root / "service" / "remote" / "scrcpy-server.jar";
@@ -227,6 +250,8 @@ ServiceApplicationOpenResult ServiceApplication::open(
         auto impl = std::make_unique<Impl>();
         impl->options = std::move(options);
         impl->runtime_repository = std::move(runtime_repository.owner);
+        impl->runtime_repository_read_bundle =
+            std::move(runtime_repository_read_bundle);
         impl->shutdown = std::make_shared<ServiceShutdownCoordinator>();
         impl->readiness = std::make_shared<health::HealthReadinessOwner>(
             health_snapshot("starting", *impl->runtime_repository));
@@ -463,6 +488,12 @@ std::shared_ptr<trigger::TriggerExecutor>
 ServiceApplication::trigger_executor() const noexcept
 {
     return impl_ ? impl_->executor : nullptr;
+}
+
+std::shared_ptr<const runtime::repository::RuntimeRepositoryReadBundle>
+ServiceApplication::runtime_repository_read_bundle() const noexcept
+{
+    return impl_ ? impl_->runtime_repository_read_bundle : nullptr;
 }
 
 int run_service_application(

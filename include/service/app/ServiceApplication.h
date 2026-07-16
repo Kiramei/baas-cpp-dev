@@ -15,6 +15,10 @@
 #include <span>
 #include <string_view>
 
+namespace baas::runtime::repository {
+class RuntimeRepositoryReadBundle;
+}
+
 namespace baas::service::app {
 
 // Process/package identity is deliberately distinct from the protocol identity.
@@ -110,6 +114,12 @@ public:
     // production trigger WebSocket factory. It does not expose a transport.
     [[nodiscard]] std::shared_ptr<trigger::TriggerExecutor>
         trigger_executor() const noexcept;
+
+    // Immutable, generation-bound resources and scripts selected during
+    // startup admission. Consumers receive only the pathless read capability.
+    [[nodiscard]] std::shared_ptr<
+        const runtime::repository::RuntimeRepositoryReadBundle>
+        runtime_repository_read_bundle() const noexcept;
 
 private:
     class Impl;

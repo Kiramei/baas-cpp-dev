@@ -157,16 +157,24 @@ void write_runtime_repository_file(
     if (!output) throw std::runtime_error("runtime repository fixture write failed");
 }
 
+constexpr std::string_view runtime_repository_manifest =
+    R"({"schema":"baas.runtime-repository.tree-manifest/v1","entries":[{"path":"nested/payload.bin","size":"7","sha256":"239f59ed55e737c77147cf55ad0c1b030b6d7ee748a7426952f9b852d5a935e5","mode":"file"}]})";
+
+constexpr std::string_view runtime_repository_manifest_sha256 =
+    "737a1b1bcb0b033b9d8a969ac87271ee6dc4ad2f1659a49488413b5a2986b270";
+
 [[nodiscard]] std::string add_runtime_repository_activation(
-    const std::filesystem::path& project_root)
+    const std::filesystem::path& project_root,
+    const char resource_digit = '1',
+    const char script_digit = '2')
 {
-    const std::string resource_commit(40, '1');
-    const std::string script_commit(40, '2');
+    const std::string resource_commit(40, resource_digit);
+    const std::string script_commit(40, script_digit);
     const std::array<repository::RuntimeRepository, 2> values{{
         {"resources", resource_commit, "objects/resources/" + resource_commit,
-         "manifest.json", std::string(64, 'a')},
+         "manifest.json", std::string(runtime_repository_manifest_sha256)},
         {"scripts", script_commit, "objects/scripts/" + script_commit,
-         "manifest.json", std::string(64, 'b')},
+         "manifest.json", std::string(runtime_repository_manifest_sha256)},
     }};
     const auto generation = repository::runtime_repository_generation(values);
     const auto state_root =
@@ -199,7 +207,29 @@ void write_runtime_repository_file(
     write_runtime_repository_file(
         state_root / "snapshots" / (generation + ".json"), snapshot.dump());
     write_runtime_repository_file(state_root / "current.json", current.dump());
+    for (const auto& value : values) {
+        const auto repository_root = state_root / value.root;
+        write_runtime_repository_file(
+            repository_root / value.manifest, runtime_repository_manifest);
+        write_runtime_repository_file(
+            repository_root / "nested" / "payload.bin", "payload");
+    }
     return generation;
+}
+
+void publish_runtime_repository_generation(
+    const std::filesystem::path& project_root,
+    const std::string_view generation)
+{
+    const nlohmann::json current{
+        {"schema", "baas.runtime-repositories.current/v1"},
+        {"generation", generation},
+        {"snapshot", "snapshots/" + std::string{generation} + ".json"},
+    };
+    write_runtime_repository_file(
+        project_root / ".baas-updater" / "runtime-repositories"
+            / "current.json",
+        current.dump());
 }
 
 [[nodiscard]] std::uint16_t unused_loopback_port()
@@ -359,6 +389,28 @@ void test_real_loopback_lifecycle_trigger_and_persistence()
           "real production dependencies must compose ServiceApplication");
     if (!opened) return;
     auto application = std::move(opened.application);
+    const auto runtime_repository_read_bundle =
+        application->runtime_repository_read_bundle();
+    check(runtime_repository_read_bundle
+              && runtime_repository_read_bundle.get()
+                  == application->runtime_repository_read_bundle().get()
+              && runtime_repository_read_bundle->generation()
+                  == runtime_repository_generation
+              && runtime_repository_read_bundle->resources().generation()
+                  == runtime_repository_generation
+              && runtime_repository_read_bundle->scripts().generation()
+                  == runtime_repository_generation
+              && runtime_repository_read_bundle->resources().entries().size() == 1
+              && runtime_repository_read_bundle->scripts().entries().size() == 1,
+          "application must retain one validated resources/scripts bundle for its startup generation");
+    if (runtime_repository_read_bundle) {
+        const auto payload = runtime_repository_read_bundle->resources().read(
+            "nested/payload.bin", 7);
+        check(std::string{
+                  reinterpret_cast<const char*>(payload.data()), payload.size()}
+                  == "payload",
+              "application repository capability must return manifest-verified owned bytes");
+    }
     check(application->readiness_snapshot().state
               == router::HealthReadinessState::starting,
           "application must begin in explicit starting readiness");
@@ -369,6 +421,17 @@ void test_real_loopback_lifecycle_trigger_and_persistence()
               && contender.authentication_error
                   == baas::service::auth::AuthError::storage_failure,
           "second instance must fail on the persistent auth installation lock");
+
+    const auto advanced_generation = add_runtime_repository_activation(
+        root.path, '3', '4');
+    check(advanced_generation != runtime_repository_generation
+              && application->runtime_repository_read_bundle().get()
+                  == runtime_repository_read_bundle.get()
+              && application->runtime_repository_read_bundle()->generation()
+                  == runtime_repository_generation,
+          "advancing current must not replace the application's retained startup bundle");
+    publish_runtime_repository_generation(
+        root.path, runtime_repository_generation);
 
     const auto started = application->start_transport();
     check(started.started && started.port == port && application->port() == port,
@@ -760,6 +823,23 @@ void test_missing_remote_resource_fails_before_composition_side_effects()
           "missing remote resource must fail before auth or resource-store effects");
 }
 
+void test_invalid_repository_payload_fails_before_remote_and_composition()
+{
+    TemporaryRoot root{"invalid-runtime-payload"};
+    const auto generation = add_runtime_repository_activation(root.path);
+    write_runtime_repository_file(
+        root.path / ".baas-updater" / "runtime-repositories" / "objects"
+            / "scripts" / std::string(40, '2') / "nested" / "payload.bin",
+        "tamper!");
+    const auto opened = app::ServiceApplication::open(
+        options(root.path, unused_loopback_port(), generation));
+    check(opened.error == app::ServiceApplicationError::runtime_repository_invalid
+              && !opened.application,
+          "payload digest mismatch must fail before the later missing remote-resource check");
+    check(!std::filesystem::exists(root.path / "config"),
+          "payload admission failure must precede auth, resource-store, worker, and socket effects");
+}
+
 }  // namespace
 
 int main()
@@ -772,6 +852,7 @@ int main()
         test_missing_repository_fails_before_composition();
         test_repository_generation_mismatch_fails_before_composition();
         test_invalid_runtime_repository_fails_before_composition();
+        test_invalid_repository_payload_fails_before_remote_and_composition();
         test_missing_remote_resource_fails_before_composition_side_effects();
     } catch (const std::exception& error) {
         std::cerr << "UNEXPECTED: " << error.what() << '\n';
