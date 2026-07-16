@@ -7,6 +7,7 @@ add_library(
         STATIC
         "${BAAS_PROJECT_PATH}/src/service/adapters/ConfigArchiveCodec.cpp"
         "${BAAS_PROJECT_PATH}/src/service/adapters/FileResourceStore.cpp"
+        "${BAAS_PROJECT_PATH}/include/service/adapters/BoundedJson.h"
 )
 target_compile_features(BAAS_service_file_resource_store PUBLIC cxx_std_20)
 target_include_directories(

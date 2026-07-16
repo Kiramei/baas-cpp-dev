@@ -24,6 +24,7 @@ target_link_libraries(
         BAAS_service_file_resource_store
         BAAS_service_runtime_provider_bridge
         BAAS_service_runtime_repository_owner
+        BAAS_service_runtime_configuration_defaults
         BAAS_service_remote_backend
         BAAS_service_status_trigger
         BAAS_service_adb_discovery_trigger
@@ -90,5 +91,15 @@ if(BUILD_SERVICE_APP_TESTS)
             PROPERTIES
             PASS_REGULAR_EXPRESSION "Usage: BAAS_service"
             TIMEOUT 10
+    )
+    add_test(
+            NAME BAAS_service_no_embedded_configuration_defaults
+            COMMAND "${CMAKE_COMMAND}"
+                    "-DSERVICE_BINARY=$<TARGET_FILE:BAAS_service>"
+                    -P "${BAAS_PROJECT_PATH}/tests/service/VerifyServiceBinaryNoEmbeddedDefaults.cmake"
+    )
+    set_tests_properties(
+            BAAS_service_no_embedded_configuration_defaults
+            PROPERTIES TIMEOUT 30
     )
 endif()

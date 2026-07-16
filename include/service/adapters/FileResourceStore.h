@@ -1,5 +1,6 @@
 #pragma once
 
+#include "service/adapters/ConfigurationDefaults.h"
 #include "service/channels/SyncHandler.h"
 
 #include <cstddef>
@@ -136,6 +137,7 @@ struct FileResourceStoreDependencies {
     PostCommitDurabilityCheck post_commit_durability_check;
     ConfigCreateFaultInjector config_create_fault_injector;
     ConfigArchiveFaultInjector config_archive_fault_injector;
+    std::shared_ptr<const ConfigurationDefaults> configuration_defaults;
 };
 
 // Production ResourceStore for resources owned by the BAAS project root.

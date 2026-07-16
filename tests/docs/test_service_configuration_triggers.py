@@ -1,7 +1,4 @@
-import hashlib
-import json
 import pathlib
-import re
 import unittest
 
 
@@ -9,46 +6,44 @@ ROOT = pathlib.Path(__file__).resolve().parents[2]
 
 
 class ServiceConfigurationTriggerDocsTests(unittest.TestCase):
-    def test_embedded_python_create_defaults_are_canonical(self) -> None:
-        defaults = (
-            ROOT / "src/service/adapters/ConfigurationDefaults.h"
+    def test_defaults_are_admitted_from_the_runtime_resource_snapshot(self) -> None:
+        self.assertFalse(
+            (ROOT / "src/service/adapters/ConfigurationDefaults.h").exists()
+        )
+        loader = (
+            ROOT / "src/service/app/RuntimeConfigurationDefaults.cpp"
         ).read_text(encoding="utf-8")
-        expected = {
-            "user": (97, "7ff8fd26b5afe0b1243a5e24ebcae674b31c60ecf7c53be3d8765ee4c2fc2d01"),
-            "event": (26, "8e402fe3c3782058d5c65c69dca16f87a5f91317bfda82879ab1f295b75f1844"),
-            "switches": (11, "ff935aa191bdbfc8b3b3e509b1f01b88a7c8c117c3b235816fa783997e68045a"),
-        }
-        for name, (length, digest) in expected.items():
-            match = re.search(
-                rf'{name} = R"BAAS_DEFAULT\((.*?)\)BAAS_DEFAULT"',
-                defaults,
-                re.DOTALL,
-            )
-            self.assertIsNotNone(match)
-            document = json.loads(match.group(1))
-            canonical = json.dumps(
-                document, ensure_ascii=False, sort_keys=True, separators=(",", ":")
-            ).encode("utf-8")
-            self.assertEqual(len(document), length)
-            self.assertEqual(hashlib.sha256(canonical).hexdigest(), digest)
+        application = (ROOT / "src/service/app/ServiceApplication.cpp").read_text(
+            encoding="utf-8"
+        )
+        for name in ("user.json", "event.json", "switch.json", "static.json"):
+            self.assertIn(f'"service/configuration/defaults/{name}"', loader)
+        self.assertIn("consumer_limits.max_json_depth", loader)
+        self.assertIn("consumer_limits.max_json_nodes", loader)
+        self.assertIn("consumer_limits.max_json_bytes", loader)
+        self.assertIn("adapters::bounded_json::parse_json", loader)
+        self.assertIn("value.dump(2).size()", loader)
+        self.assertIn('candidate["name"] = "x"', loader)
+        for server in ('u8"官服"', 'u8"国际服青少年"', 'u8"日服PC端"'):
+            self.assertIn(server, loader)
+        self.assertIn("load_runtime_configuration_defaults", application)
+        self.assertLess(
+            application.index("load_runtime_configuration_defaults"),
+            application.index("make_shared<adapters::FileResourceStore>"),
+        )
 
-    def test_embedded_python_static_default_is_complete(self) -> None:
-        defaults = (
-            ROOT / "src/service/adapters/ConfigurationDefaults.h"
-        ).read_text(encoding="utf-8")
-        parts = re.findall(
-            r'R"BAAS_STATIC\((.*?)\)BAAS_STATIC"', defaults, re.DOTALL
+    def test_store_uses_injected_defaults_without_a_compiled_fallback(self) -> None:
+        header = (ROOT / "include/service/adapters/ConfigurationDefaults.h").read_text(
+            encoding="utf-8"
         )
-        self.assertEqual(len(parts), 13)
-        document = json.loads("".join(parts))
-        canonical = json.dumps(
-            document, ensure_ascii=False, sort_keys=True, separators=(",", ":")
-        ).encode("utf-8")
-        self.assertEqual(
-            hashlib.sha256(canonical).hexdigest(),
-            "4b31c708fbbcd88300eb00e1ec71a556bc22f596467e5af356330b5496d2b247",
+        store = (ROOT / "src/service/adapters/FileResourceStore.cpp").read_text(
+            encoding="utf-8"
         )
-        self.assertEqual(len(document), 25)
+        self.assertIn("std::string user_json", header)
+        self.assertIn("configuration_defaults", store)
+        self.assertIn('.static_json).at("create_item_order")', store)
+        self.assertNotIn("BAAS_DEFAULT", store)
+        self.assertNotIn("BAAS_STATIC", store)
 
     def test_production_slice_is_registered_built_and_migration_bounded(self) -> None:
         header = (ROOT / "include/service/app/ConfigurationTriggerRegistration.h").read_text(encoding="utf-8")
@@ -72,6 +67,12 @@ class ServiceConfigurationTriggerDocsTests(unittest.TestCase):
         self.assertIn("BAAS_service_configuration_trigger_tests", workflow)
         self.assertIn("-DBUILD_SERVICE_CONFIGURATION_TRIGGERS=ON", android_workflow)
         self.assertIn("BAAS_service_configuration_triggers", android_workflow)
+        self.assertIn(
+            "-DBUILD_SERVICE_RUNTIME_CONFIGURATION_DEFAULTS=ON", android_workflow
+        )
+        self.assertIn(
+            "BAAS_service_runtime_configuration_defaults", android_workflow
+        )
         self.assertIn("--requires=baas-nlohmann-json/3.11.3", android_workflow)
         self.assertIn("--requires=baas-miniz/3.1.2", workflow)
         self.assertIn("--requires=baas-miniz/3.1.2", android_workflow)

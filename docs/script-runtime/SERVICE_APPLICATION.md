@@ -122,6 +122,10 @@ observing one startup generation. Application tests also verify that missing
 or mismatched generations and invalid payload bytes fail before composition
 side effects, that the application retains both same-generation read
 capabilities, and that health does not expose repository paths or metadata.
+Startup also reads and validates the user, event, switch, and static initializer
+documents through the retained resources capability before constructing the mutable
+user resource store. These documents remain external runtime data and are never
+compiled into `BAAS_service`.
 Separate CTest entries execute
 the actual binary for `--help` and `--version`. CI provisions pinned
 cpp-httplib, libsodium, nlohmann-json, and miniz recipes, builds the bounded ZIP
