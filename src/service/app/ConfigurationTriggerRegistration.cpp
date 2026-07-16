@@ -11,10 +11,16 @@ namespace {
 
 using Json = nlohmann::json;
 
-enum class PayloadError { none, capacity, invalid, missing_id };
+enum class PayloadError { none, capacity, invalid, missing_id, missing_name_server };
 
 struct ParsedId {
     std::string id;
+    PayloadError error{PayloadError::none};
+};
+
+struct ParsedCreate {
+    std::string name;
+    std::string server;
     PayloadError error{PayloadError::none};
 };
 
@@ -24,15 +30,18 @@ struct ParsedId {
         && limits.max_payload_bytes <= 1U * 1'024U * 1'024U
         && limits.max_payload_depth != 0 && limits.max_payload_depth <= 64
         && limits.max_payload_nodes != 0 && limits.max_payload_nodes <= 65'536
-        && limits.max_id_bytes != 0 && limits.max_id_bytes <= 1'024;
+        && limits.max_id_bytes != 0 && limits.max_id_bytes <= 1'024
+        && limits.max_name_bytes != 0
+        && limits.max_name_bytes <= 64U * 1'024U
+        && limits.max_server_bytes != 0 && limits.max_server_bytes <= 4'096;
 }
 
-[[nodiscard]] ParsedId parse_id(
-    const std::string_view payload, const ConfigurationTriggerLimits& limits)
+template <typename Project>
+[[nodiscard]] PayloadError parse_payload(
+    const std::string_view payload, const ConfigurationTriggerLimits& limits,
+    Project&& project)
 {
-    if (payload.size() > limits.max_payload_bytes) {
-        return {{}, PayloadError::capacity};
-    }
+    if (payload.size() > limits.max_payload_bytes) return PayloadError::capacity;
     bool duplicate{};
     bool capacity{};
     std::size_t nodes{};
@@ -60,23 +69,55 @@ struct ParsedId {
             return !duplicate && !capacity;
         };
         auto root = Json::parse(payload, callback, false);
-        if (capacity) return {{}, PayloadError::capacity};
+        if (capacity) return PayloadError::capacity;
         if (root.is_discarded() || duplicate || !root.is_object()) {
-            return {{}, PayloadError::invalid};
+            return PayloadError::invalid;
         }
-        const auto found = root.find("id");
-        if (found == root.end() || !found->is_string()) {
-            return {{}, PayloadError::missing_id};
-        }
-        auto id = found->get<std::string>();
-        if (id.empty()) return {{}, PayloadError::missing_id};
-        if (id.size() > limits.max_id_bytes) return {{}, PayloadError::capacity};
-        return {std::move(id), PayloadError::none};
+        return project(root);
     } catch (const std::bad_alloc&) {
-        return {{}, PayloadError::capacity};
+        return PayloadError::capacity;
     } catch (...) {
-        return {{}, PayloadError::invalid};
+        return PayloadError::invalid;
     }
+}
+
+[[nodiscard]] ParsedId parse_id(
+    const std::string_view payload, const ConfigurationTriggerLimits& limits)
+{
+    ParsedId result;
+    result.error = parse_payload(payload, limits, [&](const Json& root) {
+        const auto found = root.find("id");
+        if (found == root.end() || !found->is_string() || found->empty()) {
+            return PayloadError::missing_id;
+        }
+        result.id = found->get<std::string>();
+        return result.id.size() > limits.max_id_bytes
+            ? PayloadError::capacity : PayloadError::none;
+    });
+    return result;
+}
+
+[[nodiscard]] ParsedCreate parse_create(
+    const std::string_view payload, const ConfigurationTriggerLimits& limits)
+{
+    ParsedCreate result;
+    result.error = parse_payload(payload, limits, [&](const Json& root) {
+        const auto name = root.find("name");
+        const auto server = root.find("server");
+        if (name == root.end() || server == root.end()
+            || !name->is_string() || !server->is_string()
+            || name->empty() || server->empty()) {
+            return PayloadError::missing_name_server;
+        }
+        result.name = name->get<std::string>();
+        result.server = server->get<std::string>();
+        if (result.name.size() > limits.max_name_bytes
+            || result.server.size() > limits.max_server_bytes) {
+            return PayloadError::capacity;
+        }
+        return PayloadError::none;
+    });
+    return result;
 }
 
 void stage_error(trigger::TriggerResponseSink& sink, const std::string_view error)
@@ -114,6 +155,9 @@ void validate_or_error(
         case PayloadError::capacity: stage_error(sink, "config_payload_capacity"); break;
         case PayloadError::invalid: stage_error(sink, "invalid_config_payload"); break;
         case PayloadError::missing_id: stage_error(sink, "id is required"); break;
+        case PayloadError::missing_name_server:
+            stage_error(sink, "server and name are required for add_config");
+            break;
     }
 }
 
@@ -142,7 +186,52 @@ ConfigurationTriggerRegistrationResult make_configuration_trigger_registrations(
     }
     try {
         std::vector<trigger::TriggerHandlerRegistration> registrations;
-        registrations.reserve(2);
+        registrations.reserve(3);
+        registrations.push_back({
+            "add_config*",
+            [store, limits](const trigger::AdmittedTriggerRequest& request,
+                            trigger::TriggerResponseSink& sink,
+                            const std::stop_token stop) {
+                if (stop.stop_requested()) return stage_cancelled(sink);
+                const auto parsed = parse_create(request.payload_json(), limits);
+                if (parsed.error != PayloadError::none) {
+                    validate_or_error(
+                        ParsedId{{}, parsed.error}, sink);
+                    return;
+                }
+                bool claim_attempted{};
+                const auto result = store->create_config(
+                    parsed.name, parsed.server, stop,
+                    [&](const std::string_view serial) {
+                        claim_attempted = true;
+                        std::string data;
+                        try {
+                            data = "{\"serial\":" + Json(serial).dump() + "}";
+                        } catch (...) {
+                            stage_error(sink, "config_response_capacity");
+                            return false;
+                        }
+                        const auto prepared = sink.irrevocable_success(std::move(data));
+                        if (!prepared && !sink.irrevocable_terminal_claimed()) {
+                            stage_error(sink, "config_response_rejected");
+                        }
+                        return sink.irrevocable_terminal_claimed();
+                    });
+                if (claim_attempted) {
+                    if (!result && sink.irrevocable_terminal_claimed()) {
+                        static_cast<void>(sink.irrevocable_error(
+                            std::string{command_error(result.error)}));
+                    }
+                    return;
+                }
+                if (stop.stop_requested()
+                    || result.error == adapters::ConfigCommandError::cancelled) {
+                    return stage_cancelled(sink);
+                }
+                if (!result) return stage_error(sink, command_error(result.error));
+                stage_error(sink, "config_internal_error");
+            },
+        });
         registrations.push_back({
             "copy_config",
             [store, limits](const trigger::AdmittedTriggerRequest& request,

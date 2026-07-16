@@ -5,6 +5,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -16,6 +17,12 @@
 #include <string_view>
 #include <thread>
 #include <vector>
+
+#ifdef _WIN32
+#include <process.h>
+#else
+#include <unistd.h>
+#endif
 
 using namespace std::chrono_literals;
 namespace adapters = baas::service::adapters;
@@ -29,6 +36,15 @@ namespace {
 
 int failures{};
 
+std::uint64_t current_process_id() noexcept
+{
+#ifdef _WIN32
+    return static_cast<std::uint64_t>(::_getpid());
+#else
+    return static_cast<std::uint64_t>(::getpid());
+#endif
+}
+
 void check(const bool condition, const std::string_view message)
 {
     if (!condition) {
@@ -41,10 +57,14 @@ class TempProject final {
 public:
     TempProject()
     {
-        static std::atomic<unsigned int> sequence{};
+        static std::atomic<std::uint64_t> sequence{};
+        const auto timestamp = std::chrono::steady_clock::now()
+                                   .time_since_epoch()
+                                   .count();
         root = std::filesystem::temp_directory_path()
-            / ("baas-config-trigger-" + std::to_string(sequence.fetch_add(1)));
-        std::filesystem::remove_all(root);
+            / ("baas-config-trigger-" + std::to_string(current_process_id())
+               + "-" + std::to_string(timestamp) + "-"
+               + std::to_string(sequence.fetch_add(1)));
         std::filesystem::create_directories(root / "config");
     }
     ~TempProject()
@@ -228,6 +248,66 @@ void test_copy_and_remove_exact_python_envelopes()
     executor->shutdown();
 }
 
+void test_add_config_prefix_exact_python_envelope_and_defaults()
+{
+    TempProject project;
+    adapters::FileResourceStoreDependencies dependencies;
+    dependencies.clock = [] { return 1'725'000'123'456.75; };
+    auto store = std::make_shared<adapters::FileResourceStore>(
+        project.root, std::move(dependencies));
+    auto executor = std::make_shared<trigger::TriggerExecutor>(dispatcher(store));
+
+    const auto added = execute(
+        executor, "add_configuration", 3,
+        R"({"name":"First profile","server":"日服"})");
+    const auto envelope = Json::parse(added.json);
+    check(added.status == protocol::ResponseStatus::ok
+              && envelope.value("command", "") == "add_configuration"
+              && envelope.value("timestamp", 0) == 3
+              && envelope.at("data")
+                     == Json{{"serial", "1725000123456"}},
+          "add_config prefix must return exactly Python's serial-only data");
+    const auto directory = project.root / "config" / "1725000123456";
+    const auto config = Json::parse(std::ifstream(directory / "config.json"));
+    const auto event = Json::parse(std::ifstream(directory / "event.json"));
+    const auto switches = Json::parse(std::ifstream(directory / "switch.json"));
+    check(config["name"] == "First profile" && config["server"] == "日服"
+              && config["create_item_holding_quantity"].size() == 157
+              && event.size() == 26 && event[0]["daily_reset"][0][0] == 19
+              && switches.size() == 11
+              && std::filesystem::is_regular_file(
+                  project.root / "config" / "static.json"),
+          "add_config must publish the complete Python initializer vector");
+    const auto listed = store->config_list({});
+    const auto pulled = store->pull(
+        {channels::SyncResource::config, "1725000123456"}, {});
+    check(listed && Json::parse(listed->data_json)
+                        == Json::array({"1725000123456"})
+              && pulled && Json::parse(pulled->data_json)["name"] == "First profile",
+          "new config must be immediately visible to list/pull provider paths");
+
+    for (const auto payload : {
+             R"({})", R"({"name":"x"})", R"({"server":"日服"})",
+             R"({"name":1,"server":"日服"})",
+             R"({"name":"x","server":false})"}) {
+        const auto rejected = execute(executor, "add_config_v2", 4, payload);
+        check(rejected.status == protocol::ResponseStatus::error
+                  && rejected.json.find(
+                         "server and name are required for add_config")
+                         != std::string::npos,
+              "add_config must reject missing, false, and non-string fields");
+    }
+    const auto unsupported = execute(
+        executor, "add_config", 5,
+        R"({"name":"x","server":"CN"})");
+    check(unsupported.status == protocol::ResponseStatus::error
+              && unsupported.json.find("config_invalid_data") != std::string::npos
+              && Json::parse(store->config_list({})->data_json).size() == 1
+              && !has_private_config_transaction(project.root / "config"),
+          "unsupported server must fail without a visible or staged config");
+    executor->shutdown();
+}
+
 void test_validation_bounds_and_fail_closed_paths()
 {
     TempProject project;
@@ -263,6 +343,9 @@ void test_validation_bounds_and_fail_closed_paths()
     cancelled.request_stop();
     check(store->copy_config("source", cancelled.get_token()).error
               == adapters::ConfigCommandError::cancelled
+              && store->create_config(
+                     "name", "日服", cancelled.get_token()).error
+                  == adapters::ConfigCommandError::cancelled
               && store->remove_config("source", cancelled.get_token()).error
                   == adapters::ConfigCommandError::cancelled,
           "filesystem operations must observe cancellation before mutation");
@@ -590,6 +673,55 @@ void test_all_python_server_mappings_and_invalid_servers()
                   && before && after && before->data_json == after->data_json,
               "unsupported server values must fail without publishing a target");
     }
+
+    TempProject create_project;
+    adapters::FileResourceStoreDependencies create_dependencies;
+    create_dependencies.clock = [] { return 80'000.0; };
+    adapters::FileResourceStore create_store(
+        create_project.root, std::move(create_dependencies));
+    std::optional<Json> canonical_cn_event;
+    for (std::size_t index = 0; index < servers.size(); ++index) {
+        const auto created = create_store.create_config(
+            index < 2 ? "duplicate name" : "profile-" + std::to_string(index),
+            servers[index].first, {});
+        check(static_cast<bool>(created),
+              "all eight Python server labels must support add_config");
+        if (!created) continue;
+        const auto directory = create_project.root / "config" / created.serial;
+        const auto config = Json::parse(std::ifstream(directory / "config.json"));
+        const auto event = Json::parse(std::ifstream(directory / "event.json"));
+        const auto switches = Json::parse(std::ifstream(directory / "switch.json"));
+        check(config.size() == 97 && event.size() == 26 && switches.size() == 11
+                  && config["server"] == servers[index].first
+                  && config["create_item_holding_quantity"].size()
+                         == servers[index].second,
+              "create output must retain complete 97/26/11 vectors and server quantities");
+        const int expected_reset = index < 2 ? 20 : 19;
+        check(event[0]["daily_reset"][0][0] == expected_reset,
+              "create event reset must select the exact CN/non-CN projection");
+        if (index == 0) canonical_cn_event = event;
+        if (canonical_cn_event) {
+            auto expected_event = *canonical_cn_event;
+            if (index >= 2) {
+                for (auto& item : expected_event) {
+                    for (auto& reset : item["daily_reset"]) {
+                        reset[0] = reset[0].get<int>() - 1;
+                    }
+                }
+            }
+            check(event == expected_event,
+                  "all 26 events and 29 resets must equal the canonical CN/non-CN vector");
+        }
+    }
+    const auto static_config = Json::parse(std::ifstream(
+        create_project.root / "config" / "static.json"));
+    check(static_config.size() == 25,
+          "create must install the complete 25-key static vector");
+    const auto list = Json::parse(create_store.config_list({})->data_json);
+    check(list.size() == 8,
+          "duplicate display names are legal and do not collapse config ids");
+    check(!std::filesystem::exists(create_project.root / "error.log"),
+          "successful create must not emit Python initializer error.log noise");
 }
 
 void test_registration_scope_and_limits()
@@ -605,9 +737,90 @@ void test_registration_scope_and_limits()
               == app::ConfigurationTriggerRegistrationError::invalid_limits,
           "registration must reject unbounded payload limits");
     auto made = app::make_configuration_trigger_registrations(store);
-    check(made && made.registrations[0].descriptor_name == "copy_config"
-              && made.registrations[1].descriptor_name == "remove_config*",
-          "registration must install exactly the coherent two-command slice");
+    check(made && made.registrations[0].descriptor_name == "add_config*"
+              && made.registrations[1].descriptor_name == "copy_config"
+              && made.registrations[2].descriptor_name == "remove_config*",
+          "registration must install exactly the coherent three-command slice");
+}
+
+void test_add_irrevocable_claim_is_corrected_after_commit_failure()
+{
+    TempProject project;
+    adapters::FileResourceStoreDependencies dependencies;
+    dependencies.clock = [] { return 91'000.0; };
+    dependencies.config_create_fault_injector =
+        [](const std::string_view step) {
+            return step == "before_directory_commit";
+        };
+    auto store = std::make_shared<adapters::FileResourceStore>(
+        project.root, std::move(dependencies));
+    auto executor = std::make_shared<trigger::TriggerExecutor>(dispatcher(store));
+    const auto response = execute(
+        executor, "add_config", 30,
+        R"({"name":"claimed","server":"日服"})");
+    check(response.status == protocol::ResponseStatus::error
+              && response.json.find("config_internal_error") != std::string::npos
+              && !std::filesystem::exists(project.root / "config" / "91000")
+              && !has_private_config_transaction(project.root / "config"),
+          "post-claim directory failure must correct success to an irrevocable error");
+    const auto static_data = store->pull(
+        {channels::SyncResource::static_data, std::nullopt}, {});
+    check(static_data && Json::parse(static_data->data_json).size() == 25,
+          "independent static metadata upgrade remains provider-visible after create failure");
+    executor->shutdown();
+}
+
+void test_copy_static_upgrade_is_independent_of_directory_claim()
+{
+    TempProject project;
+    project.add_server("source", "日服");
+    std::ofstream(project.root / "config" / "static.json")
+        << R"({"old_but_valid":true})";
+    auto store = std::make_shared<adapters::FileResourceStore>(project.root);
+    const auto copied = store->copy_config(
+        "source", {},
+        [](const std::string_view, const std::string_view) { return false; });
+    const auto static_data = store->pull(
+        {channels::SyncResource::static_data, std::nullopt}, {});
+    const auto listed = store->config_list({});
+    check(copied.error == adapters::ConfigCommandError::cancelled
+              && static_data && Json::parse(static_data->data_json).size() == 25
+              && listed && Json::parse(listed->data_json)
+                     == Json::array({"source"})
+              && !has_private_config_transaction(project.root / "config"),
+          "copy uses the same independent static upgrade before a rejected directory claim");
+}
+
+void test_directory_commit_never_replaces_concurrent_target()
+{
+    TempProject project;
+    project.add_server("source", "日服");
+    adapters::FileResourceStoreDependencies dependencies;
+    dependencies.clock = [] { return 92'000.0; };
+    auto store = std::make_shared<adapters::FileResourceStore>(
+        project.root, std::move(dependencies));
+    const auto target = project.root / "config" / "92000";
+
+    const auto created = store->create_config(
+        "claimed", "日服", {}, [&](const std::string_view id) {
+            check(id == "92000", "create collision fixture claims expected serial");
+            return std::filesystem::create_directory(target);
+        });
+    check(created.error == adapters::ConfigCommandError::conflict
+              && std::filesystem::is_empty(target)
+              && !has_private_config_transaction(project.root / "config"),
+          "create no-replace commit preserves a concurrently claimed empty target");
+
+    std::filesystem::remove(target);
+    const auto copied = store->copy_config(
+        "source", {}, [&](const std::string_view id, const std::string_view) {
+            check(id == "92000", "copy collision fixture claims expected serial");
+            return std::filesystem::create_directory(target);
+        });
+    check(copied.error == adapters::ConfigCommandError::conflict
+              && std::filesystem::is_empty(target)
+              && !has_private_config_transaction(project.root / "config"),
+          "copy no-replace commit preserves a concurrently claimed empty target");
 }
 
 void test_backpressure_retries_terminal_without_repeating_copy()
@@ -667,6 +880,7 @@ int main()
 {
     try {
         test_copy_and_remove_exact_python_envelopes();
+        test_add_config_prefix_exact_python_envelope_and_defaults();
         test_validation_bounds_and_fail_closed_paths();
         test_wide_tree_entry_budget_and_cancellation_cleanup();
         test_structural_success_invalidates_cached_resources();
@@ -674,6 +888,9 @@ int main()
         test_commit_point_wins_late_stop_and_staging_is_protected_scope();
         test_all_python_server_mappings_and_invalid_servers();
         test_registration_scope_and_limits();
+        test_add_irrevocable_claim_is_corrected_after_commit_failure();
+        test_copy_static_upgrade_is_independent_of_directory_claim();
+        test_directory_commit_never_replaces_concurrent_target();
         test_backpressure_retries_terminal_without_repeating_copy();
     } catch (const std::exception& error) {
         ++failures;

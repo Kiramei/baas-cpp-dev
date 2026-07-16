@@ -16,6 +16,8 @@ struct ConfigurationTriggerLimits {
     std::size_t max_payload_depth{16};
     std::size_t max_payload_nodes{1'024};
     std::size_t max_id_bytes{256};
+    std::size_t max_name_bytes{1'024};
+    std::size_t max_server_bytes{256};
 };
 
 enum class ConfigurationTriggerRegistrationError : std::uint8_t {
@@ -36,12 +38,12 @@ struct ConfigurationTriggerRegistrationResult {
     [[nodiscard]] explicit operator bool() const noexcept
     {
         return error == ConfigurationTriggerRegistrationError::none
-            && registrations.size() == 2;
+            && registrations.size() == 3;
     }
 };
 
-// Registers exactly Python's copy_config exact command and remove_config*
-// prefix family. No add/export/import/TOML placeholder is installed.
+// Registers Python's add_config* and remove_config* prefix families plus the
+// exact copy_config command. No export/import/TOML placeholder is installed.
 [[nodiscard]] ConfigurationTriggerRegistrationResult
 make_configuration_trigger_registrations(
     std::shared_ptr<adapters::FileResourceStore> store,

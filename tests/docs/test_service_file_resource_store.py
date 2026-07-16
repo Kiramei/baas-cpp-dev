@@ -12,7 +12,7 @@ class ServiceFileResourceStoreDocsTests(unittest.TestCase):
         source = (ROOT / "src/service/adapters/FileResourceStore.cpp").read_text()
         module = (ROOT / "cmake/ServiceFileResourceStore.cmake").read_text()
         root_cmake = (ROOT / "CMakeLists.txt").read_text()
-        workflow = (ROOT / ".github/workflows/foundation-runtime.yml").read_text()
+        workflow = (ROOT / ".github/workflows/service-application.yml").read_text()
         spec = (ROOT / "docs/script-runtime/SERVICE_FILE_RESOURCE_STORE.md").read_text()
 
         self.assertIn("committed_durability_uncertain", header)
@@ -40,6 +40,9 @@ class ServiceFileResourceStoreDocsTests(unittest.TestCase):
         self.assertIn("committed_durability_uncertain", spec)
         self.assertIn("entry barrier", spec)
         self.assertIn("refresh_and_publish", spec)
+        self.assertIn("create_config", header)
+        self.assertIn(".baas-create-", source)
+        self.assertIn("BAAS_service_file_resource_store_tests", workflow)
 
     def test_preserved_setup_toml_shape_is_tomllib_readable(self) -> None:
         merged = '''

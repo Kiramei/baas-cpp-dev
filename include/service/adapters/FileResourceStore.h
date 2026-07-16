@@ -39,6 +39,16 @@ struct ConfigCopyResult {
     }
 };
 
+struct ConfigCreateResult {
+    std::string serial;
+    ConfigCommandError error{ConfigCommandError::none};
+
+    [[nodiscard]] explicit operator bool() const noexcept
+    {
+        return error == ConfigCommandError::none;
+    }
+};
+
 struct ConfigRemoveResult {
     ConfigCommandError error{ConfigCommandError::none};
 
@@ -72,6 +82,7 @@ struct ResourceRefreshResult {
 
 using ConfigCopyCommitClaim =
     std::function<bool(std::string_view serial, std::string_view name)>;
+using ConfigCreateCommitClaim = std::function<bool(std::string_view serial)>;
 using ConfigRemoveCommitClaim = std::function<bool()>;
 
 struct FileResourceStoreDependencies {
@@ -86,10 +97,15 @@ struct FileResourceStoreDependencies {
         std::string_view bytes)>;
     using PostCommitDurabilityCheck =
         std::function<bool(const std::filesystem::path& parent_directory)>;
+    // Deterministic transaction fault injection. Returning true or throwing
+    // fails before the named create-config commit step; production leaves this
+    // empty.
+    using ConfigCreateFaultInjector = std::function<bool(std::string_view step)>;
 
     Clock clock;
     AtomicWriter atomic_writer;
     PostCommitDurabilityCheck post_commit_durability_check;
+    ConfigCreateFaultInjector config_create_fault_injector;
 };
 
 // Production ResourceStore for resources owned by the BAAS project root.
@@ -142,9 +158,14 @@ public:
 
     [[nodiscard]] const std::filesystem::path& project_root() const noexcept;
 
-    // Exact production backends for Python trigger commands copy_config and
-    // remove_config*. Structural changes share the patch mutation gate and
-    // invalidate cached snapshots before becoming observable.
+    // Exact production backends for Python trigger commands add_config*,
+    // copy_config, and remove_config*. Structural changes share the patch
+    // mutation gate and invalidate cached snapshots before becoming observable.
+    [[nodiscard]] ConfigCreateResult create_config(
+        std::string_view name,
+        std::string_view server,
+        std::stop_token stop,
+        ConfigCreateCommitClaim claim = {});
     [[nodiscard]] ConfigCopyResult copy_config(
         std::string_view source_id,
         std::stop_token stop,

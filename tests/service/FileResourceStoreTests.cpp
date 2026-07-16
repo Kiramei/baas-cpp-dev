@@ -6,6 +6,7 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cstdint>
 #include <cwctype>
 #include <filesystem>
 #include <fstream>
@@ -23,6 +24,9 @@
 #define NOMINMAX
 #endif
 #include <Windows.h>
+#include <process.h>
+#else
+#include <unistd.h>
 #endif
 
 namespace {
@@ -33,6 +37,15 @@ namespace adapters = baas::service::adapters;
 namespace channels = baas::service::channels;
 
 std::atomic<int> failures{};
+
+std::uint64_t current_process_id() noexcept
+{
+#if defined(_WIN32)
+    return static_cast<std::uint64_t>(::_getpid());
+#else
+    return static_cast<std::uint64_t>(::getpid());
+#endif
+}
 
 void check(const bool condition, const std::string& message)
 {
@@ -71,9 +84,14 @@ public:
     TempProject()
     {
         static std::atomic<std::uint64_t> sequence{};
+        const auto timestamp = std::chrono::steady_clock::now()
+                                   .time_since_epoch()
+                                   .count();
         root = std::filesystem::temp_directory_path()
-            / ("baas-file-resource-store-" + std::to_string(sequence.fetch_add(1)));
-        std::filesystem::remove_all(root);
+            / ("baas-file-resource-store-"
+               + std::to_string(current_process_id()) + "-"
+               + std::to_string(timestamp) + "-"
+               + std::to_string(sequence.fetch_add(1)));
         std::filesystem::create_directories(root / "config");
     }
 
@@ -1224,6 +1242,249 @@ void test_setup_toml_scalar_table_conflicts_fail_closed()
           "unrelated child arrays-of-tables do not block a projected scalar");
 }
 
+void test_create_config_transaction_concurrency_cancellation_and_cleanup()
+{
+    TempProject project;
+    adapters::FileResourceStoreDependencies create_dependencies;
+    create_dependencies.clock = [] { return 7'000.9; };
+    adapters::FileResourceStore store(
+        project.root, std::move(create_dependencies));
+
+    std::optional<adapters::ConfigCreateResult> first;
+    std::optional<adapters::ConfigCreateResult> second;
+    std::thread one([&] { first = store.create_config("one", "日服", {}); });
+    std::thread two([&] { second = store.create_config("two", "官服", {}); });
+    one.join();
+    two.join();
+    check(first && second && *first && *second
+              && first->serial != second->serial
+              && ((first->serial == "7000" && second->serial == "7001")
+                  || (first->serial == "7001" && second->serial == "7000")),
+          "concurrent creates serialize and allocate distinct millisecond ids");
+    const auto listed = store.config_list({});
+    check(listed && Json::parse(listed->data_json)
+                        == Json::array({"7000", "7001"}),
+          "both committed creates become atomically list-visible");
+    for (const auto& result : {*first, *second}) {
+        auto config = store.pull(config_key(result.serial), {});
+        auto event = store.pull(event_key(result.serial), {});
+        check(config && event && Json::parse(event->data_json).size() == 26
+                  && std::filesystem::is_regular_file(
+                      project.root / "config" / result.serial / "switch.json"),
+              "create publishes complete config/event/switch resources");
+    }
+
+    const auto rejected = store.create_config(
+        "rejected", "日服", {}, [](const std::string_view) { return false; });
+    check(rejected.error == adapters::ConfigCommandError::cancelled
+              && !std::filesystem::exists(project.root / "config" / "7002"),
+          "a rejected commit claim leaves no visible directory");
+    bool private_left{};
+    for (const auto& child :
+         std::filesystem::directory_iterator(project.root / "config")) {
+        private_left = private_left
+            || child.path().filename().string().starts_with(".baas-");
+    }
+    check(!private_left, "claim rejection reclaims every private staging sibling");
+
+    std::stop_source cancelled;
+    cancelled.request_stop();
+    const auto pre_cancelled = store.create_config(
+        "cancelled", "日服", cancelled.get_token());
+    check(pre_cancelled.error == adapters::ConfigCommandError::cancelled,
+          "pre-commit cancellation performs no create mutation");
+
+    std::stop_source late_stop;
+    std::optional<std::thread> canceller;
+    const auto committed = store.create_config(
+        "committed", "日服", late_stop.get_token(),
+        [&](const std::string_view) {
+            canceller.emplace([&] {
+                static_cast<void>(late_stop.request_stop());
+            });
+            return true;
+        });
+    if (canceller) canceller->join();
+    check(committed && late_stop.stop_requested()
+              && std::filesystem::is_directory(
+                  project.root / "config" / committed.serial),
+          "commit claim linearizes before a concurrent late cancellation");
+
+    TempProject failed_project;
+    std::filesystem::create_directory(
+        failed_project.root / "config" / "static.json");
+    adapters::FileResourceStore failed_store(
+        failed_project.root, dependencies());
+    const auto failed = failed_store.create_config("bad", "日服", {});
+    check(failed.error == adapters::ConfigCommandError::invalid_data
+              && Json::parse(failed_store.config_list({})->data_json).empty(),
+          "invalid static target fails closed before config publication");
+    private_left = false;
+    for (const auto& child :
+         std::filesystem::directory_iterator(failed_project.root / "config")) {
+        private_left = private_left
+            || child.path().filename().string().starts_with(".baas-");
+    }
+    check(!private_left, "static initialization failure cleans private staging");
+
+    TempProject invalid_project;
+    adapters::FileResourceStore invalid_store(
+        invalid_project.root, dependencies());
+    const auto before_invalid = invalid_store.config_list({});
+    for (const auto& [name, server] :
+         std::vector<std::pair<std::string, std::string>>{
+             {"", "日服"}, {" \t\r\n", "日服"},
+             {"\xE3\x80\x80", "日服"}, {"valid", "unknown"}}) {
+        const auto rejected_invalid = invalid_store.create_config(name, server, {});
+        check(rejected_invalid.error == adapters::ConfigCommandError::invalid_data,
+              "empty/Unicode-whitespace names and unknown servers fail closed");
+    }
+    const auto after_invalid = invalid_store.config_list({});
+    check(before_invalid && after_invalid
+              && before_invalid->data_json == after_invalid->data_json
+              && !std::filesystem::exists(invalid_project.root / "error.log")
+              && !std::filesystem::exists(invalid_project.root / "config" / "static.json"),
+          "invalid create inputs have zero filesystem and error-log side effects");
+
+    TempProject frozen_project;
+    for (std::size_t index = 0; index < 1'024; ++index) {
+        std::filesystem::create_directory(
+            frozen_project.root / "config" / std::to_string(10'000 + index));
+    }
+    adapters::FileResourceStoreDependencies frozen_dependencies;
+    frozen_dependencies.clock = [] { return 10'000.0; };
+    adapters::FileResourceStore frozen_store(
+        frozen_project.root, std::move(frozen_dependencies));
+    const auto frozen = frozen_store.create_config("bounded", "日服", {});
+    check(frozen.error == adapters::ConfigCommandError::conflict
+              && !std::filesystem::exists(
+                  frozen_project.root / "config" / "static.json"),
+          "a frozen/rolled-back clock probes at most 1,024 ids then fails without side effects");
+
+    TempProject full_project;
+    full_project.add_pair(
+        "only", R"({"name":"only","server":"日服"})", "[]");
+    channels::ResourceStoreLimits one_limit;
+    one_limit.max_resources = 1;
+    adapters::FileResourceStore full_store(
+        full_project.root, dependencies(), one_limit);
+    const auto full = full_store.create_config("overflow", "日服", {});
+    const auto full_copy = full_store.copy_config("only", {});
+    check(full.error == adapters::ConfigCommandError::capacity
+              && full_copy.error == adapters::ConfigCommandError::capacity
+              && Json::parse(full_store.config_list({})->data_json)
+                     == Json::array({"only"})
+              && !std::filesystem::exists(
+                  full_project.root / "config" / "static.json"),
+          "create enforces max_resources before staging or static mutation");
+
+    TempProject missing_static_failure_project;
+    adapters::FileResourceStoreDependencies missing_static_failure_dependencies;
+    missing_static_failure_dependencies.clock = [] { return 11'000.0; };
+    missing_static_failure_dependencies.atomic_writer =
+        [](const std::filesystem::path&, const std::string_view) {
+            return adapters::AtomicWriteResult::not_committed;
+        };
+    adapters::FileResourceStore missing_static_failure_store(
+        missing_static_failure_project.root,
+        std::move(missing_static_failure_dependencies));
+    const auto missing_static_failure = missing_static_failure_store.create_config(
+        "atomic-failure", "日服", {});
+    check(missing_static_failure.error
+                  == adapters::ConfigCommandError::internal_error
+              && !std::filesystem::exists(
+                  missing_static_failure_project.root / "config" / "static.json")
+              && !std::filesystem::exists(
+                  missing_static_failure_project.root / "config" / "11000"),
+          "missing-static precommit failure exposes neither partial JSON nor config");
+
+    TempProject injected_project;
+    const std::string original_static = R"({"sentinel":"preserve"})";
+    write_bytes(injected_project.root / "config" / "static.json", original_static);
+    adapters::FileResourceStoreDependencies injected_dependencies;
+    injected_dependencies.clock = [] { return 12'000.0; };
+    injected_dependencies.config_create_fault_injector =
+        [](const std::string_view step) {
+            return step == "before_directory_commit";
+        };
+    adapters::FileResourceStore injected_store(
+        injected_project.root, std::move(injected_dependencies));
+    const auto injected = injected_store.create_config("fault", "日服", {});
+    const auto upgraded_static = Json::parse(read_bytes(
+        injected_project.root / "config" / "static.json"));
+    check(injected.error == adapters::ConfigCommandError::internal_error
+              && upgraded_static.size() == 25
+              && upgraded_static.contains("create_item_order")
+              && !std::filesystem::exists(
+                  injected_project.root / "config" / "12000"),
+          "static metadata upgrade commits independently before directory publication");
+    private_left = false;
+    for (const auto& child :
+         std::filesystem::directory_iterator(injected_project.root / "config")) {
+        private_left = private_left
+            || child.path().filename().string().starts_with(".baas-");
+    }
+    check(!private_left && !std::filesystem::exists(injected_project.root / "error.log"),
+          "fault injection reclaims staging/backup and emits no error.log");
+
+    TempProject throwing_fault_project;
+    adapters::FileResourceStoreDependencies throwing_fault_dependencies;
+    throwing_fault_dependencies.clock = [] { return 13'000.0; };
+    throwing_fault_dependencies.config_create_fault_injector =
+        [](const std::string_view step) -> bool {
+            if (step == "before_static_commit") {
+                throw std::bad_alloc{};
+            }
+            return false;
+        };
+    adapters::FileResourceStore throwing_fault_store(
+        throwing_fault_project.root, std::move(throwing_fault_dependencies));
+    const auto throwing_fault = throwing_fault_store.create_config(
+        "throwing-fault", "日服", {});
+    private_left = false;
+    for (const auto& child : std::filesystem::directory_iterator(
+             throwing_fault_project.root / "config")) {
+        private_left = private_left
+            || child.path().filename().string().starts_with(".baas-");
+    }
+    check(throwing_fault.error == adapters::ConfigCommandError::internal_error
+              && !private_left
+              && !std::filesystem::exists(
+                  throwing_fault_project.root / "config" / "13000")
+              && !std::filesystem::exists(
+                  throwing_fault_project.root / "config" / "static.json"),
+          "an exception after staging creation reclaims the complete transaction");
+
+    TempProject missing_root_project;
+    std::filesystem::remove(missing_root_project.root / "config");
+    adapters::FileResourceStore missing_root_store(
+        missing_root_project.root, dependencies());
+    const auto missing_root = missing_root_store.create_config(
+        "never", "日服", {});
+    check(missing_root.error == adapters::ConfigCommandError::invalid_data
+              && !std::filesystem::exists(missing_root_project.root / "config"),
+          "create requires the AuthOwner-protected config-root precondition");
+
+    TempProject reparse_project;
+    const auto external = reparse_project.root / "external-config";
+    std::filesystem::create_directory(external);
+    std::filesystem::remove(reparse_project.root / "config");
+    std::error_code link_error;
+    std::filesystem::create_directory_symlink(
+        external, reparse_project.root / "config", link_error);
+    if (!link_error) {
+        bool rejected_reparse{};
+        try {
+            adapters::FileResourceStore unsafe(reparse_project.root, dependencies());
+        } catch (const std::invalid_argument&) {
+            rejected_reparse = true;
+        }
+        check(rejected_reparse
+                  && std::filesystem::is_empty(external),
+              "a reparse/symlink config root is rejected before create side effects");
+    }
+}
+
 }  // namespace
 
 int main()
@@ -1252,6 +1513,7 @@ int main()
         test_setup_toml_legacy_proxy_projection();
         test_setup_toml_eof_insertion_keeps_valid_line_boundaries();
         test_setup_toml_scalar_table_conflicts_fail_closed();
+        test_create_config_transaction_concurrency_cancellation_and_cleanup();
         test_refresh_and_publish();
     } catch (const std::exception& error) {
         ++failures;
