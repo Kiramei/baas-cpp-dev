@@ -480,9 +480,17 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install --yes autoconf automake build-essential libtool ninja-build
-          android_sdk="${ANDROID_SDK_ROOT:-${ANDROID_HOME}}"
-          test -n "${android_sdk}"
-          sdkmanager 'ndk;29.0.13846066'
+          android_sdk="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}"
+          if [[ -z "${android_sdk}" ]]; then
+            echo 'Neither ANDROID_SDK_ROOT nor ANDROID_HOME is set.' >&2
+            exit 1
+          fi
+          sdkmanager="${android_sdk}/cmdline-tools/latest/bin/sdkmanager"
+          if [[ ! -x "${sdkmanager}" ]]; then
+            echo "Could not find executable sdkmanager at ${sdkmanager}." >&2
+            exit 1
+          fi
+          "${sdkmanager}" --sdk_root="${android_sdk}" 'ndk;29.0.13846066'
           test -d "${android_sdk}/ndk/29.0.13846066"
           echo "ANDROID_NDK_HOME=${android_sdk}/ndk/29.0.13846066" >> "$GITHUB_ENV"
 
