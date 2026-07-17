@@ -48,7 +48,7 @@ struct RuntimeResourceSnapshotLoaderLimits final {
     std::size_t max_string_bytes{1'024};
     std::size_t max_json_depth{8};
     std::size_t max_json_nodes{131'072};
-    std::size_t max_work{1536U * 1024U * 1024U};
+    std::size_t max_work{2ULL * 1024ULL * 1024ULL * 1024ULL};
 };
 
 struct RuntimeResourceSnapshotLoadResult final {

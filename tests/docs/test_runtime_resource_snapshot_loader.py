@@ -18,6 +18,9 @@ class RuntimeResourceSnapshotLoaderContractTests(unittest.TestCase):
         cls.docs = (
             ROOT / "docs/script-runtime/RUNTIME_RESOURCE_SNAPSHOT_LOADER.md"
         ).read_text(encoding="utf-8")
+        cls.foundation_ci = (
+            ROOT / ".github/workflows/foundation-runtime.yml"
+        ).read_text(encoding="utf-8")
 
     def test_pathless_capability_and_external_manifest(self) -> None:
         self.assertIn("const repository::RuntimeRepositoryReadView& resources", self.header)
@@ -42,6 +45,27 @@ class RuntimeResourceSnapshotLoaderContractTests(unittest.TestCase):
         self.assertNotIn("resource/", self.cmake)
         self.assertIn("remain external", self.docs)
         self.assertIn("must never be\naccepted from a browser request", self.docs)
+
+    def test_foundation_ci_builds_host_tests_and_android_production_target(self) -> None:
+        self.assertIn(
+            "-DBUILD_RUNTIME_RESOURCE_SNAPSHOT_LOADER_TESTS=ON",
+            self.foundation_ci,
+        )
+        self.assertIn(
+            "BAAS_runtime_resource_snapshot_loader_tests", self.foundation_ci
+        )
+        self.assertIn(
+            "-DBUILD_RUNTIME_RESOURCE_SNAPSHOT_LOADER=ON", self.foundation_ci
+        )
+        self.assertIn(
+            "BAAS_runtime_repository_updater BAAS_service_runtime_task_owner\n"
+            "          BAAS_runtime_resource_snapshot_loader\n",
+            self.foundation_ci,
+        )
+        self.assertIn(
+            "docs/script-runtime/RUNTIME_RESOURCE_SNAPSHOT_LOADER.md",
+            self.foundation_ci,
+        )
 
 
 if __name__ == "__main__":

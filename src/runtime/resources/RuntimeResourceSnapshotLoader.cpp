@@ -137,7 +137,10 @@ struct DuplicateKeyState final {
             fail(RuntimeResourceSnapshotLoadError::invalid_manifest);
         return accepted;
     };
-    auto result = Json::parse(text, bounded_callback, true, true);
+    // Repository manifests are strict JSON. In particular, do not enable
+    // nlohmann's optional C/C++ comment extension here: accepting it would
+    // make the signed package grammar differ between validators.
+    auto result = Json::parse(text, bounded_callback, true, false);
     if (state.duplicate)
         fail(RuntimeResourceSnapshotLoadError::invalid_manifest);
     return result;
@@ -385,8 +388,10 @@ load_runtime_resource_snapshot(const repository::RuntimeRepositoryReadView& reso
                                 std::move(entry.sha256), std::move(owned)});
         }
         check_cancelled(stop_token);
-        // ResourceSnapshot performs an independent digest pass and defensive
-        // copy; reserve that linear work before publication begins.
+        // ResourceSnapshot performs an independent digest pass and then a
+        // separate defensive copy. Reserve both linear passes before
+        // publication begins; the repository read pass was charged above.
+        work.charge(total_bytes);
         work.charge(total_bytes);
         invoke_hook(RuntimeResourceSnapshotLoaderHookPoint::before_snapshot_build);
         snapshot_resources::ResourceSnapshotLimits snapshot_limits;

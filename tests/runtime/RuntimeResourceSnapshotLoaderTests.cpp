@@ -272,11 +272,12 @@ void test_exact_schema_and_manifest_identity() {
          {R"({"schema":"baas.resources/v1","entries":[],"extra":true})",
           R"({"schema":"baas.resources/v1"})",
           R"({"schema":"baas.resources/v1","schema":"baas.resources/v1","entries":[]})",
+          R"({"schema":"baas.resources/v1",/* comments are not JSON */"entries":[]})",
           R"({"schema":"baas.resources/v2","entries":[]})"}) {
         RepositoryFixture fixture{std::string{manifest}, files};
         expect_error(loader::load_runtime_resource_snapshot(fixture.resources(), {"CN", {}}),
                      loader::RuntimeResourceSnapshotLoadError::invalid_manifest,
-                     "top-level field set, duplicates, and schema must be exact");
+                     "top-level field set, duplicate keys, JSON grammar, and schema must be exact");
     }
 
     auto unknown = package_manifest({entries.front()});
@@ -381,7 +382,8 @@ void throw_second_payload_allocation(const loader::RuntimeResourceSnapshotLoader
 
 void test_limits_cancel_oom_and_wrong_capability() {
     const auto entries = valid_entries();
-    RepositoryFixture fixture{package_manifest(entries), fixture_files(entries)};
+    const auto manifest = package_manifest(entries);
+    RepositoryFixture fixture{manifest, fixture_files(entries)};
 
     loader::RuntimeResourceSnapshotLoaderLimits limits;
     limits.max_manifest_bytes = 1;
@@ -414,6 +416,21 @@ void test_limits_cancel_oom_and_wrong_capability() {
     expect_error(loader::load_runtime_resource_snapshot(fixture.resources(), {"CN", {}}, limits),
                  loader::RuntimeResourceSnapshotLoadError::work_limit_exceeded,
                  "work limit must bind total work");
+    std::size_t exact_work = manifest.size() * 3U + entries.size();
+    for (const auto& entry : entries) {
+        exact_work += entry.id.size() + entry.path.size() + entry.media_type.size() +
+                      sha256(entry.bytes).size() + entry.locale.size() + entry.activity.size();
+        exact_work += entry.bytes.size() * 3U;
+    }
+    limits = {};
+    limits.max_work = exact_work - 1U;
+    expect_error(loader::load_runtime_resource_snapshot(fixture.resources(), {"CN", {}}, limits),
+                 loader::RuntimeResourceSnapshotLoadError::work_limit_exceeded,
+                 "work budget must include read, snapshot digest, and defensive copy passes");
+    limits.max_work = exact_work;
+    check(static_cast<bool>(
+              loader::load_runtime_resource_snapshot(fixture.resources(), {"CN", {}}, limits)),
+          "exact cumulative work budget must permit publication");
     limits = {};
     limits.max_json_depth = 1;
     expect_error(loader::load_runtime_resource_snapshot(fixture.resources(), {"CN", {}}, limits),
