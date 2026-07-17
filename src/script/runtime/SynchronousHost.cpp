@@ -1210,6 +1210,10 @@ bool HostReleaseDispatcher::detach_context_for_destruction(Heap& heap) noexcept
 {
     if (!impl_->attached || heap.identity() != impl_->context_id)
         return false;
+    // Refuse before changing dispatcher admission. The Heap repeats this
+    // check at the destructive boundary, so evaluator callbacks cannot turn a
+    // rejected re-entrant teardown into a half-closed dispatcher.
+    if (heap.evaluator_boundary_active()) return false;
     {
         const std::scoped_lock lock(impl_->control_mutex);
         if (impl_->context_detached) return true;

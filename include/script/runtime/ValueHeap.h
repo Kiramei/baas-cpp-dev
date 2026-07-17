@@ -18,6 +18,7 @@
 namespace baas::script::runtime {
 
 class HostReleaseDispatcher;
+class EvaluatorHeapBoundary;
 
 enum class RuntimeErrorCode {
     TypeMismatch,
@@ -43,6 +44,7 @@ enum class RuntimeErrorCode {
     JsonByteLimitExceeded,
     JsonWorkLimitExceeded,
     JsonDuplicateKey,
+    HeapBusy,
 };
 
 [[nodiscard]] std::string_view runtime_error_code_name(RuntimeErrorCode code) noexcept;
@@ -482,6 +484,7 @@ public:
 
 private:
     friend class HostReleaseDispatcher;
+    friend class EvaluatorHeapBoundary;
     struct Impl;
     Impl* impl_;
 
@@ -491,6 +494,9 @@ private:
     // or silently discard a non-empty detached release token.
     [[nodiscard]] DetachedHostReleases detach_host_releases();
     void teardown_for_dispatcher();
+    void enter_evaluator_boundary() noexcept;
+    void leave_evaluator_boundary() noexcept;
+    [[nodiscard]] bool evaluator_boundary_active() const noexcept;
     [[nodiscard]] std::size_t pending_host_release_count() const noexcept;
 };
 

@@ -68,6 +68,7 @@ EXPECTED_ERRORS = (
     ("JsonByteLimitExceeded", "RT021_JSON_BYTE_LIMIT_EXCEEDED"),
     ("JsonWorkLimitExceeded", "RT022_JSON_WORK_LIMIT_EXCEEDED"),
     ("JsonDuplicateKey", "RT023_JSON_DUPLICATE_KEY"),
+    ("HeapBusy", "RT024_HEAP_BUSY"),
 )
 
 

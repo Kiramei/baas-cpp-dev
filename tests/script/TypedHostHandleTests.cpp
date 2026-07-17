@@ -388,20 +388,32 @@ void test_evaluator_vertical_and_close()
 void test_evaluator_release_drain_reentry_boundary()
 {
     runtime::SynchronousEvaluator* active{};
+    runtime::HostReleaseDispatcher* dispatcher_ptr{};
     bool nested_invocation_rejected{};
     bool nested_close{};
+    bool nested_heap_teardown_rejected{};
+    bool nested_dispatcher_teardown{};
     auto dispatcher = std::make_shared<runtime::HostReleaseDispatcher>(
         117, std::vector<runtime::HostReleaseAdapter>{
             {31, [&](const runtime::HostHandleValue&) {
                  try {
                      static_cast<void>(active->invoke_export("main", "run"));
-                 } catch (const runtime::EvaluationError& error) {
-                     nested_invocation_rejected = error.code()
-                         == runtime::LanguageErrorCode::HostUnavailable;
+                } catch (const runtime::EvaluationError& error) {
+                    nested_invocation_rejected = error.code()
+                        == runtime::LanguageErrorCode::HostUnavailable;
                  }
                  nested_close = active->close();
+                 try {
+                     static_cast<void>(active->heap().teardown());
+                 } catch (const runtime::RuntimeError& error) {
+                     nested_heap_teardown_rejected = error.code()
+                         == runtime::RuntimeErrorCode::HeapBusy;
+                 }
+                 nested_dispatcher_teardown =
+                     dispatcher_ptr->teardown(active->heap());
                  return true;
              }}});
+    dispatcher_ptr = dispatcher.get();
     runtime::SynchronousHostOptions options;
     options.metadata =
         std::make_shared<const runtime::HostModuleRegistry>(
@@ -434,9 +446,18 @@ void test_evaluator_release_drain_reentry_boundary()
     } catch (...) {
         outer_result_valid = false;
     }
-    check(nested_invocation_rejected && !nested_close && outer_result_valid
+    check(nested_invocation_rejected && !nested_close
+              && nested_heap_teardown_rejected
+              && !nested_dispatcher_teardown && outer_result_valid
               && dispatcher->stats().pending_releases == 0,
-          "release adapter cannot reenter invocation/close or invalidate the outer result");
+          "release adapter cannot reenter invocation/close/teardown or invalidate the outer result");
+
+    auto next_grant = dispatcher->adopt(dispatcher->reserve(
+        runtime::HostHandleTypeId::Resource, 31, 8));
+    const auto next_handle = dispatcher->publish(
+        evaluator.heap(), next_grant, runtime::HostHandleTypeId::Resource);
+    check(evaluator.heap().close_host_handle(next_handle.as_heap_ref()),
+          "rejected dispatcher teardown preserves Host-handle admission");
     const auto next = evaluator.invoke_export("main", "run");
     check(evaluator.heap().map_entries(next.value.as_heap_ref())[0].second.as_integer() == 2,
           "release-drain reentry rejection leaves the evaluator open and usable");

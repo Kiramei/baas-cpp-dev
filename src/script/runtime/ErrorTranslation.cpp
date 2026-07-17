@@ -10,7 +10,8 @@ LanguageErrorDescriptor translate_runtime_error_code(const RuntimeErrorCode code
         case CrossHeapReference:
         case StaleReference:
         case CellKindMismatch:
-        case HeapTornDown: return {LanguageErrorCode::InternalInvariant};
+        case HeapTornDown:
+        case HeapBusy: return {LanguageErrorCode::InternalInvariant};
         case MemoryLimitExceeded:
         case CellLimitExceeded:
         case SingleAllocationExceeded:

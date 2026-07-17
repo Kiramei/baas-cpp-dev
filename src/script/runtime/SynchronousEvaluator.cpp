@@ -25,6 +25,24 @@
 #include <vector>
 
 namespace baas::script::runtime {
+
+// Internal RAII capability used by evaluator entry points. Heap teardown is a
+// public legacy API, so the Heap itself must enforce this boundary rather than
+// relying only on evaluator re-entry flags.
+class EvaluatorHeapBoundary final {
+public:
+    explicit EvaluatorHeapBoundary(Heap& heap) noexcept : heap_(&heap)
+    {
+        heap_->enter_evaluator_boundary();
+    }
+    ~EvaluatorHeapBoundary() { heap_->leave_evaluator_boundary(); }
+
+    EvaluatorHeapBoundary(const EvaluatorHeapBoundary&) = delete;
+    EvaluatorHeapBoundary& operator=(const EvaluatorHeapBoundary&) = delete;
+
+private:
+    Heap* heap_;
+};
 namespace {
 
 using namespace ast;
@@ -374,6 +392,7 @@ struct SynchronousEvaluator::Impl {
     std::vector<ActiveFrame> active_frames;
     std::vector<Activation> activations;
     Heap::RootId invocation_result_root{};
+    Heap::RootId invocation_staging_root{};
     std::thread::id owner_thread{std::this_thread::get_id()};
     bool host_call_active{};
     bool execution_active{};
@@ -402,6 +421,10 @@ struct SynchronousEvaluator::Impl {
         // entry-function result never needs to allocate after script effects
         // have already committed.
         invocation_result_root = heap.add_root(Value::null());
+        // A distinct pre-admitted root protects the prospective result across
+        // the final cancellation/deadline probe without replacing the last
+        // successfully published result.
+        invocation_staging_root = heap.add_root(Value::null());
         configure_host();
     }
 
@@ -1698,6 +1721,58 @@ struct SynchronousEvaluator::Impl {
         if (specifier.kind != ModuleKind::Package)
             boundary_fail(LanguageErrorCode::HostUnavailable,
                           "Host modules cannot be evaluator entries");
+        struct StagingGuard final {
+            Impl& evaluator;
+            bool staged{};
+
+            explicit StagingGuard(Impl& value) noexcept : evaluator(value) {}
+
+            void stage(const Value value)
+            {
+                if (!evaluator.heap.update_root(
+                        evaluator.invocation_staging_root, value)) {
+                    evaluator.fail(
+                        LanguageErrorCode::InternalInvariant,
+                        "entry invocation staging root is absent");
+                }
+                staged = true;
+            }
+
+            void publish(const Value value)
+            {
+                if (!evaluator.heap.update_root(
+                        evaluator.invocation_result_root, value)) {
+                    evaluator.fail(
+                        LanguageErrorCode::InternalInvariant,
+                        "entry invocation result root is absent");
+                }
+                clear();
+            }
+
+            void clear()
+            {
+                if (!staged) return;
+                if (!evaluator.heap.update_root(
+                        evaluator.invocation_staging_root, Value::null())) {
+                    evaluator.fail(
+                        LanguageErrorCode::InternalInvariant,
+                        "entry invocation staging root is absent");
+                }
+                staged = false;
+            }
+
+            ~StagingGuard()
+            {
+                if (!staged) return;
+                try {
+                    if (!evaluator.heap.update_root(
+                            evaluator.invocation_staging_root, Value::null()))
+                        std::terminate();
+                } catch (...) {
+                    std::terminate();
+                }
+            }
+        } staging(*this);
         try {
             check_execution_safe_point({});
             static_cast<void>(initialize_module(specifier.canonical_id, {}));
@@ -1705,10 +1780,9 @@ struct SynchronousEvaluator::Impl {
                 specifier.canonical_id, export_name);
             const std::vector<CallArgument> arguments;
             const auto result = invoke(callee, arguments, {}, {});
+            staging.stage(result);
             check_execution_safe_point({});
-            if (!heap.update_root(invocation_result_root, result))
-                fail(LanguageErrorCode::InternalInvariant,
-                     "entry invocation result root is absent");
+            staging.publish(result);
             return {result, stats};
         } catch (const ScriptUnwind& unwind) {
             const auto& metadata =
@@ -3321,6 +3395,7 @@ EvaluationResult SynchronousEvaluator::execute(const std::string_view entry_modu
             LanguageErrorCode::HostUnavailable,
             "synchronous evaluator public-boundary re-entry is forbidden",
             {}, {}, impl_->stats.steps);
+    EvaluatorHeapBoundary heap_boundary{impl_->heap};
     struct BoundaryGuard final {
         Impl* impl;
         explicit BoundaryGuard(Impl* value) noexcept : impl(value)
@@ -3388,6 +3463,7 @@ EvaluationInvocationResult SynchronousEvaluator::invoke_export(
             LanguageErrorCode::HostUnavailable,
             "synchronous evaluator public-boundary re-entry is forbidden",
             {}, {}, impl_->stats.steps);
+    EvaluatorHeapBoundary heap_boundary{impl_->heap};
     struct BoundaryGuard final {
         Impl* impl;
         explicit BoundaryGuard(Impl* value) noexcept : impl(value)

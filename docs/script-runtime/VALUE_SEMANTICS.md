@@ -240,6 +240,11 @@ or another reachable cell. Collection reclaims unreachable cycles. Reuse of a
 slot increments its generation, and access through an obsolete generation MUST
 fail as `RT003_STALE_REFERENCE`. Teardown invalidates the heap and later heap
 operations MUST fail as `RT015_HEAP_TORN_DOWN`.
+While an evaluator owns an active public execution boundary, including its
+post-execution Host release drain, an attempted Heap teardown MUST fail as
+`RT024_HEAP_BUSY` without invalidating cells or changing Host dispatcher
+admission. The owning evaluator may tear down the Heap only after that boundary
+has returned.
 
 Allocation and collection may occur during mutation. The runtime MUST root
 inputs and intermediates across those points. A failed append, map update,
@@ -394,6 +399,7 @@ error contract:
 | `RT021_JSON_BYTE_LIMIT_EXCEEDED` | bridge logical total bytes or overflow |
 | `RT022_JSON_WORK_LIMIT_EXCEEDED` | bridge node/edge work limit |
 | `RT023_JSON_DUPLICATE_KEY` | repeated in-memory JSON object key |
+| `RT024_HEAP_BUSY` | teardown attempted during a protected evaluator boundary |
 
 Implementations MUST preserve these exact spellings in
 `runtime_error_code_name`. Adding a new stable error requires a new number; an

@@ -112,6 +112,64 @@ private:
     mutable std::atomic<bool> unexpected_{};
 };
 
+class BoundaryCollectionProbe final : public runtime::HostCancellationProbe {
+public:
+    void attach(runtime::SynchronousEvaluator& evaluator) noexcept
+    {
+        evaluator_ = &evaluator;
+    }
+
+    void arm_after(const std::size_t polls, const bool cancel) noexcept
+    {
+        trigger_.store(
+            observed_.load(std::memory_order_relaxed) + polls,
+            std::memory_order_relaxed);
+        cancel_.store(cancel, std::memory_order_relaxed);
+    }
+
+    [[nodiscard]] bool cancelled() const noexcept override
+    {
+        const auto observed =
+            observed_.fetch_add(1, std::memory_order_relaxed) + 1;
+        if (observed != trigger_.load(std::memory_order_relaxed)) return false;
+        try {
+            evaluator_->heap().collect();
+            collections_.fetch_add(1, std::memory_order_relaxed);
+        } catch (...) {
+            collection_failed_.store(true, std::memory_order_relaxed);
+        }
+        return cancel_.load(std::memory_order_relaxed);
+    }
+
+    [[nodiscard]] bool deadline_exceeded() const noexcept override
+    {
+        return false;
+    }
+
+    [[nodiscard]] std::size_t polls() const noexcept
+    {
+        return observed_.load(std::memory_order_relaxed);
+    }
+
+    [[nodiscard]] std::size_t collections() const noexcept
+    {
+        return collections_.load(std::memory_order_relaxed);
+    }
+
+    [[nodiscard]] bool collection_failed() const noexcept
+    {
+        return collection_failed_.load(std::memory_order_relaxed);
+    }
+
+private:
+    runtime::SynchronousEvaluator* evaluator_{};
+    mutable std::atomic<std::size_t> observed_{};
+    mutable std::atomic<std::size_t> trigger_{};
+    mutable std::atomic<std::size_t> collections_{};
+    mutable std::atomic<bool> cancel_{};
+    mutable std::atomic<bool> collection_failed_{};
+};
+
 void check(const bool condition, const std::string_view message)
 {
     if (!condition) {
@@ -314,37 +372,53 @@ void test_exact_entry_export_invocation()
 
 void test_entry_invocation_transactional_publication_and_reentry()
 {
-    auto publication_probe = std::make_shared<ControlledProbe>(0);
+    auto publication_probe = std::make_shared<BoundaryCollectionProbe>();
     runtime::SynchronousEvaluator publication({{
         "main",
         "let sequence = 0;\n"
         "fn run() { sequence += 1; return {\"sequence\": sequence}; }\n",
     }}, {}, {}, {}, nullptr, publication_probe);
+    publication_probe->attach(publication);
     static_cast<void>(publication.invoke_export("main", "run"));
     const auto polls_after_first = publication_probe->polls();
-    const auto prior = publication.invoke_export("main", "run");
+    static_cast<void>(publication.invoke_export("main", "run"));
     const auto polls_after_second = publication_probe->polls();
     const auto steady_invocation_polls = polls_after_second - polls_after_first;
     check(steady_invocation_polls != 0,
           "entry invocation exposes at least one cancellation safe point");
-    publication_probe->set_cancel_after(
-        polls_after_second + steady_invocation_polls);
+
+    publication_probe->arm_after(steady_invocation_polls, false);
+    const auto collected_success = publication.invoke_export("main", "run");
+    bool collected_success_valid{};
+    try {
+        const auto entries = publication.heap().map_entries(
+            collected_success.value.as_heap_ref());
+        collected_success_valid = entries.size() == 1
+            && entries[0].second.as_integer() == 3;
+    } catch (...) {
+        collected_success_valid = false;
+    }
+    check(publication_probe->collections() == 1
+              && !publication_probe->collection_failed()
+              && collected_success_valid,
+          "the pre-admitted staging root protects a result when the final probe collects");
+
+    publication_probe->arm_after(steady_invocation_polls, true);
     expect_error(runtime::LanguageErrorCode::Cancelled,
                  [&] { static_cast<void>(publication.invoke_export("main", "run")); },
                  "final-boundary cancellation rejects an otherwise completed entry call");
-    publication_probe->set_cancel_after(0);
     publication.heap().collect();
     bool prior_survived = false;
     try {
         const auto entries = publication.heap().map_entries(
-            prior.value.as_heap_ref());
+            collected_success.value.as_heap_ref());
         prior_survived = entries.size() == 1
-            && entries[0].second.as_integer() == 2;
+            && entries[0].second.as_integer() == 3;
     } catch (...) {
         prior_survived = false;
     }
-    check(prior_survived,
-          "a failed final cancellation cannot replace the last published entry result");
+    check(publication_probe->collections() == 2 && prior_survived,
+          "a collecting final cancellation cannot replace the last published entry result");
 
     auto reentrant_probe = std::make_shared<ReentrantInvocationProbe>();
     runtime::SynchronousEvaluator reentrant({{

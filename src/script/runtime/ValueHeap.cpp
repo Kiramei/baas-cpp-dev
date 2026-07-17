@@ -884,6 +884,7 @@ struct Heap::Impl {
     bool release_lease_active{};
     bool release_detached{};
     RootId next_root_id{1};
+    std::size_t evaluator_boundary_depth{};
     bool collecting{false};
     bool torn_down{false};
 };
@@ -914,6 +915,7 @@ std::string_view runtime_error_code_name(const RuntimeErrorCode code) noexcept
         case RuntimeErrorCode::JsonByteLimitExceeded: return "RT021_JSON_BYTE_LIMIT_EXCEEDED";
         case RuntimeErrorCode::JsonWorkLimitExceeded: return "RT022_JSON_WORK_LIMIT_EXCEEDED";
         case RuntimeErrorCode::JsonDuplicateKey: return "RT023_JSON_DUPLICATE_KEY";
+        case RuntimeErrorCode::HeapBusy: return "RT024_HEAP_BUSY";
     }
     return "RT000_UNKNOWN";
 }
@@ -1668,6 +1670,10 @@ void Heap::collect() { impl_->collect(); }
 
 void Heap::teardown_for_dispatcher()
 {
+    if (impl_->evaluator_boundary_depth != 0)
+        throw RuntimeError(
+            RuntimeErrorCode::HeapBusy,
+            "heap teardown is forbidden during an active evaluator boundary");
     if (impl_->torn_down) return;
     impl_->reserve_sweep_storage(false);
     for (std::size_t index = 0; index < impl_->slots.size(); ++index) {
@@ -1677,6 +1683,25 @@ void Heap::teardown_for_dispatcher()
     impl_->explicit_roots.clear();
     impl_->temporary_roots.clear();
     impl_->torn_down = true;
+}
+
+void Heap::enter_evaluator_boundary() noexcept
+{
+    if (impl_->evaluator_boundary_depth == std::numeric_limits<std::size_t>::max())
+        std::terminate();
+    ++impl_->evaluator_boundary_depth;
+}
+
+void Heap::leave_evaluator_boundary() noexcept
+{
+    if (impl_->evaluator_boundary_depth == 0)
+        std::terminate();
+    --impl_->evaluator_boundary_depth;
+}
+
+bool Heap::evaluator_boundary_active() const noexcept
+{
+    return impl_->evaluator_boundary_depth != 0;
 }
 
 std::vector<HostReleaseRecord> Heap::drain_release_queue()
