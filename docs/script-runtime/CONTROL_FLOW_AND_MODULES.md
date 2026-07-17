@@ -474,6 +474,18 @@ unreachable side-table records are retained until evaluator teardown. This is
 an explicit transitional representation, not the final traced closure design
 selected by ADR-0002.
 
+The production-facing synchronous entry boundary is
+`SynchronousEvaluator::invoke_export(entry_module, export_name)`. It validates
+one exact canonical package module, initializes that module through the normal
+graph/cache rules, resolves one exact public export, and invokes it with no
+explicit arguments. Default parameters remain valid; required arguments,
+private or missing exports, non-callable values, Host entry modules, and
+non-canonical module IDs fail closed. A long-lived result-root slot is admitted
+during evaluator construction; successful calls publish into it with a
+non-allocating update after script effects, and the value survives collection
+until a later entry result replaces it. This API never constructs wrapper
+source and never derives an export from a filesystem path.
+
 The evaluator also implements a deliberately narrow synchronous Host bridge.
 It deduplicates actual `baas/*` imports, fixes the greatest compatible minor,
 and lazily authorizes each accessed export through the manifest/policy/platform/
@@ -507,7 +519,8 @@ deterministic package-graph foundation, module/package links, pending
 implementation statements, the ROADMAP status, and Foundation CI path wiring.
 `tests/script/SynchronousEvaluatorTests.cpp` additionally checks recursive and
 constructive two-counter execution, closure survival across heap collection,
-module cache/laziness/failure identity, and deterministic budget failures.
+module cache/laziness/failure identity, exact entry-export invocation and
+result rooting, and deterministic budget failures.
 `tests/script/SynchronousHostTests.cpp` and
 `tests/script/SynchronousHostEvaluatorTests.cpp` check the bounded native ABI,
 all HOST001-HOST016 mappings, exception redaction, capability-before-argument

@@ -193,6 +193,85 @@ void test_control_flow_closures_defaults_and_recursion()
           "recursive calls must be reflected in deterministic evaluator stats");
 }
 
+void test_exact_entry_export_invocation()
+{
+    runtime::SynchronousEvaluator evaluator({{
+        "tasks/main",
+        "let calls = 0;\n"
+        "fn run(step = 4) {\n"
+        "  calls += 1;\n"
+        "  return {\"value\": calls + step};\n"
+        "}\n"
+        "fn needs(value) { return value; }\n"
+        "fn _private() { return 1; }\n"
+        "let not_callable = 7;\n",
+    }});
+
+    const auto invoked = evaluator.invoke_export("tasks/main", "run");
+    const auto entries = evaluator.heap().map_entries(
+        invoked.value.as_heap_ref());
+    check(entries.size() == 1 && entries[0].first == "value"
+              && entries[0].second.as_integer() == 5,
+          "entry invocation initializes the exact module and calls the exact public export once");
+    check(invoked.stats.initialized_modules == 1
+              && invoked.stats.created_functions == 3,
+          "entry invocation reports the complete post-call evaluator statistics");
+
+    // The result is retained by the evaluator rather than returned as an
+    // immediately collectible unrooted heap identity.
+    evaluator.heap().collect();
+    check(evaluator.heap().map_entries(invoked.value.as_heap_ref())[0].second.as_integer() == 5,
+          "entry invocation result remains rooted across heap collection");
+
+    expect_error(runtime::LanguageErrorCode::CallArityMismatch,
+                 [&] { static_cast<void>(evaluator.invoke_export("tasks/main", "needs")); },
+                 "entry exports with required arguments fail closed");
+    expect_error(runtime::LanguageErrorCode::NotCallable,
+                 [&] { static_cast<void>(evaluator.invoke_export("tasks/main", "not_callable")); },
+                 "non-callable entry exports fail closed");
+    expect_error(runtime::LanguageErrorCode::ModuleMemberMissing,
+                 [&] { static_cast<void>(evaluator.invoke_export("tasks/main", "missing")); },
+                 "missing entry exports fail closed");
+    expect_error(runtime::LanguageErrorCode::ModuleMemberMissing,
+                 [&] { static_cast<void>(evaluator.invoke_export("tasks/main", "_private")); },
+                 "private entry exports fail closed");
+
+    const auto second = evaluator.invoke_export("tasks/main", "run");
+    check(evaluator.heap().map_entries(second.value.as_heap_ref())[0].second.as_integer() == 6,
+          "each explicit entry invocation executes once without reinitializing its module");
+
+    runtime::SynchronousEvaluator thrown({{
+        "main", "fn run() { throw \"entry failed\"; }\n",
+    }});
+    const auto error = expect_error(
+        runtime::LanguageErrorCode::ThrownValue,
+        [&] { static_cast<void>(thrown.invoke_export("main", "run")); },
+        "entry invocation preserves structured script failures");
+    check(!error.structured_error().empty(),
+          "entry invocation publishes the structured error envelope");
+
+    auto probe = std::make_shared<ControlledProbe>(5);
+    runtime::SynchronousEvaluator cancelled({{
+        "main",
+        "let initialized = 0;\n"
+        "initialized += 1;\n"
+        "fn run() { let value = 0; while (value < 100) { value += 1; } return value; }\n",
+    }}, {}, {}, {}, nullptr, probe);
+    expect_error(runtime::LanguageErrorCode::Cancelled,
+                 [&] { static_cast<void>(cancelled.invoke_export("main", "run")); },
+                 "entry invocation observes evaluator cancellation safe points");
+    probe->set_cancel_after(0);
+    const auto retried = cancelled.invoke_export("main", "run");
+    check(retried.value.as_integer() == 100
+              && cancelled.stats().initialized_modules == 1,
+          "cancelled entry initialization remains retryable without duplicate module commit");
+
+    check(evaluator.close(), "entry evaluator closes after invocation");
+    expect_error(runtime::LanguageErrorCode::HostUnavailable,
+                 [&] { static_cast<void>(evaluator.invoke_export("tasks/main", "run")); },
+                 "closed evaluators reject new entry invocations");
+}
+
 void test_multi_module_cache_and_namespace_calls()
 {
     std::vector<runtime::SourceModule> modules{
@@ -964,6 +1043,7 @@ int main()
     try {
     test_values_collections_operators_and_short_circuit();
     test_control_flow_closures_defaults_and_recursion();
+    test_exact_entry_export_invocation();
     test_multi_module_cache_and_namespace_calls();
     test_module_failure_cache_and_lazy_initialization();
     test_constructive_two_counter_program();

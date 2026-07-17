@@ -373,6 +373,7 @@ struct SynchronousEvaluator::Impl {
     std::size_t host_registry_validation_work{};
     std::vector<ActiveFrame> active_frames;
     std::vector<Activation> activations;
+    Heap::RootId invocation_result_root{};
     std::thread::id owner_thread{std::this_thread::get_id()};
     bool host_call_active{};
     bool execution_active{};
@@ -396,6 +397,10 @@ struct SynchronousEvaluator::Impl {
     {
         validate_limits();
         compile_modules(std::move(sources), semantic_options, is_nfc);
+        // Admission happens during evaluator construction so publishing an
+        // entry-function result never needs to allocate after script effects
+        // have already committed.
+        invocation_result_root = heap.add_root(Value::null());
         configure_host();
     }
 
@@ -1648,6 +1653,68 @@ struct SynchronousEvaluator::Impl {
             const auto message = metadata.message;
             const auto module = metadata.source ? metadata.source->module : current_module;
             const auto span = metadata.source ? metadata.source->span : SourceSpan{};
+            const auto envelope = structured_error_envelope(unwind.error);
+            throw EvaluationError(
+                code, message, module, span, stats.steps, envelope);
+        }
+    }
+
+    [[nodiscard]] EvaluationInvocationResult invoke_export(
+        const std::string_view entry, const std::string_view export_name)
+    {
+        const auto boundary_fail = [&](const LanguageErrorCode code,
+                                       std::string message) -> void {
+            throw EvaluationError(
+                code, std::move(message), current_module, {}, stats.steps);
+        };
+        if (std::this_thread::get_id() != owner_thread)
+            boundary_fail(LanguageErrorCode::HostUnavailable,
+                          "synchronous evaluator called from a non-owning thread");
+        if (host_call_active)
+            boundary_fail(LanguageErrorCode::HostUnavailable,
+                          "Host callback re-entry into the evaluator is forbidden");
+        ModuleSpecifier specifier;
+        try {
+            specifier = validate_module_specifier(entry, nfc);
+        } catch (const ModuleSpecifierError&) {
+            boundary_fail(LanguageErrorCode::ImportSpecifierInvalid,
+                          "entry module id is not canonical");
+        }
+        if (specifier.kind != ModuleKind::Package)
+            boundary_fail(LanguageErrorCode::HostUnavailable,
+                          "Host modules cannot be evaluator entries");
+
+        struct ExecutionGuard {
+            Impl& evaluator;
+            explicit ExecutionGuard(Impl& value) : evaluator(value)
+            {
+                evaluator.execution_active = true;
+            }
+            ~ExecutionGuard() { evaluator.execution_active = false; }
+        } execution(*this);
+        try {
+            check_execution_safe_point({});
+            static_cast<void>(initialize_module(specifier.canonical_id, {}));
+            const auto callee = module_export(
+                specifier.canonical_id, export_name);
+            const std::vector<CallArgument> arguments;
+            const auto result = invoke(callee, arguments, {}, {});
+            if (!heap.update_root(invocation_result_root, result))
+                fail(LanguageErrorCode::InternalInvariant,
+                     "entry invocation result root is absent");
+            check_execution_safe_point({});
+            return {result, stats};
+        } catch (const ScriptUnwind& unwind) {
+            const auto& metadata =
+                heap.error_metadata_view(unwind.error.as_heap_ref());
+            const auto code = metadata.code;
+            const auto message = metadata.message;
+            const auto module = metadata.source
+                ? metadata.source->module
+                : current_module;
+            const auto span = metadata.source
+                ? metadata.source->span
+                : SourceSpan{};
             const auto envelope = structured_error_envelope(unwind.error);
             throw EvaluationError(
                 code, message, module, span, stats.steps, envelope);
@@ -3283,6 +3350,60 @@ EvaluationResult SynchronousEvaluator::execute(const std::string_view entry_modu
         throw EvaluationError(
             LanguageErrorCode::InternalInvariant,
             "unknown evaluator execution failure",
+            impl_->current_module,
+            {},
+            impl_->stats.steps);
+    }
+}
+
+EvaluationInvocationResult SynchronousEvaluator::invoke_export(
+    const std::string_view entry_module,
+    const std::string_view export_name)
+{
+    if (impl_->closed)
+        throw EvaluationError(
+            LanguageErrorCode::HostUnavailable,
+            "evaluator is closed", {}, {}, impl_->stats.steps);
+    struct ReleaseDrain final {
+        Impl* impl;
+        ~ReleaseDrain() { impl->drain_host_releases(); }
+    } release_drain{impl_};
+    try {
+        return impl_->invoke_export(entry_module, export_name);
+    } catch (const EvaluationError&) {
+        throw;
+    } catch (const RuntimeError& error) {
+        throw EvaluationError(
+            translate_runtime_error_code(error.code()).code,
+            error.what(),
+            impl_->current_module,
+            {},
+            impl_->stats.steps);
+    } catch (const std::bad_alloc&) {
+        throw EvaluationError(
+            LanguageErrorCode::MemoryLimitExceeded,
+            "entry export invocation allocation failed",
+            impl_->current_module,
+            {},
+            impl_->stats.steps);
+    } catch (const std::length_error&) {
+        throw EvaluationError(
+            LanguageErrorCode::MemoryLimitExceeded,
+            "entry export invocation container bound exceeded",
+            impl_->current_module,
+            {},
+            impl_->stats.steps);
+    } catch (const std::exception&) {
+        throw EvaluationError(
+            LanguageErrorCode::InternalInvariant,
+            "unexpected entry export invocation failure",
+            impl_->current_module,
+            {},
+            impl_->stats.steps);
+    } catch (...) {
+        throw EvaluationError(
+            LanguageErrorCode::InternalInvariant,
+            "unknown entry export invocation failure",
             impl_->current_module,
             {},
             impl_->stats.steps);
