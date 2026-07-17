@@ -360,6 +360,7 @@ struct SynchronousEvaluator::Impl {
     std::vector<NativeFunctionRecord> native_functions;
     std::map<std::string, HostModuleRecord, std::less<>> host_modules;
     std::optional<SynchronousHostOptions> host_options;
+    std::shared_ptr<const HostCancellationProbe> cancellation;
     std::map<std::string, std::size_t, std::less<>> host_budget_limits;
     std::map<std::string, std::size_t, std::less<>> host_budget_used;
     EvaluationStats stats;
@@ -384,9 +385,13 @@ struct SynchronousEvaluator::Impl {
         HeapLimits heap_limits,
         const SemanticOptions semantic_options,
         const NfcPredicate is_nfc,
-        std::optional<SynchronousHostOptions> synchronous_host_options)
+        std::optional<SynchronousHostOptions> synchronous_host_options,
+        std::shared_ptr<const HostCancellationProbe> execution_cancellation)
         : limits(evaluator_limits), heap(heap_limits, is_nfc),
-          host_options(std::move(synchronous_host_options)), nfc(is_nfc)
+          host_options(std::move(synchronous_host_options)),
+          cancellation(host_options && host_options->cancellation
+              ? host_options->cancellation : std::move(execution_cancellation)),
+          nfc(is_nfc)
     {
         validate_limits();
         compile_modules(std::move(sources), semantic_options, is_nfc);
@@ -841,6 +846,7 @@ struct SynchronousEvaluator::Impl {
             ++stats.cleanup_steps;
             return;
         }
+        check_execution_interrupt(span);
         if (stats.steps >= limits.max_steps) {
             fail(
                 LanguageErrorCode::InstructionLimitExceeded,
@@ -848,6 +854,26 @@ struct SynchronousEvaluator::Impl {
                 span);
         }
         ++stats.steps;
+    }
+
+    void check_execution_interrupt(const SourceSpan span)
+    {
+        // Cancellation and deadlines are masked while ERR-013 cleanup drains.
+        // The original terminal remains primary unless cleanup itself reaches
+        // an independent terminal limit or failure.
+        if (!cancellation || cleanup_depth != 0) return;
+        if (cancellation->deadline_exceeded()) {
+            fail(
+                LanguageErrorCode::DeadlineExceeded,
+                "synchronous evaluator deadline exceeded",
+                span);
+        }
+        if (cancellation->cancelled()) {
+            fail(
+                LanguageErrorCode::Cancelled,
+                "synchronous evaluator cancellation requested",
+                span);
+        }
     }
 
     void charge_collection(const std::size_t amount, const SourceSpan span)
@@ -1269,6 +1295,7 @@ struct SynchronousEvaluator::Impl {
 
     [[nodiscard]] Value initialize_module(const std::string& id, const SourceSpan import_span)
     {
+        check_execution_interrupt(import_span);
         const auto found = modules.find(id);
         if (found == modules.end()) {
             fail(
@@ -1573,6 +1600,7 @@ struct SynchronousEvaluator::Impl {
             ~ExecutionGuard() { evaluator.execution_active = false; }
         } execution(*this);
         try {
+            check_execution_interrupt({});
             const auto value = initialize_module(specifier.canonical_id, {});
             return {value, stats};
         } catch (const ScriptUnwind& unwind) {
@@ -3088,10 +3116,11 @@ SynchronousEvaluator::SynchronousEvaluator(
     const EvaluatorLimits limits,
     const HeapLimits heap_limits,
     const SemanticOptions semantic_options,
-    const NfcPredicate is_nfc)
+    const NfcPredicate is_nfc,
+    std::shared_ptr<const HostCancellationProbe> cancellation)
     : impl_(create_impl(
           std::move(modules), limits, heap_limits, semantic_options, is_nfc,
-          std::nullopt))
+          std::nullopt, std::move(cancellation)))
 {
 }
 
@@ -3104,7 +3133,7 @@ SynchronousEvaluator::SynchronousEvaluator(
     const NfcPredicate is_nfc)
     : impl_(create_impl(
           std::move(modules), limits, heap_limits, semantic_options, is_nfc,
-          std::move(host_options)))
+          std::move(host_options), {}))
 {
 }
 
@@ -3114,12 +3143,13 @@ SynchronousEvaluator::Impl* SynchronousEvaluator::create_impl(
     const HeapLimits heap_limits,
     const SemanticOptions semantic_options,
     const NfcPredicate is_nfc,
-    std::optional<SynchronousHostOptions> host_options)
+    std::optional<SynchronousHostOptions> host_options,
+    std::shared_ptr<const HostCancellationProbe> cancellation)
 {
     try {
         return new Impl(
             std::move(modules), limits, heap_limits, semantic_options, is_nfc,
-            std::move(host_options));
+            std::move(host_options), std::move(cancellation));
     } catch (const EvaluationCompileError&) {
         throw;
     } catch (const EvaluationError&) {

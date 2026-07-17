@@ -1,6 +1,7 @@
 #include "script/runtime/SynchronousEvaluator.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cstdlib>
 #include <iostream>
 #include <limits>
@@ -14,6 +15,39 @@ namespace runtime = baas::script::runtime;
 namespace {
 
 int failures = 0;
+
+class ControlledProbe final : public runtime::HostCancellationProbe {
+public:
+    ControlledProbe(
+        const std::size_t cancel_after,
+        const bool deadline = false,
+        const bool cancelled = false) noexcept
+        : cancel_after_(cancel_after), deadline_(deadline), cancelled_(cancelled)
+    {}
+
+    [[nodiscard]] bool cancelled() const noexcept override
+    {
+        if (cancelled_) return true;
+        const auto observed = polls_.fetch_add(1, std::memory_order_relaxed) + 1;
+        return cancel_after_ != 0 && observed >= cancel_after_;
+    }
+
+    [[nodiscard]] bool deadline_exceeded() const noexcept override
+    {
+        return deadline_;
+    }
+
+    [[nodiscard]] std::size_t polls() const noexcept
+    {
+        return polls_.load(std::memory_order_relaxed);
+    }
+
+private:
+    std::size_t cancel_after_{};
+    bool deadline_{};
+    bool cancelled_{};
+    mutable std::atomic<std::size_t> polls_{};
+};
 
 void check(const bool condition, const std::string_view message)
 {
@@ -540,6 +574,54 @@ void test_terminal_failure_bypasses_catch_and_still_unwinds()
           "terminal failure must use the independent cleanup allowance and execute every defer");
 }
 
+void test_cooperative_cancellation_safe_points_and_cleanup_masking()
+{
+    auto already_cancelled = std::make_shared<ControlledProbe>(0, false, true);
+    runtime::SynchronousEvaluator empty(
+        {{"main", ""}}, {}, {}, {}, nullptr, already_cancelled);
+    const auto entry_error = expect_error(
+        runtime::LanguageErrorCode::Cancelled,
+        [&] { static_cast<void>(empty.execute("main")); },
+        "an already-cancelled context must reject an empty entry module");
+    check(!entry_error.catchable() && entry_error.steps() == 0,
+          "entry cancellation must be terminal before script work starts");
+
+    auto deadline = std::make_shared<ControlledProbe>(0, true, true);
+    runtime::SynchronousEvaluator expired(
+        {{"main", ""}}, {}, {}, {}, nullptr, deadline);
+    const auto deadline_error = expect_error(
+        runtime::LanguageErrorCode::DeadlineExceeded,
+        [&] { static_cast<void>(expired.execute("main")); },
+        "an expired deadline must take priority over a simultaneous stop");
+    check(!deadline_error.catchable(),
+          "deadline expiry must remain a terminal language error");
+
+    auto running = std::make_shared<ControlledProbe>(12);
+    runtime::EvaluatorLimits limits;
+    limits.max_steps = 10'000;
+    runtime::SynchronousEvaluator evaluator({{
+        "main",
+        "let trace = 0;\n"
+        "fn spin() {\n"
+        "  defer trace = trace * 10 + 1;\n"
+        "  defer trace = trace * 10 + 2;\n"
+        "  try { while (true) { let work = 1; } } catch (error) { trace = 999; }\n"
+        "}\n"
+        "spin();\n",
+    }}, limits, {}, {}, nullptr, running);
+    const auto cancelled = expect_error(
+        runtime::LanguageErrorCode::Cancelled,
+        [&] { static_cast<void>(evaluator.execute("main")); },
+        "a running pure-language loop must observe cooperative cancellation");
+    check(!cancelled.catchable() && running->polls() >= 12
+              && evaluator.stats().steps < limits.max_steps,
+          "cancellation must preempt the instruction bound and bypass catch");
+    check(evaluator.stats().registered_defers == 2
+              && evaluator.stats().executed_defers == 2
+              && evaluator.stats().cleanup_steps > 0,
+          "cancellation must be masked while every registered defer drains");
+}
+
 void test_terminal_cleanup_promotion_and_public_error_envelope()
 {
     runtime::EvaluatorLimits limits;
@@ -708,6 +790,7 @@ int main()
     test_dynamic_failures_compile_gate_and_explicit_boundaries();
     test_structured_errors_and_defer_unwinding();
     test_terminal_failure_bypasses_catch_and_still_unwinds();
+    test_cooperative_cancellation_safe_points_and_cleanup_masking();
     test_terminal_cleanup_promotion_and_public_error_envelope();
     test_publication_failure_still_drains_registered_defers();
     test_stack_terminal_uses_independent_cleanup_call_depth();

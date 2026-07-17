@@ -266,6 +266,14 @@ request wins. Otherwise an observed stop request wins as `Cancelled` or
 suppressed if safe. This publication rule, not thread timing or message text,
 determines deterministic precedence.
 
+The synchronous evaluator observes its injected `HostCancellationProbe` at
+execution entry, every package-module initialization boundary, and every
+ordinary statement step. An expired deadline is checked before cancellation at
+the same safe point. Once either terminal starts unwinding, further probe checks
+are masked while registered defers consume the independent cleanup budget; this
+prevents a repeated stop request from skipping cleanup or replacing a cleanup
+terminal.
+
 ### ERR-012 — Defer registration and lexical capture
 
 Executing `defer statement` registers one cleanup thunk on the current function
