@@ -217,8 +217,10 @@ void _init_all_skill_names();
 BAAS_NAMESPACE_END
 
 int main(int argc, char **argv) {
+#ifdef _WIN32
     system("chcp 65001");
-    _init("");
+#endif
+    _init();
 
     if (argc < 2) {
         BAASGlobalLogger->BAASInfo("Usage : ");
@@ -587,7 +589,7 @@ extern "C" {
             error_type = JSON_PARSE;
             return "Workflow json parse error";
         }
-    _init("");
+        _init();
 
         return "Workflow json parsed successfully.";
     }

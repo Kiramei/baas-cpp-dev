@@ -15,12 +15,18 @@ on:
       - '.github/workflows/baas_afwc.yaml'
       - 'CMakeLists.txt'
       - 'CMakePresets.json'
-      - 'cmake/BAASResources.cmake'
+      - 'cmake/**'
+      - 'deploy/conan/**'
+      - 'include/**'
+      - 'src/**'
       - 'resources.lock.json'
       - 'scripts/fetch_resources.py'
       - 'tests/docs/test_external_resource_boundary.py'
+      - 'tests/docs/test_legacy_conan_workflows.py'
       - 'tests/build/external_resource_boundary/**'
       - 'apps/BAAS_auto_fight_workflow_checker/**'
+      - 'apps/BAAS/include/module/auto_fight/**'
+      - 'apps/BAAS/src/module/auto_fight/**'
       - 'apps/BAAS/resource/image/CN/zh-cn/image_info/skill_active.json'
   pull_request:
     branches: 
@@ -29,8 +35,23 @@ on:
       - opened
       - synchronize
       - reopened
-    paths-ignore: 
-      - 'docs/**'
+    paths:
+      - '.github/workflows/baas_afwc.yaml'
+      - 'CMakeLists.txt'
+      - 'CMakePresets.json'
+      - 'cmake/**'
+      - 'deploy/conan/**'
+      - 'include/**'
+      - 'src/**'
+      - 'resources.lock.json'
+      - 'scripts/fetch_resources.py'
+      - 'tests/docs/test_external_resource_boundary.py'
+      - 'tests/docs/test_legacy_conan_workflows.py'
+      - 'tests/build/external_resource_boundary/**'
+      - 'apps/BAAS_auto_fight_workflow_checker/**'
+      - 'apps/BAAS/include/module/auto_fight/**'
+      - 'apps/BAAS/src/module/auto_fight/**'
+      - 'apps/BAAS/resource/image/CN/zh-cn/image_info/skill_active.json'
 
 
 concurrency:
@@ -48,7 +69,7 @@ env:
 
 
 jobs: 
-  Windows-latest-cmake-x64:
+  emscripten-wasm:
     name: 'Build Wasm'
     runs-on: ubuntu-latest
     defaults:
@@ -68,28 +89,64 @@ jobs:
         with: 
           fetch-depth: 1
           repository: "emscripten-core/emsdk"
-          ref: "main"
+          ref: "6.0.3"
           path: emsdk
 
       - name: Install Emsdk
         id: install_emsdk
         working-directory: emsdk
         run: |
-          ./emsdk install latest
+          ./emsdk install 6.0.3
 
       - name: Install Build Dependencies
         id: install_build_depends
         run: |
           sudo apt-get update
-          sudo apt-get install build-essential
+          sudo apt-get install --yes build-essential gcc-13 g++-13
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install pinned Conan and Ninja
+        run: python -m pip install --disable-pip-version-check conan==2.30.0 ninja==1.11.1.1
 
       - name: Build
         id: cmake_build
         run: |
-          ../emsdk/emsdk activate latest
+          ../emsdk/emsdk activate 6.0.3
           source ../emsdk/emsdk_env.sh
-          emcmake cmake -B build -DBUILD_APP_BAAS=OFF -DBUILD_APP_ISA=OFF -DBUILD_BAAS_OCR=OFF -DBUILD_BAAS_AW_CHECKER=$BUILD_BAAS_AW_CHECKER -DBAAS_FETCH_RESOURCES=ON -DCMAKE_BUILD_TYPE=$BUILD_TYPE -DCMAKE_TOOLCHAIN_FILE="../emsdk/upstream/emscripten/cmake/Modules/Platform/Emscripten.cmake"
-          cmake --build build --config Release --target BAAS_workflow_checker -j $(nproc)
+          emcc --version | head -n 1 | grep -F ' 6.0.3'
+          python deploy/conan/scripts/manage_recipes.py export \
+            --only baas-opencv \
+            --only baas-nlohmann-json \
+            --only baas-spdlog \
+            --only baas-simdutf
+          conan install deploy/conan \
+            -of build/conan/emscripten-wasm-release-afwc \
+            -pr:h=deploy/conan/profiles/emscripten-wasm-release \
+            -pr:h=deploy/conan/profiles/dependency-versions-default \
+            -pr:b=deploy/conan/profiles/linux-gcc-release \
+            -o "&:dependency_set=afwc" \
+            -o "&:onnxruntime_use_cuda=False" \
+            -o "&:use_ffmpeg=False" \
+            -o "&:use_benchmark=False" \
+            -o "&:use_opencv_dnn=False" \
+            -o "&:use_libsodium=False" \
+            -o "&:use_libgit2=False" \
+            --build=missing \
+            --no-remote
+          cmake -S . -B build \
+            -G Ninja \
+            "-DCMAKE_TOOLCHAIN_FILE=${GITHUB_WORKSPACE}/baas/build/conan/emscripten-wasm-release-afwc/generators/conan_toolchain.cmake" \
+            -DBUILD_APP_BAAS=OFF \
+            -DBUILD_APP_ISA=OFF \
+            -DBUILD_BAAS_OCR=OFF \
+            -DBUILD_BAAS_AW_CHECKER=ON \
+            -DBAAS_FETCH_RESOURCES=ON \
+            -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --config Release --target BAAS_workflow_checker --parallel $(nproc)
 
       - name: Clean Up
         id: clean_up

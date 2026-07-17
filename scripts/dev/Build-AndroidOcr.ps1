@@ -36,7 +36,13 @@ foreach ($command in @("conan", "cmake", "ninja")) {
 }
 
 if (-not $SkipRecipeExport) {
-    & python deploy\conan\scripts\manage_recipes.py export
+    & python deploy\conan\scripts\manage_recipes.py export `
+        --only baas-opencv `
+        --only baas-onnxruntime `
+        --only baas-nlohmann-json `
+        --only baas-cpp-httplib `
+        --only baas-spdlog `
+        --only baas-simdutf
     if ($LASTEXITCODE -ne 0) {
         throw "Could not export the checked-in Conan recipes."
     }
@@ -65,12 +71,22 @@ if (-not (Test-Path -LiteralPath $readelf)) {
 foreach ($targetAbi in $abis) {
     $target = $settings[$targetAbi]
     $conanOutput = "build/conan/android-clang-release-ocr-$targetAbi"
+    $commonProfileArgs = @(
+        "-pr:h=deploy/conan/profiles/$($target.Profile)",
+        "-pr:b=deploy/conan/profiles/windows-msvc-release",
+        "-c:h=tools.android:ndk_path=$env:ANDROID_NDK_LATEST_HOME"
+    )
+    $httplibArgs = @(
+        "create", "deploy/conan/recipes/baas-cpp-httplib",
+        $commonProfileArgs,
+        "--build=missing"
+    )
     $conanArgs = @(
         "install", "deploy/conan",
         "-of", $conanOutput,
-        "-pr:h=deploy/conan/profiles/$($target.Profile)",
+        $commonProfileArgs,
         "-pr:h=deploy/conan/profiles/dependency-versions-default",
-        "-c:h=tools.android:ndk_path=$env:ANDROID_NDK_LATEST_HOME",
+        "-o", "&:dependency_set=ocr",
         "-o", "&:onnxruntime_use_cuda=False",
         "-o", "&:use_ffmpeg=False",
         "-o", "&:use_benchmark=False",
@@ -79,6 +95,11 @@ foreach ($targetAbi in $abis) {
     )
 
     Write-Host "Building Android OCR for $targetAbi"
+    & conan @httplibArgs
+    if ($LASTEXITCODE -ne 0) {
+        throw "Could not provision the pinned cpp-httplib closure for $targetAbi."
+    }
+
     & conan @conanArgs
     if ($LASTEXITCODE -ne 0) {
         throw "Conan install failed for $targetAbi."
