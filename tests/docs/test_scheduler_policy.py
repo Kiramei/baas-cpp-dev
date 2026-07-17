@@ -43,6 +43,10 @@ class SchedulerPolicyContractTests(unittest.TestCase):
         self.assertIn("-DBUILD_SCHEDULER_POLICY_TESTS=ON", self.workflow)
         self.assertIn("BAAS_scheduler_policy_tests", self.workflow)
         self.assertIn("BAAS_scheduler_policy_tests)$", self.workflow)
+        self.assertIn(
+            "python -m unittest discover -s tests/docs -p test_scheduler_policy.py",
+            self.workflow,
+        )
         self.assertNotIn("BUILD_SCHEDULER_POLICY", self.foundation_workflow)
         self.assertNotIn("BAAS_scheduler_policy", self.foundation_workflow)
 
