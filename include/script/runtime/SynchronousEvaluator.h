@@ -155,6 +155,11 @@ struct EvaluationResult {
     EvaluationStats stats;
 };
 
+struct EvaluationInvocationResult {
+    Value value;
+    EvaluationStats stats;
+};
+
 // Dependency-free synchronous conformance evaluator. It executes validated
 // package ASTs only; bytecode, async/tasks, and asynchronous Host adapters
 // remain separate runtime boundaries. Synchronous structured errors and defer
@@ -183,6 +188,13 @@ public:
     SynchronousEvaluator& operator=(SynchronousEvaluator&&) = delete;
 
     [[nodiscard]] EvaluationResult execute(std::string_view entry_module);
+    // Initializes the package entry module and invokes one exact public export
+    // with no explicit arguments. Script defaults remain available, while a
+    // missing, private, non-callable, or required-argument export fails closed.
+    // This is the production task-entry boundary; callers never synthesize
+    // wrapper source or derive an export name from a repository path.
+    [[nodiscard]] EvaluationInvocationResult invoke_export(
+        std::string_view entry_module, std::string_view export_name);
     // Permanently rejects new execution and transfers all pending host release
     // ownership to the shared dispatcher. False means the caller must retain
     // that dispatcher and retry its detached releases; no Heap lifetime is needed.

@@ -385,6 +385,117 @@ void test_evaluator_vertical_and_close()
           "failed script unwind must still release the produced native handle once");
 }
 
+void test_evaluator_release_drain_reentry_boundary()
+{
+    runtime::SynchronousEvaluator* active{};
+    runtime::HostReleaseDispatcher* dispatcher_ptr{};
+    bool nested_invocation_rejected{};
+    bool nested_close{};
+    bool ownership_attempted{};
+    bool nested_lease_rejected{};
+    bool nested_ack_rejected{};
+    bool nested_retry_rejected{};
+    bool nested_defer_rejected{};
+    bool nested_heap_teardown_rejected{};
+    bool nested_release_drain_rejected{};
+    bool nested_dispatcher_teardown{};
+    std::size_t release_callbacks{};
+    auto dispatcher = std::make_shared<runtime::HostReleaseDispatcher>(
+        117, std::vector<runtime::HostReleaseAdapter>{
+            {31, [&](const runtime::HostHandleValue&) {
+                 ++release_callbacks;
+                 try {
+                     static_cast<void>(active->invoke_export("main", "run"));
+                 } catch (const runtime::EvaluationError& error) {
+                     nested_invocation_rejected = error.code()
+                         == runtime::LanguageErrorCode::HostUnavailable;
+                 }
+                 nested_close = active->close();
+                 if (!ownership_attempted) {
+                     ownership_attempted = true;
+                     nested_lease_rejected =
+                         !active->heap().lease_host_release();
+                     nested_ack_rejected =
+                         !active->heap().acknowledge_host_release(1);
+                     nested_retry_rejected =
+                         !active->heap().retry_host_release(1);
+                     nested_defer_rejected =
+                         !active->heap().defer_host_release(1);
+                 }
+                 try {
+                     static_cast<void>(active->heap().teardown());
+                 } catch (const runtime::RuntimeError& error) {
+                     nested_heap_teardown_rejected = error.code()
+                         == runtime::RuntimeErrorCode::HeapBusy;
+                 }
+                 try {
+                     static_cast<void>(active->heap().drain_release_queue());
+                 } catch (const runtime::RuntimeError& error) {
+                     nested_release_drain_rejected = error.code()
+                         == runtime::RuntimeErrorCode::HeapBusy;
+                 }
+                 nested_dispatcher_teardown =
+                     dispatcher_ptr->teardown(active->heap());
+                 return true;
+             }}});
+    dispatcher_ptr = dispatcher.get();
+    runtime::SynchronousHostOptions options;
+    options.metadata =
+        std::make_shared<const runtime::HostModuleRegistry>(
+            std::vector<runtime::HostModuleDescriptor>{});
+    options.bindings =
+        std::make_shared<const runtime::SynchronousNativeBindingSet>(
+            std::vector<runtime::SynchronousNativeBinding>{});
+    options.handles = dispatcher;
+    runtime::SynchronousEvaluator evaluator(
+        {{"main",
+          "let calls = 0;\n"
+          "fn run() { calls += 1; return {\"calls\": calls}; }\n"}},
+        std::move(options));
+    active = &evaluator;
+
+    auto grant = dispatcher->adopt(dispatcher->reserve(
+        runtime::HostHandleTypeId::Resource, 31, 8));
+    const auto handle = dispatcher->publish(
+        evaluator.heap(), grant, runtime::HostHandleTypeId::Resource);
+    check(evaluator.heap().close_host_handle(handle.as_heap_ref()),
+          "release-drain fixture queues one evaluator-owned Host handle");
+
+    const auto outer = evaluator.invoke_export("main", "run");
+    bool outer_result_valid{};
+    try {
+        const auto entries = evaluator.heap().map_entries(
+            outer.value.as_heap_ref());
+        outer_result_valid = entries.size() == 1
+            && entries[0].second.as_integer() == 1;
+    } catch (...) {
+        outer_result_valid = false;
+    }
+    check(nested_invocation_rejected && !nested_close && ownership_attempted
+              && nested_lease_rejected && nested_ack_rejected
+              && nested_retry_rejected && nested_defer_rejected
+              && nested_heap_teardown_rejected
+              && nested_release_drain_rejected
+              && !nested_dispatcher_teardown && outer_result_valid
+              && release_callbacks == 1
+              && dispatcher->stats().pending_releases == 0,
+          "release adapter cannot reenter invocation/close/destructive Heap ownership or invalidate the outer result");
+
+    auto next_grant = dispatcher->adopt(dispatcher->reserve(
+        runtime::HostHandleTypeId::Resource, 31, 8));
+    const auto next_handle = dispatcher->publish(
+        evaluator.heap(), next_grant, runtime::HostHandleTypeId::Resource);
+    check(evaluator.heap().close_host_handle(next_handle.as_heap_ref()),
+          "rejected dispatcher teardown preserves Host-handle admission");
+    const auto next = evaluator.invoke_export("main", "run");
+    check(evaluator.heap().map_entries(next.value.as_heap_ref())[0].second.as_integer() == 2,
+          "release-drain reentry rejection leaves the evaluator open and usable");
+    check(release_callbacks == 2 && dispatcher->stats().pending_releases == 0,
+          "each protected dispatcher lease is released and acknowledged exactly once");
+    check(evaluator.close(),
+          "release-drain reentry fixture closes after its public boundary returns");
+}
+
 void test_external_reservation_can_outlive_heap_safely()
 {
     std::optional<runtime::Heap::ExternalReservation> escaped;
@@ -1056,6 +1167,7 @@ int main(const int argc, char** const argv)
     test_ack_tombstone_gc_json_and_error_details();
     test_producer_faults_round_robin_and_detached_retry();
     test_evaluator_vertical_and_close();
+    test_evaluator_release_drain_reentry_boundary();
     test_external_reservation_can_outlive_heap_safely();
     test_forged_stale_and_multi_argument_rollback();
     test_limits_published_fairness_and_poisoned_completion();

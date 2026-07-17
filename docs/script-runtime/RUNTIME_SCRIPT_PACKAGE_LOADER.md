@@ -35,7 +35,9 @@ After discovery, the complete definitions are passed to
 `validate_module_graph`. Missing definitions and cycles fail closed. Successful
 `SourceModule` output follows the validated dependency-before-importer
 initialization order. The result is only a package snapshot; constructing an
-evaluator and executing an entry function are separate production steps.
+evaluator and invoking a catalog-selected entry export through
+`SynchronousEvaluator::invoke_export` are separate production steps. The
+loader never selects or calls that export itself.
 
 ## Bounded and cancellable operation
 

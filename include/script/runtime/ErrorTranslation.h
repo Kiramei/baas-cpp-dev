@@ -17,7 +17,7 @@ struct LanguageErrorDescriptor {
     }
 };
 
-// Total, allocation-free mapping for the RT001-RT023 foundation errors.
+// Total, allocation-free mapping for the RT001-RT024 foundation errors.
 // Materializing a RuntimeError into ErrorMetadata and unwinding frames belong
 // to the future VM/host translation boundary.
 [[nodiscard]] LanguageErrorDescriptor translate_runtime_error_code(RuntimeErrorCode code) noexcept;

@@ -72,6 +72,104 @@ private:
     mutable std::atomic<std::size_t> polls_{};
 };
 
+class ReentrantInvocationProbe final : public runtime::HostCancellationProbe {
+public:
+    void attach(runtime::SynchronousEvaluator& evaluator) noexcept
+    {
+        evaluator_ = &evaluator;
+    }
+
+    [[nodiscard]] bool cancelled() const noexcept override
+    {
+        if (attempted_.exchange(true, std::memory_order_relaxed)) return false;
+        try {
+            static_cast<void>(evaluator_->invoke_export("main", "run"));
+        } catch (const runtime::EvaluationError& error) {
+            rejected_.store(
+                error.code() == runtime::LanguageErrorCode::HostUnavailable,
+                std::memory_order_relaxed);
+        } catch (...) {
+            unexpected_.store(true, std::memory_order_relaxed);
+        }
+        return false;
+    }
+
+    [[nodiscard]] bool deadline_exceeded() const noexcept override
+    {
+        return false;
+    }
+
+    [[nodiscard]] bool rejected() const noexcept
+    {
+        return rejected_.load(std::memory_order_relaxed)
+            && !unexpected_.load(std::memory_order_relaxed);
+    }
+
+private:
+    runtime::SynchronousEvaluator* evaluator_{};
+    mutable std::atomic<bool> attempted_{};
+    mutable std::atomic<bool> rejected_{};
+    mutable std::atomic<bool> unexpected_{};
+};
+
+class BoundaryCollectionProbe final : public runtime::HostCancellationProbe {
+public:
+    void attach(runtime::SynchronousEvaluator& evaluator) noexcept
+    {
+        evaluator_ = &evaluator;
+    }
+
+    void arm_after(const std::size_t polls, const bool cancel) noexcept
+    {
+        trigger_.store(
+            observed_.load(std::memory_order_relaxed) + polls,
+            std::memory_order_relaxed);
+        cancel_.store(cancel, std::memory_order_relaxed);
+    }
+
+    [[nodiscard]] bool cancelled() const noexcept override
+    {
+        const auto observed =
+            observed_.fetch_add(1, std::memory_order_relaxed) + 1;
+        if (observed != trigger_.load(std::memory_order_relaxed)) return false;
+        try {
+            evaluator_->heap().collect();
+            collections_.fetch_add(1, std::memory_order_relaxed);
+        } catch (...) {
+            collection_failed_.store(true, std::memory_order_relaxed);
+        }
+        return cancel_.load(std::memory_order_relaxed);
+    }
+
+    [[nodiscard]] bool deadline_exceeded() const noexcept override
+    {
+        return false;
+    }
+
+    [[nodiscard]] std::size_t polls() const noexcept
+    {
+        return observed_.load(std::memory_order_relaxed);
+    }
+
+    [[nodiscard]] std::size_t collections() const noexcept
+    {
+        return collections_.load(std::memory_order_relaxed);
+    }
+
+    [[nodiscard]] bool collection_failed() const noexcept
+    {
+        return collection_failed_.load(std::memory_order_relaxed);
+    }
+
+private:
+    runtime::SynchronousEvaluator* evaluator_{};
+    mutable std::atomic<std::size_t> observed_{};
+    mutable std::atomic<std::size_t> trigger_{};
+    mutable std::atomic<std::size_t> collections_{};
+    mutable std::atomic<bool> cancel_{};
+    mutable std::atomic<bool> collection_failed_{};
+};
+
 void check(const bool condition, const std::string_view message)
 {
     if (!condition) {
@@ -191,6 +289,147 @@ void test_control_flow_closures_defaults_and_recursion()
           "recursion, defaults, closure calls and loops must execute as one program");
     check(evaluator.stats().peak_call_depth >= 6,
           "recursive calls must be reflected in deterministic evaluator stats");
+}
+
+void test_exact_entry_export_invocation()
+{
+    runtime::SynchronousEvaluator evaluator({{
+        "tasks/main",
+        "let calls = 0;\n"
+        "fn run(step = 4) {\n"
+        "  calls += 1;\n"
+        "  return {\"value\": calls + step};\n"
+        "}\n"
+        "fn needs(value) { return value; }\n"
+        "fn _private() { return 1; }\n"
+        "let not_callable = 7;\n",
+    }});
+
+    const auto invoked = evaluator.invoke_export("tasks/main", "run");
+    const auto entries = evaluator.heap().map_entries(
+        invoked.value.as_heap_ref());
+    check(entries.size() == 1 && entries[0].first == "value"
+              && entries[0].second.as_integer() == 5,
+          "entry invocation initializes the exact module and calls the exact public export once");
+    check(invoked.stats.initialized_modules == 1
+              && invoked.stats.created_functions == 3,
+          "entry invocation reports the complete post-call evaluator statistics");
+
+    // The result is retained by the evaluator rather than returned as an
+    // immediately collectible unrooted heap identity.
+    evaluator.heap().collect();
+    check(evaluator.heap().map_entries(invoked.value.as_heap_ref())[0].second.as_integer() == 5,
+          "entry invocation result remains rooted across heap collection");
+
+    expect_error(runtime::LanguageErrorCode::CallArityMismatch,
+                 [&] { static_cast<void>(evaluator.invoke_export("tasks/main", "needs")); },
+                 "entry exports with required arguments fail closed");
+    expect_error(runtime::LanguageErrorCode::NotCallable,
+                 [&] { static_cast<void>(evaluator.invoke_export("tasks/main", "not_callable")); },
+                 "non-callable entry exports fail closed");
+    expect_error(runtime::LanguageErrorCode::ModuleMemberMissing,
+                 [&] { static_cast<void>(evaluator.invoke_export("tasks/main", "missing")); },
+                 "missing entry exports fail closed");
+    expect_error(runtime::LanguageErrorCode::ModuleMemberMissing,
+                 [&] { static_cast<void>(evaluator.invoke_export("tasks/main", "_private")); },
+                 "private entry exports fail closed");
+
+    const auto second = evaluator.invoke_export("tasks/main", "run");
+    check(evaluator.heap().map_entries(second.value.as_heap_ref())[0].second.as_integer() == 6,
+          "each explicit entry invocation executes once without reinitializing its module");
+
+    runtime::SynchronousEvaluator thrown({{
+        "main", "fn run() { throw \"entry failed\"; }\n",
+    }});
+    const auto error = expect_error(
+        runtime::LanguageErrorCode::ThrownValue,
+        [&] { static_cast<void>(thrown.invoke_export("main", "run")); },
+        "entry invocation preserves structured script failures");
+    check(!error.structured_error().empty(),
+          "entry invocation publishes the structured error envelope");
+
+    auto probe = std::make_shared<ControlledProbe>(5);
+    runtime::SynchronousEvaluator cancelled({{
+        "main",
+        "let initialized = 0;\n"
+        "initialized += 1;\n"
+        "fn run() { let value = 0; while (value < 100) { value += 1; } return value; }\n",
+    }}, {}, {}, {}, nullptr, probe);
+    expect_error(runtime::LanguageErrorCode::Cancelled,
+                 [&] { static_cast<void>(cancelled.invoke_export("main", "run")); },
+                 "entry invocation observes evaluator cancellation safe points");
+    probe->set_cancel_after(0);
+    const auto retried = cancelled.invoke_export("main", "run");
+    check(retried.value.as_integer() == 100
+              && cancelled.stats().initialized_modules == 1,
+          "cancelled entry initialization remains retryable without duplicate module commit");
+
+    check(evaluator.close(), "entry evaluator closes after invocation");
+    expect_error(runtime::LanguageErrorCode::HostUnavailable,
+                 [&] { static_cast<void>(evaluator.invoke_export("tasks/main", "run")); },
+                 "closed evaluators reject new entry invocations");
+}
+
+void test_entry_invocation_transactional_publication_and_reentry()
+{
+    auto publication_probe = std::make_shared<BoundaryCollectionProbe>();
+    runtime::SynchronousEvaluator publication({{
+        "main",
+        "let sequence = 0;\n"
+        "fn run() { sequence += 1; return {\"sequence\": sequence}; }\n",
+    }}, {}, {}, {}, nullptr, publication_probe);
+    publication_probe->attach(publication);
+    static_cast<void>(publication.invoke_export("main", "run"));
+    const auto polls_after_first = publication_probe->polls();
+    static_cast<void>(publication.invoke_export("main", "run"));
+    const auto polls_after_second = publication_probe->polls();
+    const auto steady_invocation_polls = polls_after_second - polls_after_first;
+    check(steady_invocation_polls != 0,
+          "entry invocation exposes at least one cancellation safe point");
+
+    publication_probe->arm_after(steady_invocation_polls, false);
+    const auto collected_success = publication.invoke_export("main", "run");
+    bool collected_success_valid{};
+    try {
+        const auto entries = publication.heap().map_entries(
+            collected_success.value.as_heap_ref());
+        collected_success_valid = entries.size() == 1
+            && entries[0].second.as_integer() == 3;
+    } catch (...) {
+        collected_success_valid = false;
+    }
+    check(publication_probe->collections() == 1
+              && !publication_probe->collection_failed()
+              && collected_success_valid,
+          "the pre-admitted staging root protects a result when the final probe collects");
+
+    publication_probe->arm_after(steady_invocation_polls, true);
+    expect_error(runtime::LanguageErrorCode::Cancelled,
+                 [&] { static_cast<void>(publication.invoke_export("main", "run")); },
+                 "final-boundary cancellation rejects an otherwise completed entry call");
+    publication.heap().collect();
+    bool prior_survived = false;
+    try {
+        const auto entries = publication.heap().map_entries(
+            collected_success.value.as_heap_ref());
+        prior_survived = entries.size() == 1
+            && entries[0].second.as_integer() == 3;
+    } catch (...) {
+        prior_survived = false;
+    }
+    check(publication_probe->collections() == 2 && prior_survived,
+          "a collecting final cancellation cannot replace the last published entry result");
+
+    auto reentrant_probe = std::make_shared<ReentrantInvocationProbe>();
+    runtime::SynchronousEvaluator reentrant({{
+        "main",
+        "let calls = 0;\n"
+        "fn run() { calls += 1; return calls; }\n",
+    }}, {}, {}, {}, nullptr, reentrant_probe);
+    reentrant_probe->attach(reentrant);
+    const auto result = reentrant.invoke_export("main", "run");
+    check(reentrant_probe->rejected() && result.value.as_integer() == 1,
+          "cancellation-probe reentry is rejected before a second entry execution");
 }
 
 void test_multi_module_cache_and_namespace_calls()
@@ -964,6 +1203,8 @@ int main()
     try {
     test_values_collections_operators_and_short_circuit();
     test_control_flow_closures_defaults_and_recursion();
+    test_exact_entry_export_invocation();
+    test_entry_invocation_transactional_publication_and_reentry();
     test_multi_module_cache_and_namespace_calls();
     test_module_failure_cache_and_lazy_initialization();
     test_constructive_two_counter_program();

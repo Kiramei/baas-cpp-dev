@@ -18,6 +18,7 @@
 namespace baas::script::runtime {
 
 class HostReleaseDispatcher;
+class EvaluatorHeapBoundary;
 
 enum class RuntimeErrorCode {
     TypeMismatch,
@@ -43,6 +44,7 @@ enum class RuntimeErrorCode {
     JsonByteLimitExceeded,
     JsonWorkLimitExceeded,
     JsonDuplicateKey,
+    HeapBusy,
 };
 
 [[nodiscard]] std::string_view runtime_error_code_name(RuntimeErrorCode code) noexcept;
@@ -458,8 +460,10 @@ public:
     // release records; host I/O belongs to the owning context/adapter strand.
     bool close_host_handle(HeapRef reference);
     // At most one release may be leased at a time. External memory remains
-    // charged until the owning dispatcher acknowledges the lease. A failed
-    // ownership transfer retries the same immutable record without loss.
+    // charged until the owning dispatcher acknowledges the lease. Public
+    // lease/acknowledge/retry/defer operations are refused while an evaluator
+    // boundary owns the Heap; the dispatcher uses friend-only operations so a
+    // release adapter cannot seize, erase, or rotate its in-flight record.
     [[nodiscard]] std::optional<HostReleaseLease> lease_host_release();
     bool acknowledge_host_release(std::uint64_t lease_id) noexcept;
     bool retry_host_release(std::uint64_t lease_id) noexcept;
@@ -467,7 +471,8 @@ public:
     // pending releases so a pinned/broken adapter cannot starve the queue.
     bool defer_host_release(std::uint64_t lease_id) noexcept;
     // Legacy eager ownership transfer. New typed dispatchers use leases and
-    // the friend-only teardown path below.
+    // the friend-only teardown path below. An evaluator boundary rejects this
+    // operation with RT024 before any lease, queue, cursor, or ledger mutation.
     [[nodiscard]] std::vector<HostReleaseRecord> drain_release_queue();
 
     void collect();
@@ -482,6 +487,7 @@ public:
 
 private:
     friend class HostReleaseDispatcher;
+    friend class EvaluatorHeapBoundary;
     struct Impl;
     Impl* impl_;
 
@@ -490,7 +496,15 @@ private:
     // Friend-only reliable ownership transfer. Application code cannot obtain
     // or silently discard a non-empty detached release token.
     [[nodiscard]] DetachedHostReleases detach_host_releases();
+    [[nodiscard]] std::optional<HostReleaseLease>
+        lease_host_release_for_dispatcher();
+    bool acknowledge_host_release_for_dispatcher(std::uint64_t lease_id) noexcept;
+    bool retry_host_release_for_dispatcher(std::uint64_t lease_id) noexcept;
+    bool defer_host_release_for_dispatcher(std::uint64_t lease_id) noexcept;
     void teardown_for_dispatcher();
+    void enter_evaluator_boundary() noexcept;
+    void leave_evaluator_boundary() noexcept;
+    [[nodiscard]] bool evaluator_boundary_active() const noexcept;
     [[nodiscard]] std::size_t pending_host_release_count() const noexcept;
 };
 

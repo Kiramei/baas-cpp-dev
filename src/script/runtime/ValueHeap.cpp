@@ -884,6 +884,7 @@ struct Heap::Impl {
     bool release_lease_active{};
     bool release_detached{};
     RootId next_root_id{1};
+    std::size_t evaluator_boundary_depth{};
     bool collecting{false};
     bool torn_down{false};
 };
@@ -914,6 +915,7 @@ std::string_view runtime_error_code_name(const RuntimeErrorCode code) noexcept
         case RuntimeErrorCode::JsonByteLimitExceeded: return "RT021_JSON_BYTE_LIMIT_EXCEEDED";
         case RuntimeErrorCode::JsonWorkLimitExceeded: return "RT022_JSON_WORK_LIMIT_EXCEEDED";
         case RuntimeErrorCode::JsonDuplicateKey: return "RT023_JSON_DUPLICATE_KEY";
+        case RuntimeErrorCode::HeapBusy: return "RT024_HEAP_BUSY";
     }
     return "RT000_UNKNOWN";
 }
@@ -1594,6 +1596,12 @@ bool Heap::close_host_handle(const HeapRef reference)
 
 std::optional<HostReleaseLease> Heap::lease_host_release()
 {
+    if (impl_->evaluator_boundary_depth != 0) return std::nullopt;
+    return lease_host_release_for_dispatcher();
+}
+
+std::optional<HostReleaseLease> Heap::lease_host_release_for_dispatcher()
+{
     if (impl_->release_lease_active ||
         impl_->release_head >= impl_->release_queue.size())
         return std::nullopt;
@@ -1612,6 +1620,13 @@ std::optional<HostReleaseLease> Heap::lease_host_release()
 }
 
 bool Heap::acknowledge_host_release(const std::uint64_t lease_id) noexcept
+{
+    if (impl_->evaluator_boundary_depth != 0) return false;
+    return acknowledge_host_release_for_dispatcher(lease_id);
+}
+
+bool Heap::acknowledge_host_release_for_dispatcher(
+    const std::uint64_t lease_id) noexcept
 {
     if (!impl_->release_lease_active || lease_id == 0 ||
         lease_id != impl_->active_release_lease_id ||
@@ -1641,6 +1656,13 @@ bool Heap::acknowledge_host_release(const std::uint64_t lease_id) noexcept
 
 bool Heap::retry_host_release(const std::uint64_t lease_id) noexcept
 {
+    if (impl_->evaluator_boundary_depth != 0) return false;
+    return retry_host_release_for_dispatcher(lease_id);
+}
+
+bool Heap::retry_host_release_for_dispatcher(
+    const std::uint64_t lease_id) noexcept
+{
     if (!impl_->release_lease_active || lease_id == 0 ||
         lease_id != impl_->active_release_lease_id)
         return false;
@@ -1651,6 +1673,13 @@ bool Heap::retry_host_release(const std::uint64_t lease_id) noexcept
 }
 
 bool Heap::defer_host_release(const std::uint64_t lease_id) noexcept
+{
+    if (impl_->evaluator_boundary_depth != 0) return false;
+    return defer_host_release_for_dispatcher(lease_id);
+}
+
+bool Heap::defer_host_release_for_dispatcher(
+    const std::uint64_t lease_id) noexcept
 {
     if (!impl_->release_lease_active || lease_id == 0 ||
         lease_id != impl_->active_release_lease_id ||
@@ -1668,6 +1697,10 @@ void Heap::collect() { impl_->collect(); }
 
 void Heap::teardown_for_dispatcher()
 {
+    if (impl_->evaluator_boundary_depth != 0)
+        throw RuntimeError(
+            RuntimeErrorCode::HeapBusy,
+            "heap teardown is forbidden during an active evaluator boundary");
     if (impl_->torn_down) return;
     impl_->reserve_sweep_storage(false);
     for (std::size_t index = 0; index < impl_->slots.size(); ++index) {
@@ -1679,8 +1712,31 @@ void Heap::teardown_for_dispatcher()
     impl_->torn_down = true;
 }
 
+void Heap::enter_evaluator_boundary() noexcept
+{
+    if (impl_->evaluator_boundary_depth == std::numeric_limits<std::size_t>::max())
+        std::terminate();
+    ++impl_->evaluator_boundary_depth;
+}
+
+void Heap::leave_evaluator_boundary() noexcept
+{
+    if (impl_->evaluator_boundary_depth == 0)
+        std::terminate();
+    --impl_->evaluator_boundary_depth;
+}
+
+bool Heap::evaluator_boundary_active() const noexcept
+{
+    return impl_->evaluator_boundary_depth != 0;
+}
+
 std::vector<HostReleaseRecord> Heap::drain_release_queue()
 {
+    if (impl_->evaluator_boundary_depth != 0)
+        throw RuntimeError(
+            RuntimeErrorCode::HeapBusy,
+            "Host release ownership transfer is forbidden during an active evaluator boundary");
     impl_->release_lease_active = false;
     impl_->active_release_lease_id = 0;
     impl_->compact_release_queue();

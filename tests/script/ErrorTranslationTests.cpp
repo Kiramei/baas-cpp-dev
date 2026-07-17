@@ -39,6 +39,7 @@ constexpr std::array expected{
     Expected{runtime::RuntimeErrorCode::JsonByteLimitExceeded, "JsonLimitExceeded", true},
     Expected{runtime::RuntimeErrorCode::JsonWorkLimitExceeded, "JsonLimitExceeded", true},
     Expected{runtime::RuntimeErrorCode::JsonDuplicateKey, "JsonDuplicateKey", true},
+    Expected{runtime::RuntimeErrorCode::HeapBusy, "InternalInvariant", false},
 };
 
 }  // namespace
