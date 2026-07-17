@@ -17,6 +17,7 @@
 #include <stop_token>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -28,6 +29,7 @@ namespace resources = baas::resources;
 
 std::atomic<int> failures{};
 std::stop_source* read_cancellation{};
+std::stop_source* loader_cancellation{};
 
 void check(const bool condition, const std::string_view message) {
     if (condition)
@@ -229,7 +231,7 @@ void expect_error(const loader::RuntimeResourceSnapshotLoadResult& result,
                   const loader::RuntimeResourceSnapshotLoadError error,
                   const std::string_view message) {
     check(!result, message);
-    check(!result.snapshot, message);
+    check(!result.activation, message);
     check(result.error == error, message);
 }
 
@@ -246,23 +248,36 @@ void expect_error(const loader::RuntimeResourceSnapshotLoadResult& result,
 
 void test_success_selector_and_owned_lifetime() {
     const auto entries = valid_entries();
-    RepositoryFixture fixture{package_manifest(entries), fixture_files(entries)};
-    const auto loaded =
-        loader::load_runtime_resource_snapshot(fixture.resources(), {"CN", "Event"});
-    check(static_cast<bool>(loaded), "valid package must load");
-    if (!loaded)
-        return;
-    check(loaded.snapshot->entry_count() == entries.size(), "all variants must be retained");
-    const auto exact = loaded.snapshot->resolve("image/menu");
-    check(exact && exact->sha256() == sha256(entries[2].bytes),
-          "selector must prefer locale plus activity");
-    const auto override = loaded.snapshot->resolve("image/menu", "JP");
-    check(override && override->sha256() == sha256(entries[3].bytes),
-          "locale override must retain activity fallback");
-    for (const auto& entry : entries)
-        fixture.erase_payload(entry.path);
+    std::shared_ptr<const loader::RuntimeResourceSnapshotActivation> retained;
+    std::shared_ptr<const resources::ResourceEntry> exact;
+    std::string generation;
+    std::string commit;
+    {
+        RepositoryFixture fixture{package_manifest(entries), fixture_files(entries)};
+        const auto loaded =
+            loader::load_runtime_resource_snapshot(fixture.resources(), {"CN", "Event"});
+        check(static_cast<bool>(loaded), "valid package must load");
+        if (!loaded)
+            return;
+        generation = fixture.resources().generation();
+        commit = fixture.resources().commit();
+        check(loaded.activation->generation() == generation &&
+                  loaded.activation->commit() == commit,
+              "activation must retain the exact resources generation and commit");
+        check(loaded.activation->snapshot()->entry_count() == entries.size(),
+              "all variants must be retained");
+        exact = loaded.activation->snapshot()->resolve("image/menu");
+        check(exact && exact->sha256() == sha256(entries[2].bytes),
+              "selector must prefer locale plus activity");
+        const auto override = loaded.activation->snapshot()->resolve("image/menu", "JP");
+        check(override && override->sha256() == sha256(entries[3].bytes),
+              "locale override must retain activity fallback");
+        retained = loaded.activation;
+    }
+    check(retained && retained->generation() == generation && retained->commit() == commit,
+          "activation provenance must survive read-view destruction");
     check(exact && std::ranges::equal(exact->bytes(), entries[2].bytes),
-          "snapshot bytes must survive repository deletion");
+          "snapshot bytes must survive repository and read-view destruction");
 }
 
 void test_exact_schema_and_manifest_identity() {
@@ -373,6 +388,13 @@ void throw_allocation(const loader::RuntimeResourceSnapshotLoaderHookPoint) {
     throw std::bad_alloc{};
 }
 
+void cancel_before_snapshot_publication(
+    const loader::RuntimeResourceSnapshotLoaderHookPoint point) {
+    if (loader_cancellation != nullptr &&
+        point == loader::RuntimeResourceSnapshotLoaderHookPoint::before_snapshot_build)
+        loader_cancellation->request_stop();
+}
+
 std::atomic<int> payload_copy_hooks{};
 void throw_second_payload_allocation(const loader::RuntimeResourceSnapshotLoaderHookPoint point) {
     if (point == loader::RuntimeResourceSnapshotLoaderHookPoint::before_payload_copy &&
@@ -469,6 +491,16 @@ void test_limits_cancel_oom_and_wrong_capability() {
     repository::set_runtime_repository_read_view_hook(nullptr);
     read_cancellation = nullptr;
 
+    std::stop_source during_publication;
+    loader_cancellation = &during_publication;
+    loader::set_runtime_resource_snapshot_loader_hook(cancel_before_snapshot_publication);
+    expect_error(loader::load_runtime_resource_snapshot(
+                     fixture.resources(), {"CN", {}}, {}, during_publication.get_token()),
+                 loader::RuntimeResourceSnapshotLoadError::cancelled,
+                 "cancellation before snapshot publication must expose no activation");
+    loader::set_runtime_resource_snapshot_loader_hook(nullptr);
+    loader_cancellation = nullptr;
+
     loader::set_runtime_resource_snapshot_loader_hook(throw_allocation);
     expect_error(loader::load_runtime_resource_snapshot(fixture.resources(), {"CN", {}}),
                  loader::RuntimeResourceSnapshotLoadError::resource_exhausted,
@@ -483,6 +515,19 @@ void test_limits_cancel_oom_and_wrong_capability() {
 }
 
 void test_stable_error_names_and_no_embedded_payload(const std::filesystem::path& executable) {
+    static_assert(!std::is_default_constructible_v<
+                  loader::RuntimeResourceSnapshotActivation>);
+    static_assert(!std::is_constructible_v<
+                  loader::RuntimeResourceSnapshotActivation, std::string, std::string,
+                  std::shared_ptr<const resources::ResourceSnapshot>>);
+    static_assert(!std::is_copy_constructible_v<
+                  loader::RuntimeResourceSnapshotActivation>);
+    static_assert(!std::is_copy_assignable_v<
+                  loader::RuntimeResourceSnapshotActivation>);
+    static_assert(!std::is_move_constructible_v<
+                  loader::RuntimeResourceSnapshotActivation>);
+    static_assert(!std::is_move_assignable_v<
+                  loader::RuntimeResourceSnapshotActivation>);
     check(loader::runtime_resource_snapshot_load_error_name(
               loader::RuntimeResourceSnapshotLoadError::cancelled) == "RRL017_CANCELLED",
           "typed error names must remain stable");

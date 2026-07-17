@@ -1,11 +1,13 @@
 # Runtime resource snapshot loader
 
 `BAAS_runtime_resource_snapshot_loader` materializes one immutable
-`baas::resources::ResourceSnapshot` from the `resources()` capability of a
+`RuntimeResourceSnapshotActivation` from the `resources()` capability of a
 pinned `RuntimeRepositoryReadBundle`. The loader has no API for native paths,
 `BAAS_RESOURCE_DIR`, process-global resource state, URLs, Git references, or
 browser-supplied repository metadata. Resource bytes remain external and are
-read only at runtime.
+read only at runtime. The activation owns the `baas::resources::ResourceSnapshot`
+and the exact resources repository generation and commit copied from that
+pinned capability.
 
 ## External manifest v1
 
@@ -48,6 +50,12 @@ identity, size, and digest. Finally `ResourceSnapshot::build` independently
 checks declared size and digest and defensively owns every byte before the
 snapshot is published. Removing repository files after a successful load does
 not invalidate the snapshot.
+
+The activation provenance is deliberately not caller-constructible. A later
+procedure or task activation must compare its pinned scripts generation with
+`RuntimeResourceSnapshotActivation::generation()` before composing executable
+code and resource bytes. A bare `ResourceSnapshot` is insufficient evidence of
+same-generation repository selection.
 
 `RuntimeResourceSnapshotLoaderLimits` independently bounds manifest bytes,
 entries, total bytes, bytes per file, string bytes, and cumulative work.
