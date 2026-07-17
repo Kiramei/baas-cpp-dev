@@ -10,11 +10,12 @@ foreach(required_target
     endif()
 endforeach()
 
+include("${CMAKE_CURRENT_LIST_DIR}/ServiceRuntimeRepositoryTrustedPlanState.cmake")
+
 add_library(
         BAAS_service_runtime_repository_plan
         STATIC
         "${BAAS_PROJECT_PATH}/src/service/app/RuntimeRepositoryTrustedPlan.cpp"
-        "${BAAS_PROJECT_PATH}/src/service/app/RuntimeRepositoryTrustedPlanState.cpp"
         "${BAAS_PROJECT_PATH}/src/service/app/RuntimeRepositoryTrustedPlanUpdateOwner.cpp"
         "${BAAS_PROJECT_PATH}/include/service/app/RuntimeRepositoryTrustedPlan.h"
         "${BAAS_PROJECT_PATH}/include/service/app/RuntimeRepositoryTrustedPlanState.h"
@@ -29,7 +30,10 @@ target_include_directories(
 target_link_libraries(
         BAAS_service_runtime_repository_plan
         PUBLIC BAAS_runtime_repository_updater
-        PRIVATE BAAS_service_auth_crypto BAAS::nlohmann_json
+        PRIVATE
+        BAAS_service_auth_crypto
+        BAAS_service_runtime_repository_trusted_plan_state
+        BAAS::nlohmann_json
 )
 
 if(MSVC)

@@ -14,8 +14,12 @@
 #include <vector>
 
 #if defined(_WIN32)
+#define NOMINMAX
 #include <process.h>
+#include <windows.h>
 #else
+#include <fcntl.h>
+#include <sys/file.h>
 #include <unistd.h>
 #endif
 
@@ -66,6 +70,53 @@ public:
     std::filesystem::path path;
 };
 
+class HeldWriterLock final {
+public:
+    explicit HeldWriterLock(const std::filesystem::path& path)
+    {
+#if defined(_WIN32)
+        handle_ = CreateFileW(
+            path.c_str(), GENERIC_READ | GENERIC_WRITE,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+            OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+        if (handle_ == INVALID_HANDLE_VALUE
+            || !LockFileEx(handle_, LOCKFILE_EXCLUSIVE_LOCK, 0, 1, 0, &overlapped_)) {
+            throw std::runtime_error("fixture writer lock failed");
+        }
+#else
+        descriptor_ = open(path.c_str(), O_RDWR | O_CLOEXEC | O_NOFOLLOW);
+        if (descriptor_ < 0 || flock(descriptor_, LOCK_EX) != 0)
+            throw std::runtime_error("fixture writer lock failed");
+#endif
+    }
+
+    ~HeldWriterLock()
+    {
+#if defined(_WIN32)
+        if (handle_ != INVALID_HANDLE_VALUE) {
+            UnlockFileEx(handle_, 0, 1, 0, &overlapped_);
+            CloseHandle(handle_);
+        }
+#else
+        if (descriptor_ >= 0) {
+            static_cast<void>(flock(descriptor_, LOCK_UN));
+            close(descriptor_);
+        }
+#endif
+    }
+
+    HeldWriterLock(const HeldWriterLock&) = delete;
+    HeldWriterLock& operator=(const HeldWriterLock&) = delete;
+
+private:
+#if defined(_WIN32)
+    HANDLE handle_{INVALID_HANDLE_VALUE};
+    OVERLAPPED overlapped_{};
+#else
+    int descriptor_{-1};
+#endif
+};
+
 void write_file(const std::filesystem::path& path, const std::string_view bytes)
 {
     std::filesystem::create_directories(path.parent_path());
@@ -113,6 +164,24 @@ void write_file(const std::filesystem::path& path, const std::string_view bytes)
         + std::string{generation} + ".json\"}";
 }
 
+void install_trusted_state(
+    const std::filesystem::path& project_root,
+    const std::string_view generation)
+{
+    const auto state_root =
+        project_root / ".baas-updater" / "runtime-repositories";
+    write_file(state_root / ".trusted-plan-writer.lock", "");
+    write_file(
+        state_root / ".trusted-plan-owner",
+        "baas.runtime-repositories.trusted-plan-owner/v1\ninitialized\n");
+    write_file(
+        state_root / ".trusted-plan-state.json",
+        "{\"schema\":\"baas.runtime-repositories.trusted-plan-state/v1\","
+        "\"generation\":\"" + std::string{generation}
+            + "\",\"sequence\":\"1\",\"payload_sha256\":\""
+            + std::string(64, 'c') + "\"}");
+}
+
 [[nodiscard]] std::string install_generation(
     const std::filesystem::path& project_root,
     const std::array<repository::RuntimeRepository, 2>& values,
@@ -124,7 +193,10 @@ void write_file(const std::filesystem::path& path, const std::string_view bytes)
     write_file(
         state_root / "snapshots" / (generation + ".json"),
         snapshot_json(values, generation));
-    if (publish) write_file(state_root / "current.json", current_json(generation));
+    if (publish) {
+        write_file(state_root / "current.json", current_json(generation));
+        install_trusted_state(project_root, generation);
+    }
     return generation;
 }
 
@@ -150,18 +222,104 @@ void test_valid_activation_is_pinned_for_owner_lifetime()
     if (!opened) return;
     auto owner = std::move(opened.owner);
     const auto pin = owner->pin();
+    const auto trust = owner->script_trust_evidence();
     check(owner->phase() == app::ServiceRuntimeRepositoryPhase::pinned
               && owner->generation() == generation && pin
-              && pin->generation() == generation,
-          "valid activation must publish the exact immutable generation");
+              && pin->generation() == generation && trust
+              && trust->covers(generation, std::string(40, '2'))
+              && !trust->covers(generation, std::string(40, '3'))
+              && !trust->covers(std::string(64, 'f'), std::string(40, '2')),
+          "valid activation must publish exact immutable native trust evidence");
+
+    app::ServiceRuntimeRepositoryOwner untrusted_embedding{pin};
+    check(!untrusted_embedding.script_trust_evidence(),
+          "a snapshot-only owner must never manufacture production trust evidence");
 
     std::error_code ignored;
     std::filesystem::remove_all(
         root.path / ".baas-updater" / "runtime-repositories", ignored);
     check(pin && pin->generation() == generation
               && pin->resources().commit == std::string(40, '1')
-              && owner->generation() == generation,
-          "owner and retained pins must outlive mutable activation files");
+              && owner->generation() == generation && trust
+              && trust->covers(generation, std::string(40, '2')),
+          "owner, retained pins, and trust evidence must outlive mutable activation files");
+}
+
+void test_trusted_state_is_required_exact_and_recovery_free()
+{
+    {
+        TemporaryRoot root{"missing-trust"};
+        const auto generation = install_generation(root.path, descriptors('1', '2'));
+        std::filesystem::remove(
+            root.path / ".baas-updater" / "runtime-repositories"
+                / ".trusted-plan-state.json");
+        const auto opened = app::open_service_runtime_repository_owner(
+            root.path, generation);
+        check(!opened
+                  && opened.error == app::ServiceRuntimeRepositoryOpenError::
+                      trusted_state_invalid,
+              "a repository pin without durable signed-plan state must fail closed");
+    }
+    {
+        TemporaryRoot root{"mismatched-trust"};
+        const auto generation = install_generation(root.path, descriptors('2', '3'));
+        install_trusted_state(root.path, std::string(64, 'f'));
+        const auto opened = app::open_service_runtime_repository_owner(
+            root.path, generation);
+        check(!opened
+                  && opened.error == app::ServiceRuntimeRepositoryOpenError::
+                      trusted_state_generation_mismatch
+                  && opened.trusted_state_error ==
+                      app::RuntimeRepositoryTrustedPlanStateError::
+                          inconsistent_generation,
+              "trusted policy state must name the exact immutable generation");
+    }
+    {
+        TemporaryRoot root{"pending-trust"};
+        const auto generation = install_generation(root.path, descriptors('3', '4'));
+        write_file(
+            root.path / ".baas-updater" / "runtime-repositories"
+                / ".trusted-plan-journal.json",
+            "{}");
+        const auto opened = app::open_service_runtime_repository_owner(
+            root.path, generation);
+        check(!opened
+                  && opened.error == app::ServiceRuntimeRepositoryOpenError::
+                      trusted_state_pending_recovery
+                  && opened.trusted_state_error ==
+                      app::RuntimeRepositoryTrustedPlanStateError::pending_recovery,
+              "service startup must not recover or complete a pending policy journal");
+    }
+    {
+        TemporaryRoot root{"pending-publication"};
+        const auto generation = install_generation(root.path, descriptors('4', '5'));
+        write_file(
+            root.path / ".baas-updater" / "runtime-repositories"
+                / ".publish-journal.json",
+            "{}");
+        const auto opened = app::open_service_runtime_repository_owner(
+            root.path, generation);
+        check(!opened
+                  && opened.error == app::ServiceRuntimeRepositoryOpenError::
+                      trusted_state_pending_recovery,
+              "service startup must not recover a pending repository publication");
+    }
+    {
+        TemporaryRoot root{"writer-active"};
+        const auto generation = install_generation(root.path, descriptors('5', '6'));
+        const auto lock_path =
+            root.path / ".baas-updater" / "runtime-repositories"
+                / ".trusted-plan-writer.lock";
+        HeldWriterLock writer{lock_path};
+        const auto opened = app::open_service_runtime_repository_owner(
+            root.path, generation);
+        check(!opened
+                  && opened.error == app::ServiceRuntimeRepositoryOpenError::
+                      trusted_state_pending_recovery
+                  && opened.trusted_state_error ==
+                      app::RuntimeRepositoryTrustedPlanStateError::not_ready,
+              "service startup must fail immediately while native publication owns the policy lock");
+    }
 }
 
 void test_malformed_and_tampered_activation_fail_closed()
@@ -280,7 +438,9 @@ void test_stable_names_cover_public_states()
     using enum app::ServiceRuntimeRepositoryOpenError;
     for (const auto error : {
              none, invalid_expected_generation, generation_mismatch,
-             invalid_activation, internal_error}) {
+             invalid_activation, trusted_state_invalid,
+             trusted_state_generation_mismatch,
+             trusted_state_pending_recovery, internal_error}) {
         check(app::service_runtime_repository_open_error_name(error) != "unknown",
               "every repository owner error must have a stable name");
     }
@@ -298,6 +458,7 @@ int main()
     try {
         test_missing_current_fails_expected_generation();
         test_valid_activation_is_pinned_for_owner_lifetime();
+        test_trusted_state_is_required_exact_and_recovery_free();
         test_malformed_and_tampered_activation_fail_closed();
         test_expected_generation_is_exact_and_canonical();
         test_concurrent_readers_observe_one_generation();

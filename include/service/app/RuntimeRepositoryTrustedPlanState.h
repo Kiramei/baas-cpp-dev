@@ -12,6 +12,7 @@ namespace baas::service::app {
 enum class RuntimeRepositoryTrustedPlanStateError : std::uint8_t {
   none,
   not_ready,
+  pending_recovery,
   invalid_root,
   invalid_state,
   inconsistent_generation,
@@ -29,6 +30,17 @@ struct RuntimeRepositoryTrustedPlanStateResult {
 
   [[nodiscard]] explicit operator bool() const noexcept {
     return error == RuntimeRepositoryTrustedPlanStateError::none;
+  }
+};
+
+struct RuntimeRepositoryTrustedPlanAttestationResult {
+  std::optional<RuntimeRepositoryTrustedState> state;
+  RuntimeRepositoryTrustedPlanStateError error{
+      RuntimeRepositoryTrustedPlanStateError::internal_error};
+
+  [[nodiscard]] explicit operator bool() const noexcept {
+    return error == RuntimeRepositoryTrustedPlanStateError::none &&
+           state.has_value();
   }
 };
 
@@ -58,6 +70,14 @@ public:
 
   [[nodiscard]] RuntimeRepositoryTrustedPlanStateResult
   reconcile(std::optional<std::string_view> actual_generation) noexcept;
+
+  // Strict read-only service-start attestation. It never creates ownership,
+  // recovers a publication, completes a trusted-state journal, or rewrites
+  // policy state. A native updater operation or either pending journal fails
+  // closed. Success proves that initialized trusted policy state names the
+  // exact already-pinned repository generation.
+  [[nodiscard]] RuntimeRepositoryTrustedPlanAttestationResult
+  attest_exact(std::string_view actual_generation) const noexcept;
 
   [[nodiscard]] RuntimeRepositoryTrustedPlanStateResult
   prepare(std::optional<std::string_view> expected_previous_generation,

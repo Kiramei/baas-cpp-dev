@@ -22,6 +22,7 @@
 #else
 #include <cerrno>
 #include <fcntl.h>
+#include <sys/file.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #endif
@@ -37,6 +38,8 @@ constexpr std::string_view journal_schema =
 constexpr std::string_view state_name = ".trusted-plan-state.json";
 constexpr std::string_view journal_name = ".trusted-plan-journal.json";
 constexpr std::string_view owner_name = ".trusted-plan-owner";
+constexpr std::string_view writer_lock_name = ".trusted-plan-writer.lock";
+constexpr std::string_view publication_journal_name = ".publish-journal.json";
 constexpr std::string_view owner_uninitialized =
     "baas.runtime-repositories.trusted-plan-owner/v1\nuninitialized\n";
 constexpr std::string_view owner_initialized =
@@ -286,6 +289,121 @@ void require_plain_root(const std::filesystem::path &root) {
 #endif
 }
 
+// Uses the updater's exact writer-lock byte without creating any filesystem
+// state. Service startup takes this lock only long enough to compare its
+// immutable repository pin with already-committed trusted policy state.
+class PolicyReadLock final {
+public:
+  explicit PolicyReadLock(const std::filesystem::path &root) {
+    require_plain_root(root);
+    const auto path = child(root, writer_lock_name);
+    if (!present(path))
+      fail(RuntimeRepositoryTrustedPlanStateError::invalid_state);
+#ifdef _WIN32
+    handle_ = CreateFileW(
+        path.c_str(), GENERIC_READ,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+        OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+    if (handle_ == INVALID_HANDLE_VALUE)
+      fail(RuntimeRepositoryTrustedPlanStateError::io);
+
+    FILE_ATTRIBUTE_TAG_INFO attributes{};
+    FILE_STANDARD_INFO standard{};
+    if (!GetFileInformationByHandleEx(handle_, FileAttributeTagInfo,
+                                      &attributes, sizeof(attributes)) ||
+        !GetFileInformationByHandleEx(handle_, FileStandardInfo, &standard,
+                                      sizeof(standard)) ||
+        (attributes.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0 ||
+        (attributes.FileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0 ||
+        standard.NumberOfLinks != 1) {
+      release();
+      fail(RuntimeRepositoryTrustedPlanStateError::invalid_state);
+    }
+    if (!LockFileEx(handle_,
+                    LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY, 0, 1,
+                    0, &overlapped_)) {
+      const auto error = GetLastError();
+      release();
+      fail(error == ERROR_LOCK_VIOLATION || error == ERROR_IO_PENDING
+               ? RuntimeRepositoryTrustedPlanStateError::not_ready
+               : RuntimeRepositoryTrustedPlanStateError::io);
+    }
+
+    BY_HANDLE_FILE_INFORMATION locked{};
+    if (!GetFileInformationByHandle(handle_, &locked)) {
+      release();
+      fail(RuntimeRepositoryTrustedPlanStateError::io);
+    }
+    const auto reopened = CreateFileW(
+        path.c_str(), GENERIC_READ,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+        OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+    BY_HANDLE_FILE_INFORMATION current{};
+    const bool same_identity =
+        reopened != INVALID_HANDLE_VALUE &&
+        GetFileInformationByHandle(reopened, &current) &&
+        locked.dwVolumeSerialNumber == current.dwVolumeSerialNumber &&
+        locked.nFileIndexHigh == current.nFileIndexHigh &&
+        locked.nFileIndexLow == current.nFileIndexLow;
+    if (reopened != INVALID_HANDLE_VALUE)
+      CloseHandle(reopened);
+    if (!same_identity) {
+      release();
+      fail(RuntimeRepositoryTrustedPlanStateError::invalid_state);
+    }
+#else
+    descriptor_ = open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+    if (descriptor_ < 0)
+      fail(RuntimeRepositoryTrustedPlanStateError::io);
+    if (flock(descriptor_, LOCK_EX | LOCK_NB) != 0) {
+      const auto error = errno;
+      release();
+      fail(error == EWOULDBLOCK || error == EAGAIN
+               ? RuntimeRepositoryTrustedPlanStateError::not_ready
+               : RuntimeRepositoryTrustedPlanStateError::io);
+    }
+    struct stat locked{};
+    struct stat current{};
+    if (fstat(descriptor_, &locked) != 0 ||
+        lstat(path.c_str(), &current) != 0 || !S_ISREG(locked.st_mode) ||
+        !S_ISREG(current.st_mode) || locked.st_nlink != 1 ||
+        current.st_nlink != 1 || locked.st_dev != current.st_dev ||
+        locked.st_ino != current.st_ino) {
+      release();
+      fail(RuntimeRepositoryTrustedPlanStateError::invalid_state);
+    }
+#endif
+  }
+
+  ~PolicyReadLock() { release(); }
+  PolicyReadLock(const PolicyReadLock &) = delete;
+  PolicyReadLock &operator=(const PolicyReadLock &) = delete;
+
+private:
+  void release() noexcept {
+#ifdef _WIN32
+    if (handle_ != INVALID_HANDLE_VALUE) {
+      UnlockFileEx(handle_, 0, 1, 0, &overlapped_);
+      CloseHandle(handle_);
+      handle_ = INVALID_HANDLE_VALUE;
+    }
+#else
+    if (descriptor_ >= 0) {
+      static_cast<void>(flock(descriptor_, LOCK_UN));
+      close(descriptor_);
+      descriptor_ = -1;
+    }
+#endif
+  }
+
+#ifdef _WIN32
+  HANDLE handle_{INVALID_HANDLE_VALUE};
+  OVERLAPPED overlapped_{};
+#else
+  int descriptor_{-1};
+#endif
+};
+
 void sync_directory(const std::filesystem::path &root) {
 #ifndef _WIN32
   const auto descriptor =
@@ -532,6 +650,38 @@ RuntimeRepositoryTrustedPlanStateStore::reconcile(
   }
 }
 
+RuntimeRepositoryTrustedPlanAttestationResult
+RuntimeRepositoryTrustedPlanStateStore::attest_exact(
+    const std::string_view actual_generation) const noexcept {
+  try {
+    if (!lower_hex(actual_generation, 64))
+      return {{}, RuntimeRepositoryTrustedPlanStateError::invalid_state};
+    PolicyReadLock policy_lock{impl_->root};
+    std::scoped_lock lock(impl_->mutex);
+    require_plain_root(impl_->root);
+    if (present(child(impl_->root, publication_journal_name)) ||
+        present(child(impl_->root, journal_name))) {
+      return {{}, RuntimeRepositoryTrustedPlanStateError::pending_recovery};
+    }
+    const auto owner = child(impl_->root, owner_name);
+    if (!present(owner) || read_file(owner) != owner_initialized)
+      return {{}, RuntimeRepositoryTrustedPlanStateError::invalid_state};
+    const auto current = impl_->read_current();
+    if (!current)
+      return {{}, RuntimeRepositoryTrustedPlanStateError::invalid_state};
+    if (current->generation != actual_generation)
+      return {{},
+              RuntimeRepositoryTrustedPlanStateError::inconsistent_generation};
+    return {current, RuntimeRepositoryTrustedPlanStateError::none};
+  } catch (const StoreFailure &error) {
+    return {{}, error.error()};
+  } catch (const std::bad_alloc &) {
+    return {{}, RuntimeRepositoryTrustedPlanStateError::resource_exhausted};
+  } catch (...) {
+    return {{}, RuntimeRepositoryTrustedPlanStateError::internal_error};
+  }
+}
+
 RuntimeRepositoryTrustedPlanStateResult
 RuntimeRepositoryTrustedPlanStateStore::prepare(
     const std::optional<std::string_view> expected_previous_generation,
@@ -616,6 +766,8 @@ std::string_view runtime_repository_trusted_plan_state_error_name(
     return "none";
   case not_ready:
     return "not_ready";
+  case pending_recovery:
+    return "pending_recovery";
   case invalid_root:
     return "invalid_root";
   case invalid_state:
