@@ -811,6 +811,66 @@ void test_same_device_multi_waiter_fifo_order()
           "same-device multi-waiter admission must preserve exact FIFO order");
 }
 
+void test_queued_acquisition_allocation_failure_recovers()
+{
+    for (std::size_t checkpoint = 1;
+         checkpoint <= host::testing::queued_acquisition_allocation_checkpoints;
+         ++checkpoint) {
+        auto coordinator = host::PhysicalDeviceCoordinator::create(
+            {.max_devices = 8, .max_waiters = 8, .max_device_id_bytes = 64,
+             .poll_interval = 1ms});
+        std::atomic<bool> holder_entered{};
+        std::atomic<bool> release_holder{};
+        auto holder = host::make_procedure_host_runtime(
+            procedure_snapshot(), "emulator-5556",
+            std::make_shared<LambdaExecutor>([&](const host::ProcedureExecutionRequest&) {
+                holder_entered.store(true, std::memory_order_release);
+                while (!release_holder.load(std::memory_order_acquire))
+                    std::this_thread::yield();
+                return host::ProcedureExecutorOutcome::success("joined");
+            }), coordinator);
+        auto waiter = host::make_procedure_host_runtime(
+            procedure_snapshot(), "emulator-5556",
+            std::make_shared<LambdaExecutor>([](const host::ProcedureExecutionRequest&) {
+                return host::ProcedureExecutorOutcome::success("joined");
+            }), coordinator);
+        auto successor = host::make_procedure_host_runtime(
+            procedure_snapshot(), "emulator-5556",
+            std::make_shared<LambdaExecutor>([](const host::ProcedureExecutionRequest&) {
+                return host::ProcedureExecutorOutcome::success("joined");
+            }), coordinator);
+        runtime::HostResult failed = runtime::HostResult::success();
+        runtime::HostResult succeeded = runtime::HostResult::success();
+        std::thread holder_thread([&] { (void)invoke(holder, arguments()); });
+        check(wait_until(
+                  [&] { return holder_entered.load(std::memory_order_acquire); }, 2s),
+              "allocation-failure holder must own the strand");
+        std::thread waiter_thread([&] { failed = invoke(waiter, arguments()); });
+        check(wait_until([&] { return coordinator->stats().waiters == 1; }, 2s),
+              "allocation-failure call must be queued before injection");
+        std::thread successor_thread(
+            [&] { succeeded = invoke(successor, arguments()); });
+        check(wait_until([&] { return coordinator->stats().waiters == 2; }, 2s),
+              "allocation-failure successor must queue behind the injected front");
+        host::testing::fail_queued_acquisition_at_allocation(checkpoint);
+        release_holder.store(true, std::memory_order_release);
+        holder_thread.join();
+        waiter_thread.join();
+        successor_thread.join();
+        host::testing::fail_queued_acquisition_at_allocation(0);
+
+        const auto stats = coordinator->stats();
+        check(failed.has_error() &&
+                  failed.error().code == runtime::HostErrorCode::BudgetExceeded &&
+                  failed.error().effect_state == runtime::HostEffectState::NotStarted &&
+                  succeeded.ok() && stats.waiters == 0 && stats.active_devices == 0,
+              "queued admission allocation failure must erase its front ticket and stats");
+        const auto recovered = invoke(waiter, arguments());
+        check(recovered.ok() && coordinator->stats().waiters == 0,
+              "same-device admission must recover after queued allocation failure");
+    }
+}
+
 void test_cancellation_deadline_and_exception_safety()
 {
     auto coordinator = host::PhysicalDeviceCoordinator::create(
@@ -1033,6 +1093,7 @@ int main(const int argc, char** argv)
         else if (selected == "different") test_different_device_concurrency_reentry_and_shutdown();
         else if (selected == "cross-thread") test_cross_thread_logical_reentry_is_bounded();
         else if (selected == "fifo") test_same_device_multi_waiter_fifo_order();
+        else if (selected == "alloc-queue") test_queued_acquisition_allocation_failure_recovers();
         else if (selected == "cancel") test_cancellation_deadline_and_exception_safety();
         else if (selected == "stress") test_stress_repeated_serialization();
         else if (selected == "golden") test_real_evaluator_mock_procedure_log_golden_runner();
@@ -1046,6 +1107,7 @@ int main(const int argc, char** argv)
     test_different_device_concurrency_reentry_and_shutdown();
     test_cross_thread_logical_reentry_is_bounded();
     test_same_device_multi_waiter_fifo_order();
+    test_queued_acquisition_allocation_failure_recovers();
     test_cancellation_deadline_and_exception_safety();
     test_stress_repeated_serialization();
     test_real_evaluator_mock_procedure_log_golden_runner();

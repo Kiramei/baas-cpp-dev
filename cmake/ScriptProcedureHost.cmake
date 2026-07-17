@@ -29,11 +29,19 @@ endif()
 
 if(BUILD_SCRIPT_PROCEDURE_HOST_TESTS)
     include(CTest)
+    target_compile_definitions(
+            BAAS_script_procedure_host
+            PRIVATE BAAS_SCRIPT_PROCEDURE_HOST_TEST_HOOKS=1
+    )
     add_executable(
             BAAS_script_procedure_host_tests
             "${BAAS_PROJECT_PATH}/tests/script/ProcedureHostTests.cpp"
     )
     target_compile_features(BAAS_script_procedure_host_tests PRIVATE cxx_std_20)
+    target_compile_definitions(
+            BAAS_script_procedure_host_tests
+            PRIVATE BAAS_SCRIPT_PROCEDURE_HOST_TEST_HOOKS=1
+    )
     target_link_libraries(
             BAAS_script_procedure_host_tests
             PRIVATE BAAS_script_procedure_host Threads::Threads

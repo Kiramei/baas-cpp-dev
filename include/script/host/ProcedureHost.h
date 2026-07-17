@@ -239,4 +239,11 @@ struct ProcedureHostRuntime {
 [[nodiscard]] bool valid_physical_device_id(
     std::string_view value, std::size_t max_bytes = 256) noexcept;
 
+#ifdef BAAS_SCRIPT_PROCEDURE_HOST_TEST_HOOKS
+namespace testing {
+inline constexpr std::size_t queued_acquisition_allocation_checkpoints = 6;
+void fail_queued_acquisition_at_allocation(std::size_t checkpoint) noexcept;
+}  // namespace testing
+#endif
+
 }  // namespace baas::script::host

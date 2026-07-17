@@ -121,6 +121,8 @@ class ProcedureHostFoundationTests(unittest.TestCase):
             "same-thread same-device reentry",
             "propagated logical admission must reject cross-thread same-device reentry without queuing",
             "same-device multi-waiter admission must preserve exact FIFO order",
+            "queued admission allocation failure must erase its front ticket and stats",
+            "same-device admission must recover after queued allocation failure",
             "a retained admission token must become inert",
             "strand wait must cooperatively cancel",
             "cancellation during executor",

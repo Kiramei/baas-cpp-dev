@@ -44,6 +44,25 @@ public:
     std::vector<std::shared_ptr<ProcedureAdmissionNode>> lineage;
 };
 
+#ifdef BAAS_SCRIPT_PROCEDURE_HOST_TEST_HOOKS
+std::atomic<std::size_t> queued_acquisition_failure_checkpoint{};
+#endif
+
+void queued_acquisition_allocation_checkpoint(
+    const bool queued, const std::size_t checkpoint)
+{
+#ifdef BAAS_SCRIPT_PROCEDURE_HOST_TEST_HOOKS
+    if (!queued) return;
+    auto expected = checkpoint;
+    if (queued_acquisition_failure_checkpoint.compare_exchange_strong(
+            expected, 0, std::memory_order_acq_rel))
+        throw std::bad_alloc();
+#else
+    (void)queued;
+    (void)checkpoint;
+#endif
+}
+
 [[nodiscard]] JsonValue detail(const char* key, const char* value)
 {
     return JsonValue(JsonObject{{key, JsonValue(value)}});
@@ -258,6 +277,19 @@ private:
 
 }  // namespace
 
+#ifdef BAAS_SCRIPT_PROCEDURE_HOST_TEST_HOOKS
+namespace testing {
+
+void fail_queued_acquisition_at_allocation(
+    const std::size_t checkpoint) noexcept
+{
+    queued_acquisition_failure_checkpoint.store(
+        checkpoint, std::memory_order_release);
+}
+
+}  // namespace testing
+#endif
+
 ProcedureExecutorOutcome::ProcedureExecutorOutcome(
     std::variant<std::string, ProcedureExecutorError> value)
     : value_(std::move(value))
@@ -428,22 +460,33 @@ PhysicalDeviceAcquireResult PhysicalDeviceCoordinator::acquire(
         return {PhysicalDeviceAcquireCode::Backpressure, {}, {}};
 
     const auto owner = shared_from_this();
-    auto make_acquisition = [&]() -> PhysicalDeviceAcquireResult {
+    auto make_acquisition = [&](const bool queued) -> PhysicalDeviceAcquireResult {
+        std::size_t allocation_checkpoint{};
+        const auto checkpoint = [&] {
+            queued_acquisition_allocation_checkpoint(
+                queued, ++allocation_checkpoint);
+        };
         std::vector<std::shared_ptr<ProcedureAdmissionNode>> lineage;
+        checkpoint();
         lineage.reserve(active_depth + 1);
         if (parent) {
             for (const auto& node : parent->lineage)
                 if (node->active.load(std::memory_order_acquire))
                     lineage.push_back(node);
         }
+        checkpoint();
         auto node = std::make_shared<ProcedureAdmissionNode>();
         node->coordinator = impl_->identity;
+        checkpoint();
         node->device_id = device_id;
         lineage.push_back(node);
+        checkpoint();
         auto admission = std::make_shared<const ProcedureAdmissionChain>(
             std::move(lineage));
+        checkpoint();
         auto lease = std::make_shared<Impl::LeaseToken>();
         lease->owner = owner;
+        checkpoint();
         lease->device_id = device_id;
         lease->admission = node;
         state.busy = true;
@@ -454,7 +497,7 @@ PhysicalDeviceAcquireResult PhysicalDeviceCoordinator::acquire(
                 std::move(admission)};
     };
     if (!state.busy && state.waiters.empty())
-        return make_acquisition();
+        return make_acquisition(false);
     if (impl_->waiter_count >= impl_->limits.max_waiters)
         return {PhysicalDeviceAcquireCode::Backpressure, {}, {}};
     auto ticket = impl_->next_ticket++;
@@ -491,10 +534,18 @@ PhysicalDeviceAcquireResult PhysicalDeviceCoordinator::acquire(
         const auto current = impl_->devices.find(device_id);
         if (current != impl_->devices.end() && !current->second.busy &&
             !current->second.waiters.empty() && current->second.waiters.front() == ticket) {
-            auto acquisition = make_acquisition();
-            current->second.waiters.pop_front();
-            --impl_->waiter_count;
-            return acquisition;
+            try {
+                // Every potentially-throwing operation occurs before busy is
+                // published. If construction fails, remove this front ticket
+                // so the device queue cannot remain permanently poisoned.
+                auto acquisition = make_acquisition(true);
+                current->second.waiters.pop_front();
+                --impl_->waiter_count;
+                return acquisition;
+            } catch (...) {
+                cancel_wait();
+                throw;
+            }
         }
         impl_->changed.wait_for(lock, impl_->limits.poll_interval);
     }

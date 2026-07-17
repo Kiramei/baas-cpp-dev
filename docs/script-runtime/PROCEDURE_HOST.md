@@ -51,7 +51,9 @@ by `max_admission_depth`, and becomes inert when its lease is released.
 Consequently, cross-thread same-device logical reentry is rejected before it
 can enter the FIFO queue; a caller cannot fabricate a token that the
 coordinator recognizes. Multi-waiter non-reentrant calls retain exact ticket
-FIFO order.
+FIFO order. If constructing a queued front admission runs out of memory, its
+ticket and waiter accounting are removed before the allocation failure leaves
+the coordinator, so later same-device calls cannot inherit a poisoned queue.
 
 The executor must cooperatively poll during its own bounded work. Host
 postflight checks prevent a late success from outranking a deadline or
@@ -84,7 +86,8 @@ Android `arm64-v8a` and `x86_64`. Native tests cover immutable ownership and
 identity, strict malformed input, success/error mapping, lifetime, same-device
 serialization, different-device concurrency, cancellation/deadline points,
 same-thread and propagated cross-thread reentry, multi-waiter FIFO order,
-shutdown, exception/allocation failure, and 64 repeated concurrency runs.
+queued admission allocation recovery, shutdown, exception/allocation failure,
+and 64 repeated concurrency runs.
 Script evaluator tests cover the foreground discriminator through the language
 Error envelope.
 
