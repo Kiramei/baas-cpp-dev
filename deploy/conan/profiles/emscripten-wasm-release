@@ -1,0 +1,29 @@
+{% set emsdk = os.getenv("EMSDK", "__EMSDK_NOT_ACTIVATED__") %}
+{% set emscripten = os.path.join(emsdk, "upstream", "emscripten") %}
+
+[settings]
+os=Emscripten
+arch=wasm
+compiler=emcc
+compiler.version=6.0.3
+compiler.libcxx=libc++
+compiler.cppstd=20
+build_type=Release
+
+[options]
+baas-opencv/*:shared=False
+baas-spdlog/*:shared=False
+baas-simdutf/*:shared=False
+
+[buildenv]
+CC={{ os.path.join(emscripten, "emcc") }}
+CXX={{ os.path.join(emscripten, "em++") }}
+AR={{ os.path.join(emscripten, "emar") }}
+NM={{ os.path.join(emscripten, "emnm") }}
+RANLIB={{ os.path.join(emscripten, "emranlib") }}
+STRIP={{ os.path.join(emscripten, "emstrip") }}
+
+[conf]
+tools.build:compiler_executables={"c":"{{ os.path.join(emscripten, 'emcc') }}","cpp":"{{ os.path.join(emscripten, 'em++') }}"}
+tools.cmake.cmaketoolchain:generator=Ninja
+tools.cmake.cmaketoolchain:user_toolchain=["{{ os.path.join(emscripten, 'cmake', 'Modules', 'Platform', 'Emscripten.cmake') }}"]
