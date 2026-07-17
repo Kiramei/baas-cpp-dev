@@ -32,7 +32,6 @@ add_executable(
         ${BAAS_APP_BAAS_CPP_DIR}/src/module/auto_fight/constants.cpp
         ${BAAS_PROJECT_PATH}/src/BAASLogger.cpp
         ${BAAS_PROJECT_PATH}/src/BAASGlobals.cpp
-        ${BAAS_PROJECT_PATH}/src/simdutf.cpp
         ${BAAS_PROJECT_PATH}/src/config/BAASConfig.cpp
         ${BAAS_PROJECT_PATH}/src/utils/BAASStringUtil.cpp
         main.cpp

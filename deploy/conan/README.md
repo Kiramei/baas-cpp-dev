@@ -17,6 +17,8 @@ conan install deploy/conan `
   -of build/conan/windows-msvc-release-ocr `
   -pr:h=deploy/conan/profiles/windows-msvc-release `
   -pr:h=deploy/conan/profiles/dependency-versions-default `
+  -pr:b=deploy/conan/profiles/windows-msvc-release `
+  -o "&:dependency_set=ocr" `
   -o onnxruntime_use_cuda=False `
   -o use_ffmpeg=False `
   -o use_benchmark=False `
@@ -26,6 +28,19 @@ conan install deploy/conan `
 cmake --preset conan-windows-msvc-release-ocr
 cmake --build --preset conan-windows-msvc-release-ocr
 ```
+
+The final `--no-remote` install assumes that the exact public closure of
+`baas-cpp-httplib/0.50.1` has already been provisioned. On a clean runner,
+create the checked-in cpp-httplib recipe first with the same host/build
+profiles and `--build=missing`; that recipe pins OpenSSL 3.5.7. This is an
+explicit online provisioning phase, not an implicit system fallback.
+
+The WebAssembly workflow uses `dependency_set=afwc`, which resolves only the
+four dependencies linked by `BAAS_workflow_checker`. Its Emscripten host profile
+is `profiles/emscripten-wasm-release`; the native Linux build context remains
+`profiles/linux-gcc-release`. OpenCV, spdlog, and simdutf are static in the wasm
+host context. The activated EMSDK must be exactly 6.0.3 so the profile's
+`compiler.version` continues to identify the Emscripten ABI.
 
 Linux, macOS, and Android OCR commands are documented in
 `docs/conan-private-recipes-migration.md`.

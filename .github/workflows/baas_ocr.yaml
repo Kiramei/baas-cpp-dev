@@ -15,10 +15,16 @@ on:
       - '.github/workflows/baas_ocr.yaml'
       - 'CMakeLists.txt'
       - 'CMakePresets.json'
-      - 'cmake/BAASResources.cmake'
+      - 'cmake/**'
+      - 'deploy/conan/**'
+      - 'include/**'
+      - 'src/**'
       - 'resources.lock.json'
       - 'scripts/fetch_resources.py'
+      - 'scripts/dev/Build-AndroidOcr.ps1'
+      - 'scripts/dev/Enter-WindowsDevShell.ps1'
       - 'tests/docs/test_external_resource_boundary.py'
+      - 'tests/docs/test_legacy_conan_workflows.py'
       - 'tests/build/external_resource_boundary/**'
       - 'apps/ocr_server/**'
       - 'resource/**'
@@ -29,8 +35,23 @@ on:
       - opened
       - synchronize
       - reopened
-    paths-ignore: 
-      - 'docs/**'
+    paths:
+      - '.github/workflows/baas_ocr.yaml'
+      - 'CMakeLists.txt'
+      - 'CMakePresets.json'
+      - 'cmake/**'
+      - 'deploy/conan/**'
+      - 'include/**'
+      - 'src/**'
+      - 'resources.lock.json'
+      - 'scripts/fetch_resources.py'
+      - 'scripts/dev/Build-AndroidOcr.ps1'
+      - 'scripts/dev/Enter-WindowsDevShell.ps1'
+      - 'tests/docs/test_external_resource_boundary.py'
+      - 'tests/docs/test_legacy_conan_workflows.py'
+      - 'tests/build/external_resource_boundary/**'
+      - 'apps/ocr_server/**'
+      - 'resource/**'
 
 
 concurrency:
@@ -89,14 +110,55 @@ jobs:
       - name: Check GCC Version
         run: g++ --version
 
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install pinned Conan client
+        run: python -m pip install --disable-pip-version-check conan==2.30.0
+
+      - name: Generate pinned Conan dependencies
+        run: |
+          python deploy/conan/scripts/manage_recipes.py export \
+            --only baas-opencv \
+            --only baas-onnxruntime \
+            --only baas-nlohmann-json \
+            --only baas-cpp-httplib \
+            --only baas-spdlog \
+            --only baas-simdutf
+          conan create deploy/conan/recipes/baas-cpp-httplib \
+            -pr:h=deploy/conan/profiles/linux-gcc-release \
+            -pr:b=deploy/conan/profiles/linux-gcc-release \
+            --build=missing
+          conan install deploy/conan \
+            -of build/conan/linux-gcc-release-ocr \
+            -pr:h=deploy/conan/profiles/linux-gcc-release \
+            -pr:h=deploy/conan/profiles/dependency-versions-default \
+            -pr:b=deploy/conan/profiles/linux-gcc-release \
+            -o "&:dependency_set=ocr" \
+            -o "&:onnxruntime_use_cuda=False" \
+            -o "&:use_ffmpeg=False" \
+            -o "&:use_benchmark=False" \
+            --build=missing \
+            --no-remote
+
       - name: Build
         id: cmake_build
         run: |
           echo "::group::Generate makefile"
-          cmake -B build -DBUILD_APP_BAAS=OFF -DBUILD_APP_ISA=OFF -DBUILD_BAAS_OCR=$BUILD_BAAS_OCR -DBUILD_BAAS_AW_CHECKER=OFF -DBAAS_FETCH_RESOURCES=ON -DCMAKE_BUILD_TYPE=$BUILD_TYPE
+          cmake -S . -B build \
+            "-DCMAKE_TOOLCHAIN_FILE=${GITHUB_WORKSPACE}/baas_cpp/build/conan/linux-gcc-release-ocr/generators/conan_toolchain.cmake" \
+            -DBUILD_APP_BAAS=OFF \
+            -DBUILD_APP_ISA=OFF \
+            -DBUILD_BAAS_OCR=ON \
+            -DBUILD_BAAS_AW_CHECKER=OFF \
+            -DBAAS_FETCH_RESOURCES=ON \
+            -DBAAS_OCR_SERVER_USE_CUDA=OFF \
+            -DCMAKE_BUILD_TYPE=Release
           echo "::endgroup::"
           echo "::group::Build"
-          cmake --build build --config Release -j $(nproc)
+          cmake --build build --config Release --parallel $(nproc)
           echo "::endgroup::"
 
       - name: Install Python
@@ -183,14 +245,55 @@ jobs:
         run: |
           brew update
 
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install pinned Conan client
+        run: python -m pip install --disable-pip-version-check conan==2.30.0
+
+      - name: Generate pinned Conan dependencies
+        run: |
+          python deploy/conan/scripts/manage_recipes.py export \
+            --only baas-opencv \
+            --only baas-onnxruntime \
+            --only baas-nlohmann-json \
+            --only baas-cpp-httplib \
+            --only baas-spdlog \
+            --only baas-simdutf
+          conan create deploy/conan/recipes/baas-cpp-httplib \
+            -pr:h=deploy/conan/profiles/macos-appleclang-release \
+            -pr:b=deploy/conan/profiles/macos-appleclang-release \
+            --build=missing
+          conan install deploy/conan \
+            -of build/conan/macos-appleclang-release-ocr \
+            -pr:h=deploy/conan/profiles/macos-appleclang-release \
+            -pr:h=deploy/conan/profiles/dependency-versions-default \
+            -pr:b=deploy/conan/profiles/macos-appleclang-release \
+            -o "&:dependency_set=ocr" \
+            -o "&:onnxruntime_use_cuda=False" \
+            -o "&:use_ffmpeg=False" \
+            -o "&:use_benchmark=False" \
+            --build=missing \
+            --no-remote
+
       - name: Build
         id: cmake_build
         run: |
           echo "::group::Generate makefile"
-          cmake -B build -DBUILD_APP_BAAS=OFF -DBUILD_APP_ISA=OFF -DBUILD_BAAS_OCR=$BUILD_BAAS_OCR -DBUILD_BAAS_AW_CHECKER=OFF -DBAAS_FETCH_RESOURCES=ON -DCMAKE_BUILD_TYPE=$BUILD_TYPE
+          cmake -S . -B build \
+            "-DCMAKE_TOOLCHAIN_FILE=${GITHUB_WORKSPACE}/baas_cpp/build/conan/macos-appleclang-release-ocr/generators/conan_toolchain.cmake" \
+            -DBUILD_APP_BAAS=OFF \
+            -DBUILD_APP_ISA=OFF \
+            -DBUILD_BAAS_OCR=ON \
+            -DBUILD_BAAS_AW_CHECKER=OFF \
+            -DBAAS_FETCH_RESOURCES=ON \
+            -DBAAS_OCR_SERVER_USE_CUDA=OFF \
+            -DCMAKE_BUILD_TYPE=Release
           echo "::endgroup::"
           echo "::group::Build"
-          cmake --build build --config Release -j $(sysctl -n hw.logicalcpu)
+          cmake --build build --config Release --parallel $(sysctl -n hw.logicalcpu)
           echo "::endgroup::"
 
       - name: Install Python
@@ -271,24 +374,61 @@ jobs:
           fetch-depth: 0
           path: "prebuild"
 
-      - name: Install Ninja
-        id: install_ninja
-        run: |
-          choco install ninja
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install pinned Conan and Ninja
+        run: python -m pip install --disable-pip-version-check conan==2.30.0 ninja==1.11.1.1
 
       - name: Setup MSVC Dev Cmd   # Setup Developer Command Prompt for Microsotf Visual C++
         uses: TheMrMilchmann/setup-msvc-dev@v3
         with:
           arch: x64
 
+      - name: Generate pinned Conan dependencies
+        run: |
+          python deploy/conan/scripts/manage_recipes.py export `
+            --only baas-opencv `
+            --only baas-onnxruntime `
+            --only baas-nlohmann-json `
+            --only baas-cpp-httplib `
+            --only baas-spdlog `
+            --only baas-simdutf
+          conan create deploy/conan/recipes/baas-cpp-httplib `
+            -pr:h=deploy/conan/profiles/windows-msvc-release `
+            -pr:b=deploy/conan/profiles/windows-msvc-release `
+            --build=missing
+          conan install deploy/conan `
+            -of build/conan/windows-msvc-release-ocr `
+            -pr:h=deploy/conan/profiles/windows-msvc-release `
+            -pr:h=deploy/conan/profiles/dependency-versions-default `
+            -pr:b=deploy/conan/profiles/windows-msvc-release `
+            -o "&:dependency_set=ocr" `
+            -o "&:onnxruntime_use_cuda=False" `
+            -o "&:use_ffmpeg=False" `
+            -o "&:use_benchmark=False" `
+            --build=missing `
+            --no-remote
+
       - name: CMake Configure and Build
         id: cmake_configure_and_build
         run: |
           Write-Output "::group::Generate makefile"
-          cmake -S . -B build -DBUILD_APP_BAAS=OFF -DBUILD_APP_ISA=OFF -DBUILD_BAAS_OCR=${{env.BUILD_BAAS_OCR}} -DBUILD_BAAS_AW_CHECKER=OFF -DBAAS_FETCH_RESOURCES=ON -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}} -G Ninja      # Hard encode command with env var before exec
+          cmake -S . -B build `
+            "-DCMAKE_TOOLCHAIN_FILE=$env:GITHUB_WORKSPACE\baas_cpp\build\conan\windows-msvc-release-ocr\generators\conan_toolchain.cmake" `
+            -DBUILD_APP_BAAS=OFF `
+            -DBUILD_APP_ISA=OFF `
+            -DBUILD_BAAS_OCR=ON `
+            -DBUILD_BAAS_AW_CHECKER=OFF `
+            -DBAAS_FETCH_RESOURCES=ON `
+            -DBAAS_OCR_SERVER_USE_CUDA=OFF `
+            -DCMAKE_BUILD_TYPE=Release `
+            -G Ninja
           Write-Output "::endgroup::"
           Write-Output "::group::Build"
-          cmake --build build --config Release -j 4      # TODO: add number of threads
+          cmake --build build --config Release --parallel 4
           Write-Output "::endgroup::"
 
       - name: Install Python
@@ -367,23 +507,57 @@ jobs:
           fetch-depth: 0
           path: "prebuild"
 
-      - name: Install Ninja
-        id: install_ninja
-        run: |
-          choco install ninja
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
 
-      - name: CMake Configure and Build
-        id: cmake_configure_and_build
-        working-directory: ./baas_cpp
+      - name: Install pinned Android NDK
+        shell: pwsh
         run: |
-          cmake -G Ninja -B build -DCMAKE_TOOLCHAIN_FILE="$env:ANDROID_NDK_LATEST_HOME\build\cmake\android.toolchain.cmake" -DANDROID_NDK_PATH="$env:ANDROID_NDK_LATEST_HOME" -DANDROID_ABI=${{ matrix.target_arch }} -DANDROID_PLATFORM=android-26 -DBUILD_APP_BAAS=OFF -DBUILD_APP_ISA=OFF -DBUILD_BAAS_OCR=ON -DBUILD_BAAS_AW_CHECKER=OFF -DBAAS_OCR_ANDROID_BUILD=ON -DBAAS_FETCH_RESOURCES=ON -DCMAKE_BUILD_TYPE=Release
-          cmake --build build --config Release --target BAAS_ocr_server -- -j 4
+          $androidSdk = if ($env:ANDROID_SDK_ROOT) {
+            $env:ANDROID_SDK_ROOT
+          } elseif ($env:ANDROID_HOME) {
+            $env:ANDROID_HOME
+          } else {
+            throw 'Neither ANDROID_SDK_ROOT nor ANDROID_HOME is set.'
+          }
+          $sdkmanager = Join-Path $androidSdk 'cmdline-tools\latest\bin\sdkmanager.bat'
+          if (-not (Test-Path -LiteralPath $sdkmanager -PathType Leaf)) {
+            throw "Could not find sdkmanager at $sdkmanager."
+          }
+          & $sdkmanager "--sdk_root=$androidSdk" 'ndk;29.0.13846066'
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Could not install Android NDK 29.0.13846066.'
+          }
+          $ndk = Join-Path $androidSdk 'ndk\29.0.13846066'
+          if (-not (Test-Path -LiteralPath $ndk -PathType Container)) {
+            throw "Could not find Android NDK 29.0.13846066 at $ndk."
+          }
+          "ANDROID_NDK_HOME=$ndk" >> $env:GITHUB_ENV
+
+      - name: Create repository Python environment
+        working-directory: ./baas_cpp
+        shell: pwsh
+        run: |
+          python -m venv .venv
+          .\.venv\Scripts\python.exe -m pip install `
+            --disable-pip-version-check conan==2.30.0 ninja==1.11.1.1
+
+      - name: Build and verify Android OCR library
+        working-directory: ./baas_cpp
+        shell: pwsh
+        run: |
+          .\scripts\dev\Build-AndroidOcr.ps1 `
+            -Abi '${{ matrix.target_arch }}' `
+            -Jobs 4 `
+            -NdkPath $env:ANDROID_NDK_HOME
       
       - name: Upload Artifacts
         if: ${{ ( github.event_name == 'push' && github.ref == 'refs/heads/main' ) || github.event.inputs.create_release == 'true' }}
         uses: actions/upload-artifact@v4
         with:
-          path: ./baas_cpp/build/bin
+          path: ./baas_cpp/build/conan-android-clang-release-ocr-${{ matrix.target_arch }}/bin/lib/${{ matrix.target_arch }}
           name: baas-ocr-android-lib-${{ matrix.target_arch }}
 
       - name: Copy Binaries
@@ -391,7 +565,7 @@ jobs:
         working-directory: ./prebuild
         id: copy_bin
         run: |
-          Copy-Item -Path "..\baas_cpp\build\bin\*" -Destination . -Recurse -Force
+          Copy-Item -Path "..\baas_cpp\build\conan-android-clang-release-ocr-${{ matrix.target_arch }}\bin\lib\${{ matrix.target_arch }}\*" -Destination . -Recurse -Force
 
       - name: Commit and Push
         if: ${{ ( github.event_name == 'push' && github.ref == 'refs/heads/main' ) || github.event.inputs.create_release == 'true' }}

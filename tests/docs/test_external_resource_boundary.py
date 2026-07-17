@@ -1,4 +1,5 @@
 import json
+import fnmatch
 import os
 import pathlib
 import re
@@ -71,6 +72,14 @@ def _extract_push_paths(path: pathlib.Path) -> set[str]:
         if in_paths and indentation > 4 and stripped.startswith("- "):
             paths.add(stripped.removeprefix("- ").strip("'\""))
     return paths
+
+
+def _path_is_covered(changed_path: str, configured_paths: set[str]) -> bool:
+    return any(
+        changed_path == configured_path
+        or fnmatch.fnmatchcase(changed_path, configured_path)
+        for configured_path in configured_paths
+    )
 
 
 class ExternalResourceBoundaryTests(unittest.TestCase):
@@ -193,7 +202,10 @@ class ExternalResourceBoundaryTests(unittest.TestCase):
             push_paths = _extract_push_paths(path)
             self.assertIn(f".github/workflows/{path.name}", push_paths)
             for changed_path in (*common_paths, *app_paths):
-                self.assertIn(changed_path, push_paths, path.name)
+                self.assertTrue(
+                    _path_is_covered(changed_path, push_paths),
+                    f"{path.name} does not cover {changed_path}",
+                )
 
         app_workflow = (ROOT / ".github/workflows/baas_app.yaml").read_text(
             encoding="utf-8"
