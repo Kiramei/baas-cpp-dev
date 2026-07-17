@@ -846,34 +846,50 @@ struct SynchronousEvaluator::Impl {
             ++stats.cleanup_steps;
             return;
         }
-        check_execution_interrupt(span);
-        if (stats.steps >= limits.max_steps) {
+        check_execution_safe_point(span, true);
+        ++stats.steps;
+    }
+
+    void check_execution_safe_point(
+        const SourceSpan span,
+        const bool instruction_requested = false)
+    {
+        // Collect every external claim at the safe point before selecting the
+        // ASY-013 winner. The independent safety claim is deliberately chosen
+        // ahead of deadline/cancellation when the next instruction would
+        // exceed its budget.
+        if (cleanup_depth != 0) return;
+        const bool deadline = cancellation && cancellation->deadline_exceeded();
+        const bool cancelled = cancellation && cancellation->cancelled();
+        if (instruction_requested && stats.steps >= limits.max_steps) {
             fail(
                 LanguageErrorCode::InstructionLimitExceeded,
                 "synchronous evaluator step limit exceeded",
                 span);
         }
-        ++stats.steps;
-    }
-
-    void check_execution_interrupt(const SourceSpan span)
-    {
-        // Cancellation and deadlines are masked while ERR-013 cleanup drains.
-        // The original terminal remains primary unless cleanup itself reaches
-        // an independent terminal limit or failure.
-        if (!cancellation || cleanup_depth != 0) return;
-        if (cancellation->deadline_exceeded()) {
+        if (deadline) {
             fail(
                 LanguageErrorCode::DeadlineExceeded,
                 "synchronous evaluator deadline exceeded",
                 span);
         }
-        if (cancellation->cancelled()) {
+        if (cancelled) {
             fail(
                 LanguageErrorCode::Cancelled,
                 "synchronous evaluator cancellation requested",
                 span);
         }
+    }
+
+    [[nodiscard]] std::shared_ptr<const HostCancellationProbe>
+    host_cancellation_for_current_phase() const noexcept
+    {
+        // ERR-013 cleanup is uninterruptible by the external context probe.
+        // Passing an empty capability also masks cooperative polling inside
+        // the callback; conversion, per-binding Host budgets, cleanup steps,
+        // and cleanup call depth remain independently bounded.
+        if (cleanup_depth != 0) return {};
+        return host_options ? host_options->cancellation : nullptr;
     }
 
     void charge_collection(const std::size_t amount, const SourceSpan span)
@@ -1295,7 +1311,7 @@ struct SynchronousEvaluator::Impl {
 
     [[nodiscard]] Value initialize_module(const std::string& id, const SourceSpan import_span)
     {
-        check_execution_interrupt(import_span);
+        check_execution_safe_point(import_span);
         const auto found = modules.find(id);
         if (found == modules.end()) {
             fail(
@@ -1374,6 +1390,16 @@ struct SynchronousEvaluator::Impl {
             ++stats.initialized_modules;
             return module.namespace_value;
         } catch (const ScriptUnwind& unwind) {
+            const auto interruption =
+                heap.error_metadata_view(unwind.error.as_heap_ref()).code;
+            if (interruption == LanguageErrorCode::Cancelled
+                || interruption == LanguageErrorCode::DeadlineExceeded) {
+                // External context outcomes are execution-attempt results, not
+                // deterministic module failures. InitializationTransaction
+                // rolls every active nested module back to Uninitialized so a
+                // later execute() can retry against the same immutable source.
+                throw;
+            }
             Heap::RootId failure_root{};
             try {
                 failure_root = heap.add_root(unwind.error);
@@ -1600,8 +1626,9 @@ struct SynchronousEvaluator::Impl {
             ~ExecutionGuard() { evaluator.execution_active = false; }
         } execution(*this);
         try {
-            check_execution_interrupt({});
+            check_execution_safe_point({});
             const auto value = initialize_module(specifier.canonical_id, {});
+            check_execution_safe_point({});
             return {value, stats};
         } catch (const ScriptUnwind& unwind) {
             const auto& metadata = heap.error_metadata_view(unwind.error.as_heap_ref());
@@ -2599,7 +2626,8 @@ Value SynchronousEvaluator::Impl::invoke_native(
     auto result = invoke_host_callback(
         *function.binding,
         {function.module, function.export_name, function.binding->binding_id,
-         function.selected_version, stats.host_calls, host_options->cancellation},
+         function.selected_version, stats.host_calls,
+         host_cancellation_for_current_phase()},
         converted,
         host_options->bindings->limits(),
         host_options->handles.get());

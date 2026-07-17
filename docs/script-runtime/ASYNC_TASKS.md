@@ -275,6 +275,17 @@ and requests child cancellation, but any priority 1–5 context outcome override
 it. Error message text, OS scheduling, and callback thread order MUST NOT decide
 priority.
 
+The synchronous conformance evaluator applies this selection through one safe-
+point operation. It collects deadline and cancellation observations before
+selecting, but an already-exhausted instruction budget wins whenever another
+ordinary instruction is requested at that same safe point. Deadline then wins
+over cancellation, and either external claim wins over normal success. During
+package initialization, `Cancelled` and `DeadlineExceeded` roll every active
+nested module transaction back to `Uninitialized`; they MUST NOT poison the
+deterministic module-failure cache. A later non-interrupted `execute` retries
+those modules, while an already `Ready` module retains its exact namespace and
+initialization count across interrupted and repeated execution attempts.
+
 ### ASY-014 — Context strand and thread-safety boundary
 
 VM frames, `Heap`, `Environment`, module state, Task records/continuations,
