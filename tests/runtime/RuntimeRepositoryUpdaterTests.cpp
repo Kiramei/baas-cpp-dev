@@ -824,9 +824,10 @@ void test_update_order_protocol_vector_and_pin() {
                                     "committed:current-replaced",
                                     "committed:journal-removed",
                                 });
+    const auto canonical_state_root = std::filesystem::canonical(state_root);
     check(backend.staging_directories.size() == 2 &&
               std::all_of(backend.staging_directories.begin(), backend.staging_directories.end(),
-                          [&](const auto& path) { return is_within(state_root, path); }),
+                          [&](const auto& path) { return is_within(canonical_state_root, path); }),
           "backend must receive only updater-owned staging directories under the "
           "state root");
 
@@ -1115,6 +1116,31 @@ void test_parent_swap_between_enumeration_and_read_fails_closed() {
           "a parent swapped to an external link between enumeration and read "
           "must fail closed");
 #endif
+}
+
+void test_strict_validator_accepts_plain_root_through_ancestor_alias() {
+    TempDirectory temporary;
+    const auto actual_parent = temporary.path() / "actual";
+    const auto repository_root = actual_parent / "candidate";
+    const auto aliased_parent = temporary.path() / "alias";
+    write_file(repository_root / "manifest.json", strict_manifest);
+    write_file(repository_root / "payload.bin", "payload");
+    const auto linked = create_directory_link(actual_parent, aliased_parent);
+    check(linked, "platform test must create an ancestor directory alias");
+    if (!linked)
+        return;
+
+    bool accepted{};
+    try {
+        repository::StrictRuntimeRepositoryTreeValidator validator;
+        accepted = validator
+                       .validate_and_seal(strict_spec_with_manifest_hash(manifest_sha256),
+                                          aliased_parent / "candidate", {})
+                       .file_count == 2;
+    } catch (...) {
+    }
+    check(accepted,
+          "a plain repository root reached through an ancestor alias must validate by identity");
 }
 
 void test_strict_validator_rejects_link_escape() {
@@ -2203,6 +2229,7 @@ int main() {
         test_cancellation_after_first_stage_cleans_staging();
         test_path_escape_plan_is_rejected_before_fetch();
         test_parent_swap_between_enumeration_and_read_fails_closed();
+        test_strict_validator_accepts_plain_root_through_ancestor_alias();
         test_strict_validator_rejects_link_escape();
         test_strict_validator_rejects_staging_hard_links();
         test_strict_validator_enforces_file_and_byte_limits();
