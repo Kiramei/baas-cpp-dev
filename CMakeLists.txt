@@ -120,6 +120,8 @@ option(BUILD_SERVICE_TRIGGER_EXECUTOR "Build the bounded trigger execution owner
 option(BUILD_SERVICE_TRIGGER_EXECUTOR_TESTS "Build native tests for trigger execution ownership" OFF)
 option(BUILD_SERVICE_RUNTIME_TASK_OWNER "Build the service-owned runtime task lifecycle" OFF)
 option(BUILD_SERVICE_RUNTIME_TASK_OWNER_TESTS "Build runtime task lifecycle tests" OFF)
+option(BUILD_SERVICE_RUNTIME_TASK_STATUS_JSON "Build runtime task status JSON serialization" OFF)
+option(BUILD_SERVICE_RUNTIME_TASK_STATUS_JSON_TESTS "Build runtime task status JSON tests" OFF)
 option(BUILD_SERVICE_ROUTER     "Build the transport-independent BAAS service router" OFF)
 option(BUILD_SERVICE_ROUTER_TESTS "Build native tests for the BAAS service router" OFF)
 option(BUILD_SERVICE_ORIGIN_POLICY "Build the standalone HTTP Origin/CORS policy" OFF)
@@ -631,6 +633,18 @@ if(BUILD_SERVICE_RUNTIME_TASK_OWNER_TESTS
         "Build the service-owned runtime task lifecycle" FORCE)
 endif()
 
+if(BUILD_SERVICE_RUNTIME_TASK_STATUS_JSON_TESTS
+   AND NOT BUILD_SERVICE_RUNTIME_TASK_STATUS_JSON)
+    set(BUILD_SERVICE_RUNTIME_TASK_STATUS_JSON ON CACHE BOOL
+        "Build runtime task status JSON serialization" FORCE)
+endif()
+
+if(BUILD_SERVICE_RUNTIME_TASK_STATUS_JSON
+   AND NOT BUILD_SERVICE_RUNTIME_TASK_OWNER)
+    set(BUILD_SERVICE_RUNTIME_TASK_OWNER ON CACHE BOOL
+        "Build the service-owned runtime task lifecycle" FORCE)
+endif()
+
 if(BUILD_SERVICE_ROUTER_TESTS AND NOT BUILD_SERVICE_ROUTER)
     set(BUILD_SERVICE_ROUTER ON CACHE BOOL "Build the transport-independent BAAS service router" FORCE)
 endif()
@@ -739,6 +753,7 @@ if(BUILD_SERVICE_SYNC_HANDLER OR BUILD_SERVICE_REMOTE_HANDLER
    OR BUILD_SERVICE_RUNTIME_CONFIGURATION_DEFAULTS
    OR BUILD_SERVICE_RUNTIME_REPOSITORY_PLAN
    OR BUILD_SERVICE_RUNTIME_TASK_TRIGGERS
+   OR BUILD_SERVICE_RUNTIME_TASK_STATUS_JSON
    OR BUILD_SCHEDULER_POLICY)
     baas_request_dependencies(nlohmann_json)
 endif()
@@ -860,6 +875,10 @@ endif()
 
 if(BUILD_SERVICE_RUNTIME_TASK_OWNER)
     include("${CMAKE_CURRENT_LIST_DIR}/cmake/ServiceRuntimeTaskOwner.cmake")
+endif()
+
+if(BUILD_SERVICE_RUNTIME_TASK_STATUS_JSON)
+    include("${CMAKE_CURRENT_LIST_DIR}/cmake/ServiceRuntimeTaskStatusJson.cmake")
 endif()
 
 if(BUILD_SERVICE_TRIGGER_PIPE_CHANNEL)
