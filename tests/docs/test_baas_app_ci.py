@@ -23,8 +23,9 @@ class BaasAppCiTests(unittest.TestCase):
         self.assertIn("generators/conan_toolchain.cmake", self.workflow)
 
     def test_cpu_and_cuda_artifacts_use_isolated_dependency_graphs(self) -> None:
-        self.assertIn("CONAN_CUDA: True", self.workflow)
-        self.assertIn("CONAN_CUDA: False", self.workflow)
+        self.assertIn("BAAS_CONAN_MSVC_VERSION: '195'", self.workflow)
+        self.assertIn("CONAN_CUDA: 'True'", self.workflow)
+        self.assertIn("CONAN_CUDA: 'False'", self.workflow)
         self.assertIn("BUILD_SUFFIX: '-cuda'", self.workflow)
         self.assertIn("BAAS_APP_USE_CUDA=${{ matrix.BAAS_APP_USE_CUDA }}", self.workflow)
         self.assertIn("--target BAAS_APP", self.workflow)

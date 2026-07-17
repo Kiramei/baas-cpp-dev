@@ -209,7 +209,7 @@ jobs:
 
       - name: Install service-vector dependencies
         if: matrix.build_type == 'Debug'
-        run: python -m pip install --disable-pip-version-check cryptography PyNaCl
+        run: python -m pip install --disable-pip-version-check cryptography PyNaCl PyYAML==6.0.3
 
       - name: Report bundled toolchain
         run: |
@@ -274,6 +274,7 @@ jobs:
             echo "Could not find executable sdkmanager at ${sdkmanager}." >&2
             exit 1
           fi
+          yes | "${sdkmanager}" --sdk_root="${android_sdk}" --licenses >/dev/null
           "${sdkmanager}" --sdk_root="${android_sdk}" 'ndk;29.0.13846066'
           test -d "${android_sdk}/ndk/29.0.13846066"
           echo "ANDROID_NDK_HOME=${android_sdk}/ndk/29.0.13846066" >> "$GITHUB_ENV"

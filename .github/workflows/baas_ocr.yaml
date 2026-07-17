@@ -66,6 +66,7 @@ permissions:
 env:
   BUILD_TYPE: Release
   BUILD_BAAS_OCR: ON
+  BAAS_CONAN_MSVC_VERSION: '195'
 
 
 jobs:
@@ -525,6 +526,10 @@ jobs:
           $sdkmanager = Join-Path $androidSdk 'cmdline-tools\latest\bin\sdkmanager.bat'
           if (-not (Test-Path -LiteralPath $sdkmanager -PathType Leaf)) {
             throw "Could not find sdkmanager at $sdkmanager."
+          }
+          1..100 | ForEach-Object { 'y' } | & $sdkmanager "--sdk_root=$androidSdk" --licenses
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Could not accept Android SDK licenses.'
           }
           & $sdkmanager "--sdk_root=$androidSdk" 'ndk;29.0.13846066'
           if ($LASTEXITCODE -ne 0) {

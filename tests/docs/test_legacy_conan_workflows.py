@@ -81,6 +81,7 @@ class LegacyConanWorkflowTests(unittest.TestCase):
         self.assertNotIn('_init("")', afwc_source)
 
     def test_ocr_jobs_use_pinned_conan_and_generated_toolchains(self) -> None:
+        self.assertIn("BAAS_CONAN_MSVC_VERSION: '195'", self.ocr)
         self.assertEqual(self.ocr.count("conan==2.30.0"), 4)
         for profile in (
             "linux-gcc-release",
@@ -96,6 +97,13 @@ class LegacyConanWorkflowTests(unittest.TestCase):
         self.assertEqual(self.ocr.count('dependency_set=ocr'), 3)
         self.assertGreaterEqual(self.ocr.count("--no-remote"), 3)
         self.assertIn("ndk;29.0.13846066", self.ocr)
+        windows_profile = (
+            ROOT / "deploy/conan/profiles/windows-msvc-release"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            'os.getenv("BAAS_CONAN_MSVC_VERSION", "194")', windows_profile
+        )
+        self.assertIn("compiler.version={{ msvc_version }}", windows_profile)
         self.assertIn("Build-AndroidOcr.ps1", self.ocr)
         self.assertIn("-pr:b=deploy/conan/profiles/windows-msvc-release", self.android_script)
         self.assertIn('"&:dependency_set=ocr"', self.android_script)
@@ -121,6 +129,8 @@ class LegacyConanWorkflowTests(unittest.TestCase):
         profile = (ROOT / "deploy/conan/profiles/emscripten-wasm-release").read_text(
             encoding="utf-8"
         )
+        self.assertIn('tools.build:cflags=["-msimd128"]', profile)
+        self.assertIn('tools.build:cxxflags=["-msimd128"]', profile)
         for anchor in (
             "os=Emscripten",
             "arch=wasm",

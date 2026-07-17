@@ -48,6 +48,7 @@ concurrency:
 env:
   BUILD_TYPE: Release
   BUILD_APP_BAAS: ON
+  BAAS_CONAN_MSVC_VERSION: '195'
 
 
 jobs:
@@ -56,10 +57,10 @@ jobs:
       matrix:
         include:
           - BAAS_APP_USE_CUDA: ON
-            CONAN_CUDA: True
+            CONAN_CUDA: 'True'
             BUILD_SUFFIX: '-cuda'
           - BAAS_APP_USE_CUDA: OFF
-            CONAN_CUDA: False
+            CONAN_CUDA: 'False'
             BUILD_SUFFIX: ''
     name: 'Build Binary for Windows x64 / CUDA ${{ matrix.BAAS_APP_USE_CUDA }}'
     runs-on: windows-latest

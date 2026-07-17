@@ -24,6 +24,8 @@ RANLIB={{ os.path.join(emscripten, "emranlib") }}
 STRIP={{ os.path.join(emscripten, "emstrip") }}
 
 [conf]
+tools.build:cflags=["-msimd128"]
+tools.build:cxxflags=["-msimd128"]
 tools.build:compiler_executables={"c":"{{ os.path.join(emscripten, 'emcc') }}","cpp":"{{ os.path.join(emscripten, 'em++') }}"}
 tools.cmake.cmaketoolchain:generator=Ninja
 tools.cmake.cmaketoolchain:user_toolchain=["{{ os.path.join(emscripten, 'cmake', 'Modules', 'Platform', 'Emscripten.cmake') }}"]
