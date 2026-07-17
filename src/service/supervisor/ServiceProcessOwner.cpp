@@ -19,6 +19,7 @@
 #include <Windows.h>
 #else
 #include <csignal>
+#include <fcntl.h>
 #include <spawn.h>
 #include <sys/types.h>
 #include <sys/wait.h>
@@ -26,6 +27,7 @@
 
 #if defined(__APPLE__)
 #include <AvailabilityMacros.h>
+#include <sys/event.h>
 #endif
 
 #endif
@@ -361,7 +363,9 @@ public:
             emergency_release_noexcept();
 #if !defined(_WIN32)
         } else {
-            shutdown_posix_emergency_reaper(emergency_reaper_);
+            if (!emergency_reaper_handed_off_) {
+                shutdown_posix_emergency_reaper(emergency_reaper_);
+            }
 #endif
         }
     }
@@ -631,6 +635,9 @@ private:
         observed_windows_exit_.reset();
         return {ServiceProcessError::none, identifier};
 #else
+        if (emergency_reaper_handed_off_) {
+            return {ServiceProcessError::launch_failed, 0};
+        }
         std::vector<std::string> storage;
         storage.push_back(config.executable.native());
         auto arguments = service_arguments(config);
@@ -668,7 +675,9 @@ private:
         }
         short flags = POSIX_SPAWN_SETPGROUP;
 #if defined(__APPLE__)
-        flags = static_cast<short>(flags | POSIX_SPAWN_CLOEXEC_DEFAULT);
+        flags = static_cast<short>(
+            flags | POSIX_SPAWN_CLOEXEC_DEFAULT
+            | POSIX_SPAWN_START_SUSPENDED);
 #endif
         if (posix_spawnattr_setflags(&attributes, flags) != 0
             || posix_spawnattr_setpgroup(&attributes, 0) != 0) {
@@ -677,14 +686,45 @@ private:
             return {ServiceProcessError::launch_failed, 0};
         }
         pid_t child = -1;
+#if defined(__APPLE__)
+        const int exit_observer = ::kqueue();
+        if (exit_observer < 0
+            || ::fcntl(exit_observer, F_SETFD, FD_CLOEXEC) != 0) {
+            if (exit_observer >= 0) static_cast<void>(::close(exit_observer));
+            static_cast<void>(posix_spawnattr_destroy(&attributes));
+            destroy_actions();
+            return {ServiceProcessError::launch_failed, 0};
+        }
+#endif
         const int spawned = posix_spawn(
             &child, config.executable.c_str(), &actions, &attributes,
             argv.data(), empty_environment.data());
         static_cast<void>(posix_spawnattr_destroy(&attributes));
         destroy_actions();
         if (spawned != 0 || child <= 0) {
+#if defined(__APPLE__)
+            static_cast<void>(::close(exit_observer));
+#endif
             return {ServiceProcessError::launch_failed, 0};
         }
+#if defined(__APPLE__)
+        struct kevent change {};
+        EV_SET(
+            &change, static_cast<uintptr_t>(child), EVFILT_PROC,
+            EV_ADD | EV_ENABLE, NOTE_EXIT, 0, nullptr);
+        if (::kevent(exit_observer, &change, 1, nullptr, 0, nullptr) != 0) {
+            cleanup_unobserved_child(child, exit_observer);
+            return {ServiceProcessError::launch_failed, 0};
+        }
+        // POSIX_SPAWN_START_SUSPENDED closes the fast-exit registration race:
+        // NOTE_EXIT is armed before the selected image can execute.
+        if (::kill(child, SIGCONT) != 0) {
+            cleanup_unobserved_child(child, exit_observer);
+            return {ServiceProcessError::launch_failed, 0};
+        }
+        exit_observer_ = exit_observer;
+        mac_exit_observed_ = false;
+#endif
         process_ = child;
         return {
             ServiceProcessError::none,
@@ -692,6 +732,33 @@ private:
         };
 #endif
     }
+
+#if defined(__APPLE__)
+    void cleanup_unobserved_child(
+        const pid_t child,
+        const int exit_observer) noexcept
+    {
+        static_cast<void>(::close(exit_observer));
+        static_cast<void>(::kill(-child, SIGKILL));
+        const auto deadline = saturated_deadline(cleanup_limit);
+        for (;;) {
+            int status = 0;
+            pid_t waited = -1;
+            do {
+                waited = ::waitpid(child, &status, WNOHANG);
+            } while (waited < 0 && errno == EINTR);
+            if (waited == child || (waited < 0 && errno == ECHILD)) return;
+            if (waited < 0 || deadline_reached(deadline)) break;
+            std::this_thread::sleep_until(next_poll(deadline));
+        }
+        // Registration failed, but the pre-created reaper can still own the
+        // killed direct child without any PID reuse window or destructor-time
+        // allocation. This owner is poisoned against later starts because its
+        // sole emergency reaper has been consumed.
+        shutdown_posix_emergency_reaper(emergency_reaper_, child);
+        emergency_reaper_handed_off_ = true;
+    }
+#endif
 
     [[nodiscard]] std::optional<ServiceProcessWaitResult>
     poll_running_process() noexcept
@@ -747,6 +814,27 @@ private:
         return PollResult::exited;
 #else
         if (process_ <= 0) return PollResult::failed;
+#if defined(__APPLE__)
+        if (exit_observer_ < 0) return PollResult::failed;
+        if (!mac_exit_observed_) {
+            struct kevent event {};
+            const struct timespec no_wait {};
+            int observed = -1;
+            do {
+                observed = ::kevent(
+                    exit_observer_, nullptr, 0, &event, 1, &no_wait);
+            } while (observed < 0 && errno == EINTR);
+            if (observed < 0) return PollResult::failed;
+            if (observed == 0) return PollResult::pending;
+            if ((event.flags & EV_ERROR) != 0
+                || event.filter != EVFILT_PROC
+                || (event.fflags & NOTE_EXIT) == 0
+                || static_cast<pid_t>(event.ident) != process_) {
+                return PollResult::failed;
+            }
+            mac_exit_observed_ = true;
+        }
+#else
         siginfo_t information{};
         int observed = 0;
         do {
@@ -756,6 +844,7 @@ private:
         } while (observed < 0 && errno == EINTR);
         if (observed < 0) return PollResult::failed;
         if (information.si_pid == 0) return PollResult::pending;
+#endif
 
         // The leader remains a zombie here, so its PID/PGID cannot be reused.
         // Kill descendants before the sole waitpid that releases that identity.
@@ -778,6 +867,11 @@ private:
             return PollResult::failed;
         }
         process_ = -1;
+#if defined(__APPLE__)
+        static_cast<void>(::close(exit_observer_));
+        exit_observer_ = -1;
+        mac_exit_observed_ = false;
+#endif
         return PollResult::exited;
 #endif
     }
@@ -828,12 +922,22 @@ private:
 #else
         if (process_ > 0) {
             const pid_t child = std::exchange(process_, -1);
+#if defined(__APPLE__)
+            if (exit_observer_ >= 0) {
+                static_cast<void>(::close(exit_observer_));
+                exit_observer_ = -1;
+                mac_exit_observed_ = false;
+            }
+#endif
             static_cast<void>(::kill(-child, SIGKILL));
             // This worker was created before start could launch any child, so
             // emergency cleanup performs no allocation or thread creation.
             shutdown_posix_emergency_reaper(emergency_reaper_, child);
+            emergency_reaper_handed_off_ = true;
         } else {
-            shutdown_posix_emergency_reaper(emergency_reaper_);
+            if (!emergency_reaper_handed_off_) {
+                shutdown_posix_emergency_reaper(emergency_reaper_);
+            }
         }
 #endif
         std::lock_guard state{state_mutex_};
@@ -868,7 +972,12 @@ private:
     std::optional<int> observed_windows_exit_;
 #else
     pid_t process_ = -1;
+#if defined(__APPLE__)
+    int exit_observer_ = -1;
+    bool mac_exit_observed_ = false;
+#endif
     std::shared_ptr<PosixEmergencyReaperState> emergency_reaper_;
+    bool emergency_reaper_handed_off_ = false;
 #endif
 };
 
