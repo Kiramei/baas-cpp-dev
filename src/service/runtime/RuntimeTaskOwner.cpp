@@ -195,7 +195,7 @@ public:
     }
 
     [[nodiscard]] RuntimeTaskPrepareStartResult prepare_start(
-        RuntimeTaskRequest request)
+        RuntimeTaskRequest request, const bool publish_thread_failure)
     {
         if (!valid_request(request)) {
             return {
@@ -286,8 +286,15 @@ public:
         } catch (...) {
             job->phase = JobPhase::completed;
             set_thread_start_failure(*job);
-            found->second.current = job;
             found->second.reserved.reset();
+            if (publish_thread_failure) {
+                // The compatibility start() API historically publishes a
+                // terminal thread-start failure. Reversible prepare_start()
+                // must instead leave the prior public generation untouched.
+                found->second.current = job;
+            } else if (!found->second.current) {
+                jobs_.erase(found);
+            }
             result.decision = RuntimeTaskStartDecision::thread_start_failed;
             if (result.snapshot) {
                 result.snapshot->running = false;
@@ -309,7 +316,7 @@ public:
 
     [[nodiscard]] RuntimeTaskStartResult start(RuntimeTaskRequest request)
     {
-        auto prepared = prepare_start(std::move(request));
+        auto prepared = prepare_start(std::move(request), true);
         RuntimeTaskStartResult result{
             prepared.decision, std::move(prepared.snapshot)};
         if (prepared) prepared.reservation.commit();
@@ -438,6 +445,14 @@ public:
         std::lock_guard lock{mutex_};
         after_shutdown_closed_hook_ = hook;
         after_shutdown_closed_context_ = context;
+    }
+
+    void set_after_reservation_cancelled_gate_hook(
+        const RuntimeTaskOwnerTestAccess::Hook hook, void* const context) noexcept
+    {
+        std::lock_guard lock{mutex_};
+        after_reservation_cancelled_gate_hook_ = hook;
+        after_reservation_cancelled_gate_context_ = context;
     }
 
     void fail_next_thread_start() noexcept
@@ -668,19 +683,14 @@ private:
 
     void cancel_reservation(const std::shared_ptr<Job>& job) noexcept
     {
-        bool removed = false;
         {
             std::lock_guard lock{mutex_};
             const auto found = jobs_.find(job->snapshot.config_id);
-            if (found != jobs_.end()
-                && found->second.reserved.get() == job.get()) {
-                found->second.reserved.reset();
-                if (!found->second.current) jobs_.erase(found);
-                removed = true;
-                condition_.notify_all();
+            if (found == jobs_.end()
+                || found->second.reserved.get() != job.get()) {
+                std::terminate();
             }
         }
-        if (!removed) return;
         {
             std::lock_guard gate_lock{job->gate_mutex};
             if (job->gate != StartGate::pending) std::terminate();
@@ -688,6 +698,17 @@ private:
         }
         job->gate_condition.notify_one();
         if (job->worker.joinable()) job->worker.join();
+        {
+            std::lock_guard lock{mutex_};
+            const auto found = jobs_.find(job->snapshot.config_id);
+            if (found == jobs_.end()
+                || found->second.reserved.get() != job.get()) {
+                std::terminate();
+            }
+            found->second.reserved.reset();
+            if (!found->second.current) jobs_.erase(found);
+            condition_.notify_all();
+        }
     }
 
     [[nodiscard]] static bool report(
@@ -719,7 +740,19 @@ private:
             job->gate_condition.wait(gate_lock, [&job] {
                 return job->gate != StartGate::pending;
             });
-            if (job->gate == StartGate::cancelled) return;
+            if (job->gate == StartGate::cancelled) {
+#if defined(BAAS_SERVICE_RUNTIME_TASK_OWNER_TEST_HOOKS)
+                RuntimeTaskOwnerTestAccess::Hook hook = nullptr;
+                void* context = nullptr;
+                {
+                    std::lock_guard lock{mutex_};
+                    hook = after_reservation_cancelled_gate_hook_;
+                    context = after_reservation_cancelled_gate_context_;
+                }
+                if (hook != nullptr) hook(context);
+#endif
+                return;
+            }
         }
         run(job, request);
     }
@@ -875,6 +908,9 @@ private:
     void* before_drain_context_{nullptr};
     RuntimeTaskOwnerTestAccess::Hook after_shutdown_closed_hook_{nullptr};
     void* after_shutdown_closed_context_{nullptr};
+    RuntimeTaskOwnerTestAccess::Hook
+        after_reservation_cancelled_gate_hook_{nullptr};
+    void* after_reservation_cancelled_gate_context_{nullptr};
     bool fail_next_thread_start_{false};
 #endif
 };
@@ -895,7 +931,7 @@ RuntimeTaskOwner::~RuntimeTaskOwner() noexcept
 RuntimeTaskPrepareStartResult RuntimeTaskOwner::prepare_start(
     RuntimeTaskRequest request)
 {
-    return impl_->prepare_start(std::move(request));
+    return impl_->prepare_start(std::move(request), false);
 }
 
 RuntimeTaskStartResult RuntimeTaskOwner::start(RuntimeTaskRequest request)
@@ -946,6 +982,12 @@ void RuntimeTaskOwnerTestAccess::set_after_shutdown_closed_hook(
     RuntimeTaskOwner& owner, const Hook hook, void* const context) noexcept
 {
     owner.impl_->set_after_shutdown_closed_hook(hook, context);
+}
+
+void RuntimeTaskOwnerTestAccess::set_after_reservation_cancelled_gate_hook(
+    RuntimeTaskOwner& owner, const Hook hook, void* const context) noexcept
+{
+    owner.impl_->set_after_reservation_cancelled_gate_hook(hook, context);
 }
 
 void RuntimeTaskOwnerTestAccess::fail_next_thread_start(

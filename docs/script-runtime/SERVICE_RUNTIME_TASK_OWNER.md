@@ -36,13 +36,20 @@ Each retained config occupies one bounded status slot:
   the prior completed generation (or no config for a newly reserved id), never
   a false `running` state. Another prepare for the same config returns the
   deterministic `reservation-conflict` decision.
-- Destroying or move-assigning over a pending reservation removes its slot,
-  releases the gate as cancelled, and joins the worker. The backend is never
-  invoked. `commit() noexcept` atomically installs the new generation and
-  releases the gate exactly once; it performs no allocation and cannot fail.
+- Destroying or move-assigning over a pending reservation releases the gate as
+  cancelled, joins the worker, and only then removes its slot. The slot remains
+  reserved and capacity-charged until that join completes, so shutdown cannot
+  return early and a same-config prepare cannot overlap an aborting worker. The
+  backend is never invoked. `commit() noexcept` atomically installs the new
+  generation and releases the gate exactly once; it performs no allocation and
+  cannot fail.
+- Failure to create the gated worker rolls a public `prepare_start()` back to
+  the prior completed generation, or erases a newly allocated config slot. It
+  returns a terminal failure snapshot to the caller but publishes no state for
+  an operation that can never be committed.
 - The legacy `start()` API is implemented as `prepare_start()` followed
-  immediately by `commit()`, preserving its existing start result and terminal
-  thread-creation-failure snapshot.
+  immediately by `commit()`. Its private compatibility path alone preserves
+  the existing visible terminal thread-creation-failure snapshot.
 - A start while `running` returns `already-running`.
 - A start while `stopping` returns `stopping`. The old worker remains owned and
   the config cannot restart until it has actually exited. This closes the
@@ -154,8 +161,9 @@ without executing host tests.
 
 The tests execute injected backends on real worker threads and cover keyed
 concurrency, gated prepare/commit, rollback without backend entry, deterministic
-same-config reservation conflicts, forced thread-creation failure, shutdown vs
-commit/rollback linearization, duplicate admission, stop/start linearization,
-explicit terminal states, timestamp ordering, bounded progress, escaped
-reporters, worker/self shutdown, nested/reentrant stop callbacks, concurrent
-external drains, capacity enforcement, and external drain.
+same-config reservation conflicts, forced thread-creation failure with public
+rollback and legacy-only publication, abort visibility through worker join,
+shutdown vs commit/rollback linearization, duplicate admission, stop/start
+linearization, explicit terminal states, timestamp ordering, bounded progress,
+escaped reporters, worker/self shutdown, nested/reentrant stop callbacks,
+concurrent external drains, capacity enforcement, and external drain.

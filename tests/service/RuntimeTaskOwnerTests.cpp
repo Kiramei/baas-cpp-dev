@@ -53,6 +53,22 @@ template <typename Predicate>
 
 void test_start_reservation_commit_and_rollback()
 {
+    static_assert(static_cast<std::uint8_t>(
+                      runtime::RuntimeTaskStartDecision::started) == 0);
+    static_assert(static_cast<std::uint8_t>(
+                      runtime::RuntimeTaskStartDecision::already_running) == 1);
+    static_assert(static_cast<std::uint8_t>(
+                      runtime::RuntimeTaskStartDecision::stopping) == 2);
+    static_assert(static_cast<std::uint8_t>(
+                      runtime::RuntimeTaskStartDecision::owner_stopped) == 3);
+    static_assert(static_cast<std::uint8_t>(
+                      runtime::RuntimeTaskStartDecision::capacity_exceeded) == 4);
+    static_assert(static_cast<std::uint8_t>(
+                      runtime::RuntimeTaskStartDecision::invalid_request) == 5);
+    static_assert(static_cast<std::uint8_t>(
+                      runtime::RuntimeTaskStartDecision::thread_start_failed) == 6);
+    static_assert(static_cast<std::uint8_t>(
+                      runtime::RuntimeTaskStartDecision::reservation_conflict) == 7);
     static_assert(!std::is_copy_constructible_v<
                   runtime::RuntimeTaskStartReservation>);
     static_assert(std::is_nothrow_move_constructible_v<
@@ -102,13 +118,16 @@ void test_start_reservation_commit_and_rollback()
 void test_start_reservation_conflict_and_thread_failure()
 {
     std::atomic<int> backend_calls{};
+    runtime::RuntimeTaskLimits limits;
+    limits.max_configs = 1;
     runtime::RuntimeTaskOwner owner{
         [&backend_calls](
             const runtime::RuntimeTaskRequest&, std::stop_token,
             const runtime::RuntimeTaskProgressReporter&) {
             backend_calls.fetch_add(1);
             return runtime::RuntimeTaskTerminal{false, std::nullopt};
-        }};
+        },
+        limits};
 
     std::atomic<int> ready{};
     std::atomic<bool> release{};
@@ -153,19 +172,144 @@ void test_start_reservation_conflict_and_thread_failure()
               && !failed.reservation && failed.snapshot
               && !failed.snapshot->running && failed.snapshot->exit_code == 1,
           "forced thread creation failure returns a terminal failure response");
-    const auto failure_snapshot = owner.snapshot("thread-failure");
-    check(failure_snapshot && !failure_snapshot->running
-              && failure_snapshot->exit_code == 1
+    check(!owner.snapshot("thread-failure") && owner.snapshots().empty()
               && backend_calls.load() == 0,
-          "thread creation failure preserves legacy visible terminal state");
+          "failed reversible prepare publishes no config generation");
 
-    auto retry = owner.prepare_start(request("thread-failure"));
-    check(static_cast<bool>(retry),
-          "completed thread-start failure can be prepared again");
-    retry.reservation.commit();
-    check(owner.wait_for_idle("thread-failure", 3s)
-              && backend_calls.load() == 1,
-          "retry after forced thread failure commits normally");
+    auto capacity_reused = owner.prepare_start(request("capacity-reused"));
+    check(static_cast<bool>(capacity_reused),
+          "failed reversible prepare releases the only config slot");
+    capacity_reused.reservation = runtime::RuntimeTaskStartReservation{};
+
+    const auto prior_start = owner.start(request("prior", "prior-mode"));
+    check(prior_start.decision == runtime::RuntimeTaskStartDecision::started
+              && owner.wait_for_idle("prior", 3s),
+          "prior completed generation is available for rollback evidence");
+    const auto prior = owner.snapshot("prior");
+    runtime::RuntimeTaskOwnerTestAccess::fail_next_thread_start(owner);
+    auto failed_replacement = owner.prepare_start(
+        request("prior", "replacement-mode"));
+    const auto preserved = owner.snapshot("prior");
+    check(failed_replacement.decision
+              == runtime::RuntimeTaskStartDecision::thread_start_failed
+              && prior && preserved
+              && preserved->timestamp == prior->timestamp
+              && preserved->run_mode == prior->run_mode
+              && preserved->exit_code == prior->exit_code,
+          "failed replacement prepare preserves the prior public generation");
+
+    runtime::RuntimeTaskOwnerTestAccess::fail_next_thread_start(owner);
+    const auto legacy_failure = owner.start(request("prior", "legacy-mode"));
+    const auto legacy_snapshot = owner.snapshot("prior");
+    check(legacy_failure.decision
+              == runtime::RuntimeTaskStartDecision::thread_start_failed
+              && legacy_snapshot && !legacy_snapshot->running
+              && legacy_snapshot->exit_code == 1
+              && legacy_snapshot->run_mode == "legacy-mode"
+              && legacy_snapshot->timestamp > prior->timestamp,
+          "legacy start alone preserves its visible thread-failure snapshot");
+}
+
+void test_reservation_abort_remains_owned_until_join()
+{
+    struct CancelGate {
+        std::atomic<int> entered{};
+        std::atomic<bool> release{};
+    } gate;
+    std::atomic<int> backend_calls{};
+    runtime::RuntimeTaskLimits limits;
+    limits.max_configs = 1;
+    runtime::RuntimeTaskOwner owner{
+        [&backend_calls](
+            const runtime::RuntimeTaskRequest&, std::stop_token,
+            const runtime::RuntimeTaskProgressReporter&) {
+            backend_calls.fetch_add(1);
+            return runtime::RuntimeTaskTerminal{false, std::nullopt};
+        },
+        limits};
+    runtime::RuntimeTaskOwnerTestAccess::set_after_reservation_cancelled_gate_hook(
+        owner,
+        +[](void* context) noexcept {
+            auto& value = *static_cast<CancelGate*>(context);
+            value.entered.fetch_add(1);
+            while (!value.release.load()) std::this_thread::yield();
+        },
+        &gate);
+
+    auto prepared = owner.prepare_start(request("abort-owned"));
+    check(static_cast<bool>(prepared),
+          "abort ownership fixture prepares one gated worker");
+    std::atomic<bool> abort_returned{};
+    std::thread abort{[
+        reservation = std::move(prepared.reservation),
+        &abort_returned]() mutable {
+        reservation = runtime::RuntimeTaskStartReservation{};
+        abort_returned = true;
+    }};
+    check(wait_until([&gate] { return gate.entered.load() == 1; }),
+          "cancelled worker reaches the deterministic pre-exit gate");
+    check(!abort_returned.load(),
+          "reservation abort remains in progress until worker exit");
+    const auto same_config = owner.prepare_start(request("abort-owned"));
+    check(same_config.decision
+              == runtime::RuntimeTaskStartDecision::reservation_conflict,
+          "same config remains reserved until cancelled worker joins");
+    const auto other_config = owner.prepare_start(request("other"));
+    check(other_config.decision
+              == runtime::RuntimeTaskStartDecision::capacity_exceeded,
+          "cancel-in-progress remains charged to the config capacity bound");
+    gate.release = true;
+    abort.join();
+    check(abort_returned.load() && backend_calls.load() == 0
+              && !owner.snapshot("abort-owned"),
+          "abort joins without backend entry or public state");
+    auto released_capacity = owner.prepare_start(request("other"));
+    check(static_cast<bool>(released_capacity),
+          "joined abort releases its charged config slot");
+    released_capacity.reservation = runtime::RuntimeTaskStartReservation{};
+
+    struct ShutdownCancelGate {
+        std::atomic<bool> entered{};
+        std::atomic<bool> release{};
+    } shutdown_gate;
+    std::atomic<int> shutdown_backend_calls{};
+    runtime::RuntimeTaskOwner shutdown_owner{
+        [&shutdown_backend_calls](
+            const runtime::RuntimeTaskRequest&, std::stop_token,
+            const runtime::RuntimeTaskProgressReporter&) {
+            shutdown_backend_calls.fetch_add(1);
+            return runtime::RuntimeTaskTerminal{false, std::nullopt};
+        }};
+    runtime::RuntimeTaskOwnerTestAccess::set_after_reservation_cancelled_gate_hook(
+        shutdown_owner,
+        +[](void* context) noexcept {
+            auto& value = *static_cast<ShutdownCancelGate*>(context);
+            value.entered = true;
+            while (!value.release.load()) std::this_thread::yield();
+        },
+        &shutdown_gate);
+    auto shutdown_prepared = shutdown_owner.prepare_start(
+        request("shutdown-abort"));
+    std::thread shutdown_abort{
+        [reservation = std::move(shutdown_prepared.reservation)]() mutable {
+            reservation = runtime::RuntimeTaskStartReservation{};
+        }};
+    check(wait_until([&shutdown_gate] { return shutdown_gate.entered.load(); }),
+          "shutdown fixture blocks cancelled worker before exit");
+    std::atomic<bool> shutdown_returned{};
+    std::thread shutdown{[&] {
+        shutdown_owner.shutdown();
+        shutdown_returned = true;
+    }};
+    std::this_thread::sleep_for(20ms);
+    check(!shutdown_returned.load(),
+          "external shutdown waits for abort worker join, not slot removal");
+    shutdown_gate.release = true;
+    shutdown_abort.join();
+    shutdown.join();
+    check(shutdown_returned.load() && shutdown_backend_calls.load() == 0
+              && !shutdown_owner.snapshot("shutdown-abort"),
+          "shutdown returns only after the cancelled worker is joined");
 }
 
 void test_start_reservation_shutdown_linearization()
@@ -821,6 +965,7 @@ int main()
         "hook and non-hook translation units agree on owner layout");
     test_start_reservation_commit_and_rollback();
     test_start_reservation_conflict_and_thread_failure();
+    test_reservation_abort_remains_owned_until_join();
     test_start_reservation_shutdown_linearization();
     test_keyed_concurrency_and_stop_start_linearization();
     test_explicit_terminal_outcomes_and_bounded_snapshots();

@@ -122,14 +122,14 @@ private:
 };
 
 enum class RuntimeTaskStartDecision : std::uint8_t {
-    started,
-    reservation_conflict,
-    already_running,
-    stopping,
-    owner_stopped,
-    capacity_exceeded,
-    invalid_request,
-    thread_start_failed,
+    started = 0,
+    already_running = 1,
+    stopping = 2,
+    owner_stopped = 3,
+    capacity_exceeded = 4,
+    invalid_request = 5,
+    thread_start_failed = 6,
+    reservation_conflict = 7,
 };
 
 [[nodiscard]] std::string_view runtime_task_start_decision_name(
@@ -183,6 +183,8 @@ struct RuntimeTaskOwnerTestAccess final {
     static void set_before_drain_hook(
         RuntimeTaskOwner& owner, Hook hook, void* context) noexcept;
     static void set_after_shutdown_closed_hook(
+        RuntimeTaskOwner& owner, Hook hook, void* context) noexcept;
+    static void set_after_reservation_cancelled_gate_hook(
         RuntimeTaskOwner& owner, Hook hook, void* context) noexcept;
     static void fail_next_thread_start(RuntimeTaskOwner& owner) noexcept;
 };
