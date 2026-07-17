@@ -23,6 +23,9 @@ ENVIRONMENT_HEADER_PATH = ROOT / "include" / "script" / "runtime" / "Environment
 EXECUTOR_HEADER_PATH = ROOT / "include" / "script" / "runtime" / "BoundedExecutor.h"
 EXECUTOR_SOURCE_PATH = ROOT / "src" / "script" / "runtime" / "BoundedExecutor.cpp"
 EXECUTOR_TEST_PATH = ROOT / "tests" / "script" / "BoundedExecutorTests.cpp"
+EVALUATOR_SOURCE_PATH = ROOT / "src" / "script" / "runtime" / "SynchronousEvaluator.cpp"
+EVALUATOR_TEST_PATH = ROOT / "tests" / "script" / "SynchronousEvaluatorTests.cpp"
+HOST_EVALUATOR_TEST_PATH = ROOT / "tests" / "script" / "SynchronousHostEvaluatorTests.cpp"
 VALID_FIXTURE_PATH = ROOT / "tests" / "script" / "fixtures" / "async_tasks_valid.baas"
 INVALID_FIXTURE_PATH = ROOT / "tests" / "script" / "fixtures" / "async_tasks_invalid.baas"
 CMAKE_PATH = ROOT / "cmake" / "ScriptRuntime.cmake"
@@ -126,6 +129,9 @@ class AsyncTasksSpecificationTests(unittest.TestCase):
         cls.executor_header = read(EXECUTOR_HEADER_PATH)
         cls.executor_source = read(EXECUTOR_SOURCE_PATH)
         cls.executor_tests = read(EXECUTOR_TEST_PATH)
+        cls.evaluator_source = read(EVALUATOR_SOURCE_PATH)
+        cls.evaluator_tests = read(EVALUATOR_TEST_PATH)
+        cls.host_evaluator_tests = read(HOST_EVALUATOR_TEST_PATH)
         cls.valid_fixture = read(VALID_FIXTURE_PATH)
         cls.invalid_fixture = read(INVALID_FIXTURE_PATH)
         cls.cmake = read(CMAKE_PATH)
@@ -226,6 +232,27 @@ class AsyncTasksSpecificationTests(unittest.TestCase):
             "InternalInvariant",
         ):
             self.assertIn(f"`{terminal}`", self.error_spec)
+        for anchor in (
+            "check_execution_safe_point(span, claims, true)",
+            "host_cancellation_for_current_phase()",
+            "interruption == LanguageErrorCode::Cancelled",
+        ):
+            self.assertIn(anchor, self.evaluator_source)
+        for anchor in (
+            "test_safe_point_uses_asy_013_terminal_priority",
+            "test_nested_module_cancellation_is_retryable_and_cache_safe",
+            "test_success_boundary_cancellation_preserves_ready_cache",
+        ):
+            self.assertIn(anchor, self.evaluator_tests)
+        self.assertIn(
+            "test_defer_host_callbacks_mask_external_interrupts",
+            self.host_evaluator_tests,
+        )
+        self.assertIn("ExecutionSafetyClaims", self.evaluator_source)
+        self.assertIn(
+            "test_host_task_claims_outrank_same_boundary_cancellation",
+            self.host_evaluator_tests,
+        )
 
     def test_thread_confinement_host_async_roots_and_limits_are_normative(self) -> None:
         for anchor in (

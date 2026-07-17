@@ -166,7 +166,8 @@ public:
         EvaluatorLimits limits = {},
         HeapLimits heap_limits = {},
         SemanticOptions semantic_options = {},
-        NfcPredicate is_nfc = nullptr);
+        NfcPredicate is_nfc = nullptr,
+        std::shared_ptr<const HostCancellationProbe> cancellation = {});
     SynchronousEvaluator(
         std::vector<SourceModule> modules,
         SynchronousHostOptions host_options,
@@ -201,7 +202,8 @@ private:
         HeapLimits heap_limits,
         SemanticOptions semantic_options,
         NfcPredicate is_nfc,
-        std::optional<SynchronousHostOptions> host_options);
+        std::optional<SynchronousHostOptions> host_options,
+        std::shared_ptr<const HostCancellationProbe> cancellation);
     Impl* impl_;
 };
 

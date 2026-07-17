@@ -16,6 +16,61 @@ namespace {
 
 int failures = 0;
 
+class SwitchableProbe final : public runtime::HostCancellationProbe {
+public:
+    [[nodiscard]] bool cancelled() const noexcept override
+    {
+        return cancelled_.load(std::memory_order_relaxed);
+    }
+
+    [[nodiscard]] bool deadline_exceeded() const noexcept override
+    {
+        return deadline_.load(std::memory_order_relaxed);
+    }
+
+    void set_cancelled() noexcept
+    {
+        cancelled_.store(true, std::memory_order_relaxed);
+    }
+
+    void set_deadline() noexcept
+    {
+        deadline_.store(true, std::memory_order_relaxed);
+    }
+
+private:
+    std::atomic<bool> cancelled_{};
+    std::atomic<bool> deadline_{};
+};
+
+class HostBudgetRaceProbe final : public runtime::HostCancellationProbe {
+public:
+    explicit HostBudgetRaceProbe(
+        std::shared_ptr<const std::atomic<int>> completed_calls) noexcept
+        : completed_calls_(std::move(completed_calls))
+    {}
+
+    [[nodiscard]] bool cancelled() const noexcept override
+    {
+        if (completed_calls_->load(std::memory_order_relaxed) == 0) return false;
+        return post_call_polls_.fetch_add(1, std::memory_order_relaxed) + 1 >= 6;
+    }
+
+    [[nodiscard]] bool deadline_exceeded() const noexcept override
+    {
+        return false;
+    }
+
+    [[nodiscard]] std::size_t post_call_polls() const noexcept
+    {
+        return post_call_polls_.load(std::memory_order_relaxed);
+    }
+
+private:
+    std::shared_ptr<const std::atomic<int>> completed_calls_;
+    mutable std::atomic<std::size_t> post_call_polls_{};
+};
+
 void check(const bool condition, const std::string_view message)
 {
     if (!condition) { std::cerr << "FAIL: " << message << '\n'; ++failures; }
@@ -110,6 +165,105 @@ void test_log_emit_vertical_slice_and_version_selection()
     static_cast<void>(versioned.execute("main"));
     check(observed == runtime::HostApiVersion{1, 2},
           "evaluator must pass the greatest compatible exact minor to the callback");
+}
+
+void test_defer_host_callbacks_mask_external_interrupts()
+{
+    for (const bool deadline_case : {false, true}) {
+        auto probe = std::make_shared<SwitchableProbe>();
+        auto calls = std::make_shared<std::atomic<int>>(0);
+        auto cleanup_masked = std::make_shared<std::atomic<bool>>(false);
+        auto binding = runtime::make_in_memory_log_binding(
+            std::make_shared<runtime::InMemoryLogHost>());
+        binding.callback =
+            [probe, calls, cleanup_masked, deadline_case](
+                const runtime::HostCallContext& context,
+                const runtime::HostArguments&) {
+                const auto call = calls->fetch_add(1, std::memory_order_relaxed) + 1;
+                if (call == 1) {
+                    if (deadline_case) probe->set_deadline();
+                    else probe->set_cancelled();
+                } else {
+                    cleanup_masked->store(
+                        !context.deadline_exceeded() && !context.cancelled(),
+                        std::memory_order_relaxed);
+                }
+                return runtime::HostResult::success();
+            };
+        auto bindings = std::make_shared<const runtime::SynchronousNativeBindingSet>(
+            std::vector<runtime::SynchronousNativeBinding>{std::move(binding)});
+        auto options = log_options(bindings);
+        options.cancellation = probe;
+        options.budget_limits = {{"log_events", 2}};
+        runtime::SynchronousEvaluator evaluator(
+            {{"main",
+              "import \"baas/log\" as log;\n"
+              "fn run() {\n"
+              "  defer log.emit(\"info\", \"cleanup-budget-blocked\");\n"
+              "  defer log.emit(\"info\", \"cleanup-masked\");\n"
+              "  log.emit(\"info\", \"arm\");\n"
+              "  let after = 1;\n"
+              "}\n"
+              "run();\n"}},
+            std::move(options));
+
+        expect_error(
+            deadline_case ? runtime::LanguageErrorCode::DeadlineExceeded
+                          : runtime::LanguageErrorCode::Cancelled,
+            [&] { static_cast<void>(evaluator.execute("main")); },
+            "an external terminal must unwind through a deferred Host callback");
+        check(calls->load(std::memory_order_relaxed) == 2
+                  && cleanup_masked->load(std::memory_order_relaxed),
+              "deferred Host callback entry and cooperative polling must mask deadline/cancel");
+        check(evaluator.stats().registered_defers == 2
+                  && evaluator.stats().executed_defers == 2
+                  && evaluator.stats().cleanup_steps > 0
+                  && evaluator.stats().host_calls == 2,
+              "masked cleanup must still drain every defer and enforce its Host budget");
+    }
+}
+
+void test_host_task_claims_outrank_same_boundary_cancellation()
+{
+    for (const bool scoped_budget : {false, true}) {
+        auto calls = std::make_shared<std::atomic<int>>(0);
+        auto probe = std::make_shared<HostBudgetRaceProbe>(calls);
+        auto binding = runtime::make_in_memory_log_binding(
+            std::make_shared<runtime::InMemoryLogHost>());
+        binding.callback =
+            [calls](const runtime::HostCallContext&,
+                    const runtime::HostArguments&) {
+                calls->fetch_add(1, std::memory_order_relaxed);
+                return runtime::HostResult::success();
+            };
+        auto bindings = std::make_shared<const runtime::SynchronousNativeBindingSet>(
+            std::vector<runtime::SynchronousNativeBinding>{std::move(binding)});
+        auto options = log_options(bindings);
+        options.cancellation = probe;
+        if (scoped_budget) {
+            options.limits.max_host_calls = 10;
+            options.budget_limits = {{"log_events", 1}};
+        } else {
+            options.limits.max_host_calls = 1;
+        }
+        runtime::SynchronousEvaluator evaluator(
+            {{"main",
+              "import \"baas/log\" as log;\n"
+              "log.emit(\"info\", \"first\");\n"
+              "log.emit(\"info\", \"blocked\");\n"}},
+            std::move(options));
+
+        expect_error(
+            runtime::LanguageErrorCode::TaskLimitExceeded,
+            [&] { static_cast<void>(evaluator.execute("main")); },
+            scoped_budget
+                ? "scoped Host budget must outrank same-boundary cancellation"
+                : "global Host task limit must outrank same-boundary cancellation");
+        check(calls->load(std::memory_order_relaxed) == 1
+                  && probe->post_call_polls() >= 6
+                  && evaluator.stats().host_calls == 1,
+              "Host task priority evidence must reach admission without a second callback");
+    }
 }
 
 void test_import_dedup_dynamic_alias_and_gc_roots()
@@ -594,6 +748,8 @@ int main()
 {
     try {
         test_log_emit_vertical_slice_and_version_selection();
+        test_defer_host_callbacks_mask_external_interrupts();
+        test_host_task_claims_outrank_same_boundary_cancellation();
         test_import_dedup_dynamic_alias_and_gc_roots();
         test_no_host_constructor_preserves_explicit_boundary();
         test_capability_adapter_and_syntax_gates_precede_arguments();

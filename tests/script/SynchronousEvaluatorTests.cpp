@@ -1,9 +1,11 @@
 #include "script/runtime/SynchronousEvaluator.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cstdlib>
 #include <iostream>
 #include <limits>
+#include <memory>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -14,6 +16,61 @@ namespace runtime = baas::script::runtime;
 namespace {
 
 int failures = 0;
+
+class ControlledProbe final : public runtime::HostCancellationProbe {
+public:
+    ControlledProbe(
+        const std::size_t cancel_after,
+        const bool deadline = false,
+        const bool cancelled = false,
+        const std::size_t deadline_after = 0) noexcept
+        : cancel_after_(cancel_after), deadline_(deadline), cancelled_(cancelled),
+          deadline_after_(deadline_after)
+    {}
+
+    [[nodiscard]] bool cancelled() const noexcept override
+    {
+        if (cancelled_.load(std::memory_order_relaxed)) return true;
+        const auto observed = polls_.fetch_add(1, std::memory_order_relaxed) + 1;
+        const auto threshold = cancel_after_.load(std::memory_order_relaxed);
+        return threshold != 0 && observed >= threshold;
+    }
+
+    [[nodiscard]] bool deadline_exceeded() const noexcept override
+    {
+        if (deadline_.load(std::memory_order_relaxed)) return true;
+        const auto threshold = deadline_after_.load(std::memory_order_relaxed);
+        return threshold != 0
+            && polls_.load(std::memory_order_relaxed) + 1 >= threshold;
+    }
+
+    [[nodiscard]] std::size_t polls() const noexcept
+    {
+        return polls_.load(std::memory_order_relaxed);
+    }
+
+    void set_cancel_after(const std::size_t value) noexcept
+    {
+        cancel_after_.store(value, std::memory_order_relaxed);
+    }
+
+    void set_cancelled(const bool value) noexcept
+    {
+        cancelled_.store(value, std::memory_order_relaxed);
+    }
+
+    void set_deadline(const bool value) noexcept
+    {
+        deadline_.store(value, std::memory_order_relaxed);
+    }
+
+private:
+    std::atomic<std::size_t> cancel_after_{};
+    std::atomic<bool> deadline_{};
+    std::atomic<bool> cancelled_{};
+    std::atomic<std::size_t> deadline_after_{};
+    mutable std::atomic<std::size_t> polls_{};
+};
 
 void check(const bool condition, const std::string_view message)
 {
@@ -540,6 +597,214 @@ void test_terminal_failure_bypasses_catch_and_still_unwinds()
           "terminal failure must use the independent cleanup allowance and execute every defer");
 }
 
+void test_cooperative_cancellation_safe_points_and_cleanup_masking()
+{
+    auto already_cancelled = std::make_shared<ControlledProbe>(0, false, true);
+    runtime::SynchronousEvaluator empty(
+        {{"main", ""}}, {}, {}, {}, nullptr, already_cancelled);
+    const auto entry_error = expect_error(
+        runtime::LanguageErrorCode::Cancelled,
+        [&] { static_cast<void>(empty.execute("main")); },
+        "an already-cancelled context must reject an empty entry module");
+    check(!entry_error.catchable() && entry_error.steps() == 0,
+          "entry cancellation must be terminal before script work starts");
+
+    auto deadline = std::make_shared<ControlledProbe>(0, true, true);
+    runtime::SynchronousEvaluator expired(
+        {{"main", ""}}, {}, {}, {}, nullptr, deadline);
+    const auto deadline_error = expect_error(
+        runtime::LanguageErrorCode::DeadlineExceeded,
+        [&] { static_cast<void>(expired.execute("main")); },
+        "an expired deadline must take priority over a simultaneous stop");
+    check(!deadline_error.catchable(),
+          "deadline expiry must remain a terminal language error");
+
+    auto running = std::make_shared<ControlledProbe>(20);
+    runtime::EvaluatorLimits limits;
+    limits.max_steps = 10'000;
+    runtime::SynchronousEvaluator evaluator({{
+        "main",
+        "let trace = 0;\n"
+        "fn spin() {\n"
+        "  defer trace = trace * 10 + 1;\n"
+        "  defer trace = trace * 10 + 2;\n"
+        "  try { while (true) { let work = 1; } } catch (error) { trace = 999; }\n"
+        "}\n"
+        "spin();\n",
+    }}, limits, {}, {}, nullptr, running);
+    const auto cancelled = expect_error(
+        runtime::LanguageErrorCode::Cancelled,
+        [&] { static_cast<void>(evaluator.execute("main")); },
+        "a running pure-language loop must observe cooperative cancellation");
+    check(!cancelled.catchable() && running->polls() >= 20
+              && evaluator.stats().steps < limits.max_steps,
+          "cancellation must preempt the instruction bound and bypass catch");
+    check(evaluator.stats().registered_defers == 2
+              && evaluator.stats().executed_defers == 2
+              && evaluator.stats().cleanup_steps > 0,
+          "cancellation must be masked while every registered defer drains");
+}
+
+void test_safe_point_uses_asy_013_terminal_priority()
+{
+    runtime::EvaluatorLimits limits;
+    limits.max_steps = 1;
+
+    auto cancellation = std::make_shared<ControlledProbe>(4);
+    runtime::SynchronousEvaluator cancelled(
+        {{"main", "let value = 1;\n"}}, limits, {}, {}, nullptr, cancellation);
+    const auto cancelled_limit = expect_error(
+        runtime::LanguageErrorCode::InstructionLimitExceeded,
+        [&] { static_cast<void>(cancelled.execute("main")); },
+        "instruction safety must outrank cancellation pending at one safe point");
+    check(cancelled_limit.steps() == 1 && cancellation->polls() >= 4,
+          "the priority test must reach one safe point with both claims pending");
+
+    auto deadline = std::make_shared<ControlledProbe>(0, false, false, 4);
+    runtime::SynchronousEvaluator expired(
+        {{"main", "let value = 1;\n"}}, limits, {}, {}, nullptr, deadline);
+    const auto deadline_limit = expect_error(
+        runtime::LanguageErrorCode::InstructionLimitExceeded,
+        [&] { static_cast<void>(expired.execute("main")); },
+        "instruction safety must outrank a deadline pending at one safe point");
+    check(deadline_limit.steps() == 1 && deadline->polls() >= 4,
+          "deadline priority evidence must observe the simultaneous safe point");
+
+    limits = {};
+    limits.max_value_stack = 1;
+    limits.max_steps = 2;
+    runtime::SynchronousEvaluator stack_before_instruction(
+        {{"main", "let value = not false;\n"}}, limits);
+    const auto stack_limit = expect_error(
+        runtime::LanguageErrorCode::StackLimitExceeded,
+        [&] { static_cast<void>(stack_before_instruction.execute("main")); },
+        "value-stack safety must outrank instruction safety at expression admission");
+    check(stack_limit.steps() == 2,
+          "value-stack and instruction claims must be pending at one expression boundary");
+
+    limits.max_steps = 100;
+    auto stack_cancel = std::make_shared<ControlledProbe>(5);
+    runtime::SynchronousEvaluator cancelled_stack(
+        {{"main", "let value = not false;\n"}},
+        limits, {}, {}, nullptr, stack_cancel);
+    expect_error(
+        runtime::LanguageErrorCode::StackLimitExceeded,
+        [&] { static_cast<void>(cancelled_stack.execute("main")); },
+        "value-stack safety must outrank simultaneous cancellation");
+    check(stack_cancel->polls() >= 5,
+          "value-stack cancellation evidence must reach nested expression admission");
+
+    auto stack_deadline = std::make_shared<ControlledProbe>(0, false, false, 5);
+    runtime::SynchronousEvaluator expired_stack(
+        {{"main", "let value = not false;\n"}},
+        limits, {}, {}, nullptr, stack_deadline);
+    expect_error(
+        runtime::LanguageErrorCode::StackLimitExceeded,
+        [&] { static_cast<void>(expired_stack.execute("main")); },
+        "value-stack safety must outrank a simultaneous deadline");
+    check(stack_deadline->polls() >= 5,
+          "value-stack deadline evidence must reach nested expression admission");
+
+    limits = {};
+    limits.max_call_depth = 1;
+    auto call_cancel = std::make_shared<ControlledProbe>(13);
+    runtime::SynchronousEvaluator cancelled_call(
+        {{"main",
+          "fn recurse() { return recurse(); }\n"
+          "recurse();\n"}},
+        limits, {}, {}, nullptr, call_cancel);
+    expect_error(
+        runtime::LanguageErrorCode::StackLimitExceeded,
+        [&] { static_cast<void>(cancelled_call.execute("main")); },
+        "call-stack safety must outrank cancellation at function admission");
+    check(call_cancel->polls() >= 13,
+          "call-stack evidence must reach the recursive function-entry boundary");
+
+    limits = {};
+    limits.max_container_elements = 1;
+    auto collection_cancel = std::make_shared<ControlledProbe>(5);
+    runtime::SynchronousEvaluator cancelled_collection(
+        {{"main", "let values = [1, 2];\n"}},
+        limits, {}, {}, nullptr, collection_cancel);
+    expect_error(
+        runtime::LanguageErrorCode::MemoryLimitExceeded,
+        [&] { static_cast<void>(cancelled_collection.execute("main")); },
+        "preflight collection memory must outrank cancellation at its charge boundary");
+    check(collection_cancel->polls() >= 5,
+          "collection evidence must reach the pre-allocation memory boundary");
+}
+
+void test_nested_module_cancellation_is_retryable_and_cache_safe()
+{
+    std::string dependency;
+    for (std::size_t index = 0; index < 64; ++index) {
+        dependency += "let value_" + std::to_string(index) + " = "
+            + std::to_string(index) + ";\n";
+    }
+    auto probe = std::make_shared<ControlledProbe>(20);
+    runtime::EvaluatorLimits limits;
+    limits.max_steps = 10'000;
+    runtime::SynchronousEvaluator evaluator(
+        {
+            {"main", "import \"dependency\" as dependency; let ready = 1;\n"},
+            {"dependency", std::move(dependency)},
+        },
+        limits, {}, {}, nullptr, probe);
+
+    const auto interrupted = expect_error(
+        runtime::LanguageErrorCode::Cancelled,
+        [&] { static_cast<void>(evaluator.execute("main")); },
+        "nested package initialization must observe cancellation");
+    check(interrupted.module() == "dependency"
+              && evaluator.stats().initialized_modules == 0,
+          "cancelled nested and importing modules must both roll back to Uninitialized");
+
+    probe->set_cancel_after(0);
+    const auto retried = evaluator.execute("main");
+    check(evaluator.stats().initialized_modules == 2
+              && integer_export(evaluator, "main", "ready") == 1,
+          "a later execution must retry and commit both rolled-back modules");
+    const auto committed_steps = evaluator.stats().steps;
+
+    probe->set_cancelled(true);
+    expect_error(
+        runtime::LanguageErrorCode::Cancelled,
+        [&] { static_cast<void>(evaluator.execute("main")); },
+        "a repeated execute must still observe its current external context");
+    check(evaluator.stats().initialized_modules == 2
+              && evaluator.stats().steps == committed_steps,
+          "entry cancellation must not invalidate or rerun a Ready module cache");
+
+    probe->set_cancelled(false);
+    const auto cached = evaluator.execute("main");
+    check(cached.module_namespace == retried.module_namespace
+              && evaluator.stats().initialized_modules == 2
+              && evaluator.stats().steps == committed_steps,
+          "a subsequent non-cancelled execute must reuse the committed namespace exactly");
+}
+
+void test_success_boundary_cancellation_preserves_ready_cache()
+{
+    auto probe = std::make_shared<ControlledProbe>(6);
+    runtime::SynchronousEvaluator evaluator(
+        {{"main", "let value = 7;\n"}}, {}, {}, {}, nullptr, probe);
+    expect_error(
+        runtime::LanguageErrorCode::Cancelled,
+        [&] { static_cast<void>(evaluator.execute("main")); },
+        "a terminal claim at the success boundary must outrank normal success");
+    check(evaluator.stats().initialized_modules == 1,
+          "success-boundary cancellation must retain the committed Ready module");
+    const auto committed_steps = evaluator.stats().steps;
+
+    probe->set_cancel_after(0);
+    const auto cached = evaluator.execute("main");
+    check(evaluator.heap().kind(cached.module_namespace) == runtime::ValueKind::Module
+              && integer_export(evaluator, "main", "value") == 7
+              && evaluator.stats().initialized_modules == 1
+              && evaluator.stats().steps == committed_steps,
+          "a retry after success-boundary cancellation must reuse the exact Ready cache");
+}
+
 void test_terminal_cleanup_promotion_and_public_error_envelope()
 {
     runtime::EvaluatorLimits limits;
@@ -708,6 +973,10 @@ int main()
     test_dynamic_failures_compile_gate_and_explicit_boundaries();
     test_structured_errors_and_defer_unwinding();
     test_terminal_failure_bypasses_catch_and_still_unwinds();
+    test_cooperative_cancellation_safe_points_and_cleanup_masking();
+    test_safe_point_uses_asy_013_terminal_priority();
+    test_nested_module_cancellation_is_retryable_and_cache_safe();
+    test_success_boundary_cancellation_preserves_ready_cache();
     test_terminal_cleanup_promotion_and_public_error_envelope();
     test_publication_failure_still_drains_registered_defers();
     test_stack_terminal_uses_independent_cleanup_call_depth();

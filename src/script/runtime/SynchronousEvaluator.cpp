@@ -272,17 +272,21 @@ struct SynchronousEvaluator::Impl {
         Value value{Value::null()};
     };
 
+    struct ExecutionSafetyClaims {
+        const char* memory;
+        const char* stack;
+        const char* cleanup;
+        const char* task;
+    };
+
     struct StackGuard {
         Impl* evaluator;
         explicit StackGuard(Impl& evaluator, const SourceSpan span) : evaluator(&evaluator)
         {
-            evaluator.charge_step(span);
-            if (evaluator.value_stack_depth >= evaluator.limits.max_value_stack) {
-                evaluator.fail(
-                    LanguageErrorCode::StackLimitExceeded,
-                    "synchronous evaluator value stack limit exceeded",
-                    span);
-            }
+            ExecutionSafetyClaims claims{};
+            if (evaluator.value_stack_depth >= evaluator.limits.max_value_stack)
+                claims.stack = "synchronous evaluator value stack limit exceeded";
+            evaluator.charge_step(span, claims);
             ++evaluator.value_stack_depth;
             evaluator.stats.peak_value_stack = std::max(
                 evaluator.stats.peak_value_stack, evaluator.value_stack_depth);
@@ -293,28 +297,25 @@ struct SynchronousEvaluator::Impl {
     struct CallGuard {
         Impl* evaluator;
         bool cleanup{};
-        explicit CallGuard(Impl& evaluator, const SourceSpan span)
+        explicit CallGuard(
+            Impl& evaluator, const SourceSpan span,
+            ExecutionSafetyClaims claims = {})
             : evaluator(&evaluator), cleanup(evaluator.cleanup_depth != 0)
         {
             if (cleanup) {
-                if (evaluator.cleanup_call_depth >= evaluator.limits.max_cleanup_call_depth) {
-                    evaluator.fail(
-                        LanguageErrorCode::CleanupLimitExceeded,
-                        "synchronous evaluator cleanup call depth limit exceeded",
-                        span);
-                }
+                if (evaluator.cleanup_call_depth >= evaluator.limits.max_cleanup_call_depth)
+                    claims.cleanup =
+                        "synchronous evaluator cleanup call depth limit exceeded";
+                evaluator.check_execution_safe_point(span, claims);
                 ++evaluator.cleanup_call_depth;
                 evaluator.stats.peak_cleanup_call_depth = std::max(
                     evaluator.stats.peak_cleanup_call_depth,
                     evaluator.cleanup_call_depth);
                 return;
             }
-            if (evaluator.call_depth >= evaluator.limits.max_call_depth) {
-                evaluator.fail(
-                    LanguageErrorCode::StackLimitExceeded,
-                    "synchronous evaluator call depth limit exceeded",
-                    span);
-            }
+            if (evaluator.call_depth >= evaluator.limits.max_call_depth)
+                claims.stack = "synchronous evaluator call depth limit exceeded";
+            evaluator.check_execution_safe_point(span, claims);
             ++evaluator.call_depth;
             evaluator.stats.peak_call_depth = std::max(
                 evaluator.stats.peak_call_depth, evaluator.call_depth);
@@ -360,6 +361,7 @@ struct SynchronousEvaluator::Impl {
     std::vector<NativeFunctionRecord> native_functions;
     std::map<std::string, HostModuleRecord, std::less<>> host_modules;
     std::optional<SynchronousHostOptions> host_options;
+    std::shared_ptr<const HostCancellationProbe> cancellation;
     std::map<std::string, std::size_t, std::less<>> host_budget_limits;
     std::map<std::string, std::size_t, std::less<>> host_budget_used;
     EvaluationStats stats;
@@ -384,9 +386,13 @@ struct SynchronousEvaluator::Impl {
         HeapLimits heap_limits,
         const SemanticOptions semantic_options,
         const NfcPredicate is_nfc,
-        std::optional<SynchronousHostOptions> synchronous_host_options)
+        std::optional<SynchronousHostOptions> synchronous_host_options,
+        std::shared_ptr<const HostCancellationProbe> execution_cancellation)
         : limits(evaluator_limits), heap(heap_limits, is_nfc),
-          host_options(std::move(synchronous_host_options)), nfc(is_nfc)
+          host_options(std::move(synchronous_host_options)),
+          cancellation(host_options && host_options->cancellation
+              ? host_options->cancellation : std::move(execution_cancellation)),
+          nfc(is_nfc)
     {
         validate_limits();
         compile_modules(std::move(sources), semantic_options, is_nfc);
@@ -829,37 +835,85 @@ struct SynchronousEvaluator::Impl {
             options.handles->attach_context(heap);
     }
 
-    void charge_step(const SourceSpan span)
+    void charge_step(
+        const SourceSpan span, ExecutionSafetyClaims claims = {})
     {
         if (cleanup_depth != 0) {
-            if (stats.cleanup_steps >= limits.max_cleanup_steps) {
-                fail(
-                    LanguageErrorCode::CleanupLimitExceeded,
-                    "synchronous evaluator cleanup step limit exceeded",
-                    span);
-            }
+            if (stats.cleanup_steps >= limits.max_cleanup_steps)
+                claims.cleanup =
+                    "synchronous evaluator cleanup step limit exceeded";
+            check_execution_safe_point(span, claims);
             ++stats.cleanup_steps;
             return;
         }
-        if (stats.steps >= limits.max_steps) {
+        check_execution_safe_point(span, claims, true);
+        ++stats.steps;
+    }
+
+    void check_execution_safe_point(
+        const SourceSpan span,
+        const ExecutionSafetyClaims claims = {},
+        const bool instruction_requested = false)
+    {
+        // Callers provide every safety claim already knowable at this exact
+        // boundary. External observations are collected before selecting the
+        // ASY-013 winner, while ERR-013 cleanup masks only those observations.
+        const bool deadline = cleanup_depth == 0 && cancellation
+            && cancellation->deadline_exceeded();
+        const bool cancelled = cleanup_depth == 0 && cancellation
+            && cancellation->cancelled();
+        if (claims.memory != nullptr) {
+            fail(LanguageErrorCode::MemoryLimitExceeded, claims.memory, span);
+        }
+        if (claims.stack != nullptr) {
+            fail(LanguageErrorCode::StackLimitExceeded, claims.stack, span);
+        }
+        if (instruction_requested && stats.steps >= limits.max_steps) {
             fail(
                 LanguageErrorCode::InstructionLimitExceeded,
                 "synchronous evaluator step limit exceeded",
                 span);
         }
-        ++stats.steps;
+        if (claims.cleanup != nullptr) {
+            fail(LanguageErrorCode::CleanupLimitExceeded, claims.cleanup, span);
+        }
+        if (claims.task != nullptr) {
+            fail(LanguageErrorCode::TaskLimitExceeded, claims.task, span);
+        }
+        if (deadline) {
+            fail(
+                LanguageErrorCode::DeadlineExceeded,
+                "synchronous evaluator deadline exceeded",
+                span);
+        }
+        if (cancelled) {
+            fail(
+                LanguageErrorCode::Cancelled,
+                "synchronous evaluator cancellation requested",
+                span);
+        }
+    }
+
+    [[nodiscard]] std::shared_ptr<const HostCancellationProbe>
+    host_cancellation_for_current_phase() const noexcept
+    {
+        // ERR-013 cleanup is uninterruptible by the external context probe.
+        // Passing an empty capability also masks cooperative polling inside
+        // the callback; conversion, per-binding Host budgets, cleanup steps,
+        // and cleanup call depth remain independently bounded.
+        if (cleanup_depth != 0) return {};
+        return host_options ? host_options->cancellation : nullptr;
     }
 
     void charge_collection(const std::size_t amount, const SourceSpan span)
     {
-        if (amount > limits.max_container_elements
+        const bool exhausted = amount > limits.max_container_elements
             || amount > limits.max_collection_work
-            || stats.collection_work > limits.max_collection_work - amount) {
-            fail(
-                LanguageErrorCode::MemoryLimitExceeded,
-                "synchronous evaluator collection budget exceeded",
-                span);
-        }
+            || stats.collection_work > limits.max_collection_work - amount;
+        ExecutionSafetyClaims claims{};
+        if (exhausted)
+            claims.memory = "synchronous evaluator collection budget exceeded";
+        check_execution_safe_point(span, claims);
         stats.collection_work += amount;
     }
 
@@ -1269,6 +1323,7 @@ struct SynchronousEvaluator::Impl {
 
     [[nodiscard]] Value initialize_module(const std::string& id, const SourceSpan import_span)
     {
+        check_execution_safe_point(import_span);
         const auto found = modules.find(id);
         if (found == modules.end()) {
             fail(
@@ -1347,6 +1402,16 @@ struct SynchronousEvaluator::Impl {
             ++stats.initialized_modules;
             return module.namespace_value;
         } catch (const ScriptUnwind& unwind) {
+            const auto interruption =
+                heap.error_metadata_view(unwind.error.as_heap_ref()).code;
+            if (interruption == LanguageErrorCode::Cancelled
+                || interruption == LanguageErrorCode::DeadlineExceeded) {
+                // External context outcomes are execution-attempt results, not
+                // deterministic module failures. InitializationTransaction
+                // rolls every active nested module back to Uninitialized so a
+                // later execute() can retry against the same immutable source.
+                throw;
+            }
             Heap::RootId failure_root{};
             try {
                 failure_root = heap.add_root(unwind.error);
@@ -1573,7 +1638,9 @@ struct SynchronousEvaluator::Impl {
             ~ExecutionGuard() { evaluator.execution_active = false; }
         } execution(*this);
         try {
+            check_execution_safe_point({});
             const auto value = initialize_module(specifier.canonical_id, {});
+            check_execution_safe_point({});
             return {value, stats};
         } catch (const ScriptUnwind& unwind) {
             const auto& metadata = heap.error_metadata_view(unwind.error.as_heap_ref());
@@ -2449,18 +2516,22 @@ Value SynchronousEvaluator::Impl::invoke_native(
                  "required Host argument is missing", span);
     }
 
-    if (stats.host_calls >= host_options->limits.max_host_calls)
-        fail(LanguageErrorCode::TaskLimitExceeded,
-             "synchronous Host call limit exceeded", span);
     const auto configured_budget = host_budget_limits.find(contract.budget_scope);
     const auto budget_limit = configured_budget == host_budget_limits.end()
         ? host_options->limits.max_host_calls
         : configured_budget->second;
+    const auto existing_budget = host_budget_used.find(contract.budget_scope);
+    const auto budget_used = existing_budget == host_budget_used.end()
+        ? 0U : existing_budget->second;
+    ExecutionSafetyClaims call_claims{};
+    if (stats.host_calls >= host_options->limits.max_host_calls)
+        call_claims.task = "synchronous Host call limit exceeded";
+    else if (budget_used >= budget_limit)
+        call_claims.task = "Host operation budget exceeded";
+    CallGuard call_guard(*this, span, call_claims);
+
     auto [budget, inserted] = host_budget_used.try_emplace(contract.budget_scope, 0);
     (void)inserted;
-    if (budget->second >= budget_limit)
-        fail(LanguageErrorCode::TaskLimitExceeded,
-             "Host operation budget exceeded", span);
     ++budget->second;
     struct BudgetReservation {
         std::size_t* used;
@@ -2468,7 +2539,6 @@ Value SynchronousEvaluator::Impl::invoke_native(
         ~BudgetReservation() { if (!committed) --*used; }
     } reservation{&budget->second};
 
-    CallGuard call_guard(*this, span);
     auto roots = heap.root_scope();
     HostArguments converted(parameters.size());
     HostValueMetrics aggregate;
@@ -2571,7 +2641,8 @@ Value SynchronousEvaluator::Impl::invoke_native(
     auto result = invoke_host_callback(
         *function.binding,
         {function.module, function.export_name, function.binding->binding_id,
-         function.selected_version, stats.host_calls, host_options->cancellation},
+         function.selected_version, stats.host_calls,
+         host_cancellation_for_current_phase()},
         converted,
         host_options->bindings->limits(),
         host_options->handles.get());
@@ -3088,10 +3159,11 @@ SynchronousEvaluator::SynchronousEvaluator(
     const EvaluatorLimits limits,
     const HeapLimits heap_limits,
     const SemanticOptions semantic_options,
-    const NfcPredicate is_nfc)
+    const NfcPredicate is_nfc,
+    std::shared_ptr<const HostCancellationProbe> cancellation)
     : impl_(create_impl(
           std::move(modules), limits, heap_limits, semantic_options, is_nfc,
-          std::nullopt))
+          std::nullopt, std::move(cancellation)))
 {
 }
 
@@ -3104,7 +3176,7 @@ SynchronousEvaluator::SynchronousEvaluator(
     const NfcPredicate is_nfc)
     : impl_(create_impl(
           std::move(modules), limits, heap_limits, semantic_options, is_nfc,
-          std::move(host_options)))
+          std::move(host_options), {}))
 {
 }
 
@@ -3114,12 +3186,13 @@ SynchronousEvaluator::Impl* SynchronousEvaluator::create_impl(
     const HeapLimits heap_limits,
     const SemanticOptions semantic_options,
     const NfcPredicate is_nfc,
-    std::optional<SynchronousHostOptions> host_options)
+    std::optional<SynchronousHostOptions> host_options,
+    std::shared_ptr<const HostCancellationProbe> cancellation)
 {
     try {
         return new Impl(
             std::move(modules), limits, heap_limits, semantic_options, is_nfc,
-            std::move(host_options));
+            std::move(host_options), std::move(cancellation));
     } catch (const EvaluationCompileError&) {
         throw;
     } catch (const EvaluationError&) {
