@@ -92,6 +92,8 @@ option(BUILD_BAAS_NMS_BENCHMARK "Build BAAS vs OpenCV dnn NMS Google Benchmark e
 option(BUILD_SCRIPT_RUNTIME     "Build the standalone BAAS script runtime" OFF)
 option(BUILD_SCRIPT_TESTS       "Build native tests for the BAAS script runtime" OFF)
 option(BUILD_SCRIPT_TOOLS       "Build BAAS script developer tools" OFF)
+option(BUILD_SCHEDULER_POLICY   "Build the pure scheduler policy/parser" OFF)
+option(BUILD_SCHEDULER_POLICY_TESTS "Build deterministic scheduler policy tests" OFF)
 option(BUILD_RESOURCE_CORE      "Build immutable resource snapshot core" OFF)
 option(BUILD_RESOURCE_CORE_TESTS "Build immutable resource snapshot tests" OFF)
 option(BUILD_RUNTIME_REPOSITORY "Build read-only runtime repository activation" OFF)
@@ -284,6 +286,11 @@ endif()
 
 if(BUILD_SCRIPT_TESTS AND NOT BUILD_SCRIPT_RUNTIME)
     set(BUILD_SCRIPT_RUNTIME ON CACHE BOOL "Build the standalone BAAS script runtime" FORCE)
+endif()
+
+if(BUILD_SCHEDULER_POLICY_TESTS AND NOT BUILD_SCHEDULER_POLICY)
+    set(BUILD_SCHEDULER_POLICY ON CACHE BOOL
+        "Build the pure scheduler policy/parser" FORCE)
 endif()
 
 if(BUILD_SCRIPT_TOOLS AND NOT BUILD_SCRIPT_RUNTIME)
@@ -708,7 +715,8 @@ endif()
 if(BUILD_SERVICE_SYNC_HANDLER OR BUILD_SERVICE_REMOTE_HANDLER
    OR BUILD_SERVICE_FILE_RESOURCE_STORE
    OR BUILD_SERVICE_RUNTIME_CONFIGURATION_DEFAULTS
-   OR BUILD_SERVICE_RUNTIME_REPOSITORY_PLAN)
+   OR BUILD_SERVICE_RUNTIME_REPOSITORY_PLAN
+   OR BUILD_SCHEDULER_POLICY)
     baas_request_dependencies(nlohmann_json)
 endif()
 
@@ -744,6 +752,7 @@ file(
 # Standalone libraries must not leak into the legacy application's globbed
 # core sources.
 list(FILTER BAAS_CORE_SOURCES EXCLUDE REGEX "/src/script/.*\\.cpp$")
+list(FILTER BAAS_CORE_SOURCES EXCLUDE REGEX "/src/scheduler/.*\\.cpp$")
 list(FILTER BAAS_CORE_SOURCES EXCLUDE REGEX "/src/runtime/repository/.*\\.cpp$")
 list(FILTER BAAS_CORE_SOURCES EXCLUDE REGEX "/src/service/.*\\.cpp$")
 
@@ -800,6 +809,10 @@ endif()
 
 if(BUILD_SCRIPT_RESOURCE_HOST)
     include("${CMAKE_CURRENT_LIST_DIR}/cmake/ScriptResourceHost.cmake")
+endif()
+
+if(BUILD_SCHEDULER_POLICY)
+    include("${CMAKE_CURRENT_LIST_DIR}/cmake/SchedulerPolicy.cmake")
 endif()
 
 if(BUILD_SERVICE_TRIGGER_CATALOG)
