@@ -21,6 +21,7 @@ constexpr std::size_t hard_manifest_bytes = 4U * 1'024U * 1'024U;
 constexpr std::size_t hard_json_depth = 32;
 constexpr std::size_t hard_json_nodes = 500'000;
 constexpr std::size_t hard_modules = 16'384;
+constexpr std::size_t hard_procedures = 16'384;
 constexpr std::size_t hard_host_modules = 1'024;
 constexpr std::size_t hard_capabilities = 262'144;
 constexpr std::size_t hard_string_bytes = 4'096;
@@ -356,6 +357,30 @@ template <std::size_t Size>
     }
     return dot;
 }
+[[nodiscard]] bool procedure_id(std::string_view value) noexcept
+{
+    if (value.empty() || value.front() == '/' || value.back() == '/'
+        || value.find("//") != std::string_view::npos
+        || value.find('\\') != std::string_view::npos
+        || value.find(':') != std::string_view::npos
+        || value.find('\0') != std::string_view::npos) return false;
+    for (std::size_t begin{}; begin < value.size();) {
+        const auto end = value.find('/', begin);
+        const auto segment = value.substr(begin, end == std::string_view::npos
+            ? value.size() - begin : end - begin);
+        if (segment.empty() || segment == "." || segment == ".."
+            || segment.front() == '-' || segment.back() == '-'
+            || segment.front() == '.' || segment.back() == '.') return false;
+        if (!std::ranges::all_of(segment, [](const char byte) {
+                return (byte >= 'a' && byte <= 'z')
+                    || (byte >= '0' && byte <= '9')
+                    || byte == '-' || byte == '_' || byte == '.';
+            })) return false;
+        if (end == std::string_view::npos) break;
+        begin = end + 1;
+    }
+    return true;
+}
 [[nodiscard]] bool lowercase_sha256(std::string_view value) noexcept
 {
     return value.size() == 64 && std::ranges::all_of(value, [](char byte) {
@@ -405,6 +430,7 @@ void validate_limits(const RuntimeScriptExecutionPlanLimits& limits)
         || limits.max_json_depth == 0 || limits.max_json_depth > hard_json_depth
         || limits.max_json_nodes == 0 || limits.max_json_nodes > hard_json_nodes
         || limits.max_modules == 0 || limits.max_modules > hard_modules
+        || limits.max_procedures == 0 || limits.max_procedures > hard_procedures
         || limits.max_host_modules == 0 || limits.max_host_modules > hard_host_modules
         || limits.max_capabilities == 0 || limits.max_capabilities > hard_capabilities
         || limits.max_string_bytes == 0 || limits.max_string_bytes > hard_string_bytes
@@ -436,6 +462,7 @@ struct RuntimeScriptExecutionPlan::Impl final {
     std::string package_build;
     std::vector<std::string> capabilities;
     std::vector<RuntimeScriptExecutionModule> modules;
+    std::vector<std::string> procedure_ids;
     RuntimeScriptPackage package;
 };
 
@@ -452,6 +479,7 @@ const RuntimeScriptPackageVersion& RuntimeScriptExecutionPlan::package_version()
 const std::string& RuntimeScriptExecutionPlan::package_build() const noexcept { return impl_->package_build; }
 std::span<const std::string> RuntimeScriptExecutionPlan::capabilities() const noexcept { return impl_->capabilities; }
 std::span<const RuntimeScriptExecutionModule> RuntimeScriptExecutionPlan::modules() const noexcept { return impl_->modules; }
+std::span<const std::string> RuntimeScriptExecutionPlan::procedure_ids() const noexcept { return impl_->procedure_ids; }
 const RuntimeScriptPackage& RuntimeScriptExecutionPlan::package() const noexcept { return impl_->package; }
 
 std::string_view runtime_script_execution_plan_error_name(
@@ -487,6 +515,7 @@ std::string_view runtime_script_execution_plan_error_name(
         case package_load_failed: return "RSE025_PACKAGE_LOAD_FAILED";
         case cancelled: return "RSE026_CANCELLED";
         case resource_exhausted: return "RSE027_RESOURCE_EXHAUSTED";
+        case procedure_requirements_missing: return "RSE028_PROCEDURE_REQUIREMENTS_MISSING";
     }
     return "RSE999_UNKNOWN";
 }
@@ -554,19 +583,33 @@ RuntimeScriptExecutionPlanResult build_runtime_script_execution_plan(
         if (root.contains("signature") || root.contains("signatures")
             || root.contains("signature_path"))
             fail(RuntimeScriptExecutionPlanError::unsupported_signature);
-        constexpr std::array required_root{
+        constexpr std::array schema_one_root{
             std::string_view{"manifest_schema"}, std::string_view{"package"},
             std::string_view{"language"}, std::string_view{"entrypoint"},
             std::string_view{"host_modules"}, std::string_view{"capabilities"},
             std::string_view{"profiles"}, std::string_view{"modules"},
             std::string_view{"resources"}};
-        const bool has_limits = root.contains("limits");
-        if (root.size() != required_root.size() + (has_limits ? 1U : 0U)
-            || !std::ranges::all_of(required_root, [&root](auto field) {
-                return root.contains(field);
-            })) fail(RuntimeScriptExecutionPlanError::invalid_field_set);
-        if (integer(root.at("manifest_schema")) != 1)
+        constexpr std::array schema_two_root{
+            std::string_view{"manifest_schema"}, std::string_view{"package"},
+            std::string_view{"language"}, std::string_view{"entrypoint"},
+            std::string_view{"host_modules"}, std::string_view{"capabilities"},
+            std::string_view{"profiles"}, std::string_view{"modules"},
+            std::string_view{"resources"}, std::string_view{"procedures"}};
+        if (!root.contains("manifest_schema"))
+            fail(RuntimeScriptExecutionPlanError::invalid_field_set);
+        const auto manifest_schema = integer(root.at("manifest_schema"));
+        if (manifest_schema != 1 && manifest_schema != 2)
             fail(RuntimeScriptExecutionPlanError::manifest_schema_unsupported);
+        const bool has_limits = root.contains("limits");
+        const auto contains_exact = [&root, has_limits](const auto& required) {
+            return root.size() == required.size() + (has_limits ? 1U : 0U)
+                && std::ranges::all_of(required, [&root](const auto field) {
+                    return root.contains(field);
+                });
+        };
+        if ((manifest_schema == 1 && !contains_exact(schema_one_root))
+            || (manifest_schema == 2 && !contains_exact(schema_two_root)))
+            fail(RuntimeScriptExecutionPlanError::invalid_field_set);
 
         auto impl = std::make_shared<RuntimeScriptExecutionPlan::Impl>();
         impl->generation = scripts.generation();
@@ -646,6 +689,36 @@ RuntimeScriptExecutionPlanResult build_runtime_script_execution_plan(
             if (manifest_hosts[index].canonical_id != descriptor.host_modules[index].canonical_id
                 || manifest_hosts[index].major != descriptor.host_modules[index].major
                 || manifest_hosts[index].min_minor != descriptor.host_modules[index].min_minor)
+                fail(RuntimeScriptExecutionPlanError::host_requirement_mismatch);
+        }
+
+        const bool requires_procedure_host = std::ranges::any_of(
+            manifest_hosts, [](const RuntimeScriptHostRequirement& requirement) {
+                return requirement.canonical_id == "baas/procedure";
+            });
+        if (manifest_schema == 1) {
+            if (requires_procedure_host)
+                fail(RuntimeScriptExecutionPlanError::procedure_requirements_missing);
+        } else {
+            const auto& procedures = array(root.at("procedures"));
+            if (procedures.size() > limits.max_procedures)
+                fail(RuntimeScriptExecutionPlanError::limit_exceeded);
+            impl->procedure_ids.reserve(procedures.size());
+            std::set<std::string, std::less<>> exact_ids;
+            std::set<std::string, std::less<>> folded_ids;
+            for (const auto& procedure_value : procedures) {
+                const auto& id = text(procedure_value);
+                charge(id.size() + 1U);
+                const auto folded = ascii_fold(id);
+                if (!exact_ids.insert(id).second || !folded_ids.insert(folded).second
+                    || !procedure_id(id))
+                    fail(RuntimeScriptExecutionPlanError::invalid_value);
+                impl->procedure_ids.push_back(id);
+            }
+            std::ranges::sort(impl->procedure_ids);
+            if (requires_procedure_host && impl->procedure_ids.empty())
+                fail(RuntimeScriptExecutionPlanError::procedure_requirements_missing);
+            if (!requires_procedure_host && !impl->procedure_ids.empty())
                 fail(RuntimeScriptExecutionPlanError::host_requirement_mismatch);
         }
 
