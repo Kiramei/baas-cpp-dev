@@ -26,6 +26,9 @@ class RuntimeScriptCatalogContractTests(unittest.TestCase):
         cls.docs = (
             ROOT / "docs/script-runtime/RUNTIME_SCRIPT_CATALOG.md"
         ).read_text(encoding="utf-8")
+        cls.tests = (
+            ROOT / "tests/runtime/RuntimeScriptCatalogTests.cpp"
+        ).read_text(encoding="utf-8")
 
     def test_pathless_pin_and_immutable_target(self) -> None:
         self.assertIn("BUILD_RUNTIME_SCRIPT_CATALOG", self.root_cmake)
@@ -69,6 +72,13 @@ class RuntimeScriptCatalogContractTests(unittest.TestCase):
             ),
             2,
         )
+
+    def test_fixture_capabilities_match_real_host_contracts(self) -> None:
+        combined = self.docs + self.tests
+        self.assertIn("log.emit", combined)
+        self.assertIn("resource.read", combined)
+        self.assertNotIn("log.write", combined)
+        self.assertNotIn("resource.decode", combined)
 
 
 if __name__ == "__main__":

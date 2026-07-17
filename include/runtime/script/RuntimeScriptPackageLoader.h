@@ -9,6 +9,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <span>
 #include <stop_token>
 #include <string>
 #include <string_view>
@@ -36,8 +37,27 @@ enum class RuntimeScriptPackageLoadError : std::uint8_t {
     missing_package_module,
     import_cycle,
     graph_validation_failed,
+    invalid_package_manifest,
+    package_pin_mismatch,
+    module_outside_package,
+    module_manifest_mismatch,
+    unexpected_package_module,
     cancelled,
     resource_exhausted,
+};
+
+struct RuntimeScriptPackagePin {
+    std::string_view generation;
+    std::string_view commit;
+};
+
+struct RuntimeScriptPackageModuleManifest {
+    std::string_view canonical_module;
+    // Exact repository-root logical path supplied by the package boundary.
+    // The loader never derives a package root from this value.
+    std::string_view logical_path;
+    std::uintmax_t size{};
+    std::string_view sha256;
 };
 
 [[nodiscard]] std::string_view runtime_script_package_load_error_name(
@@ -91,6 +111,18 @@ struct RuntimeScriptPackageLoadResult {
 [[nodiscard]] RuntimeScriptPackageLoadResult load_runtime_script_package(
     const repository::RuntimeRepositoryReadView& scripts,
     std::string_view canonical_entry_module,
+    const RuntimeScriptPackageLoaderLimits& limits = {},
+    std::stop_token stop_token = {}) noexcept;
+
+// Strict package-bound discovery. Every package source read must be present in
+// the supplied exact allowlist with matching repository size/digest, and every
+// allowlisted module must be reachable from the entry. The caller pin is
+// checked before discovery and again before publication.
+[[nodiscard]] RuntimeScriptPackageLoadResult load_manifested_runtime_script_package(
+    const repository::RuntimeRepositoryReadView& scripts,
+    RuntimeScriptPackagePin expected,
+    std::string_view canonical_entry_module,
+    std::span<const RuntimeScriptPackageModuleManifest> modules,
     const RuntimeScriptPackageLoaderLimits& limits = {},
     std::stop_token stop_token = {}) noexcept;
 

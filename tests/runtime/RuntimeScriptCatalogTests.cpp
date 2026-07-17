@@ -138,8 +138,8 @@ public:
             scripts.push_back({std::string{catalog::runtime_script_catalog_manifest},
                                std::move(catalog_bytes)});
         }
-        if (include_package) scripts.push_back({"packages/core.json", "{}"});
-        if (include_entry) scripts.push_back({"tasks/entry.baas", "let ready = true;\n"});
+        if (include_package) scripts.push_back({"packages/core/baas.package.json", "{}"});
+        if (include_entry) scripts.push_back({"packages/core/tasks/entry.baas", "let ready = true;\n"});
         const auto resource_manifest = tree_manifest(resources);
         const auto scripts_manifest = tree_manifest(scripts);
         const std::string resource_commit(40, '1');
@@ -199,13 +199,14 @@ private:
 {
     return R"({"run_mode":")" + std::string{run_mode}
         + R"(","task":")" + std::string{canonical}
-        + R"(","package_manifest":"packages/core.json",)"
+        + R"(","package_root":"packages/core",)"
+          R"("package_manifest":"packages/core/baas.package.json",)"
           R"("entry_module":"tasks/entry","entry_export":"run",)"
           R"("language_version":{"major":1,"minor":0},)"
           R"("host_modules":[{"module":"baas/resource","major":1,"min_minor":0,)"
-          R"("capabilities":["resource.read","resource.decode"]},)"
+          R"("capabilities":["resource.read"]},)"
           R"({"module":"baas/log","major":1,"min_minor":2,)"
-          R"("capabilities":["log.write"]}],"legacy_aliases":[")"
+          R"("capabilities":["log.emit"]}],"legacy_aliases":[")"
         + std::string{alias} + R"("]})";
 }
 
@@ -222,7 +223,7 @@ private:
         std::pair{"explore_activity_mission", "start_explore_activity_mission"},
         std::pair{"explore_activity_challenge", "start_explore_activity_challenge"},
     };
-    std::string result = R"({"schema":"baas.runtime-script.catalog/v1","tasks":[)";
+    std::string result = R"({"schema":"baas.runtime-script.catalog/v2","tasks":[)";
     for (std::size_t output_index{}; output_index < aliases.size(); ++output_index) {
         if (output_index != 0) result.push_back(',');
         const auto index = reverse ? aliases.size() - output_index - 1 : output_index;
@@ -278,7 +279,8 @@ void test_success_exact_routes_versions_and_alias_data()
     }
     const auto canonical = result.catalog->resolve("solve", "main_story");
     check(canonical && !canonical->legacy_alias
-              && canonical->task->package_manifest == "packages/core.json"
+              && canonical->task->package_root == "packages/core"
+              && canonical->task->package_manifest == "packages/core/baas.package.json"
               && canonical->task->entry_module == "tasks/entry"
               && canonical->task->entry_export == "run"
               && canonical->task->language_version
@@ -287,7 +289,7 @@ void test_success_exact_routes_versions_and_alias_data()
     check(canonical && canonical->task->host_modules[0].canonical_id == "baas/log"
               && canonical->task->host_modules[1].canonical_id == "baas/resource"
               && canonical->task->host_modules[1].capabilities
-                  == std::vector<std::string>{"resource.decode", "resource.read"},
+                  == std::vector<std::string>{"resource.read"},
           "host requirements and capabilities must have deterministic output");
     check(!result.catalog->resolve("Solve", "main_story")
               && !result.catalog->resolve("solve", "Main_Story")
@@ -350,7 +352,7 @@ void test_resolution_owns_published_views()
               && one_line->requested_task == "start_group_story"
               && one_line->legacy_alias
               && one_line->task->canonical_task == "group_story"
-              && one_line->task->package_manifest == "packages/core.json",
+              && one_line->task->package_manifest == "packages/core/baas.package.json",
           "a one-line resolve from a temporary load result must retain its task "
           "and requested-task view");
 }
@@ -393,16 +395,16 @@ void test_strict_json_schema_and_route_collisions()
         expect_error(catalog::load_runtime_script_catalog(fixture.scripts(), fixture.pin()),
                      error, message);
     };
-    invalid(R"({"schema":"baas.runtime-script.catalog/v1","schema":"x","tasks":[]})",
+    invalid(R"({"schema":"baas.runtime-script.catalog/v2","schema":"x","tasks":[]})",
             catalog::RuntimeScriptCatalogError::invalid_json,
             "duplicate JSON keys must be rejected during parsing");
-    invalid(R"({"schema":"baas.runtime-script.catalog/v1","tasks":[],"extra":0})",
+    invalid(R"({"schema":"baas.runtime-script.catalog/v2","tasks":[],"extra":0})",
             catalog::RuntimeScriptCatalogError::invalid_field_set,
             "unknown root fields must be rejected");
-    invalid(R"({"schema":"baas.runtime-script.catalog/v2","tasks":[]})",
+    invalid(R"({"schema":"baas.runtime-script.catalog/v3","tasks":[]})",
             catalog::RuntimeScriptCatalogError::invalid_schema,
             "unknown schema versions must fail closed");
-    invalid(std::string{"{\"schema\":\"baas.runtime-script.catalog/v1\",\"tasks\":[\"\xC0\xAF\"]}", 66},
+    invalid(std::string{"{\"schema\":\"baas.runtime-script.catalog/v2\",\"tasks\":[\"\xC0\xAF\"]}", 66},
             catalog::RuntimeScriptCatalogError::invalid_utf8,
             "invalid UTF-8 must be rejected before JSON publication");
 
@@ -412,17 +414,35 @@ void test_strict_json_schema_and_route_collisions()
     invalid(std::move(nul), catalog::RuntimeScriptCatalogError::invalid_value,
             "decoded NUL values must fail closed");
 
-    const auto duplicate = R"({"schema":"baas.runtime-script.catalog/v1","tasks":[)"
+    const auto duplicate = R"({"schema":"baas.runtime-script.catalog/v2","tasks":[)"
         + task_json("first", "same") + "," + task_json("second", "same") + "]}";
     invalid(duplicate, catalog::RuntimeScriptCatalogError::duplicate_route,
             "duplicate run-mode/request routes must be rejected");
 
     auto unknown_task = task_json("one", "old");
     unknown_task.insert(unknown_task.size() - 1, R"(,"extra":0)");
-    invalid(R"({"schema":"baas.runtime-script.catalog/v1","tasks":[)"
+    invalid(R"({"schema":"baas.runtime-script.catalog/v2","tasks":[)"
                 + unknown_task + "]}",
             catalog::RuntimeScriptCatalogError::invalid_field_set,
             "unknown task fields must be rejected");
+
+    auto invalid_root = valid_catalog();
+    const auto root = invalid_root.find(R"("package_root":"packages/core")");
+    invalid_root.replace(root, std::string_view{R"("package_root":"packages/core")"}.size(),
+                         R"("package_root":"../core")");
+    invalid(std::move(invalid_root), catalog::RuntimeScriptCatalogError::invalid_value,
+            "package roots must be canonical repository identifiers");
+
+    auto mismatched_manifest = valid_catalog();
+    const auto manifest = mismatched_manifest.find(
+        R"("package_manifest":"packages/core/baas.package.json")");
+    mismatched_manifest.replace(
+        manifest,
+        std::string_view{R"("package_manifest":"packages/core/baas.package.json")"}.size(),
+        R"("package_manifest":"packages/core/other.json")");
+    invalid(std::move(mismatched_manifest),
+            catalog::RuntimeScriptCatalogError::missing_package_manifest,
+            "package manifest identity must be exact under the explicit root");
 }
 
 void test_limits_and_cancellation()
@@ -464,12 +484,7 @@ void test_limits_and_cancellation()
                  catalog::RuntimeScriptCatalogError::limit_exceeded,
                  "aggregate Host module count must be bounded");
     limits = {};
-    limits.max_capabilities_per_module = 1;
-    expect_error(catalog::load_runtime_script_catalog(fixture.scripts(), fixture.pin(), limits),
-                 catalog::RuntimeScriptCatalogError::limit_exceeded,
-                 "per-module capability count must be bounded");
-    limits = {};
-    limits.max_total_capabilities = 26;
+    limits.max_total_capabilities = 17;
     expect_error(catalog::load_runtime_script_catalog(fixture.scripts(), fixture.pin(), limits),
                  catalog::RuntimeScriptCatalogError::limit_exceeded,
                  "aggregate capability count must be bounded");

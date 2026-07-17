@@ -37,6 +37,18 @@ The package root contains:
 - `baas.package.sig`: detached signature over the exact manifest file bytes;
 - the modules and resources named by the manifest.
 
+When a package is carried inside the signed runtime scripts repository, the
+runtime catalog provides an explicit canonical `package_root` and requires the
+manifest entry to be exactly `<package_root>/baas.package.json`. All manifest
+module/resource paths remain relative to that root. Repository-bundled
+activation may use native trust evidence from the signed repository update plan
+instead of the standalone detached package signature only when that evidence
+binds the exact generation and scripts commit and the read capability verifies
+the signed tree manifest plus every payload digest. A bare read view or browser
+request is not trust evidence. Standalone artifacts still require
+`baas.package.sig`; an implementation that supports only repository-bundled
+mode must reject, not ignore, detached signatures.
+
 The signature is detached deliberately. No JSON canonicalization is required,
 and reformatting the manifest invalidates the signature. The signature file is
 bounded UTF-8 JSON with exactly these schema-1 fields:

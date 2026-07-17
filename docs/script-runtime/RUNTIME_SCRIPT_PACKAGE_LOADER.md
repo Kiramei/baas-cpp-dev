@@ -39,6 +39,15 @@ evaluator and invoking a catalog-selected entry export through
 `SynchronousEvaluator::invoke_export` are separate production steps. The
 loader never selects or calls that export itself.
 
+The strict `load_manifested_runtime_script_package` overload additionally
+binds discovery to a caller generation/commit and an exact package-module
+allowlist whose entries carry explicit repository logical paths. Size and
+digest metadata must match the repository tree before any
+source read. Imports outside the allowlist and allowlisted modules not reachable
+from the entry fail closed. The execution-plan boundary uses this overload so a
+package cannot traverse into another package merely because both are entries in
+the same verified scripts repository.
+
 ## Bounded and cancellable operation
 
 Independent limits cover module count, source bytes per file, aggregate source

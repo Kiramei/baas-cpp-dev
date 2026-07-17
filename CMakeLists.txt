@@ -106,6 +106,8 @@ option(BUILD_RUNTIME_SCRIPT_PACKAGE_LOADER "Build pathless BAAS Script package d
 option(BUILD_RUNTIME_SCRIPT_PACKAGE_LOADER_TESTS "Build runtime BAAS Script package loader tests" OFF)
 option(BUILD_RUNTIME_SCRIPT_CATALOG "Build the immutable runtime BAAS Script task catalog" OFF)
 option(BUILD_RUNTIME_SCRIPT_CATALOG_TESTS "Build runtime BAAS Script catalog tests" OFF)
+option(BUILD_RUNTIME_SCRIPT_EXECUTION_PLAN "Build immutable runtime BAAS Script execution plans" OFF)
+option(BUILD_RUNTIME_SCRIPT_EXECUTION_PLAN_TESTS "Build runtime BAAS Script execution plan tests" OFF)
 option(BUILD_SCRIPT_RESOURCE_HOST "Build baas/resource script Host adapter" OFF)
 option(BUILD_SCRIPT_RESOURCE_HOST_TESTS "Build baas/resource script Host tests" OFF)
 option(BUILD_SERVICE_PROTOCOL   "Build the standalone BAAS service protocol library" OFF)
@@ -329,6 +331,22 @@ endif()
 
 if(BUILD_RUNTIME_REPOSITORY_UPDATER AND NOT BUILD_RUNTIME_REPOSITORY)
     set(BUILD_RUNTIME_REPOSITORY ON CACHE BOOL "Build read-only runtime repository activation" FORCE)
+endif()
+
+if(BUILD_RUNTIME_SCRIPT_EXECUTION_PLAN_TESTS)
+    set(BUILD_RUNTIME_SCRIPT_EXECUTION_PLAN ON CACHE BOOL
+        "Build immutable runtime BAAS Script execution plans" FORCE)
+    set(BUILD_RUNTIME_REPOSITORY_TESTS ON CACHE BOOL
+        "Build runtime repository activation tests" FORCE)
+    set(BUILD_RESOURCE_CORE ON CACHE BOOL
+        "Build immutable resource snapshot core" FORCE)
+endif()
+
+if(BUILD_RUNTIME_SCRIPT_EXECUTION_PLAN)
+    set(BUILD_RUNTIME_SCRIPT_CATALOG ON CACHE BOOL
+        "Build the immutable runtime BAAS Script task catalog" FORCE)
+    set(BUILD_RUNTIME_SCRIPT_PACKAGE_LOADER ON CACHE BOOL
+        "Build pathless BAAS Script package discovery from a runtime repository" FORCE)
 endif()
 
 if(BUILD_RUNTIME_SCRIPT_PACKAGE_LOADER_TESTS)
@@ -888,6 +906,10 @@ endif()
 
 if(BUILD_RUNTIME_SCRIPT_CATALOG)
     include("${CMAKE_CURRENT_LIST_DIR}/cmake/RuntimeScriptCatalog.cmake")
+endif()
+
+if(BUILD_RUNTIME_SCRIPT_EXECUTION_PLAN)
+    include("${CMAKE_CURRENT_LIST_DIR}/cmake/RuntimeScriptExecutionPlan.cmake")
 endif()
 
 if(BUILD_SCRIPT_RESOURCE_HOST)

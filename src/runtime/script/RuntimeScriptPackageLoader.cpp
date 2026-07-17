@@ -167,13 +167,41 @@ std::string_view runtime_script_package_load_error_name(
             return "RSP018_GRAPH_VALIDATION_FAILED";
         case cancelled: return "RSP019_CANCELLED";
         case resource_exhausted: return "RSP020_RESOURCE_EXHAUSTED";
+        case invalid_package_manifest: return "RSP021_INVALID_PACKAGE_MANIFEST";
+        case package_pin_mismatch: return "RSP022_PACKAGE_PIN_MISMATCH";
+        case module_outside_package: return "RSP023_MODULE_OUTSIDE_PACKAGE";
+        case module_manifest_mismatch: return "RSP024_MODULE_MANIFEST_MISMATCH";
+        case unexpected_package_module: return "RSP025_UNEXPECTED_PACKAGE_MODULE";
     }
     return "RSP999_UNKNOWN";
 }
 
-RuntimeScriptPackageLoadResult load_runtime_script_package(
+namespace {
+
+[[nodiscard]] bool lowercase_sha256(const std::string_view value) noexcept
+{
+    return value.size() == 64 && std::ranges::all_of(value, [](const char byte) {
+        return (byte >= '0' && byte <= '9') || (byte >= 'a' && byte <= 'f');
+    });
+}
+
+[[nodiscard]] std::string ascii_fold(const std::string_view value)
+{
+    std::string result{value};
+    std::ranges::transform(result, result.begin(), [](const unsigned char byte) {
+        return static_cast<char>(byte >= 'A' && byte <= 'Z'
+                ? byte + ('a' - 'A')
+                : byte);
+    });
+    return result;
+}
+
+RuntimeScriptPackageLoadResult load_runtime_script_package_impl(
     const repository::RuntimeRepositoryReadView& scripts,
+    const RuntimeScriptPackagePin expected,
     const std::string_view canonical_entry_module,
+    const std::span<const RuntimeScriptPackageModuleManifest> package_modules,
+    const bool strict_package,
     const RuntimeScriptPackageLoaderLimits& limits,
     const std::stop_token stop_token) noexcept
 {
@@ -183,6 +211,12 @@ RuntimeScriptPackageLoadResult load_runtime_script_package(
         }
         if (scripts.repository_id() != "scripts") {
             fail(RuntimeScriptPackageLoadError::wrong_repository);
+        }
+        if (strict_package
+            && (expected.generation.empty() || expected.commit.empty()
+                || expected.generation != scripts.generation()
+                || expected.commit != scripts.commit())) {
+            fail(RuntimeScriptPackageLoadError::package_pin_mismatch);
         }
         check_cancelled(stop_token);
 
@@ -196,6 +230,47 @@ RuntimeScriptPackageLoadResult load_runtime_script_package(
         }
 
         WorkBudget work{limits.max_work};
+        std::map<std::string_view, const RuntimeScriptPackageModuleManifest*, std::less<>>
+            package_allowlist;
+        std::set<std::string_view, std::less<>> package_paths;
+        std::set<std::string, std::less<>> folded_package_paths;
+        if (strict_package) {
+            if (package_modules.empty() || package_modules.size() > limits.max_modules) {
+                fail(RuntimeScriptPackageLoadError::invalid_package_manifest);
+            }
+            for (const auto& item : package_modules) {
+                check_cancelled(stop_token);
+                work.charge(item.canonical_module.size());
+                work.charge(item.logical_path.size());
+                work.charge(item.sha256.size());
+                const auto specifier = canonical_specifier(
+                    item.canonical_module, limits,
+                    RuntimeScriptPackageLoadError::invalid_package_manifest);
+                if (specifier.kind != language_runtime::ModuleKind::Package
+                    || item.logical_path.empty()
+                    || item.size > limits.max_source_file_bytes
+                    || !lowercase_sha256(item.sha256)
+                    || !package_paths.insert(item.logical_path).second
+                    || !folded_package_paths.insert(ascii_fold(item.logical_path)).second
+                    || !package_allowlist.emplace(item.canonical_module, &item).second) {
+                    fail(RuntimeScriptPackageLoadError::invalid_package_manifest);
+                }
+                const auto* repository_item = manifest_entry(
+                    scripts, item.logical_path);
+                if (repository_item == nullptr || repository_item->size != item.size
+                    || repository_item->sha256 != item.sha256) {
+                    fail(
+                        RuntimeScriptPackageLoadError::module_manifest_mismatch,
+                        specifier.canonical_id);
+                }
+            }
+            if (!package_allowlist.contains(entry.canonical_id)) {
+                fail(
+                    RuntimeScriptPackageLoadError::module_outside_package,
+                    entry.canonical_id);
+            }
+        }
+
         std::deque<std::string> pending;
         std::set<std::string, std::less<>> discovered;
         std::set<std::string, std::less<>> seen_hosts;
@@ -216,7 +291,15 @@ RuntimeScriptPackageLoadResult load_runtime_script_package(
             const auto specifier = canonical_specifier(
                 module, limits,
                 RuntimeScriptPackageLoadError::invalid_import_specifier);
-            const auto source_path = specifier.manifest_source_path();
+            std::string source_path;
+            if (strict_package) {
+                const auto allowed = package_allowlist.find(module);
+                if (allowed == package_allowlist.end())
+                    fail(RuntimeScriptPackageLoadError::module_outside_package, module);
+                source_path = allowed->second->logical_path;
+            } else {
+                source_path = specifier.manifest_source_path();
+            }
             const auto* manifested = manifest_entry(scripts, source_path);
             if (manifested == nullptr) {
                 fail(RuntimeScriptPackageLoadError::module_not_manifested, module);
@@ -319,6 +402,12 @@ RuntimeScriptPackageLoadResult load_runtime_script_package(
                     }
                     continue;
                 }
+                if (strict_package
+                    && !package_allowlist.contains(imported_specifier.canonical_id)) {
+                    fail(
+                        RuntimeScriptPackageLoadError::module_outside_package,
+                        imported_specifier.canonical_id);
+                }
                 if (discovered.insert(imported_specifier.canonical_id).second) {
                     if (discovered.size() > limits.max_modules) {
                         fail(
@@ -334,6 +423,9 @@ RuntimeScriptPackageLoadResult load_runtime_script_package(
         }
 
         check_cancelled(stop_token);
+        if (strict_package && discovered.size() != package_allowlist.size()) {
+            fail(RuntimeScriptPackageLoadError::unexpected_package_module);
+        }
         std::vector<language_runtime::ModuleDefinition> definitions;
         definitions.reserve(loaded.size());
         for (const auto& record : loaded) {
@@ -414,6 +506,12 @@ RuntimeScriptPackageLoadResult load_runtime_script_package(
                 std::move(loaded[record->second].source));
         }
         package.graph = std::move(graph);
+        check_cancelled(stop_token);
+        if (strict_package
+            && (expected.generation != scripts.generation()
+                || expected.commit != scripts.commit())) {
+            fail(RuntimeScriptPackageLoadError::package_pin_mismatch);
+        }
         return {
             std::optional<RuntimeScriptPackage>{std::move(package)},
             RuntimeScriptPackageLoadError::none,
@@ -438,6 +536,30 @@ RuntimeScriptPackageLoadResult load_runtime_script_package(
             {},
             {}};
     }
+}
+
+}  // namespace
+
+RuntimeScriptPackageLoadResult load_runtime_script_package(
+    const repository::RuntimeRepositoryReadView& scripts,
+    const std::string_view canonical_entry_module,
+    const RuntimeScriptPackageLoaderLimits& limits,
+    const std::stop_token stop_token) noexcept
+{
+    return load_runtime_script_package_impl(
+        scripts, {}, canonical_entry_module, {}, false, limits, stop_token);
+}
+
+RuntimeScriptPackageLoadResult load_manifested_runtime_script_package(
+    const repository::RuntimeRepositoryReadView& scripts,
+    const RuntimeScriptPackagePin expected,
+    const std::string_view canonical_entry_module,
+    const std::span<const RuntimeScriptPackageModuleManifest> modules,
+    const RuntimeScriptPackageLoaderLimits& limits,
+    const std::stop_token stop_token) noexcept
+{
+    return load_runtime_script_package_impl(
+        scripts, expected, canonical_entry_module, modules, true, limits, stop_token);
 }
 
 }  // namespace baas::runtime::script
