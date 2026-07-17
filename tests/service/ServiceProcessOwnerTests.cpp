@@ -88,7 +88,12 @@ public:
     {
         static std::atomic<std::uint64_t> sequence{};
         auto name = path_from_utf8(u8"baas owner & (空格) %! ");
-        name += std::to_string(sequence.fetch_add(1));
+#if defined(_WIN32)
+        name += std::to_string(GetCurrentProcessId());
+#else
+        name += std::to_string(::getpid());
+#endif
+        name += "-" + std::to_string(sequence.fetch_add(1));
         path_ = std::filesystem::temp_directory_path() / name;
         std::filesystem::create_directories(path_);
     }
@@ -219,8 +224,13 @@ void test_no_inherited_handles(const std::filesystem::path& helper)
           "inheritance-boundary fixture child must start");
     check(wait_for_file(value.project_root / ready_file),
           "inheritance-boundary fixture must become ready");
+#if defined(_WIN32)
+    check(WaitForSingleObject(sentinel, 0) == WAIT_TIMEOUT,
+          "child must not inherit the explicitly inheritable event object");
+#else
     check(read_text(value.project_root / sentinel_result_file) == "closed",
-          "child must not inherit the explicitly inheritable handle/fd");
+          "child must not inherit the explicitly inheritable fd");
+#endif
     check(owner.stop(5s) == supervisor::ServiceProcessError::none,
           "inheritance-boundary fixture must stop cleanly");
 #if defined(_WIN32)

@@ -153,10 +153,11 @@ void check_inheritance_sentinel(const std::filesystem::path& project_root)
     input >> raw;
     if (!input) return;
 #if defined(_WIN32)
-    DWORD flags = 0;
-    const bool inherited = GetHandleInformation(
-        reinterpret_cast<HANDLE>(static_cast<std::uintptr_t>(raw)), &flags)
-        != FALSE;
+    // Handle values are process-local and may be reused for an unrelated
+    // object in the child. Signalling the parent's event proves object
+    // identity; the parent asserts that its event remains unsignalled.
+    const bool inherited = SetEvent(
+        reinterpret_cast<HANDLE>(static_cast<std::uintptr_t>(raw))) != FALSE;
 #else
     errno = 0;
     const bool inherited = ::fcntl(static_cast<int>(raw), F_GETFD) != -1
