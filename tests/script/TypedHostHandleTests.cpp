@@ -385,6 +385,65 @@ void test_evaluator_vertical_and_close()
           "failed script unwind must still release the produced native handle once");
 }
 
+void test_evaluator_release_drain_reentry_boundary()
+{
+    runtime::SynchronousEvaluator* active{};
+    bool nested_invocation_rejected{};
+    bool nested_close{};
+    auto dispatcher = std::make_shared<runtime::HostReleaseDispatcher>(
+        117, std::vector<runtime::HostReleaseAdapter>{
+            {31, [&](const runtime::HostHandleValue&) {
+                 try {
+                     static_cast<void>(active->invoke_export("main", "run"));
+                 } catch (const runtime::EvaluationError& error) {
+                     nested_invocation_rejected = error.code()
+                         == runtime::LanguageErrorCode::HostUnavailable;
+                 }
+                 nested_close = active->close();
+                 return true;
+             }}});
+    runtime::SynchronousHostOptions options;
+    options.metadata =
+        std::make_shared<const runtime::HostModuleRegistry>(
+            std::vector<runtime::HostModuleDescriptor>{});
+    options.bindings =
+        std::make_shared<const runtime::SynchronousNativeBindingSet>(
+            std::vector<runtime::SynchronousNativeBinding>{});
+    options.handles = dispatcher;
+    runtime::SynchronousEvaluator evaluator(
+        {{"main",
+          "let calls = 0;\n"
+          "fn run() { calls += 1; return {\"calls\": calls}; }\n"}},
+        std::move(options));
+    active = &evaluator;
+
+    auto grant = dispatcher->adopt(dispatcher->reserve(
+        runtime::HostHandleTypeId::Resource, 31, 8));
+    const auto handle = dispatcher->publish(
+        evaluator.heap(), grant, runtime::HostHandleTypeId::Resource);
+    check(evaluator.heap().close_host_handle(handle.as_heap_ref()),
+          "release-drain fixture queues one evaluator-owned Host handle");
+
+    const auto outer = evaluator.invoke_export("main", "run");
+    bool outer_result_valid{};
+    try {
+        const auto entries = evaluator.heap().map_entries(
+            outer.value.as_heap_ref());
+        outer_result_valid = entries.size() == 1
+            && entries[0].second.as_integer() == 1;
+    } catch (...) {
+        outer_result_valid = false;
+    }
+    check(nested_invocation_rejected && !nested_close && outer_result_valid
+              && dispatcher->stats().pending_releases == 0,
+          "release adapter cannot reenter invocation/close or invalidate the outer result");
+    const auto next = evaluator.invoke_export("main", "run");
+    check(evaluator.heap().map_entries(next.value.as_heap_ref())[0].second.as_integer() == 2,
+          "release-drain reentry rejection leaves the evaluator open and usable");
+    check(evaluator.close(),
+          "release-drain reentry fixture closes after its public boundary returns");
+}
+
 void test_external_reservation_can_outlive_heap_safely()
 {
     std::optional<runtime::Heap::ExternalReservation> escaped;
@@ -1056,6 +1115,7 @@ int main(const int argc, char** const argv)
     test_ack_tombstone_gc_json_and_error_details();
     test_producer_faults_round_robin_and_detached_retry();
     test_evaluator_vertical_and_close();
+    test_evaluator_release_drain_reentry_boundary();
     test_external_reservation_can_outlive_heap_safely();
     test_forged_stale_and_multi_argument_rollback();
     test_limits_published_fairness_and_poisoned_completion();

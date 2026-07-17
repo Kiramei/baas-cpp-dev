@@ -482,9 +482,13 @@ explicit arguments. Default parameters remain valid; required arguments,
 private or missing exports, non-callable values, Host entry modules, and
 non-canonical module IDs fail closed. A long-lived result-root slot is admitted
 during evaluator construction; successful calls publish into it with a
-non-allocating update after script effects, and the value survives collection
-until a later entry result replaces it. This API never constructs wrapper
-source and never derives an export from a filesystem path.
+non-allocating update only after the terminal cancellation/deadline safe point.
+A failed call therefore cannot displace the last successful result, and that
+value survives collection until a later successful entry result replaces it.
+All synchronous execution entry points reject same-thread reentry while an
+execution or its Host-release drain is active, including reentry attempted by
+an NFC or cancellation probe. This API never constructs wrapper source and
+never derives an export from a filesystem path.
 
 The evaluator also implements a deliberately narrow synchronous Host bridge.
 It deduplicates actual `baas/*` imports, fixes the greatest compatible minor,

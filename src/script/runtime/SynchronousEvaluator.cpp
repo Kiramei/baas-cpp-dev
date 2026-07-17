@@ -377,6 +377,7 @@ struct SynchronousEvaluator::Impl {
     std::thread::id owner_thread{std::this_thread::get_id()};
     bool host_call_active{};
     bool execution_active{};
+    bool public_boundary_active{};
     bool closed{};
     std::size_t cleanup_depth{};
     std::size_t cleanup_call_depth{};
@@ -418,7 +419,7 @@ struct SynchronousEvaluator::Impl {
     [[nodiscard]] bool close() noexcept
     {
         if (std::this_thread::get_id() != owner_thread || execution_active ||
-            host_call_active)
+            public_boundary_active || host_call_active)
             return false;
         closed = true;
         if (host_options && host_options->handles)
@@ -1623,6 +1624,17 @@ struct SynchronousEvaluator::Impl {
         if (host_call_active)
             boundary_fail(LanguageErrorCode::HostUnavailable,
                           "Host callback re-entry into the evaluator is forbidden");
+        if (execution_active)
+            boundary_fail(LanguageErrorCode::HostUnavailable,
+                          "synchronous evaluator execution re-entry is forbidden");
+        struct ExecutionGuard {
+            Impl& evaluator;
+            explicit ExecutionGuard(Impl& value) : evaluator(value)
+            {
+                evaluator.execution_active = true;
+            }
+            ~ExecutionGuard() { evaluator.execution_active = false; }
+        } execution(*this);
         ModuleSpecifier specifier;
         try {
             specifier = validate_module_specifier(entry, nfc);
@@ -1634,14 +1646,6 @@ struct SynchronousEvaluator::Impl {
             boundary_fail(LanguageErrorCode::HostUnavailable,
                           "Host modules cannot be evaluator entries");
         }
-        struct ExecutionGuard {
-            Impl& evaluator;
-            explicit ExecutionGuard(Impl& evaluator) : evaluator(evaluator)
-            {
-                evaluator.execution_active = true;
-            }
-            ~ExecutionGuard() { evaluator.execution_active = false; }
-        } execution(*this);
         try {
             check_execution_safe_point({});
             const auto value = initialize_module(specifier.canonical_id, {});
@@ -1673,6 +1677,17 @@ struct SynchronousEvaluator::Impl {
         if (host_call_active)
             boundary_fail(LanguageErrorCode::HostUnavailable,
                           "Host callback re-entry into the evaluator is forbidden");
+        if (execution_active)
+            boundary_fail(LanguageErrorCode::HostUnavailable,
+                          "synchronous evaluator execution re-entry is forbidden");
+        struct ExecutionGuard {
+            Impl& evaluator;
+            explicit ExecutionGuard(Impl& value) : evaluator(value)
+            {
+                evaluator.execution_active = true;
+            }
+            ~ExecutionGuard() { evaluator.execution_active = false; }
+        } execution(*this);
         ModuleSpecifier specifier;
         try {
             specifier = validate_module_specifier(entry, nfc);
@@ -1683,15 +1698,6 @@ struct SynchronousEvaluator::Impl {
         if (specifier.kind != ModuleKind::Package)
             boundary_fail(LanguageErrorCode::HostUnavailable,
                           "Host modules cannot be evaluator entries");
-
-        struct ExecutionGuard {
-            Impl& evaluator;
-            explicit ExecutionGuard(Impl& value) : evaluator(value)
-            {
-                evaluator.execution_active = true;
-            }
-            ~ExecutionGuard() { evaluator.execution_active = false; }
-        } execution(*this);
         try {
             check_execution_safe_point({});
             static_cast<void>(initialize_module(specifier.canonical_id, {}));
@@ -1699,10 +1705,10 @@ struct SynchronousEvaluator::Impl {
                 specifier.canonical_id, export_name);
             const std::vector<CallArgument> arguments;
             const auto result = invoke(callee, arguments, {}, {});
+            check_execution_safe_point({});
             if (!heap.update_root(invocation_result_root, result))
                 fail(LanguageErrorCode::InternalInvariant,
                      "entry invocation result root is absent");
-            check_execution_safe_point({});
             return {result, stats};
         } catch (const ScriptUnwind& unwind) {
             const auto& metadata =
@@ -3310,6 +3316,19 @@ EvaluationResult SynchronousEvaluator::execute(const std::string_view entry_modu
         throw EvaluationError(
             LanguageErrorCode::HostUnavailable,
             "evaluator is closed", {}, {}, impl_->stats.steps);
+    if (impl_->public_boundary_active)
+        throw EvaluationError(
+            LanguageErrorCode::HostUnavailable,
+            "synchronous evaluator public-boundary re-entry is forbidden",
+            {}, {}, impl_->stats.steps);
+    struct BoundaryGuard final {
+        Impl* impl;
+        explicit BoundaryGuard(Impl* value) noexcept : impl(value)
+        {
+            impl->public_boundary_active = true;
+        }
+        ~BoundaryGuard() { impl->public_boundary_active = false; }
+    } boundary{impl_};
     struct ReleaseDrain final {
         Impl* impl;
         ~ReleaseDrain() { impl->drain_host_releases(); }
@@ -3364,6 +3383,19 @@ EvaluationInvocationResult SynchronousEvaluator::invoke_export(
         throw EvaluationError(
             LanguageErrorCode::HostUnavailable,
             "evaluator is closed", {}, {}, impl_->stats.steps);
+    if (impl_->public_boundary_active)
+        throw EvaluationError(
+            LanguageErrorCode::HostUnavailable,
+            "synchronous evaluator public-boundary re-entry is forbidden",
+            {}, {}, impl_->stats.steps);
+    struct BoundaryGuard final {
+        Impl* impl;
+        explicit BoundaryGuard(Impl* value) noexcept : impl(value)
+        {
+            impl->public_boundary_active = true;
+        }
+        ~BoundaryGuard() { impl->public_boundary_active = false; }
+    } boundary{impl_};
     struct ReleaseDrain final {
         Impl* impl;
         ~ReleaseDrain() { impl->drain_host_releases(); }
