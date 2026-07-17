@@ -92,6 +92,8 @@ option(BUILD_BAAS_NMS_BENCHMARK "Build BAAS vs OpenCV dnn NMS Google Benchmark e
 option(BUILD_SCRIPT_RUNTIME     "Build the standalone BAAS script runtime" OFF)
 option(BUILD_SCRIPT_TESTS       "Build native tests for the BAAS script runtime" OFF)
 option(BUILD_SCRIPT_TOOLS       "Build BAAS script developer tools" OFF)
+option(BUILD_SCHEDULER_POLICY   "Build the pure scheduler policy/parser" OFF)
+option(BUILD_SCHEDULER_POLICY_TESTS "Build deterministic scheduler policy tests" OFF)
 option(BUILD_RESOURCE_CORE      "Build immutable resource snapshot core" OFF)
 option(BUILD_RESOURCE_CORE_TESTS "Build immutable resource snapshot tests" OFF)
 option(BUILD_RUNTIME_REPOSITORY "Build read-only runtime repository activation" OFF)
@@ -116,6 +118,8 @@ option(BUILD_SERVICE_BUSINESS_PIPE_CHANNEL "Build provider/sync/remote Pipe adap
 option(BUILD_SERVICE_BUSINESS_PIPE_CHANNEL_TESTS "Build business Pipe adapter tests" OFF)
 option(BUILD_SERVICE_TRIGGER_EXECUTOR "Build the bounded trigger execution owner" OFF)
 option(BUILD_SERVICE_TRIGGER_EXECUTOR_TESTS "Build native tests for trigger execution ownership" OFF)
+option(BUILD_SERVICE_RUNTIME_TASK_OWNER "Build the service-owned runtime task lifecycle" OFF)
+option(BUILD_SERVICE_RUNTIME_TASK_OWNER_TESTS "Build runtime task lifecycle tests" OFF)
 option(BUILD_SERVICE_ROUTER     "Build the transport-independent BAAS service router" OFF)
 option(BUILD_SERVICE_ROUTER_TESTS "Build native tests for the BAAS service router" OFF)
 option(BUILD_SERVICE_ORIGIN_POLICY "Build the standalone HTTP Origin/CORS policy" OFF)
@@ -172,6 +176,8 @@ option(BUILD_SERVICE_ADB_DISCOVERY_TRIGGER "Build the production detect_adb trig
 option(BUILD_SERVICE_ADB_DISCOVERY_TRIGGER_TESTS "Build deterministic detect_adb trigger tests" OFF)
 option(BUILD_SERVICE_CONFIGURATION_TRIGGERS "Build production configuration trigger registrations" OFF)
 option(BUILD_SERVICE_CONFIGURATION_TRIGGER_TESTS "Build configuration trigger production tests" OFF)
+option(BUILD_SERVICE_RUNTIME_TASK_TRIGGERS "Build scheduler/task trigger registrations" OFF)
+option(BUILD_SERVICE_RUNTIME_TASK_TRIGGER_TESTS "Build scheduler/task trigger registration tests" OFF)
 option(BUILD_SERVICE_COMMAND_LINE "Build the bounded service command-line contract" OFF)
 option(BUILD_SERVICE_COMMAND_LINE_TESTS "Build deterministic service command-line tests" OFF)
 option(BUILD_SERVICE_SHUTDOWN_COORDINATOR "Build the service main-thread shutdown coordinator" OFF)
@@ -284,6 +290,11 @@ endif()
 
 if(BUILD_SCRIPT_TESTS AND NOT BUILD_SCRIPT_RUNTIME)
     set(BUILD_SCRIPT_RUNTIME ON CACHE BOOL "Build the standalone BAAS script runtime" FORCE)
+endif()
+
+if(BUILD_SCHEDULER_POLICY_TESTS AND NOT BUILD_SCHEDULER_POLICY)
+    set(BUILD_SCHEDULER_POLICY ON CACHE BOOL
+        "Build the pure scheduler policy/parser" FORCE)
 endif()
 
 if(BUILD_SCRIPT_TOOLS AND NOT BUILD_SCRIPT_RUNTIME)
@@ -516,6 +527,18 @@ if(BUILD_SERVICE_CONFIGURATION_TRIGGER_TESTS AND NOT BUILD_SERVICE_TRIGGER_EXECU
     set(BUILD_SERVICE_TRIGGER_EXECUTOR ON CACHE BOOL "Build the bounded trigger execution owner" FORCE)
 endif()
 
+if(BUILD_SERVICE_RUNTIME_TASK_TRIGGER_TESTS AND NOT BUILD_SERVICE_RUNTIME_TASK_TRIGGERS)
+    set(BUILD_SERVICE_RUNTIME_TASK_TRIGGERS ON CACHE BOOL "Build scheduler/task trigger registrations" FORCE)
+endif()
+
+if(BUILD_SERVICE_RUNTIME_TASK_TRIGGERS AND NOT BUILD_SERVICE_TRIGGER_DISPATCH)
+    set(BUILD_SERVICE_TRIGGER_DISPATCH ON CACHE BOOL "Build the transport-independent trigger dispatcher" FORCE)
+endif()
+
+if(BUILD_SERVICE_RUNTIME_TASK_TRIGGER_TESTS AND NOT BUILD_SERVICE_TRIGGER_EXECUTOR)
+    set(BUILD_SERVICE_TRIGGER_EXECUTOR ON CACHE BOOL "Build the bounded trigger execution owner" FORCE)
+endif()
+
 if(BUILD_SERVICE_COMMAND_LINE_TESTS AND NOT BUILD_SERVICE_COMMAND_LINE)
     set(BUILD_SERVICE_COMMAND_LINE ON CACHE BOOL "Build the bounded service command-line contract" FORCE)
 endif()
@@ -600,6 +623,12 @@ endif()
 
 if(BUILD_SERVICE_TRIGGER_EXECUTOR AND NOT BUILD_SERVICE_TRIGGER_CATALOG)
     set(BUILD_SERVICE_TRIGGER_CATALOG ON CACHE BOOL "Build the transport-independent trigger command catalog" FORCE)
+endif()
+
+if(BUILD_SERVICE_RUNTIME_TASK_OWNER_TESTS
+   AND NOT BUILD_SERVICE_RUNTIME_TASK_OWNER)
+    set(BUILD_SERVICE_RUNTIME_TASK_OWNER ON CACHE BOOL
+        "Build the service-owned runtime task lifecycle" FORCE)
 endif()
 
 if(BUILD_SERVICE_ROUTER_TESTS AND NOT BUILD_SERVICE_ROUTER)
@@ -708,7 +737,9 @@ endif()
 if(BUILD_SERVICE_SYNC_HANDLER OR BUILD_SERVICE_REMOTE_HANDLER
    OR BUILD_SERVICE_FILE_RESOURCE_STORE
    OR BUILD_SERVICE_RUNTIME_CONFIGURATION_DEFAULTS
-   OR BUILD_SERVICE_RUNTIME_REPOSITORY_PLAN)
+   OR BUILD_SERVICE_RUNTIME_REPOSITORY_PLAN
+   OR BUILD_SERVICE_RUNTIME_TASK_TRIGGERS
+   OR BUILD_SCHEDULER_POLICY)
     baas_request_dependencies(nlohmann_json)
 endif()
 
@@ -744,6 +775,7 @@ file(
 # Standalone libraries must not leak into the legacy application's globbed
 # core sources.
 list(FILTER BAAS_CORE_SOURCES EXCLUDE REGEX "/src/script/.*\\.cpp$")
+list(FILTER BAAS_CORE_SOURCES EXCLUDE REGEX "/src/scheduler/.*\\.cpp$")
 list(FILTER BAAS_CORE_SOURCES EXCLUDE REGEX "/src/runtime/repository/.*\\.cpp$")
 list(FILTER BAAS_CORE_SOURCES EXCLUDE REGEX "/src/service/.*\\.cpp$")
 
@@ -802,6 +834,10 @@ if(BUILD_SCRIPT_RESOURCE_HOST)
     include("${CMAKE_CURRENT_LIST_DIR}/cmake/ScriptResourceHost.cmake")
 endif()
 
+if(BUILD_SCHEDULER_POLICY)
+    include("${CMAKE_CURRENT_LIST_DIR}/cmake/SchedulerPolicy.cmake")
+endif()
+
 if(BUILD_SERVICE_TRIGGER_CATALOG)
     include("${CMAKE_CURRENT_LIST_DIR}/cmake/ServiceTriggerCatalog.cmake")
 endif()
@@ -822,6 +858,10 @@ if(BUILD_SERVICE_TRIGGER_EXECUTOR)
     include("${CMAKE_CURRENT_LIST_DIR}/cmake/ServiceTriggerExecutor.cmake")
 endif()
 
+if(BUILD_SERVICE_RUNTIME_TASK_OWNER)
+    include("${CMAKE_CURRENT_LIST_DIR}/cmake/ServiceRuntimeTaskOwner.cmake")
+endif()
+
 if(BUILD_SERVICE_TRIGGER_PIPE_CHANNEL)
     include("${CMAKE_CURRENT_LIST_DIR}/cmake/ServiceTriggerPipeChannel.cmake")
 endif()
@@ -836,6 +876,10 @@ endif()
 
 if(BUILD_SERVICE_CONFIGURATION_TRIGGERS)
     include("${CMAKE_CURRENT_LIST_DIR}/cmake/ServiceConfigurationTriggers.cmake")
+endif()
+
+if(BUILD_SERVICE_RUNTIME_TASK_TRIGGERS)
+    include("${CMAKE_CURRENT_LIST_DIR}/cmake/ServiceRuntimeTaskTriggers.cmake")
 endif()
 
 if(BUILD_SERVICE_ROUTER)
