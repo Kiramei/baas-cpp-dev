@@ -67,6 +67,7 @@ env:
   BUILD_TYPE: Release
   BUILD_BAAS_OCR: ON
   BAAS_CONAN_MSVC_VERSION: '195'
+  BAAS_PREBUILD_PUBLISH_ENABLED: ${{ secrets.GHA_TOKEN_SECRET != '' }}
 
 
 jobs:
@@ -85,7 +86,7 @@ jobs:
           path: "baas_cpp"
 
       - name: Clone Prebuild Repo
-        if: ${{ ( github.event_name == 'push' && github.ref == 'refs/heads/main' ) || github.event.inputs.create_release == 'true' }}
+        if: ${{ ((github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event.inputs.create_release == 'true') && env.BAAS_PREBUILD_PUBLISH_ENABLED == 'true' }}
         id: checkout_prebuild
         uses: actions/checkout@v4
         with:
@@ -191,14 +192,14 @@ jobs:
           name: baas-ocr-bin-ubuntu-x64
 
       - name: Copy Binaries
-        if: ${{ ( github.event_name == 'push' && github.ref == 'refs/heads/main' ) || github.event.inputs.create_release == 'true' }}
+        if: ${{ ((github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event.inputs.create_release == 'true') && env.BAAS_PREBUILD_PUBLISH_ENABLED == 'true' }}
         working-directory: ./prebuild
         id: copy_bin
         run: |
           cp -a -f ../baas_cpp/build/bin/* .
 
       - name: Commit and Push
-        if: ${{ ( github.event_name == 'push' && github.ref == 'refs/heads/main' ) || github.event.inputs.create_release == 'true' }}
+        if: ${{ ((github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event.inputs.create_release == 'true') && env.BAAS_PREBUILD_PUBLISH_ENABLED == 'true' }}
         working-directory: ./prebuild
         continue-on-error: true
         id: commit_and_push
@@ -230,7 +231,7 @@ jobs:
           path: "baas_cpp"
 
       - name: Clone Prebuild Repo
-        if: ${{ ( github.event_name == 'push' && github.ref == 'refs/heads/main' ) || github.event.inputs.create_release == 'true' }}
+        if: ${{ ((github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event.inputs.create_release == 'true') && env.BAAS_PREBUILD_PUBLISH_ENABLED == 'true' }}
         id: checkout_prebuild
         uses: actions/checkout@v4
         with:
@@ -326,14 +327,14 @@ jobs:
           name: baas-ocr-bin-macOS-arm64
 
       - name: Copy Binaries
-        if: ${{ ( github.event_name == 'push' && github.ref == 'refs/heads/main' ) || github.event.inputs.create_release == 'true' }}
+        if: ${{ ((github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event.inputs.create_release == 'true') && env.BAAS_PREBUILD_PUBLISH_ENABLED == 'true' }}
         working-directory: ./prebuild
         id: copy_bin
         run: |
           cp -a -f ../baas_cpp/build/bin/* .
   
       - name: Commit and Push
-        if: ${{ ( github.event_name == 'push' && github.ref == 'refs/heads/main' ) || github.event.inputs.create_release == 'true' }}
+        if: ${{ ((github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event.inputs.create_release == 'true') && env.BAAS_PREBUILD_PUBLISH_ENABLED == 'true' }}
         working-directory: ./prebuild
         continue-on-error: true
         id: commit_and_push
@@ -365,7 +366,7 @@ jobs:
           path: "baas_cpp"
 
       - name: Clone Prebuild Repo
-        if: ${{ ( github.event_name == 'push' && github.ref == 'refs/heads/main' ) || github.event.inputs.create_release == 'true' }}
+        if: ${{ ((github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event.inputs.create_release == 'true') && env.BAAS_PREBUILD_PUBLISH_ENABLED == 'true' }}
         id: checkout_prebuild
         uses: actions/checkout@v4
         with:
@@ -461,14 +462,14 @@ jobs:
           name: baas-ocr-bin-windows-x64
 
       - name: Copy Binaries
-        if: ${{ ( github.event_name == 'push' && github.ref == 'refs/heads/main' ) || github.event.inputs.create_release == 'true' }}
+        if: ${{ ((github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event.inputs.create_release == 'true') && env.BAAS_PREBUILD_PUBLISH_ENABLED == 'true' }}
         working-directory: ./prebuild
         id: copy_bin
         run: |
           Copy-Item -Path "..\baas_cpp\build\bin\*" -Destination . -Recurse -Force
 
       - name: Commit and Push
-        if: ${{ ( github.event_name == 'push' && github.ref == 'refs/heads/main' ) || github.event.inputs.create_release == 'true' }}
+        if: ${{ ((github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event.inputs.create_release == 'true') && env.BAAS_PREBUILD_PUBLISH_ENABLED == 'true' }}
         working-directory: ./prebuild
         continue-on-error: true
         id: commit_and_push
@@ -498,7 +499,7 @@ jobs:
           path: "baas_cpp"
 
       - name: Clone Prebuild Repo
-        if: ${{ ( github.event_name == 'push' && github.ref == 'refs/heads/main' ) || github.event.inputs.create_release == 'true' }}
+        if: ${{ ((github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event.inputs.create_release == 'true') && env.BAAS_PREBUILD_PUBLISH_ENABLED == 'true' }}
         id: checkout_prebuild
         uses: actions/checkout@v4
         with:
@@ -566,14 +567,14 @@ jobs:
           name: baas-ocr-android-lib-${{ matrix.target_arch }}
 
       - name: Copy Binaries
-        if: ${{ ( github.event_name == 'push' && github.ref == 'refs/heads/main' ) || github.event.inputs.create_release == 'true' }}
+        if: ${{ ((github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event.inputs.create_release == 'true') && env.BAAS_PREBUILD_PUBLISH_ENABLED == 'true' }}
         working-directory: ./prebuild
         id: copy_bin
         run: |
           Copy-Item -Path "..\baas_cpp\build\conan-android-clang-release-ocr-${{ matrix.target_arch }}\bin\lib\${{ matrix.target_arch }}\*" -Destination . -Recurse -Force
 
       - name: Commit and Push
-        if: ${{ ( github.event_name == 'push' && github.ref == 'refs/heads/main' ) || github.event.inputs.create_release == 'true' }}
+        if: ${{ ((github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event.inputs.create_release == 'true') && env.BAAS_PREBUILD_PUBLISH_ENABLED == 'true' }}
         working-directory: ./prebuild
         continue-on-error: true
         id: commit_and_push
