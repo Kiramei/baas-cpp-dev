@@ -1,0 +1,78 @@
+name: WebUI service supervisor foundation
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/webui-service-supervisor.yml'
+      - 'CMakeLists.txt'
+      - 'cmake/WebUiServiceSupervisor.cmake'
+      - 'include/service/supervisor/**'
+      - 'src/service/supervisor/**'
+      - 'tests/service/ServiceProcessOwnerTests.cpp'
+      - 'tests/service/ServiceProcessTestChild.cpp'
+      - 'docs/script-runtime/WEBUI_SERVICE_SUPERVISOR_FOUNDATION.md'
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+    paths:
+      - '.github/workflows/webui-service-supervisor.yml'
+      - 'CMakeLists.txt'
+      - 'cmake/WebUiServiceSupervisor.cmake'
+      - 'include/service/supervisor/**'
+      - 'src/service/supervisor/**'
+      - 'tests/service/ServiceProcessOwnerTests.cpp'
+      - 'tests/service/ServiceProcessTestChild.cpp'
+      - 'docs/script-runtime/WEBUI_SERVICE_SUPERVISOR_FOUNDATION.md'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: webui-service-supervisor-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  desktop:
+    name: ${{ matrix.os }} / ${{ matrix.build_type }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+        build_type: [Debug, Release]
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Configure process-owner foundation
+        run: >-
+          cmake -S . -B build/webui-service-supervisor
+          -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
+          -DBUILD_WEBUI_SERVICE_SUPERVISOR_TESTS=ON
+          -DBUILD_APP_BAAS=OFF
+          -DBUILD_APP_ISA=OFF
+          -DBUILD_BAAS_OCR=OFF
+          -DBUILD_BAAS_AW_CHECKER=OFF
+          -DBUILD_BAAS_NMS_BENCHMARK=OFF
+          -DBAAS_FETCH_RESOURCES=OFF
+
+      - name: Build strict process-owner targets
+        run: >-
+          cmake --build build/webui-service-supervisor
+          --config ${{ matrix.build_type }}
+          --parallel 4
+          --target BAAS_webui_service_process_owner_tests
+
+      - name: Run deterministic process lifecycle tests
+        run: >-
+          ctest --test-dir build/webui-service-supervisor
+          --build-config ${{ matrix.build_type }}
+          --output-on-failure
+          -R "^BAAS_webui_service_process_owner_tests$"
