@@ -258,6 +258,25 @@ map_snapshot_error(const snapshot_resources::ResourceErrorCode code) noexcept {
 
 } // namespace
 
+RuntimeResourceSnapshotActivation::RuntimeResourceSnapshotActivation(
+    std::string generation, std::string commit,
+    std::shared_ptr<const snapshot_resources::ResourceSnapshot> snapshot) noexcept
+    : generation_(std::move(generation)), commit_(std::move(commit)),
+      snapshot_(std::move(snapshot)) {}
+
+const std::string& RuntimeResourceSnapshotActivation::generation() const noexcept {
+    return generation_;
+}
+
+const std::string& RuntimeResourceSnapshotActivation::commit() const noexcept {
+    return commit_;
+}
+
+const std::shared_ptr<const snapshot_resources::ResourceSnapshot>&
+RuntimeResourceSnapshotActivation::snapshot() const noexcept {
+    return snapshot_;
+}
+
 std::string_view
 runtime_resource_snapshot_load_error_name(const RuntimeResourceSnapshotLoadError error) noexcept {
     using enum RuntimeResourceSnapshotLoadError;
@@ -404,7 +423,11 @@ load_runtime_resource_snapshot(const repository::RuntimeRepositoryReadView& reso
         auto snapshot = snapshot_resources::ResourceSnapshot::build(
             std::move(selector), std::move(payloads), snapshot_limits);
         check_cancelled(stop_token);
-        return {std::move(snapshot), RuntimeResourceSnapshotLoadError::none};
+        auto activation = std::shared_ptr<const RuntimeResourceSnapshotActivation>(
+            new RuntimeResourceSnapshotActivation{
+                resources.generation(), resources.commit(), std::move(snapshot)});
+        check_cancelled(stop_token);
+        return {std::move(activation), RuntimeResourceSnapshotLoadError::none};
     } catch (const LoaderFailure& failure) {
         return {{}, failure.error};
     } catch (const snapshot_resources::ResourceError& error) {

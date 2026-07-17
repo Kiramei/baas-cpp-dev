@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <memory>
 #include <stop_token>
+#include <string>
 #include <string_view>
 
 namespace baas::runtime::resources {
@@ -51,12 +52,48 @@ struct RuntimeResourceSnapshotLoaderLimits final {
     std::size_t max_work{2ULL * 1024ULL * 1024ULL * 1024ULL};
 };
 
+struct RuntimeResourceSnapshotLoadResult;
+
+// Unforgeable publication that retains the exact repository provenance of the
+// immutable byte snapshot. Downstream activation must compare generation()
+// against its scripts view before composing resources with executable code.
+class RuntimeResourceSnapshotActivation final {
+  public:
+    RuntimeResourceSnapshotActivation(const RuntimeResourceSnapshotActivation&) = delete;
+    RuntimeResourceSnapshotActivation& operator=(
+        const RuntimeResourceSnapshotActivation&) = delete;
+    RuntimeResourceSnapshotActivation(RuntimeResourceSnapshotActivation&&) = delete;
+    RuntimeResourceSnapshotActivation& operator=(RuntimeResourceSnapshotActivation&&) = delete;
+
+    [[nodiscard]] const std::string& generation() const noexcept;
+    [[nodiscard]] const std::string& commit() const noexcept;
+    [[nodiscard]] const std::shared_ptr<const ::baas::resources::ResourceSnapshot>&
+    snapshot() const noexcept;
+
+  private:
+    RuntimeResourceSnapshotActivation(
+        std::string generation,
+        std::string commit,
+        std::shared_ptr<const ::baas::resources::ResourceSnapshot> snapshot) noexcept;
+
+    std::string generation_;
+    std::string commit_;
+    std::shared_ptr<const ::baas::resources::ResourceSnapshot> snapshot_;
+
+    friend RuntimeResourceSnapshotLoadResult load_runtime_resource_snapshot(
+        const repository::RuntimeRepositoryReadView&,
+        ::baas::resources::ResourceSelector,
+        const RuntimeResourceSnapshotLoaderLimits&,
+        std::stop_token) noexcept;
+};
+
 struct RuntimeResourceSnapshotLoadResult final {
-    std::shared_ptr<const ::baas::resources::ResourceSnapshot> snapshot;
+    std::shared_ptr<const RuntimeResourceSnapshotActivation> activation;
     RuntimeResourceSnapshotLoadError error{RuntimeResourceSnapshotLoadError::none};
 
     [[nodiscard]] explicit operator bool() const noexcept {
-        return error == RuntimeResourceSnapshotLoadError::none && static_cast<bool>(snapshot);
+        return error == RuntimeResourceSnapshotLoadError::none &&
+               static_cast<bool>(activation) && static_cast<bool>(activation->snapshot());
     }
 };
 

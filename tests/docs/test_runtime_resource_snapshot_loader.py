@@ -38,6 +38,10 @@ class RuntimeResourceSnapshotLoaderContractTests(unittest.TestCase):
         self.assertIn("max_work", self.header)
         self.assertIn("std::stop_token", self.header)
         self.assertIn(") noexcept;", self.header)
+        self.assertIn("class RuntimeResourceSnapshotActivation final", self.header)
+        self.assertIn("const std::string& generation() const noexcept", self.header)
+        self.assertIn("const std::string& commit() const noexcept", self.header)
+        self.assertIn("activation;", self.header)
 
     def test_isolated_target_has_no_legacy_resource_tooling(self) -> None:
         self.assertIn("BAAS_runtime_resource_snapshot_loader", self.cmake)
@@ -45,6 +49,8 @@ class RuntimeResourceSnapshotLoaderContractTests(unittest.TestCase):
         self.assertNotIn("resource/", self.cmake)
         self.assertIn("remain external", self.docs)
         self.assertIn("must never be\naccepted from a browser request", self.docs)
+        self.assertIn("not caller-constructible", self.docs)
+        self.assertIn("same-generation repository selection", self.docs)
 
     def test_foundation_ci_builds_host_tests_and_android_production_target(self) -> None:
         self.assertIn(
