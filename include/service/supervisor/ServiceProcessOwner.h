@@ -14,6 +14,8 @@ inline constexpr std::string_view service_process_loopback_host = "127.0.0.1";
 
 struct ServiceProcessConfig {
     std::filesystem::path service_executable;
+    std::filesystem::path trusted_application_root;
+    std::filesystem::path safe_working_directory;
     std::filesystem::path project_root;
     std::string host{service_process_loopback_host};
     std::uint16_t port = 0;
@@ -68,9 +70,12 @@ struct ServiceProcessWaitResult {
     std::optional<ServiceProcessExit> exit;
 };
 
-// Owns exactly one BAAS_service child at a time. The caller resolves and fixes
-// the executable path before start; this class never performs PATH lookup and
-// never constructs a shell command. All public operations are thread-safe.
+// Owns exactly one BAAS_service child at a time. A trusted native host (never a
+// browser payload) resolves the application root, executable and working
+// directory before start. The executable and working directory must be inside
+// that root. This class never performs PATH lookup, inherits the parent
+// environment, or constructs a shell command. All public operations are
+// thread-safe.
 class ServiceProcessOwner final {
 public:
     ServiceProcessOwner();
@@ -92,6 +97,10 @@ public:
 
     [[nodiscard]] ServiceProcessState state() const noexcept;
     [[nodiscard]] std::uint64_t process_id() const noexcept;
+
+#if defined(BAAS_SERVICE_PROCESS_OWNER_TEST_HOOKS)
+    [[nodiscard]] bool emergency_reaper_ready_for_tests() const noexcept;
+#endif
 
 private:
     class Impl;

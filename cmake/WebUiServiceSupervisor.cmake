@@ -1,6 +1,7 @@
 include_guard(GLOBAL)
 
-if(TARGET_OS_NAME STREQUAL "Android")
+if(ANDROID OR CMAKE_SYSTEM_NAME STREQUAL "Android"
+   OR TARGET_OS_NAME STREQUAL "Android")
     message(FATAL_ERROR
         "The pure WebUI BAAS_service process supervisor is desktop-only")
 endif()
@@ -24,6 +25,17 @@ target_link_libraries(
         BAAS_webui_service_process_owner PUBLIC Threads::Threads
 )
 
+foreach(property LINK_LIBRARIES INTERFACE_LINK_LIBRARIES)
+    get_target_property(_supervisor_links
+        BAAS_webui_service_process_owner ${property})
+    if(_supervisor_links MATCHES
+       "(git2|libgit2|BAAS_service|BAASResources|resource|configuration)")
+        message(FATAL_ERROR
+            "WebUI service process owner has a forbidden link dependency: ${_supervisor_links}")
+    endif()
+endforeach()
+unset(_supervisor_links)
+
 if(MSVC)
     target_compile_options(
             BAAS_webui_service_process_owner
@@ -46,6 +58,10 @@ endif()
 
 if(BUILD_WEBUI_SERVICE_SUPERVISOR_TESTS)
     include(CTest)
+    target_compile_definitions(
+            BAAS_webui_service_process_owner
+            PRIVATE BAAS_SERVICE_PROCESS_OWNER_TEST_HOOKS
+    )
     add_executable(
             BAAS_webui_service_process_test_child
             "${BAAS_PROJECT_PATH}/tests/service/ServiceProcessTestChild.cpp"
@@ -65,9 +81,16 @@ if(BUILD_WEBUI_SERVICE_SUPERVISOR_TESTS)
     target_compile_features(
             BAAS_webui_service_process_owner_tests PRIVATE cxx_std_20
     )
+    target_compile_definitions(
+            BAAS_webui_service_process_owner_tests
+            PRIVATE BAAS_SERVICE_PROCESS_OWNER_TEST_HOOKS
+    )
     target_link_libraries(
             BAAS_webui_service_process_owner_tests
-            PRIVATE BAAS_webui_service_process_owner Threads::Threads
+            PRIVATE
+                BAAS_webui_service_process_owner
+                BAAS_service_command_line
+                Threads::Threads
     )
     add_dependencies(
             BAAS_webui_service_process_owner_tests

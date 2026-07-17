@@ -4,6 +4,7 @@
 #include <array>
 #include <cerrno>
 #include <chrono>
+#include <condition_variable>
 #include <filesystem>
 #include <iterator>
 #include <limits>
@@ -23,7 +24,6 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-extern char** environ;
 #endif
 
 namespace baas::service::supervisor {
@@ -31,11 +31,27 @@ namespace {
 
 struct ValidatedConfig {
     std::filesystem::path executable;
+    std::filesystem::path application_root;
+    std::filesystem::path working_directory;
     std::filesystem::path project_root;
     std::string host;
     std::uint16_t port = 0;
     std::string generation;
 };
+
+[[nodiscard]] bool is_within(
+    const std::filesystem::path& root,
+    const std::filesystem::path& candidate) noexcept
+{
+    auto root_part = root.begin();
+    auto candidate_part = candidate.begin();
+    for (; root_part != root.end(); ++root_part, ++candidate_part) {
+        if (candidate_part == candidate.end() || *root_part != *candidate_part) {
+            return false;
+        }
+    }
+    return true;
+}
 
 [[nodiscard]] bool canonical_generation(const std::string_view value) noexcept
 {
@@ -52,6 +68,10 @@ struct ValidatedConfig {
     try {
         if (config.service_executable.empty()
             || !config.service_executable.is_absolute()
+            || config.trusted_application_root.empty()
+            || !config.trusted_application_root.is_absolute()
+            || config.safe_working_directory.empty()
+            || !config.safe_working_directory.is_absolute()
             || config.project_root.empty() || !config.project_root.is_absolute()
             || config.host != service_process_loopback_host || config.port == 0
             || !canonical_generation(config.runtime_repository_generation)) {
@@ -70,6 +90,33 @@ struct ValidatedConfig {
         if (::access(executable.c_str(), X_OK) != 0) return std::nullopt;
 #endif
         error.clear();
+        const auto application_status = std::filesystem::symlink_status(
+            config.trusted_application_root, error);
+        if (error
+            || application_status.type()
+                != std::filesystem::file_type::directory) {
+            return std::nullopt;
+        }
+        const auto application_root = std::filesystem::canonical(
+            config.trusted_application_root, error);
+        if (error || application_root.empty()
+            || !is_within(application_root, executable)) {
+            return std::nullopt;
+        }
+        error.clear();
+        const auto working_status = std::filesystem::symlink_status(
+            config.safe_working_directory, error);
+        if (error
+            || working_status.type() != std::filesystem::file_type::directory) {
+            return std::nullopt;
+        }
+        const auto working_directory = std::filesystem::canonical(
+            config.safe_working_directory, error);
+        if (error || working_directory.empty()
+            || !is_within(application_root, working_directory)) {
+            return std::nullopt;
+        }
+        error.clear();
         const auto project_status =
             std::filesystem::symlink_status(config.project_root, error);
         if (error || project_status.type() != std::filesystem::file_type::directory) {
@@ -80,6 +127,8 @@ struct ValidatedConfig {
         if (error || project_root.empty()) return std::nullopt;
         return ValidatedConfig{
             executable,
+            application_root,
+            working_directory,
             project_root,
             std::move(config.host),
             config.port,
@@ -221,31 +270,112 @@ private:
     };
 }
 
+struct PosixEmergencyReaperState final {
+    std::mutex mutex;
+    std::condition_variable changed;
+    bool shutdown = false;
+    pid_t child = -1;
+};
+
+[[nodiscard]] std::shared_ptr<PosixEmergencyReaperState>
+create_posix_emergency_reaper()
+{
+    auto state = std::make_shared<PosixEmergencyReaperState>();
+    std::thread worker{[state] {
+        pid_t child = -1;
+        {
+            std::unique_lock lock{state->mutex};
+            state->changed.wait(lock, [&state] { return state->shutdown; });
+            child = state->child;
+        }
+        if (child > 0) {
+            // The handoff occurs before the leader is reaped, so this group
+            // kill cannot target a reused PID/PGID.
+            static_cast<void>(::kill(-child, SIGKILL));
+            int status = 0;
+            while (::waitpid(child, &status, 0) < 0 && errno == EINTR) {
+            }
+        }
+    }};
+    worker.detach();
+    return state;
+}
+
+void shutdown_posix_emergency_reaper(
+    const std::shared_ptr<PosixEmergencyReaperState>& state,
+    const pid_t child = -1) noexcept
+{
+    {
+        std::lock_guard lock{state->mutex};
+        state->child = child;
+        state->shutdown = true;
+    }
+    state->changed.notify_one();
+}
+
 #endif
 
 }  // namespace
 
 class ServiceProcessOwner::Impl final {
 public:
-    ~Impl() { destroy_noexcept(); }
+    Impl()
+#if !defined(_WIN32)
+        : emergency_reaper_(create_posix_emergency_reaper())
+#endif
+    {}
+
+    ~Impl()
+    {
+        if (stop(cleanup_limit) != ServiceProcessError::none) {
+            emergency_release_noexcept();
+#if !defined(_WIN32)
+        } else {
+            shutdown_posix_emergency_reaper(emergency_reaper_);
+#endif
+        }
+    }
 
     [[nodiscard]] ServiceProcessStartResult start(ServiceProcessConfig config)
     {
-        std::lock_guard<std::mutex> lock{mutex_};
-        if (state_ != ServiceProcessState::stopped) {
-            return {ServiceProcessError::already_active, 0};
-        }
         auto validated = validate_config(std::move(config));
         if (!validated) {
             return {ServiceProcessError::invalid_configuration, 0};
         }
-        return start_locked(*validated);
+        std::uint64_t generation = 0;
+        {
+            std::lock_guard lock{state_mutex_};
+            if (phase_ != Phase::stopped) {
+                return {ServiceProcessError::already_active, 0};
+            }
+            phase_ = Phase::starting;
+            generation = ++operation_generation_;
+        }
+
+        ServiceProcessStartResult result;
+        {
+            std::lock_guard operation{operation_mutex_};
+            result = start_platform(*validated);
+        }
+        {
+            std::lock_guard lock{state_mutex_};
+            (void)generation;
+            if (result) {
+                phase_ = Phase::running;
+                process_id_ = result.process_id;
+            } else {
+                phase_ = Phase::stopped;
+                process_id_ = 0;
+            }
+            exit_.reset();
+        }
+        state_changed_.notify_all();
+        return result;
     }
 
     [[nodiscard]] ServiceProcessWaitResult wait_for(
         const std::chrono::milliseconds timeout) noexcept
     {
-        std::lock_guard<std::mutex> lock{mutex_};
         if (timeout < std::chrono::milliseconds::zero()) {
             return {
                 ServiceProcessWaitDisposition::failed,
@@ -253,62 +383,163 @@ public:
                 std::nullopt,
             };
         }
-        if (state_ == ServiceProcessState::stopped) {
-            return {
-                ServiceProcessWaitDisposition::not_running,
-                ServiceProcessError::none,
-                std::nullopt,
-            };
+        const auto deadline = saturated_deadline(timeout);
+        for (;;) {
+            {
+                std::unique_lock lock{state_mutex_};
+                if (phase_ == Phase::stopped) {
+                    return {
+                        ServiceProcessWaitDisposition::not_running,
+                        ServiceProcessError::none,
+                        std::nullopt,
+                    };
+                }
+                if (phase_ == Phase::exited) {
+                    return {
+                        ServiceProcessWaitDisposition::exited,
+                        ServiceProcessError::none,
+                        exit_,
+                    };
+                }
+                if (phase_ == Phase::starting || phase_ == Phase::stopping) {
+                    if (deadline_reached(deadline)) return timed_out_wait();
+                    state_changed_.wait_until(lock, next_poll(deadline));
+                    continue;
+                }
+            }
+
+            const auto polled = poll_running_process();
+            if (polled.has_value()) return *polled;
+            if (deadline_reached(deadline)) return timed_out_wait();
+            std::unique_lock lock{state_mutex_};
+            state_changed_.wait_until(lock, next_poll(deadline));
         }
-        if (state_ == ServiceProcessState::exited) {
-            return {
-                ServiceProcessWaitDisposition::exited,
-                ServiceProcessError::none,
-                exit_,
-            };
-        }
-        return wait_running_locked(timeout);
     }
 
     [[nodiscard]] ServiceProcessError stop(
         const std::chrono::milliseconds timeout) noexcept
     {
-        std::lock_guard<std::mutex> lock{mutex_};
         if (timeout < std::chrono::milliseconds::zero()) {
             return ServiceProcessError::invalid_configuration;
         }
-        if (state_ == ServiceProcessState::stopped) {
-            return ServiceProcessError::none;
+        const auto deadline = saturated_deadline(timeout);
+        std::uint64_t generation = 0;
+        for (;;) {
+            std::unique_lock lock{state_mutex_};
+            if (phase_ == Phase::stopped) return ServiceProcessError::none;
+            if (phase_ == Phase::exited) {
+                phase_ = Phase::stopped;
+                exit_.reset();
+                ++operation_generation_;
+                lock.unlock();
+                state_changed_.notify_all();
+                return ServiceProcessError::none;
+            }
+            if (phase_ == Phase::starting || phase_ == Phase::stopping) {
+                if (deadline_reached(deadline)) {
+                    return ServiceProcessError::wait_failed;
+                }
+                state_changed_.wait_until(lock, next_poll(deadline));
+                continue;
+            }
+            phase_ = Phase::stopping;
+            generation = operation_generation_;
+            break;
         }
-        if (state_ == ServiceProcessState::exited) {
-            state_ = ServiceProcessState::stopped;
-            exit_.reset();
-            return ServiceProcessError::none;
+        state_changed_.notify_all();
+
+        ServiceProcessError result = ServiceProcessError::none;
+        {
+            std::lock_guard operation{operation_mutex_};
+            result = terminate_and_reap_platform(deadline);
         }
-        if (!terminate_locked()) return ServiceProcessError::terminate_failed;
-        const auto waited = wait_running_locked(timeout);
-        if (waited.disposition != ServiceProcessWaitDisposition::exited) {
-            return ServiceProcessError::wait_failed;
+        {
+            std::lock_guard lock{state_mutex_};
+            (void)generation;
+            if (result == ServiceProcessError::none) {
+                phase_ = Phase::stopped;
+                process_id_ = 0;
+                exit_.reset();
+                ++operation_generation_;
+            } else {
+                phase_ = Phase::running;
+            }
         }
-        state_ = ServiceProcessState::stopped;
-        exit_.reset();
-        return ServiceProcessError::none;
+        state_changed_.notify_all();
+        return result;
     }
 
     [[nodiscard]] ServiceProcessState state() const noexcept
     {
-        std::lock_guard<std::mutex> lock{mutex_};
-        return state_;
+        std::lock_guard lock{state_mutex_};
+        if (phase_ == Phase::stopped) return ServiceProcessState::stopped;
+        if (phase_ == Phase::exited) return ServiceProcessState::exited;
+        return ServiceProcessState::running;
     }
 
     [[nodiscard]] std::uint64_t process_id() const noexcept
     {
-        std::lock_guard<std::mutex> lock{mutex_};
+        std::lock_guard lock{state_mutex_};
         return process_id_;
     }
 
+#if defined(BAAS_SERVICE_PROCESS_OWNER_TEST_HOOKS)
+    [[nodiscard]] bool emergency_reaper_ready_for_tests() const noexcept
+    {
+#if defined(_WIN32)
+        return true;
+#else
+        std::lock_guard lock{emergency_reaper_->mutex};
+        return !emergency_reaper_->shutdown;
+#endif
+    }
+#endif
+
 private:
-    [[nodiscard]] ServiceProcessStartResult start_locked(
+    using Clock = std::chrono::steady_clock;
+    enum class Phase : std::uint8_t { stopped, starting, running, stopping, exited };
+    static constexpr auto cleanup_limit = std::chrono::seconds{5};
+    static constexpr auto poll_interval = std::chrono::milliseconds{2};
+
+    [[nodiscard]] static Clock::time_point saturated_deadline(
+        const std::chrono::milliseconds timeout) noexcept
+    {
+        const auto now = Clock::now();
+        const auto available = Clock::time_point::max() - now;
+        const auto available_ms =
+            std::chrono::duration_cast<std::chrono::milliseconds>(available);
+        if (timeout >= available_ms) return Clock::time_point::max();
+        return now + std::chrono::duration_cast<Clock::duration>(timeout);
+    }
+
+    [[nodiscard]] static bool deadline_reached(
+        const Clock::time_point deadline) noexcept
+    {
+        return deadline != Clock::time_point::max() && Clock::now() >= deadline;
+    }
+
+    [[nodiscard]] static Clock::time_point next_poll(
+        const Clock::time_point deadline) noexcept
+    {
+        const auto now = Clock::now();
+        const auto available = Clock::time_point::max() - now;
+        const auto candidate = available <= poll_interval
+            ? Clock::time_point::max()
+            : now + poll_interval;
+        if (deadline == Clock::time_point::max()) return candidate;
+        return std::min(deadline, candidate);
+    }
+
+    [[nodiscard]] static ServiceProcessWaitResult timed_out_wait() noexcept
+    {
+        return {
+            ServiceProcessWaitDisposition::timed_out,
+            ServiceProcessError::none,
+            std::nullopt,
+        };
+    }
+
+    [[nodiscard]] ServiceProcessStartResult start_platform(
         const ValidatedConfig& config)
     {
 #if defined(_WIN32)
@@ -332,28 +563,43 @@ private:
         std::vector<wchar_t> mutable_command(
             command_line->begin(), command_line->end());
         mutable_command.push_back(L'\0');
+        std::array<wchar_t, 2> empty_environment{L'\0', L'\0'};
         const auto executable = config.executable.native();
-        const auto project_root = config.project_root.native();
+        const auto working_directory = config.working_directory.native();
         if (!CreateProcessW(
                 executable.c_str(), mutable_command.data(), nullptr, nullptr,
                 FALSE,
                 CREATE_SUSPENDED | CREATE_NEW_PROCESS_GROUP
                     | CREATE_UNICODE_ENVIRONMENT,
-                nullptr, project_root.c_str(), &startup, &process)) {
+                empty_environment.data(), working_directory.c_str(),
+                &startup, &process)) {
             return {ServiceProcessError::launch_failed, 0};
         }
         WindowsHandle process_handle{process.hProcess};
         WindowsHandle thread_handle{process.hThread};
-        if (!AssignProcessToJobObject(job.get(), process_handle.get())
+        const bool assigned =
+            AssignProcessToJobObject(job.get(), process_handle.get()) != FALSE;
+        if (!assigned
             || ResumeThread(thread_handle.get()) == static_cast<DWORD>(-1)) {
-            static_cast<void>(TerminateProcess(process_handle.get(), 127));
-            static_cast<void>(WaitForSingleObject(process_handle.get(), INFINITE));
+            if (assigned) {
+                static_cast<void>(TerminateJobObject(job.get(), 127));
+                job.reset();
+            } else {
+                static_cast<void>(TerminateProcess(process_handle.get(), 127));
+            }
+            if (WaitForSingleObject(
+                    process_handle.get(),
+                    static_cast<DWORD>(cleanup_limit.count() * 1000))
+                != WAIT_OBJECT_0) {
+                job.reset();
+            }
             return {ServiceProcessError::launch_failed, 0};
         }
         const auto identifier = static_cast<std::uint64_t>(process.dwProcessId);
         process_ = std::move(process_handle);
         job_ = std::move(job);
-        process_id_ = identifier;
+        observed_windows_exit_.reset();
+        return {ServiceProcessError::none, identifier};
 #else
         std::vector<std::string> storage;
         storage.push_back(config.executable.native());
@@ -365,6 +611,7 @@ private:
         argv.reserve(storage.size() + 1);
         for (auto& argument : storage) argv.push_back(argument.data());
         argv.push_back(nullptr);
+        std::array<char*, 1> empty_environment{nullptr};
 
         posix_spawn_file_actions_t actions{};
         posix_spawnattr_t attributes{};
@@ -380,6 +627,11 @@ private:
             return {ServiceProcessError::launch_failed, 0};
         }
 #endif
+        if (posix_spawn_file_actions_addchdir_np(
+                &actions, config.working_directory.c_str()) != 0) {
+            destroy_actions();
+            return {ServiceProcessError::launch_failed, 0};
+        }
         if (posix_spawnattr_init(&attributes) != 0) {
             destroy_actions();
             return {ServiceProcessError::launch_failed, 0};
@@ -397,148 +649,196 @@ private:
         pid_t child = -1;
         const int spawned = posix_spawn(
             &child, config.executable.c_str(), &actions, &attributes,
-            argv.data(), environ);
+            argv.data(), empty_environment.data());
         static_cast<void>(posix_spawnattr_destroy(&attributes));
         destroy_actions();
         if (spawned != 0 || child <= 0) {
             return {ServiceProcessError::launch_failed, 0};
         }
-        process_id_ = static_cast<std::uint64_t>(child);
         process_ = child;
+        return {
+            ServiceProcessError::none,
+            static_cast<std::uint64_t>(child),
+        };
 #endif
-        state_ = ServiceProcessState::running;
-        exit_.reset();
-        return {ServiceProcessError::none, process_id_};
     }
 
-    [[nodiscard]] ServiceProcessWaitResult wait_running_locked(
-        const std::chrono::milliseconds timeout) noexcept
+    [[nodiscard]] std::optional<ServiceProcessWaitResult>
+    poll_running_process() noexcept
     {
-#if defined(_WIN32)
-        const auto bounded = std::min<std::uint64_t>(
-            static_cast<std::uint64_t>(timeout.count()),
-            static_cast<std::uint64_t>(INFINITE - 1));
-        const auto wait = WaitForSingleObject(
-            process_.get(), static_cast<DWORD>(bounded));
-        if (wait == WAIT_TIMEOUT) {
-            return {
-                ServiceProcessWaitDisposition::timed_out,
-                ServiceProcessError::none,
-                std::nullopt,
-            };
-        }
-        if (wait != WAIT_OBJECT_0) {
-            return {
+        std::scoped_lock lock{operation_mutex_, state_mutex_};
+        if (phase_ != Phase::running) return std::nullopt;
+        ServiceProcessExit process_exit{};
+        const auto result = poll_and_reap_platform(process_exit);
+        if (result == PollResult::pending) return std::nullopt;
+        if (result == PollResult::failed) {
+            return ServiceProcessWaitResult{
                 ServiceProcessWaitDisposition::failed,
                 ServiceProcessError::wait_failed,
                 std::nullopt,
             };
         }
-        DWORD code = 0;
-        if (!GetExitCodeProcess(process_.get(), &code)) {
-            return {
-                ServiceProcessWaitDisposition::failed,
-                ServiceProcessError::wait_failed,
-                std::nullopt,
-            };
-        }
-        exit_ = ServiceProcessExit{static_cast<int>(code), false, 0};
-        process_.reset();
-        job_.reset();
-#else
-        const auto deadline = std::chrono::steady_clock::now() + timeout;
-        int status = 0;
-        for (;;) {
-            const auto waited = ::waitpid(process_, &status, WNOHANG);
-            if (waited == process_) break;
-            if (waited < 0) {
-                if (errno == EINTR) continue;
-                return {
-                    ServiceProcessWaitDisposition::failed,
-                    ServiceProcessError::wait_failed,
-                    std::nullopt,
-                };
-            }
-            if (std::chrono::steady_clock::now() >= deadline) {
-                return {
-                    ServiceProcessWaitDisposition::timed_out,
-                    ServiceProcessError::none,
-                    std::nullopt,
-                };
-            }
-            std::this_thread::sleep_for(std::chrono::milliseconds{2});
-        }
-        static_cast<void>(::kill(-process_, SIGKILL));
-        if (WIFEXITED(status)) {
-            exit_ = ServiceProcessExit{WEXITSTATUS(status), false, 0};
-        } else if (WIFSIGNALED(status)) {
-            exit_ = ServiceProcessExit{128 + WTERMSIG(status), true, WTERMSIG(status)};
-        } else {
-            return {
-                ServiceProcessWaitDisposition::failed,
-                ServiceProcessError::wait_failed,
-                std::nullopt,
-            };
-        }
-        process_ = -1;
-#endif
+        phase_ = Phase::exited;
         process_id_ = 0;
-        state_ = ServiceProcessState::exited;
-        return {
+        exit_ = process_exit;
+        state_changed_.notify_all();
+        return ServiceProcessWaitResult{
             ServiceProcessWaitDisposition::exited,
             ServiceProcessError::none,
             exit_,
         };
     }
 
-    [[nodiscard]] bool terminate_locked() noexcept
+    enum class PollResult : std::uint8_t { pending, exited, failed };
+
+    [[nodiscard]] PollResult poll_and_reap_platform(
+        ServiceProcessExit& process_exit) noexcept
     {
 #if defined(_WIN32)
-        if (!job_) return false;
-        if (TerminateJobObject(job_.get(), 137) != FALSE) return true;
-        return process_ && TerminateProcess(process_.get(), 137) != FALSE;
+        if (!process_ || !job_) return PollResult::failed;
+        if (!observed_windows_exit_) {
+            const auto wait = WaitForSingleObject(process_.get(), 0);
+            if (wait == WAIT_TIMEOUT) return PollResult::pending;
+            if (wait != WAIT_OBJECT_0) return PollResult::failed;
+            DWORD code = 0;
+            if (!GetExitCodeProcess(process_.get(), &code)) {
+                return PollResult::failed;
+            }
+            observed_windows_exit_ = static_cast<int>(code);
+        }
+        if (TerminateJobObject(job_.get(), 137) == FALSE && !job_is_empty()) {
+            return PollResult::failed;
+        }
+        if (!job_is_empty()) return PollResult::pending;
+        process_exit = ServiceProcessExit{*observed_windows_exit_, false, 0};
+        process_.reset();
+        job_.reset();
+        observed_windows_exit_.reset();
+        return PollResult::exited;
 #else
-        if (process_ <= 0) return false;
-        if (::kill(-process_, SIGKILL) == 0) return true;
-        return errno == ESRCH;
+        if (process_ <= 0) return PollResult::failed;
+        siginfo_t information{};
+        int observed = 0;
+        do {
+            observed = ::waitid(
+                P_PID, static_cast<id_t>(process_), &information,
+                WEXITED | WNOHANG | WNOWAIT);
+        } while (observed < 0 && errno == EINTR);
+        if (observed < 0) return PollResult::failed;
+        if (information.si_pid == 0) return PollResult::pending;
+
+        // The leader remains a zombie here, so its PID/PGID cannot be reused.
+        // Kill descendants before the sole waitpid that releases that identity.
+        if (::kill(-process_, SIGKILL) != 0 && errno != ESRCH) {
+            return PollResult::failed;
+        }
+        int status = 0;
+        pid_t waited = -1;
+        do {
+            waited = ::waitpid(process_, &status, WNOHANG);
+        } while (waited < 0 && errno == EINTR);
+        if (waited == 0) return PollResult::pending;
+        if (waited != process_) return PollResult::failed;
+        if (WIFEXITED(status)) {
+            process_exit = ServiceProcessExit{WEXITSTATUS(status), false, 0};
+        } else if (WIFSIGNALED(status)) {
+            process_exit = ServiceProcessExit{
+                128 + WTERMSIG(status), true, WTERMSIG(status)};
+        } else {
+            return PollResult::failed;
+        }
+        process_ = -1;
+        return PollResult::exited;
 #endif
     }
 
-    void destroy_noexcept() noexcept
+    [[nodiscard]] ServiceProcessError terminate_and_reap_platform(
+        const Clock::time_point deadline) noexcept
     {
-        std::lock_guard<std::mutex> lock{mutex_};
-        if (state_ == ServiceProcessState::running) {
-            static_cast<void>(terminate_locked());
 #if defined(_WIN32)
-            if (process_) {
-                static_cast<void>(WaitForSingleObject(process_.get(), INFINITE));
-            }
-            process_.reset();
-            job_.reset();
-#else
-            if (process_ > 0) {
-                int status = 0;
-                while (::waitpid(process_, &status, 0) < 0 && errno == EINTR) {
-                }
-                static_cast<void>(::kill(-process_, SIGKILL));
-            }
-            process_ = -1;
-#endif
+        if (!process_ || !job_) return ServiceProcessError::terminate_failed;
+        if (TerminateJobObject(job_.get(), 137) == FALSE && !job_is_empty()) {
+            return ServiceProcessError::terminate_failed;
         }
+#else
+        if (process_ <= 0) return ServiceProcessError::terminate_failed;
+        if (::kill(-process_, SIGKILL) != 0 && errno != ESRCH) {
+            return ServiceProcessError::terminate_failed;
+        }
+#endif
+        for (;;) {
+            ServiceProcessExit ignored{};
+            const auto result = poll_and_reap_platform(ignored);
+            if (result == PollResult::exited) return ServiceProcessError::none;
+            if (result == PollResult::failed) {
+                return ServiceProcessError::wait_failed;
+            }
+            if (deadline_reached(deadline)) {
+                return ServiceProcessError::wait_failed;
+            }
+            std::this_thread::sleep_until(next_poll(deadline));
+        }
+    }
+
+    void emergency_release_noexcept() noexcept
+    {
+        std::lock_guard operation{operation_mutex_};
+#if defined(_WIN32)
+        // Closing the last kill-on-close Job handle is the fail-closed tree
+        // boundary. The finite wait only confirms the leader; Windows has no
+        // zombie resource after both handles are closed.
+        job_.reset();
+        if (process_) {
+            static_cast<void>(WaitForSingleObject(
+                process_.get(),
+                static_cast<DWORD>(cleanup_limit.count() * 1000)));
+        }
+        process_.reset();
+        observed_windows_exit_.reset();
+#else
+        if (process_ > 0) {
+            const pid_t child = std::exchange(process_, -1);
+            static_cast<void>(::kill(-child, SIGKILL));
+            // This worker was created before start could launch any child, so
+            // emergency cleanup performs no allocation or thread creation.
+            shutdown_posix_emergency_reaper(emergency_reaper_, child);
+        } else {
+            shutdown_posix_emergency_reaper(emergency_reaper_);
+        }
+#endif
+        std::lock_guard state{state_mutex_};
+        phase_ = Phase::stopped;
         process_id_ = 0;
-        state_ = ServiceProcessState::stopped;
         exit_.reset();
     }
 
-    mutable std::mutex mutex_;
-    ServiceProcessState state_ = ServiceProcessState::stopped;
+#if defined(_WIN32)
+    [[nodiscard]] bool job_is_empty() const noexcept
+    {
+        JOBOBJECT_BASIC_ACCOUNTING_INFORMATION accounting{};
+        return job_
+            && QueryInformationJobObject(
+                   job_.get(), JobObjectBasicAccountingInformation,
+                   &accounting, sizeof(accounting), nullptr)
+                != FALSE
+            && accounting.ActiveProcesses == 0;
+    }
+#endif
+
+    mutable std::mutex state_mutex_;
+    std::condition_variable state_changed_;
+    std::mutex operation_mutex_;
+    Phase phase_ = Phase::stopped;
+    std::uint64_t operation_generation_ = 0;
     std::uint64_t process_id_ = 0;
     std::optional<ServiceProcessExit> exit_;
 #if defined(_WIN32)
     WindowsHandle process_;
     WindowsHandle job_;
+    std::optional<int> observed_windows_exit_;
 #else
     pid_t process_ = -1;
+    std::shared_ptr<PosixEmergencyReaperState> emergency_reaper_;
 #endif
 };
 
@@ -589,5 +889,12 @@ std::uint64_t ServiceProcessOwner::process_id() const noexcept
 {
     return impl_->process_id();
 }
+
+#if defined(BAAS_SERVICE_PROCESS_OWNER_TEST_HOOKS)
+bool ServiceProcessOwner::emergency_reaper_ready_for_tests() const noexcept
+{
+    return impl_->emergency_reaper_ready_for_tests();
+}
+#endif
 
 }  // namespace baas::service::supervisor

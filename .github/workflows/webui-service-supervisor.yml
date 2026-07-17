@@ -7,9 +7,19 @@ on:
     paths:
       - '.github/workflows/webui-service-supervisor.yml'
       - 'CMakeLists.txt'
-      - 'cmake/WebUiServiceSupervisor.cmake'
+      - 'cmake/**'
       - 'include/service/supervisor/**'
       - 'src/service/supervisor/**'
+      - 'apps/BAAS_service/main.cpp'
+      - 'include/service/app/ServiceCommandLine.h'
+      - 'include/service/app/ServiceApplication.h'
+      - 'include/service/app/ServiceShutdown.h'
+      - 'include/service/health/HealthReadiness.h'
+      - 'src/service/app/ServiceCommandLine.cpp'
+      - 'src/service/app/ServiceApplication.cpp'
+      - 'src/service/app/ServiceShutdown.cpp'
+      - 'src/service/health/HealthReadiness.cpp'
+      - 'tests/service/ServiceCommandLineTests.cpp'
       - 'tests/service/ServiceProcessOwnerTests.cpp'
       - 'tests/service/ServiceProcessTestChild.cpp'
       - 'docs/script-runtime/WEBUI_SERVICE_SUPERVISOR_FOUNDATION.md'
@@ -19,9 +29,19 @@ on:
     paths:
       - '.github/workflows/webui-service-supervisor.yml'
       - 'CMakeLists.txt'
-      - 'cmake/WebUiServiceSupervisor.cmake'
+      - 'cmake/**'
       - 'include/service/supervisor/**'
       - 'src/service/supervisor/**'
+      - 'apps/BAAS_service/main.cpp'
+      - 'include/service/app/ServiceCommandLine.h'
+      - 'include/service/app/ServiceApplication.h'
+      - 'include/service/app/ServiceShutdown.h'
+      - 'include/service/health/HealthReadiness.h'
+      - 'src/service/app/ServiceCommandLine.cpp'
+      - 'src/service/app/ServiceApplication.cpp'
+      - 'src/service/app/ServiceShutdown.cpp'
+      - 'src/service/health/HealthReadiness.cpp'
+      - 'tests/service/ServiceCommandLineTests.cpp'
       - 'tests/service/ServiceProcessOwnerTests.cpp'
       - 'tests/service/ServiceProcessTestChild.cpp'
       - 'docs/script-runtime/WEBUI_SERVICE_SUPERVISOR_FOUNDATION.md'
@@ -51,11 +71,26 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
+      - name: Assert default-off and Android rejection boundaries
+        run: >-
+          cmake -S . -B build/webui-service-supervisor-default
+          -DBUILD_APP_BAAS=OFF
+          -DBUILD_APP_ISA=OFF
+          -DBAAS_FETCH_RESOURCES=OFF
+
+      - name: Verify configure-time supervisor boundaries
+        run: >-
+          cmake
+          -DSOURCE_DIR=${{ github.workspace }}
+          -DBUILD_DIR=${{ github.workspace }}/build/webui-service-supervisor-default
+          -P cmake/WebUiServiceSupervisorAssertions.cmake
+
       - name: Configure process-owner foundation
         run: >-
           cmake -S . -B build/webui-service-supervisor
           -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
           -DBUILD_WEBUI_SERVICE_SUPERVISOR_TESTS=ON
+          -DBUILD_SERVICE_COMMAND_LINE_TESTS=ON
           -DBUILD_APP_BAAS=OFF
           -DBUILD_APP_ISA=OFF
           -DBUILD_BAAS_OCR=OFF
@@ -68,11 +103,11 @@ jobs:
           cmake --build build/webui-service-supervisor
           --config ${{ matrix.build_type }}
           --parallel 4
-          --target BAAS_webui_service_process_owner_tests
+          --target BAAS_webui_service_process_owner_tests BAAS_service_command_line_tests
 
       - name: Run deterministic process lifecycle tests
         run: >-
           ctest --test-dir build/webui-service-supervisor
           --build-config ${{ matrix.build_type }}
           --output-on-failure
-          -R "^BAAS_webui_service_process_owner_tests$"
+          -R "^(BAAS_webui_service_process_owner_tests|BAAS_service_command_line_tests)$"
