@@ -1594,10 +1594,12 @@ RepositoryTreeSeal StrictRuntimeRepositoryTreeValidator::validate_and_seal(
         !std::filesystem::is_directory(repository_root))
         fail(RuntimeRepositoryUpdateErrorCode::ValidationFailed,
              "repository root is not a plain directory");
+    const auto requested_root_identity = directory_identity(repository_root);
     const auto canonical_root = std::filesystem::canonical(repository_root);
-    if (canonical_root != repository_root.lexically_normal())
+    if (reparse_or_link(repository_root) ||
+        directory_identity(canonical_root) != requested_root_identity)
         fail(RuntimeRepositoryUpdateErrorCode::ValidationFailed,
-             "repository root is not canonical");
+             "repository root changed while validation was anchored");
 
     struct FileRecord final {
         std::string relative;
@@ -1606,14 +1608,14 @@ RepositoryTreeSeal StrictRuntimeRepositoryTreeValidator::validate_and_seal(
     };
     std::vector<FileRecord> files;
     std::vector<std::string> directories;
-    for (std::filesystem::recursive_directory_iterator iterator(repository_root), end;
+    for (std::filesystem::recursive_directory_iterator iterator(canonical_root), end;
          iterator != end; ++iterator) {
         check_cancelled(stop_token);
         const auto& path = iterator->path();
         if (reparse_or_link(path))
             fail(RuntimeRepositoryUpdateErrorCode::ValidationFailed,
                  "repository tree contains a link or reparse point");
-        const auto relative_path = path.lexically_relative(repository_root);
+        const auto relative_path = path.lexically_relative(canonical_root);
         const auto encoded_relative = relative_path.generic_u8string();
         const std::string relative(reinterpret_cast<const char*>(encoded_relative.data()),
                                    encoded_relative.size());
