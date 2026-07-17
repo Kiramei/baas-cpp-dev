@@ -224,67 +224,97 @@ void require_plain_root(const std::filesystem::path &root) {
   return true;
 }
 
+#ifdef _WIN32
+class NativeReadHandle final {
+public:
+  explicit NativeReadHandle(const HANDLE handle) noexcept : handle_(handle) {}
+  ~NativeReadHandle() {
+    if (handle_ != INVALID_HANDLE_VALUE)
+      CloseHandle(handle_);
+  }
+  NativeReadHandle(const NativeReadHandle &) = delete;
+  NativeReadHandle &operator=(const NativeReadHandle &) = delete;
+  [[nodiscard]] HANDLE get() const noexcept { return handle_; }
+
+private:
+  HANDLE handle_{INVALID_HANDLE_VALUE};
+};
+#else
+class NativeReadDescriptor final {
+public:
+  explicit NativeReadDescriptor(const int descriptor) noexcept
+      : descriptor_(descriptor) {}
+  ~NativeReadDescriptor() {
+    if (descriptor_ >= 0)
+      close(descriptor_);
+  }
+  NativeReadDescriptor(const NativeReadDescriptor &) = delete;
+  NativeReadDescriptor &operator=(const NativeReadDescriptor &) = delete;
+  [[nodiscard]] int get() const noexcept { return descriptor_; }
+
+private:
+  int descriptor_{-1};
+};
+#endif
+
 [[nodiscard]] std::string read_file(const std::filesystem::path &path) {
 #ifdef _WIN32
-  const auto handle = CreateFileW(
+  const auto raw_handle = CreateFileW(
       path.c_str(), GENERIC_READ,
       FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
       OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT,
       nullptr);
-  if (handle == INVALID_HANDLE_VALUE)
+  if (raw_handle == INVALID_HANDLE_VALUE)
     fail(RuntimeRepositoryTrustedPlanStateError::io);
-  const auto close = [&] { CloseHandle(handle); };
+  const NativeReadHandle handle{raw_handle};
   FILE_ATTRIBUTE_TAG_INFO attributes{};
   FILE_STANDARD_INFO information{};
-  if (!GetFileInformationByHandleEx(handle, FileAttributeTagInfo, &attributes,
+  if (!GetFileInformationByHandleEx(handle.get(), FileAttributeTagInfo, &attributes,
                                     sizeof(attributes)) ||
-      !GetFileInformationByHandleEx(handle, FileStandardInfo, &information,
+      !GetFileInformationByHandleEx(handle.get(), FileStandardInfo, &information,
                                     sizeof(information)) ||
       (attributes.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0 ||
       (attributes.FileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0 ||
       information.NumberOfLinks != 1 || information.EndOfFile.QuadPart < 0 ||
       static_cast<std::uint64_t>(information.EndOfFile.QuadPart) >
           maximum_state_bytes) {
-    close();
     fail(RuntimeRepositoryTrustedPlanStateError::invalid_state);
   }
   std::string result(static_cast<std::size_t>(information.EndOfFile.QuadPart),
                      '\0');
   DWORD read{};
   if ((!result.empty() &&
-       (!ReadFile(handle, result.data(), static_cast<DWORD>(result.size()),
+       (!ReadFile(handle.get(), result.data(), static_cast<DWORD>(result.size()),
                   &read, nullptr) ||
         read != result.size()))) {
-    close();
     fail(RuntimeRepositoryTrustedPlanStateError::io);
   }
-  close();
   return result;
 #else
-  const auto descriptor = open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
-  if (descriptor < 0)
+  const auto raw_descriptor =
+      open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+  if (raw_descriptor < 0)
     fail(RuntimeRepositoryTrustedPlanStateError::io);
+  const NativeReadDescriptor descriptor{raw_descriptor};
   struct stat information{};
-  if (fstat(descriptor, &information) != 0 || !S_ISREG(information.st_mode) ||
+  if (fstat(descriptor.get(), &information) != 0 ||
+      !S_ISREG(information.st_mode) ||
       information.st_nlink != 1 || information.st_size < 0 ||
       static_cast<std::uint64_t>(information.st_size) > maximum_state_bytes) {
-    close(descriptor);
     fail(RuntimeRepositoryTrustedPlanStateError::invalid_state);
   }
   std::string result(static_cast<std::size_t>(information.st_size), '\0');
   std::size_t offset{};
   while (offset < result.size()) {
     const auto count =
-        read(descriptor, result.data() + offset, result.size() - offset);
+        read(descriptor.get(), result.data() + offset, result.size() - offset);
     if (count < 0 && errno == EINTR)
       continue;
     if (count <= 0) {
-      close(descriptor);
       fail(RuntimeRepositoryTrustedPlanStateError::io);
     }
     offset += static_cast<std::size_t>(count);
   }
-  close(descriptor);
   return result;
 #endif
 }
