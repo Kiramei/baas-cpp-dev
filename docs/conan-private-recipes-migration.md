@@ -27,6 +27,30 @@ Export private recipes:
 python deploy/conan/scripts/manage_recipes.py export
 ```
 
+Windows BAAS App, Release (CPU):
+
+```powershell
+conan install deploy/conan `
+  -of build/conan/windows-msvc-release-baas `
+  -pr:h=deploy/conan/profiles/windows-msvc-release `
+  -pr:h=deploy/conan/profiles/dependency-versions-default `
+  -pr:b=deploy/conan/profiles/windows-msvc-release `
+  -pr:b=deploy/conan/profiles/dependency-versions-default `
+  -o "&:onnxruntime_use_cuda=False" `
+  -o "&:use_ffmpeg=True" `
+  -o "&:use_benchmark=True" `
+  --build=missing
+
+cmake --preset conan-windows-msvc-release-baas
+cmake --build --preset conan-windows-msvc-release-baas
+```
+
+For the CUDA artifact, use `onnxruntime_use_cuda=True`, output directory
+`build/conan/windows-msvc-release-baas-cuda`, and the
+`conan-windows-msvc-release-baas-cuda` configure/build preset. ONNX Runtime and
+its provider runtime files are copied from the Conan package graph; the CI does
+not download or splice individual DLLs into a repository-local directory.
+
 Windows OCR Server, Release:
 
 ```powershell
