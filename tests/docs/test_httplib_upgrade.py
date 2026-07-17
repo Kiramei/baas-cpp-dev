@@ -40,6 +40,7 @@ class HttplibUpgradeContractTests(unittest.TestCase):
         self.assertIn('"openssl/*:shared": False', conanfile)
         self.assertIn('"openssl/*:no_apps": True', conanfile)
         self.assertIn('"openssl/*:no_fips": True', conanfile)
+        self.assertIn('"openssl/*:no_legacy": True', conanfile)
         self.assertIn('"openssl/*:no_zlib": True', conanfile)
         self.assertIn('self.cpp_info.requires = ["openssl::openssl"]', conanfile)
         self.assertIn('exports_sources = "patches/*", "LICENSE"', conanfile)
