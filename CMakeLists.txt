@@ -118,6 +118,8 @@ option(BUILD_SERVICE_BUSINESS_PIPE_CHANNEL "Build provider/sync/remote Pipe adap
 option(BUILD_SERVICE_BUSINESS_PIPE_CHANNEL_TESTS "Build business Pipe adapter tests" OFF)
 option(BUILD_SERVICE_TRIGGER_EXECUTOR "Build the bounded trigger execution owner" OFF)
 option(BUILD_SERVICE_TRIGGER_EXECUTOR_TESTS "Build native tests for trigger execution ownership" OFF)
+option(BUILD_SERVICE_RUNTIME_TASK_OWNER "Build the service-owned runtime task lifecycle" OFF)
+option(BUILD_SERVICE_RUNTIME_TASK_OWNER_TESTS "Build runtime task lifecycle tests" OFF)
 option(BUILD_SERVICE_ROUTER     "Build the transport-independent BAAS service router" OFF)
 option(BUILD_SERVICE_ROUTER_TESTS "Build native tests for the BAAS service router" OFF)
 option(BUILD_SERVICE_ORIGIN_POLICY "Build the standalone HTTP Origin/CORS policy" OFF)
@@ -623,6 +625,12 @@ if(BUILD_SERVICE_TRIGGER_EXECUTOR AND NOT BUILD_SERVICE_TRIGGER_CATALOG)
     set(BUILD_SERVICE_TRIGGER_CATALOG ON CACHE BOOL "Build the transport-independent trigger command catalog" FORCE)
 endif()
 
+if(BUILD_SERVICE_RUNTIME_TASK_OWNER_TESTS
+   AND NOT BUILD_SERVICE_RUNTIME_TASK_OWNER)
+    set(BUILD_SERVICE_RUNTIME_TASK_OWNER ON CACHE BOOL
+        "Build the service-owned runtime task lifecycle" FORCE)
+endif()
+
 if(BUILD_SERVICE_ROUTER_TESTS AND NOT BUILD_SERVICE_ROUTER)
     set(BUILD_SERVICE_ROUTER ON CACHE BOOL "Build the transport-independent BAAS service router" FORCE)
 endif()
@@ -848,6 +856,10 @@ endif()
 
 if(BUILD_SERVICE_TRIGGER_EXECUTOR)
     include("${CMAKE_CURRENT_LIST_DIR}/cmake/ServiceTriggerExecutor.cmake")
+endif()
+
+if(BUILD_SERVICE_RUNTIME_TASK_OWNER)
+    include("${CMAKE_CURRENT_LIST_DIR}/cmake/ServiceRuntimeTaskOwner.cmake")
 endif()
 
 if(BUILD_SERVICE_TRIGGER_PIPE_CHANNEL)
