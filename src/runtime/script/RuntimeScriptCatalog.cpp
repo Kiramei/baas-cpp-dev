@@ -485,6 +485,38 @@ struct RuntimeScriptCatalog::Impl final {
     std::vector<Route> routes;
 };
 
+RuntimeScriptCatalogResolution::RuntimeScriptCatalogResolution(
+    std::shared_ptr<const void> owner,
+    const RuntimeScriptTaskDescriptor* const task_value,
+    const std::string_view requested_task_value,
+    const bool legacy_alias_value) noexcept
+    : task(task_value),
+      requested_task(requested_task_value),
+      legacy_alias(legacy_alias_value),
+      owner_(std::move(owner))
+{
+}
+
+RuntimeScriptCatalogResolution::RuntimeScriptCatalogResolution(
+    RuntimeScriptCatalogResolution&& other) noexcept
+    : task(other.task),
+      requested_task(other.requested_task),
+      legacy_alias(other.legacy_alias),
+      owner_(other.owner_)
+{
+}
+
+RuntimeScriptCatalogResolution& RuntimeScriptCatalogResolution::operator=(
+    RuntimeScriptCatalogResolution&& other) noexcept
+{
+    if (this == &other) return *this;
+    task = other.task;
+    requested_task = other.requested_task;
+    legacy_alias = other.legacy_alias;
+    owner_ = other.owner_;
+    return *this;
+}
+
 std::string_view runtime_script_catalog_error_name(
     const RuntimeScriptCatalogError error) noexcept
 {
@@ -550,7 +582,10 @@ std::optional<RuntimeScriptCatalogResolution> RuntimeScriptCatalog::resolve(
         return std::nullopt;
     }
     return RuntimeScriptCatalogResolution{
-        &impl_->tasks[found->task_index], found->requested_task, found->legacy_alias};
+        impl_,
+        &impl_->tasks[found->task_index],
+        found->requested_task,
+        found->legacy_alias};
 }
 
 RuntimeScriptCatalogLoadResult load_runtime_script_catalog(

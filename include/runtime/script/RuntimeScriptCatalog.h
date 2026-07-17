@@ -97,10 +97,35 @@ struct RuntimeScriptTaskDescriptor {
                            const RuntimeScriptTaskDescriptor&) = default;
 };
 
-struct RuntimeScriptCatalogResolution {
+class RuntimeScriptCatalogResolution final {
+public:
+    RuntimeScriptCatalogResolution(const RuntimeScriptCatalogResolution&) noexcept = default;
+    RuntimeScriptCatalogResolution& operator=(
+        const RuntimeScriptCatalogResolution&) noexcept = default;
+
+    // Keep the source owning its published views too. The public pointer/view
+    // therefore remain safe to inspect after either a copy or a move.
+    RuntimeScriptCatalogResolution(RuntimeScriptCatalogResolution&& other) noexcept;
+    RuntimeScriptCatalogResolution& operator=(
+        RuntimeScriptCatalogResolution&& other) noexcept;
+    ~RuntimeScriptCatalogResolution() = default;
+
     const RuntimeScriptTaskDescriptor* task{};
     std::string_view requested_task;
     bool legacy_alias{};
+
+private:
+    RuntimeScriptCatalogResolution(
+        std::shared_ptr<const void> owner,
+        const RuntimeScriptTaskDescriptor* task,
+        std::string_view requested_task,
+        bool legacy_alias) noexcept;
+
+    // Type-erased so the resolution can be declared before the catalog's
+    // private Impl. Callers cannot reset the owner independently of the views.
+    std::shared_ptr<const void> owner_;
+
+    friend class RuntimeScriptCatalog;
 };
 
 class RuntimeScriptCatalog;

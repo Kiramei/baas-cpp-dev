@@ -303,6 +303,58 @@ void test_success_exact_routes_versions_and_alias_data()
           "source task order must not change deterministic catalog output");
 }
 
+void test_resolution_owns_published_views()
+{
+    std::optional<catalog::RuntimeScriptCatalogResolution> escaped;
+    {
+        RepositoryFixture fixture{valid_catalog()};
+        const auto loaded = catalog::load_runtime_script_catalog(
+            fixture.scripts(), fixture.pin());
+        check(static_cast<bool>(loaded),
+              "the lifetime regression fixture must load");
+        if (!loaded) return;
+        escaped = loaded.catalog->resolve("solve", "start_main_story");
+    }
+    check(escaped && escaped->task != nullptr
+              && escaped->requested_task == "start_main_story"
+              && escaped->legacy_alias
+              && escaped->task->canonical_task == "main_story"
+              && escaped->task->entry_module == "tasks/entry",
+          "a resolution must retain its task and requested-task view after the "
+          "load result, catalog, repository view, and fixture are destroyed");
+    if (!escaped) return;
+
+    const auto copied = *escaped;
+    auto moved = std::move(*escaped);
+    check(copied.task->canonical_task == "main_story"
+              && copied.requested_task == "start_main_story"
+              && moved.task->canonical_task == "main_story"
+              && moved.requested_task == "start_main_story"
+              && escaped->task->canonical_task == "main_story"
+              && escaped->requested_task == "start_main_story",
+          "copying or moving a resolution must preserve every published view "
+          "on both the destination and source");
+    escaped.reset();
+    check(copied.task->canonical_task == "main_story"
+              && copied.requested_task == "start_main_story"
+              && moved.task->canonical_task == "main_story"
+              && moved.requested_task == "start_main_story",
+          "copied and moved resolutions must own their views independently of "
+          "the destroyed source");
+
+    RepositoryFixture fixture{valid_catalog()};
+    const auto one_line = catalog::load_runtime_script_catalog(
+        fixture.scripts(), fixture.pin()).catalog->resolve(
+            "solve", "start_group_story");
+    check(one_line && one_line->task != nullptr
+              && one_line->requested_task == "start_group_story"
+              && one_line->legacy_alias
+              && one_line->task->canonical_task == "group_story"
+              && one_line->task->package_manifest == "packages/core.json",
+          "a one-line resolve from a temporary load result must retain its task "
+          "and requested-task view");
+}
+
 void test_pin_repository_and_reference_boundaries()
 {
     RepositoryFixture fixture{valid_catalog()};
@@ -520,6 +572,7 @@ int main()
 {
     try {
         test_success_exact_routes_versions_and_alias_data();
+        test_resolution_owns_published_views();
         test_pin_repository_and_reference_boundaries();
         test_strict_json_schema_and_route_collisions();
         test_limits_and_cancellation();
