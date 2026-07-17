@@ -7,6 +7,13 @@ import re
 import unittest
 from pathlib import Path
 
+from scripts.migration.operation_index import (
+    BEGIN_MARKER,
+    END_MARKER,
+    render_generated_matrix,
+    stable_json,
+)
+
 
 ROOT = Path(__file__).resolve().parents[2]
 SPEC_PATH = ROOT / "docs" / "script-runtime" / "HOST_CAPABILITY_CONTRACTS.md"
@@ -56,10 +63,12 @@ EXPECTED_MODULES = (
     "baas/vision",
     "baas/ocr",
     "baas/device",
+    "baas/clock",
     "baas/config",
     "baas/log",
     "baas/notify",
     "baas/scheduler",
+    "baas/procedure",
     "baas/resource",
     "baas/fs",
     "baas/service",
@@ -153,6 +162,13 @@ class HostCapabilityContractTests(unittest.TestCase):
         )
         binding_ids: set[str] = set()
         capability_ids: set[str] = set()
+        common_binding_fields = {
+            "budget", "cancellation", "capability", "errors", "export", "id",
+            "parameters", "parity_test", "returns",
+        }
+        extension_binding_fields = {
+            "argument_contract", "composite_effects", "control_contract", "result_schema",
+        }
         for module in modules:
             self.assertRegex(module["id"], r"^baas/[a-z]+$")
             self.assertTrue(module["cpp_interfaces"])
@@ -166,6 +182,10 @@ class HostCapabilityContractTests(unittest.TestCase):
             for capability in module_capabilities:
                 self.assertRegex(capability, r"^[a-z]+(?:\.[a-z]+)+$")
             for binding in module["bindings"]:
+                self.assertFalse(
+                    set(binding) - common_binding_fields - extension_binding_fields,
+                    f"unknown binding catalog fields in {binding['id']}",
+                )
                 self.assertRegex(binding["id"], r"^host\.[a-z]+\.[a-z_]+\.v1$")
                 self.assertNotIn(binding["id"], binding_ids)
                 binding_ids.add(binding["id"])
@@ -179,9 +199,35 @@ class HostCapabilityContractTests(unittest.TestCase):
                 parameter_names = [item["name"] for item in binding["parameters"]]
                 self.assertEqual(len(parameter_names), len(set(parameter_names)))
                 for parameter in binding["parameters"]:
+                    self.assertFalse(
+                        set(parameter) - {"default", "name", "required", "type"},
+                        f"unknown parameter catalog fields in {binding['id']}",
+                    )
                     self.assertIsInstance(parameter["required"], bool)
                     self.assertTrue(parameter["type"])
-        self.assertEqual(len(binding_ids), 41)
+                    if "default" in parameter:
+                        self.assertFalse(parameter["required"])
+                        self.assertEqual(parameter["type"], "ordered-map")
+                        self.assertEqual(parameter["default"], {})
+                if "result_schema" in binding:
+                    schema = binding["result_schema"]
+                    self.assertEqual(set(schema), {"field_order", "fields", "unknown_fields"})
+                    self.assertEqual(schema["unknown_fields"], "forbidden")
+                    self.assertEqual(set(schema["field_order"]), set(schema["fields"]))
+                    self.assertEqual(len(schema["field_order"]), len(schema["fields"]))
+                    for field in schema["fields"].values():
+                        self.assertFalse(
+                            set(field) - {"required", "semantics", "type", "unit"},
+                            f"unknown result field catalog keys in {binding['id']}",
+                        )
+                        self.assertIs(field["required"], True)
+                        self.assertTrue(field["semantics"])
+                        self.assertTrue(field["type"])
+                if "composite_effects" in binding or "control_contract" in binding:
+                    self.assertEqual(binding["id"], "host.procedure.run.v1")
+                if "argument_contract" in binding:
+                    self.assertEqual(binding["id"], "host.device.lifecycle.v1")
+        self.assertEqual(len(binding_ids), 44)
 
     def test_catalog_covers_every_requested_domain_and_privileged_capability(self) -> None:
         capabilities = {
@@ -196,6 +242,7 @@ class HostCapabilityContractTests(unittest.TestCase):
             "device.capture",
             "device.input",
             "device.lifecycle",
+            "clock.read",
             "config.read",
             "config.write",
             "log.emit",
@@ -204,6 +251,7 @@ class HostCapabilityContractTests(unittest.TestCase):
             "scheduler.register",
             "scheduler.dispatch",
             "scheduler.schedule",
+            "procedure.execute",
             "resource.read",
             "filesystem.read",
             "filesystem.write",
@@ -292,6 +340,183 @@ class HostCapabilityContractTests(unittest.TestCase):
             "baas::script::host::SchedulerHost::dispatch",
         )
 
+    def test_procedure_clock_and_refresh_contracts_are_explicit_gaps(self) -> None:
+        modules = {module["id"]: module for module in self.catalog["modules"]}
+        procedure = modules["baas/procedure"]
+        self.assertEqual(procedure["cpp_interfaces"], ["baas::script::host::ProcedureHost"])
+        self.assertEqual(procedure["capabilities"], ["procedure.execute"])
+        self.assertEqual(
+            procedure["concurrency"],
+            {"mode": "device_strand", "strand_key": "device_id"},
+        )
+        binding = procedure["bindings"][0]
+        self.assertEqual(binding["id"], "host.procedure.run.v1")
+        self.assertEqual(binding["export"], "run")
+        self.assertEqual(
+            binding["parameters"],
+            [
+                {"name": "procedure_id", "required": True, "type": "string"},
+                {"default": {}, "name": "options", "required": False, "type": "ordered-map"},
+            ],
+        )
+        self.assertEqual(binding["returns"], "ordered-map<ProcedureResult>")
+        self.assertEqual(binding["cancellation"], "cooperative")
+        self.assertEqual(binding["budget"], "procedure_steps")
+        self.assertEqual(
+            binding["composite_effects"],
+            ["capture", "vision", "input", "wait", "foreground_check"],
+        )
+        self.assertEqual(
+            binding["control_contract"],
+            ["cooperative_cancellation", "context_or_call_timeout"],
+        )
+        self.assertEqual(
+            binding["result_schema"],
+            {
+                "field_order": ["end"],
+                "fields": {
+                    "end": {
+                        "required": True,
+                        "semantics": (
+                            "logical terminal match identifier selected by the registered "
+                            "procedure's deterministic ordered-match rules"
+                        ),
+                        "type": "string",
+                    }
+                },
+                "unknown_fields": "forbidden",
+            },
+        )
+        self.assertTrue(
+            {
+                "HOST003_CANCELLED",
+                "HOST004_DEADLINE_EXCEEDED",
+                "HOST005_BUDGET_EXCEEDED",
+                "HOST008_DEVICE_DISCONNECTED",
+                "HOST010_RESOURCE_NOT_FOUND",
+            }.issubset(binding["errors"])
+        )
+
+        clock = modules["baas/clock"]
+        self.assertEqual(clock["cpp_interfaces"], ["baas::script::host::ClockHost"])
+        self.assertEqual(clock["capabilities"], ["clock.read"])
+        self.assertEqual(clock["bindings"][0]["id"], "host.clock.now.v1")
+        self.assertEqual(clock["bindings"][0]["returns"], "ordered-map<ClockReading>")
+        self.assertEqual(
+            clock["bindings"][0]["result_schema"],
+            {
+                "field_order": ["unix_time_ns", "monotonic_time_ns"],
+                "fields": {
+                    "monotonic_time_ns": {
+                        "required": True,
+                        "semantics": (
+                            "nondecreasing execution-context elapsed-time source with an "
+                            "unspecified epoch"
+                        ),
+                        "type": "int",
+                        "unit": "nanoseconds",
+                    },
+                    "unix_time_ns": {
+                        "required": True,
+                        "semantics": (
+                            "signed nanoseconds since 1970-01-01T00:00:00Z excluding leap seconds"
+                        ),
+                        "type": "int",
+                        "unit": "nanoseconds",
+                    },
+                },
+                "unknown_fields": "forbidden",
+            },
+        )
+
+        lifecycle = next(
+            item for item in modules["baas/device"]["bindings"]
+            if item["id"] == "host.device.lifecycle.v1"
+        )
+        self.assertEqual(lifecycle["capability"], "device.lifecycle")
+        self.assertEqual(lifecycle["cancellation"], "cooperative")
+        self.assertTrue(
+            {
+                "HOST002_INVALID_ARGUMENT",
+                "HOST003_CANCELLED",
+                "HOST004_DEADLINE_EXCEEDED",
+                "HOST005_BUDGET_EXCEEDED",
+                "HOST006_UNAVAILABLE",
+                "HOST008_DEVICE_DISCONNECTED",
+            }.issubset(lifecycle["errors"])
+        )
+        self.assertEqual(lifecycle["parameters"][-1], {
+            "default": {}, "name": "options", "required": False, "type": "ordered-map",
+        })
+        self.assertEqual(
+            lifecycle["argument_contract"],
+            {
+                "action_values": ["stop", "start", "wait_ready"],
+                "target_kinds": {
+                    "application": ["stop", "start"],
+                    "automation_service": ["stop", "start", "wait_ready"],
+                },
+            },
+        )
+        self.assertEqual(
+            lifecycle["result_schema"],
+            {
+                "field_order": ["target_kind", "target_id", "state"],
+                "fields": {
+                    "state": {
+                        "required": True,
+                        "semantics": "observed postcondition: stopped, started, or ready",
+                        "type": "string",
+                    },
+                    "target_id": {
+                        "required": True,
+                        "semantics": "logical policy-approved target identifier",
+                        "type": "string",
+                    },
+                    "target_kind": {
+                        "required": True,
+                        "semantics": "application or automation_service",
+                        "type": "string",
+                    },
+                },
+                "unknown_fields": "forbidden",
+            },
+        )
+
+        rules = {rule["id"]: rule for rule in self.rules["rules"]}
+        self.assertEqual(
+            rules["procedure-host-v5"]["symbol_patterns"],
+            ["core.picture.co_detect"],
+        )
+        self.assertNotEqual(
+            rules["procedure-host-v5"]["cpp_host_binding"],
+            rules["vision-host-v2"]["cpp_host_binding"],
+        )
+        self.assertEqual(
+            rules["device-lifecycle-host-v5"]["symbol_patterns"],
+            [
+                "self.u2.app_stop",
+                "self.u2.uiautomator.start",
+                "self.wait_uiautomator_start",
+            ],
+        )
+        self.assertEqual(rules["clock-host-v5"]["symbol_patterns"], ["time.time"])
+        normalized_spec = re.sub(r"\s+", " ", self.spec)
+        for anchor in (
+            "baas/procedure.run",
+            "host.procedure.run.v1",
+            "procedure.execute",
+            "logical ID",
+            "native source path",
+            "capture, vision, input, wait, and foreground-package checks",
+            "no ProcedureHost adapter",
+            "no ClockHost adapter",
+            "host.device.lifecycle.v1",
+            "DeviceHost::lifecycle",
+            "deterministic empty ordered-map",
+        ):
+            self.assertIn(anchor, normalized_spec)
+
     def test_every_host_decision_has_an_exact_catalog_mapping(self) -> None:
         mappings = {item["rule"]: item for item in self.catalog["taxonomy_mappings"]}
         self.assertEqual(len(mappings), len(self.catalog["taxonomy_mappings"]))
@@ -308,7 +533,7 @@ class HostCapabilityContractTests(unittest.TestCase):
             for decision in operation["scope_decisions"]:
                 if decision["disposition"] == "HOST_BINDING_REQUIRED":
                     host_decisions.append((operation, decision))
-        self.assertEqual(len(host_decisions), 145)
+        self.assertEqual(len(host_decisions), 149)
         decision_rules = {decision["classification_rule"] for _, decision in host_decisions}
         self.assertTrue(decision_rules.issubset(mappings))
         self.assertEqual(
@@ -459,6 +684,26 @@ class HostCapabilityContractTests(unittest.TestCase):
                 self.assertIn(decision["parity_test_id"], row)
                 self.assertIn("INVENTORIED", row)
 
+    def test_generated_evidence_source_counts_and_matrix_have_no_drift(self) -> None:
+        self.assertEqual(
+            self.index["repository"],
+            {
+                "revision": "75bbacb545bc87e9510d85cbe8034f9180397004",
+                "source_snapshot_sha256": "76f974d77e7c63034296acefb86a707e150c68602db007f4dbec891c66f712ec",
+            },
+        )
+        summary = self.index["summary"]
+        self.assertEqual(summary["python_files"], 569)
+        self.assertEqual(summary["operation_count"], 4340)
+        self.assertEqual(summary["call_sites"], 15469)
+        self.assertEqual(summary["scope_decision_count"], 5060)
+        self.assertEqual(stable_json(self.index), read(INDEX_PATH))
+
+        generated = render_generated_matrix(self.index, "evidence/operation-index.json")
+        begin = self.matrix.index(BEGIN_MARKER)
+        end = self.matrix.index(END_MARKER, begin) + len(END_MARKER)
+        self.assertEqual(self.matrix[begin:end], generated.rstrip())
+
     def test_package_language_and_architecture_contracts_are_consistent(self) -> None:
         for anchor in (
             "effective capability set is the intersection",
@@ -522,6 +767,8 @@ class HostCapabilityContractTests(unittest.TestCase):
             ROOT / "include" / "script" / "host" / "HttpHost.h",
             ROOT / "include" / "script" / "host" / "SocketHost.h",
             ROOT / "include" / "script" / "host" / "ServiceHost.h",
+            ROOT / "include" / "script" / "host" / "ProcedureHost.h",
+            ROOT / "include" / "script" / "host" / "ClockHost.h",
         ):
             self.assertFalse(path.exists(), f"update implementation boundary when added: {path}")
 

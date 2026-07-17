@@ -178,6 +178,47 @@ class OperationIndexTests(unittest.TestCase):
         self.assertEqual(process["owner"], "Runtime Privileged I/O")
         self.assertEqual(process["parity_test_id"], "PARITY-PROCESS-HOST")
         self.assertGreater(report["summary"]["unresolved_disposition_scope_decisions"], 0)
+
+    def test_composite_procedure_device_lifecycle_and_clock_have_explicit_hosts(self) -> None:
+        report = self.generate()
+        by_symbol = {}
+        for operation in report["operations"]:
+            by_symbol.setdefault(operation["symbol"], []).append(operation)
+
+        procedure = next(
+            operation
+            for operation in by_symbol["core.picture.co_detect"]
+            if operation["call_form"] == "alias-member"
+        )
+        procedure_decision = self.scope_decision(procedure, "SCRIPT_RUNTIME")
+        self.assertEqual(procedure_decision["classification_rule"], "procedure-host-v5")
+        self.assertEqual(procedure_decision["family"], "automation.procedure")
+        self.assertEqual(
+            procedure_decision["cpp_host_binding"],
+            "baas::script::host::ProcedureHost",
+        )
+        self.assertEqual(procedure_decision["parity_test_id"], "PARITY-PROCEDURE-HOST")
+        for effect in ("capture", "vision", "input", "wait", "foreground", "cancellation", "timeout"):
+            self.assertIn(effect, procedure_decision["disposition_reason"])
+
+        for symbol in (
+            "self.u2.app_stop",
+            "self.u2.uiautomator.start",
+            "self.wait_uiautomator_start",
+        ):
+            decision = self.scope_decision(by_symbol[symbol][0], "SCRIPT_RUNTIME")
+            self.assertEqual(decision["classification_rule"], "device-lifecycle-host-v5")
+            self.assertEqual(decision["family"], "device.lifecycle")
+            self.assertEqual(
+                decision["cpp_host_binding"],
+                "baas::script::host::DeviceHost::lifecycle",
+            )
+
+        clock = self.scope_decision(by_symbol["time.time"][0], "SCRIPT_RUNTIME")
+        self.assertEqual(clock["classification_rule"], "clock-host-v5")
+        self.assertEqual(clock["family"], "time.clock")
+        self.assertEqual(clock["cpp_host_binding"], "baas::script::host::ClockHost")
+        self.assertEqual(clock["parity_test_id"], "PARITY-CLOCK-HOST")
         self.assertEqual(report["summary"]["host_binding_gaps"], 0)
 
     def test_frozen_source_boundaries_do_not_require_receiver_inference(self) -> None:

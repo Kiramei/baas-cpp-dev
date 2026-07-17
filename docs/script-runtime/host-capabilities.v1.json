@@ -4,6 +4,7 @@
     "minor": 0
   },
   "budget_scopes": [
+    {"budget": "clock_reads", "scope": "host_operation"},
     {"budget": "config_read_operations", "scope": "host_operation"},
     {"budget": "config_write_operations", "scope": "host_operation"},
     {"budget": "device_operations", "scope": "host_operation"},
@@ -15,6 +16,7 @@
     {"budget": "ocr_model_bytes", "scope": "external_memory"},
     {"budget": "ocr_work_units", "scope": "host_operation"},
     {"budget": "process_operations", "scope": "host_operation"},
+    {"budget": "procedure_steps", "scope": "host_operation"},
     {"budget": "resource_bytes", "scope": "external_memory"},
     {"budget": "resource_lookups", "scope": "host_operation"},
     {"budget": "scheduler_operations", "scope": "host_operation"},
@@ -83,13 +85,24 @@
         {"budget": "device_operations", "cancellation": "cooperative", "capability": "device.capture", "errors": ["HOST002_INVALID_ARGUMENT", "HOST003_CANCELLED", "HOST004_DEADLINE_EXCEEDED", "HOST005_BUDGET_EXCEEDED", "HOST008_DEVICE_DISCONNECTED", "HOST014_INTERNAL"], "export": "capture", "id": "host.device.capture.v1", "parameters": [{"name": "device", "required": true, "type": "host<Device>"}, {"name": "options", "required": false, "type": "ordered-map"}], "parity_test": "PARITY-DEVICE-HOST", "returns": "host<Image>"},
         {"budget": "device_operations", "cancellation": "cooperative", "capability": "device.input", "errors": ["HOST002_INVALID_ARGUMENT", "HOST003_CANCELLED", "HOST004_DEADLINE_EXCEEDED", "HOST005_BUDGET_EXCEEDED", "HOST008_DEVICE_DISCONNECTED", "HOST014_INTERNAL"], "export": "click", "id": "host.device.click.v1", "parameters": [{"name": "device", "required": true, "type": "host<Device>"}, {"name": "point", "required": true, "type": "ordered-map<Point>"}, {"name": "options", "required": false, "type": "ordered-map"}], "parity_test": "PARITY-DEVICE-HOST", "returns": "null"},
         {"budget": "device_operations", "cancellation": "cooperative", "capability": "device.input", "errors": ["HOST002_INVALID_ARGUMENT", "HOST003_CANCELLED", "HOST004_DEADLINE_EXCEEDED", "HOST005_BUDGET_EXCEEDED", "HOST008_DEVICE_DISCONNECTED", "HOST014_INTERNAL"], "export": "swipe", "id": "host.device.swipe.v1", "parameters": [{"name": "device", "required": true, "type": "host<Device>"}, {"name": "from", "required": true, "type": "ordered-map<Point>"}, {"name": "to", "required": true, "type": "ordered-map<Point>"}, {"name": "options", "required": false, "type": "ordered-map"}], "parity_test": "PARITY-DEVICE-HOST", "returns": "null"},
-        {"budget": "device_operations", "cancellation": "cooperative", "capability": "device.lifecycle", "errors": ["HOST002_INVALID_ARGUMENT", "HOST003_CANCELLED", "HOST004_DEADLINE_EXCEEDED", "HOST005_BUDGET_EXCEEDED", "HOST008_DEVICE_DISCONNECTED", "HOST014_INTERNAL"], "export": "app_control", "id": "host.device.app_control.v1", "parameters": [{"name": "device", "required": true, "type": "host<Device>"}, {"name": "action", "required": true, "type": "string"}, {"name": "package", "required": true, "type": "string"}, {"name": "options", "required": false, "type": "ordered-map"}], "parity_test": "PARITY-DEVICE-HOST", "returns": "ordered-map"}
+        {"budget": "device_operations", "cancellation": "cooperative", "capability": "device.lifecycle", "errors": ["HOST002_INVALID_ARGUMENT", "HOST003_CANCELLED", "HOST004_DEADLINE_EXCEEDED", "HOST005_BUDGET_EXCEEDED", "HOST008_DEVICE_DISCONNECTED", "HOST014_INTERNAL"], "export": "app_control", "id": "host.device.app_control.v1", "parameters": [{"name": "device", "required": true, "type": "host<Device>"}, {"name": "action", "required": true, "type": "string"}, {"name": "package", "required": true, "type": "string"}, {"name": "options", "required": false, "type": "ordered-map"}], "parity_test": "PARITY-DEVICE-HOST", "returns": "ordered-map"},
+        {"argument_contract": {"action_values": ["stop", "start", "wait_ready"], "target_kinds": {"application": ["stop", "start"], "automation_service": ["stop", "start", "wait_ready"]}}, "budget": "device_operations", "cancellation": "cooperative", "capability": "device.lifecycle", "errors": ["HOST001_CAPABILITY_DENIED", "HOST002_INVALID_ARGUMENT", "HOST003_CANCELLED", "HOST004_DEADLINE_EXCEEDED", "HOST005_BUDGET_EXCEEDED", "HOST006_UNAVAILABLE", "HOST008_DEVICE_DISCONNECTED", "HOST014_INTERNAL"], "export": "lifecycle", "id": "host.device.lifecycle.v1", "parameters": [{"name": "device", "required": true, "type": "host<Device>"}, {"name": "target_kind", "required": true, "type": "string"}, {"name": "target_id", "required": true, "type": "string"}, {"name": "action", "required": true, "type": "string"}, {"default": {}, "name": "options", "required": false, "type": "ordered-map"}], "parity_test": "PARITY-DEVICE-HOST", "result_schema": {"field_order": ["target_kind", "target_id", "state"], "fields": {"state": {"required": true, "semantics": "observed postcondition: stopped, started, or ready", "type": "string"}, "target_id": {"required": true, "semantics": "logical policy-approved target identifier", "type": "string"}, "target_kind": {"required": true, "semantics": "application or automation_service", "type": "string"}}, "unknown_fields": "forbidden"}, "returns": "ordered-map<DeviceLifecycleResult>"}
       ],
       "capabilities": ["device.capture", "device.input", "device.lifecycle"],
       "concurrency": {"mode": "device_strand", "strand_key": "device_id"},
       "cpp_interfaces": ["baas::script::host::DeviceHost"],
       "default_budget": "device_operations",
       "id": "baas/device"
+    },
+    {
+      "bindings": [
+        {"budget": "clock_reads", "cancellation": "preflight", "capability": "clock.read", "errors": ["HOST001_CAPABILITY_DENIED", "HOST005_BUDGET_EXCEEDED", "HOST006_UNAVAILABLE", "HOST014_INTERNAL"], "export": "now", "id": "host.clock.now.v1", "parameters": [], "parity_test": "PARITY-CLOCK-HOST", "result_schema": {"field_order": ["unix_time_ns", "monotonic_time_ns"], "fields": {"monotonic_time_ns": {"required": true, "semantics": "nondecreasing execution-context elapsed-time source with an unspecified epoch", "type": "int", "unit": "nanoseconds"}, "unix_time_ns": {"required": true, "semantics": "signed nanoseconds since 1970-01-01T00:00:00Z excluding leap seconds", "type": "int", "unit": "nanoseconds"}}, "unknown_fields": "forbidden"}, "returns": "ordered-map<ClockReading>"}
+      ],
+      "capabilities": ["clock.read"],
+      "concurrency": {"mode": "context_strand", "strand_key": "execution_context_id"},
+      "cpp_interfaces": ["baas::script::host::ClockHost"],
+      "default_budget": "clock_reads",
+      "id": "baas/clock"
     },
     {
       "bindings": [
@@ -137,6 +150,16 @@
       "cpp_interfaces": ["baas::script::host::SchedulerHost"],
       "default_budget": "scheduler_operations",
       "id": "baas/scheduler"
+    },
+    {
+      "bindings": [
+        {"budget": "procedure_steps", "cancellation": "cooperative", "capability": "procedure.execute", "composite_effects": ["capture", "vision", "input", "wait", "foreground_check"], "control_contract": ["cooperative_cancellation", "context_or_call_timeout"], "errors": ["HOST001_CAPABILITY_DENIED", "HOST002_INVALID_ARGUMENT", "HOST003_CANCELLED", "HOST004_DEADLINE_EXCEEDED", "HOST005_BUDGET_EXCEEDED", "HOST006_UNAVAILABLE", "HOST008_DEVICE_DISCONNECTED", "HOST010_RESOURCE_NOT_FOUND", "HOST014_INTERNAL", "HOST016_BACKPRESSURE"], "export": "run", "id": "host.procedure.run.v1", "parameters": [{"name": "procedure_id", "required": true, "type": "string"}, {"default": {}, "name": "options", "required": false, "type": "ordered-map"}], "parity_test": "PARITY-PROCEDURE-HOST", "result_schema": {"field_order": ["end"], "fields": {"end": {"required": true, "semantics": "logical terminal match identifier selected by the registered procedure's deterministic ordered-match rules", "type": "string"}}, "unknown_fields": "forbidden"}, "returns": "ordered-map<ProcedureResult>"}
+      ],
+      "capabilities": ["procedure.execute"],
+      "concurrency": {"mode": "device_strand", "strand_key": "device_id"},
+      "cpp_interfaces": ["baas::script::host::ProcedureHost"],
+      "default_budget": "procedure_steps",
+      "id": "baas/procedure"
     },
     {
       "bindings": [
@@ -219,6 +242,9 @@
   "taxonomy_mappings": [
     {"cpp_binding": "baas::script::host::SchedulerHost::register_task", "families": ["task.scheduler"], "modules": ["baas/scheduler"], "parity_test": "PARITY-TASK-REGISTRY", "rule": "task-registry-v2"},
     {"cpp_binding": "baas::script::host::SchedulerHost::dispatch", "families": ["task.action"], "modules": ["baas/scheduler"], "parity_test": "PARITY-TASK-ACTION", "rule": "task-action-dispatch-v2"},
+    {"cpp_binding": "baas::script::host::ProcedureHost", "families": ["automation.procedure"], "modules": ["baas/procedure"], "parity_test": "PARITY-PROCEDURE-HOST", "rule": "procedure-host-v5"},
+    {"cpp_binding": "baas::script::host::DeviceHost::lifecycle", "families": ["device.lifecycle"], "modules": ["baas/device"], "parity_test": "PARITY-DEVICE-HOST", "rule": "device-lifecycle-host-v5"},
+    {"cpp_binding": "baas::script::host::ClockHost", "families": ["time.clock"], "modules": ["baas/clock"], "parity_test": "PARITY-CLOCK-HOST", "rule": "clock-host-v5"},
     {"cpp_binding": "baas::script::host::DeviceHost", "families": ["device.input-capture"], "modules": ["baas/device"], "parity_test": "PARITY-DEVICE-HOST", "rule": "device-host-v2"},
     {"cpp_binding": "baas::script::host::DeviceHost", "families": ["device.emulator-discovery"], "modules": ["baas/device"], "parity_test": "PARITY-DEVICE-HOST", "rule": "emulator-registry-device-boundary-v4"},
     {"cpp_binding": "baas::script::host::DeviceHost", "families": ["device.native-adapter"], "modules": ["baas/device"], "parity_test": "PARITY-DEVICE-HOST", "rule": "nemu-native-device-boundary-v4"},
