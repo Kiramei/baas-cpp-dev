@@ -54,7 +54,7 @@ class ProductionProviderBackendContractTests(unittest.TestCase):
         self.assertIn("BAAS_service_provider_backend", self.cmake)
         self.assertIn("BAAS_service_provider_backend_tests", self.cmake)
         self.assertIn("BUILD_SERVICE_PROVIDER_BACKEND_TESTS", self.root_cmake)
-        self.assertIn('/src/service/app/.*\\\\.cpp$', self.root_cmake)
+        self.assertIn('/src/service/.*\\\\.cpp$', self.root_cmake)
 
 
 if __name__ == "__main__":

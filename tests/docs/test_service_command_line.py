@@ -70,7 +70,7 @@ class ServiceCommandLineSpecTests(unittest.TestCase):
         self.assertIn("BAAS_service_command_line", self.cmake)
         self.assertIn("BAAS_service_command_line_tests", self.cmake)
         self.assertIn("BUILD_SERVICE_COMMAND_LINE_TESTS", self.root_cmake)
-        self.assertIn('/src/service/app/.*\\\\.cpp$', self.root_cmake)
+        self.assertIn('/src/service/.*\\\\.cpp$', self.root_cmake)
         self.assertIn("BUILD_SERVICE_COMMAND_LINE_TESTS=ON", self.workflow)
         self.assertIn("BAAS_service_command_line_tests", self.workflow)
         self.assertEqual(

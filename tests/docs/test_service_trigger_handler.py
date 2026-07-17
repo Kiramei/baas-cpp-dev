@@ -19,7 +19,7 @@ class ServiceTriggerHandlerDocsTests(unittest.TestCase):
         self.assertIn("fail_send", source)
         self.assertIn("BAAS_service_trigger_handler_tests", cmake)
         self.assertIn(
-            'EXCLUDE REGEX "/src/service/channels/TriggerHandler\\\\.cpp$"',
+            'EXCLUDE REGEX "/src/service/.*\\\\.cpp$"',
             root_cmake,
         )
         self.assertIn("BUILD_SERVICE_TRIGGER_HANDLER_TESTS=ON", workflow)
