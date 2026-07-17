@@ -168,7 +168,8 @@ struct DuplicateKeyState final {
 
 [[nodiscard]] std::vector<std::byte> read_verified(
     const repository::RuntimeRepositoryReadView& scripts, const std::string_view path,
-    const std::uintmax_t limit, const std::stop_token stop) {
+    const std::uintmax_t limit, const RuntimeProcedureActivationError file_limit_error,
+    const std::stop_token stop) {
     try {
         return scripts.read(path, limit, stop);
     } catch (const repository::RuntimeRepositoryReadError& error) {
@@ -178,7 +179,7 @@ struct DuplicateKeyState final {
         if (error.code() == resource_exhausted)
             fail(RuntimeProcedureActivationError::resource_exhausted);
         if (error.code() == file_limit_exceeded)
-            fail(RuntimeProcedureActivationError::definition_too_large);
+            fail(file_limit_error);
         fail(RuntimeProcedureActivationError::repository_read_failed);
     }
 }
@@ -531,7 +532,8 @@ RuntimeProcedureActivationLoadResult load_runtime_procedure_activation(
         work.charge(static_cast<std::size_t>(manifest->size));
         invoke_hook(RuntimeProcedureActivationHookPoint::before_manifest_read);
         auto manifest_bytes = read_verified(
-            scripts, runtime_procedure_manifest_path, limits.max_manifest_bytes, stop_token);
+            scripts, runtime_procedure_manifest_path, limits.max_manifest_bytes,
+            RuntimeProcedureActivationError::manifest_too_large, stop_token);
         check_cancelled(stop_token);
         auto document = parse_strict_json(bytes_as_string(manifest_bytes), limits);
         invoke_hook(RuntimeProcedureActivationHookPoint::after_manifest_parse);
@@ -618,7 +620,8 @@ RuntimeProcedureActivationLoadResult load_runtime_procedure_activation(
             work.charge(entry.size);
             invoke_hook(RuntimeProcedureActivationHookPoint::before_definition_read);
             auto definition_bytes = read_verified(
-                scripts, entry.path, limits.max_definition_bytes, stop_token);
+                scripts, entry.path, limits.max_definition_bytes,
+                RuntimeProcedureActivationError::definition_too_large, stop_token);
             check_cancelled(stop_token);
             if (definition_bytes.size() != entry.size ||
                 snapshot_resources::sha256_hex(definition_bytes) != entry.sha256)
