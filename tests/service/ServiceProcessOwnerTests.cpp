@@ -402,7 +402,7 @@ void test_invalid_configuration(const std::filesystem::path& helper)
               == supervisor::ServiceProcessError::invalid_configuration,
           "noncanonical generation must be rejected");
 
-    for (const auto generation : {
+    for (const auto& generation : {
              std::string(63, 'a'), std::string(65, 'a'),
              std::string(64, 'g')}) {
         invalid = config(value);

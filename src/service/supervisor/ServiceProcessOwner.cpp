@@ -24,6 +24,10 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#if defined(__APPLE__)
+#include <AvailabilityMacros.h>
+#endif
+
 #endif
 
 namespace baas::service::supervisor {
@@ -268,6 +272,32 @@ private:
         "--runtime-repository-generation",
         config.generation,
     };
+}
+
+[[nodiscard]] int add_spawn_working_directory(
+    posix_spawn_file_actions_t* actions,
+    const std::filesystem::path& directory) noexcept
+{
+#if defined(__APPLE__) \
+    && defined(__MAC_OS_X_VERSION_MIN_REQUIRED) \
+    && __MAC_OS_X_VERSION_MIN_REQUIRED >= 260000
+    // macOS 26 made the standardized spelling available. Calling it only for
+    // a 26+ deployment target keeps binaries targeting older macOS releases
+    // free of a new symbol dependency.
+    return posix_spawn_file_actions_addchdir(actions, directory.c_str());
+#elif defined(__APPLE__)
+    // The _np spelling is the only deployment-compatible API before macOS 26.
+    // SDK 26 deprecates it at compile time even when the deployment target is
+    // older, so isolate the unavoidable compatibility call narrowly.
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+    const int result =
+        posix_spawn_file_actions_addchdir_np(actions, directory.c_str());
+#pragma clang diagnostic pop
+    return result;
+#else
+    return posix_spawn_file_actions_addchdir_np(actions, directory.c_str());
+#endif
 }
 
 struct PosixEmergencyReaperState final {
@@ -627,8 +657,8 @@ private:
             return {ServiceProcessError::launch_failed, 0};
         }
 #endif
-        if (posix_spawn_file_actions_addchdir_np(
-                &actions, config.working_directory.c_str()) != 0) {
+        if (add_spawn_working_directory(
+                &actions, config.working_directory) != 0) {
             destroy_actions();
             return {ServiceProcessError::launch_failed, 0};
         }
