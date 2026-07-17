@@ -1,6 +1,7 @@
 #include "service/runtime/RuntimeTaskOwner.h"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -48,6 +49,196 @@ template <typename Predicate>
     return {
         std::move(config_id), std::move(run_mode), std::string{"first"},
         {"second", "third"}};
+}
+
+void test_start_reservation_commit_and_rollback()
+{
+    static_assert(!std::is_copy_constructible_v<
+                  runtime::RuntimeTaskStartReservation>);
+    static_assert(std::is_nothrow_move_constructible_v<
+                  runtime::RuntimeTaskStartReservation>);
+    static_assert(std::is_nothrow_move_assignable_v<
+                  runtime::RuntimeTaskStartReservation>);
+
+    std::atomic<int> backend_calls{};
+    runtime::RuntimeTaskOwner owner{
+        [&backend_calls](
+            const runtime::RuntimeTaskRequest&, std::stop_token,
+            const runtime::RuntimeTaskProgressReporter&) {
+            backend_calls.fetch_add(1);
+            return runtime::RuntimeTaskTerminal{false, std::nullopt};
+        }};
+
+    {
+        auto prepared = owner.prepare_start(request("rollback"));
+        check(static_cast<bool>(prepared),
+              "start reservation prepares a gated worker");
+        check(prepared.snapshot && prepared.snapshot->running,
+              "prepare returns the complete future start response");
+        check(!owner.snapshot("rollback") && owner.snapshots().empty(),
+              "uncommitted reservation is absent from public snapshots");
+        std::this_thread::sleep_for(20ms);
+        check(backend_calls.load() == 0,
+              "gated worker cannot enter backend before commit");
+    }
+    check(backend_calls.load() == 0 && !owner.snapshot("rollback"),
+          "reservation destruction rolls back and never invokes backend");
+
+    auto committed = owner.prepare_start(request("commit"));
+    check(static_cast<bool>(committed) && !owner.snapshot("commit"),
+          "committed config remains invisible until ownership transfer");
+    committed.reservation.commit();
+    check(!static_cast<bool>(committed.reservation),
+          "commit consumes the move-only reservation exactly once");
+    check(wait_until([&backend_calls] { return backend_calls.load() == 1; }),
+          "commit releases the gate and invokes backend once");
+    check(owner.wait_for_idle("commit", 3s),
+          "committed worker publishes terminal state");
+    const auto terminal = owner.snapshot("commit");
+    check(terminal && !terminal->running,
+          "committed worker becomes the visible config generation");
+}
+
+void test_start_reservation_conflict_and_thread_failure()
+{
+    std::atomic<int> backend_calls{};
+    runtime::RuntimeTaskOwner owner{
+        [&backend_calls](
+            const runtime::RuntimeTaskRequest&, std::stop_token,
+            const runtime::RuntimeTaskProgressReporter&) {
+            backend_calls.fetch_add(1);
+            return runtime::RuntimeTaskTerminal{false, std::nullopt};
+        }};
+
+    std::atomic<int> ready{};
+    std::atomic<bool> release{};
+    std::array<runtime::RuntimeTaskStartDecision, 2> decisions{};
+    std::array<runtime::RuntimeTaskStartReservation, 2> reservations;
+    std::array<std::thread, 2> contenders;
+    for (std::size_t index = 0; index < contenders.size(); ++index) {
+        contenders[index] = std::thread{[&, index] {
+            ready.fetch_add(1);
+            while (!release.load()) std::this_thread::yield();
+            auto prepared = owner.prepare_start(request("contended"));
+            decisions[index] = prepared.decision;
+            reservations[index] = std::move(prepared.reservation);
+        }};
+    }
+    check(wait_until([&ready] { return ready.load() == 2; }),
+          "same-config contenders reach the prepare race");
+    release = true;
+    for (auto& contender : contenders) contender.join();
+    const auto prepared_count = std::count(
+        decisions.begin(), decisions.end(),
+        runtime::RuntimeTaskStartDecision::started);
+    const auto conflict_count = std::count(
+        decisions.begin(), decisions.end(),
+        runtime::RuntimeTaskStartDecision::reservation_conflict);
+    check(prepared_count == 1 && conflict_count == 1,
+          "same-config prepare race has one winner and deterministic conflict");
+    check(runtime::runtime_task_start_decision_name(
+              runtime::RuntimeTaskStartDecision::reservation_conflict)
+              == "reservation-conflict",
+          "reservation conflict has a stable decision spelling");
+    check(!owner.snapshot("contended") && backend_calls.load() == 0,
+          "contended uncommitted winner is neither visible nor executing");
+    for (auto& reservation : reservations) {
+        reservation = runtime::RuntimeTaskStartReservation{};
+    }
+
+    runtime::RuntimeTaskOwnerTestAccess::fail_next_thread_start(owner);
+    auto failed = owner.prepare_start(request("thread-failure"));
+    check(failed.decision
+              == runtime::RuntimeTaskStartDecision::thread_start_failed
+              && !failed.reservation && failed.snapshot
+              && !failed.snapshot->running && failed.snapshot->exit_code == 1,
+          "forced thread creation failure returns a terminal failure response");
+    const auto failure_snapshot = owner.snapshot("thread-failure");
+    check(failure_snapshot && !failure_snapshot->running
+              && failure_snapshot->exit_code == 1
+              && backend_calls.load() == 0,
+          "thread creation failure preserves legacy visible terminal state");
+
+    auto retry = owner.prepare_start(request("thread-failure"));
+    check(static_cast<bool>(retry),
+          "completed thread-start failure can be prepared again");
+    retry.reservation.commit();
+    check(owner.wait_for_idle("thread-failure", 3s)
+              && backend_calls.load() == 1,
+          "retry after forced thread failure commits normally");
+}
+
+void test_start_reservation_shutdown_linearization()
+{
+    struct ShutdownGate {
+        std::atomic<bool> closed{};
+        std::atomic<bool> release{};
+    } shutdown_gate;
+    std::atomic<int> backend_calls{};
+    std::atomic<bool> observed_stop{};
+    runtime::RuntimeTaskOwner owner{
+        [&backend_calls, &observed_stop](
+            const runtime::RuntimeTaskRequest&, const std::stop_token stop,
+            const runtime::RuntimeTaskProgressReporter&) {
+            backend_calls.fetch_add(1);
+            observed_stop = stop.stop_requested();
+            return runtime::RuntimeTaskTerminal{false, std::nullopt};
+        }};
+    runtime::RuntimeTaskOwnerTestAccess::set_after_shutdown_closed_hook(
+        owner,
+        +[](void* context) noexcept {
+            auto& gate = *static_cast<ShutdownGate*>(context);
+            gate.closed = true;
+            while (!gate.release.load()) std::this_thread::yield();
+        },
+        &shutdown_gate);
+
+    auto prepared = owner.prepare_start(request("shutdown-commit"));
+    check(static_cast<bool>(prepared),
+          "shutdown race has an outstanding prepared start");
+    std::thread shutdown{[&owner] { owner.shutdown(); }};
+    check(wait_until([&shutdown_gate] { return shutdown_gate.closed.load(); }),
+          "shutdown closes admission before reservation commit");
+    prepared.reservation.commit();
+    shutdown_gate.release = true;
+    shutdown.join();
+    check(backend_calls.load() == 1 && observed_stop.load(),
+          "commit after shutdown linearization executes once with stop requested");
+    const auto stopped = owner.snapshot("shutdown-commit");
+    check(stopped && !stopped->running && !stopped->stopping,
+          "shutdown drains the late committed generation to terminal state");
+
+    struct ClosedFlag { std::atomic<bool> value{}; } closed;
+    std::atomic<int> cancelled_backend_calls{};
+    runtime::RuntimeTaskOwner cancel_owner{
+        [&cancelled_backend_calls](
+            const runtime::RuntimeTaskRequest&, std::stop_token,
+            const runtime::RuntimeTaskProgressReporter&) {
+            cancelled_backend_calls.fetch_add(1);
+            return runtime::RuntimeTaskTerminal{false, std::nullopt};
+        }};
+    runtime::RuntimeTaskOwnerTestAccess::set_after_shutdown_closed_hook(
+        cancel_owner,
+        +[](void* context) noexcept {
+            static_cast<ClosedFlag*>(context)->value = true;
+        },
+        &closed);
+    auto cancelled = cancel_owner.prepare_start(request("shutdown-cancel"));
+    std::atomic<bool> shutdown_returned{};
+    std::thread cancel_shutdown{[&] {
+        cancel_owner.shutdown();
+        shutdown_returned = true;
+    }};
+    check(wait_until([&closed] { return closed.value.load(); }),
+          "second shutdown closes admission with a pending reservation");
+    std::this_thread::sleep_for(20ms);
+    check(!shutdown_returned.load(),
+          "external shutdown waits for reservation resolution");
+    cancelled.reservation = runtime::RuntimeTaskStartReservation{};
+    cancel_shutdown.join();
+    check(cancelled_backend_calls.load() == 0
+              && !cancel_owner.snapshot("shutdown-cancel"),
+          "rollback unblocks shutdown without invoking backend");
 }
 
 void test_keyed_concurrency_and_stop_start_linearization()
@@ -628,6 +819,9 @@ int main()
         runtime_task_owner_size_from_non_hook_tu()
             == sizeof(runtime::RuntimeTaskOwner),
         "hook and non-hook translation units agree on owner layout");
+    test_start_reservation_commit_and_rollback();
+    test_start_reservation_conflict_and_thread_failure();
+    test_start_reservation_shutdown_linearization();
     test_keyed_concurrency_and_stop_start_linearization();
     test_explicit_terminal_outcomes_and_bounded_snapshots();
     test_self_shutdown_and_reentrant_stop_callback();

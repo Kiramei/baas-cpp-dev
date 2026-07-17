@@ -6,6 +6,7 @@
 #include <exception>
 #include <mutex>
 #include <stdexcept>
+#include <system_error>
 #include <thread>
 #include <unordered_map>
 #include <utility>
@@ -14,6 +15,7 @@ namespace baas::service::runtime {
 namespace {
 
 enum class JobPhase : std::uint8_t { completed, running, stopping };
+enum class StartGate : std::uint8_t { pending, committed, cancelled };
 
 inline constexpr std::uint64_t json_safe_integer_max =
     9'007'199'254'740'991ULL;
@@ -46,6 +48,67 @@ inline constexpr std::uint64_t json_safe_integer_max =
 
 }  // namespace
 
+struct RuntimeTaskStartReservationAccess final {
+    [[nodiscard]] static RuntimeTaskStartReservation create(
+        std::shared_ptr<void> state,
+        const RuntimeTaskStartReservation::Action commit,
+        const RuntimeTaskStartReservation::Action cancel) noexcept
+    {
+        return RuntimeTaskStartReservation{
+            std::move(state), commit, cancel};
+    }
+};
+
+RuntimeTaskStartReservation::RuntimeTaskStartReservation(
+    std::shared_ptr<void> state, const Action commit,
+    const Action cancel) noexcept
+    : state_(std::move(state)), commit_(commit), cancel_(cancel)
+{}
+
+RuntimeTaskStartReservation::~RuntimeTaskStartReservation() noexcept
+{
+    cancel();
+}
+
+RuntimeTaskStartReservation::RuntimeTaskStartReservation(
+    RuntimeTaskStartReservation&& other) noexcept
+    : state_(std::move(other.state_)),
+      commit_(std::exchange(other.commit_, nullptr)),
+      cancel_(std::exchange(other.cancel_, nullptr))
+{}
+
+RuntimeTaskStartReservation& RuntimeTaskStartReservation::operator=(
+    RuntimeTaskStartReservation&& other) noexcept
+{
+    if (this == &other) return *this;
+    cancel();
+    state_ = std::move(other.state_);
+    commit_ = std::exchange(other.commit_, nullptr);
+    cancel_ = std::exchange(other.cancel_, nullptr);
+    return *this;
+}
+
+RuntimeTaskStartReservation::operator bool() const noexcept
+{
+    return state_ != nullptr;
+}
+
+void RuntimeTaskStartReservation::commit() noexcept
+{
+    auto state = std::move(state_);
+    const auto action = std::exchange(commit_, nullptr);
+    cancel_ = nullptr;
+    if (state && action != nullptr) action(state.get());
+}
+
+void RuntimeTaskStartReservation::cancel() noexcept
+{
+    auto state = std::move(state_);
+    const auto action = std::exchange(cancel_, nullptr);
+    commit_ = nullptr;
+    if (state && action != nullptr) action(state.get());
+}
+
 RuntimeTaskTerminal runtime_task_terminal_from_result(
     const bool succeeded, const bool is_flag_run) noexcept
 {
@@ -57,6 +120,8 @@ std::string_view runtime_task_start_decision_name(
 {
     switch (decision) {
         case RuntimeTaskStartDecision::started: return "started";
+        case RuntimeTaskStartDecision::reservation_conflict:
+            return "reservation-conflict";
         case RuntimeTaskStartDecision::already_running:
             return "already-running";
         case RuntimeTaskStartDecision::stopping: return "stopping";
@@ -87,6 +152,27 @@ std::string_view runtime_task_stop_decision_name(
 
 class RuntimeTaskOwner::Impl final
     : public std::enable_shared_from_this<RuntimeTaskOwner::Impl> {
+private:
+    struct Job {
+        RuntimeTaskSnapshot snapshot;
+        JobPhase phase{JobPhase::completed};
+        std::stop_source stop_source;
+        std::mutex gate_mutex;
+        std::condition_variable gate_condition;
+        StartGate gate{StartGate::pending};
+        std::thread worker;
+    };
+
+    struct ConfigSlot {
+        std::shared_ptr<Job> current;
+        std::shared_ptr<Job> reserved;
+    };
+
+    struct ReservationState {
+        std::shared_ptr<Impl> owner;
+        std::shared_ptr<Job> job;
+    };
+
 public:
     Impl(RuntimeTaskBackend backend, RuntimeTaskLimits limits)
         : backend_(std::move(backend)), limits_(limits)
@@ -108,36 +194,46 @@ public:
         if (has_joinable_worker()) std::terminate();
     }
 
-    [[nodiscard]] RuntimeTaskStartResult start(RuntimeTaskRequest request)
+    [[nodiscard]] RuntimeTaskPrepareStartResult prepare_start(
+        RuntimeTaskRequest request)
     {
         if (!valid_request(request)) {
-            return {RuntimeTaskStartDecision::invalid_request, std::nullopt};
+            return {
+                RuntimeTaskStartDecision::invalid_request, std::nullopt, {}};
         }
 
         std::unique_lock lock{mutex_};
         if (!accepting_) {
-            return {RuntimeTaskStartDecision::owner_stopped, std::nullopt};
+            return {
+                RuntimeTaskStartDecision::owner_stopped, std::nullopt, {}};
         }
 
         auto found = jobs_.find(request.config_id);
         std::shared_ptr<Job> previous;
         if (found != jobs_.end()) {
-            previous = found->second;
-            if (previous->phase == JobPhase::running) {
+            if (found->second.reserved) {
+                return {
+                    RuntimeTaskStartDecision::reservation_conflict,
+                    std::nullopt, {}};
+            }
+            previous = found->second.current;
+            if (previous && previous->phase == JobPhase::running) {
                 return {
                     RuntimeTaskStartDecision::already_running,
-                    previous->snapshot};
+                    previous->snapshot, {}};
             }
-            if (previous->phase == JobPhase::stopping) {
+            if (previous && previous->phase == JobPhase::stopping) {
                 return {
-                    RuntimeTaskStartDecision::stopping, previous->snapshot};
+                    RuntimeTaskStartDecision::stopping, previous->snapshot, {}};
             }
             // completed is published only after the worker's final use of the
             // owner mutex, so this join cannot wait for the same lock.
-            if (previous->worker.joinable()) previous->worker.join();
+            if (previous && previous->worker.joinable()) {
+                previous->worker.join();
+            }
         } else if (jobs_.size() >= limits_.max_configs) {
             return {
-                RuntimeTaskStartDecision::capacity_exceeded, std::nullopt};
+                RuntimeTaskStartDecision::capacity_exceeded, std::nullopt, {}};
         }
 
         // Prepare every allocation/copy needed by the successful response and
@@ -154,28 +250,44 @@ public:
         next.timestamp = next_timestamp(
             previous ? previous->snapshot.timestamp : 0);
 
-        RuntimeTaskStartResult result{
-            RuntimeTaskStartDecision::started, next};
+        RuntimeTaskPrepareStartResult result;
+        result.decision = RuntimeTaskStartDecision::started;
+        result.snapshot = next;
         auto job = std::make_shared<Job>();
-        job->phase = JobPhase::running;
         job->snapshot = std::move(next);
+        auto reservation_state = std::make_shared<ReservationState>(
+            ReservationState{shared_from_this(), job});
 
         if (found == jobs_.end()) {
-            found = jobs_.emplace(job->snapshot.config_id, job).first;
+            found = jobs_.emplace(
+                job->snapshot.config_id, ConfigSlot{nullptr, job}).first;
         } else {
-            found->second = job;
+            found->second.reserved = job;
         }
 
+        bool create_thread = true;
+#if defined(BAAS_SERVICE_RUNTIME_TASK_OWNER_TEST_HOOKS)
+        if (fail_next_thread_start_) {
+            fail_next_thread_start_ = false;
+            create_thread = false;
+        }
+#endif
         try {
+            if (!create_thread) {
+                throw std::system_error{
+                    std::make_error_code(std::errc::resource_unavailable_try_again)};
+            }
             auto self = shared_from_this();
             job->worker = std::thread{
                 [self = std::move(self), job,
                  request = std::move(request)]() mutable {
-                    self->run(job, request);
+                    self->await_commit_and_run(job, request);
                 }};
         } catch (...) {
             job->phase = JobPhase::completed;
             set_thread_start_failure(*job);
+            found->second.current = job;
+            found->second.reserved.reset();
             result.decision = RuntimeTaskStartDecision::thread_start_failed;
             if (result.snapshot) {
                 result.snapshot->running = false;
@@ -187,7 +299,20 @@ public:
                 result.snapshot->timestamp = job->snapshot.timestamp;
             }
             condition_.notify_all();
+            return result;
         }
+        result.reservation = RuntimeTaskStartReservationAccess::create(
+            std::move(reservation_state), &commit_reservation_action,
+            &cancel_reservation_action);
+        return result;
+    }
+
+    [[nodiscard]] RuntimeTaskStartResult start(RuntimeTaskRequest request)
+    {
+        auto prepared = prepare_start(std::move(request));
+        RuntimeTaskStartResult result{
+            prepared.decision, std::move(prepared.snapshot)};
+        if (prepared) prepared.reservation.commit();
         return result;
     }
 
@@ -203,7 +328,10 @@ public:
         if (found == jobs_.end()) {
             return {RuntimeTaskStopDecision::unknown_config, std::nullopt};
         }
-        Job& job = *found->second;
+        if (!found->second.current) {
+            return {RuntimeTaskStopDecision::unknown_config, std::nullopt};
+        }
+        Job& job = *found->second.current;
         if (job.phase == JobPhase::completed) {
             return {RuntimeTaskStopDecision::already_stopped, job.snapshot};
         }
@@ -249,7 +377,8 @@ public:
         std::lock_guard lock{mutex_};
         const auto found = jobs_.find(std::string{config_id});
         if (found == jobs_.end()) return std::nullopt;
-        return found->second->snapshot;
+        if (!found->second.current) return std::nullopt;
+        return found->second.current->snapshot;
     }
 
     [[nodiscard]] std::vector<RuntimeTaskSnapshot> snapshots() const
@@ -257,9 +386,9 @@ public:
         std::lock_guard lock{mutex_};
         std::vector<RuntimeTaskSnapshot> result;
         result.reserve(jobs_.size());
-        for (const auto& [config_id, job] : jobs_) {
+        for (const auto& [config_id, slot] : jobs_) {
             static_cast<void>(config_id);
-            result.push_back(job->snapshot);
+            if (slot.current) result.push_back(slot.current->snapshot);
         }
         std::sort(result.begin(), result.end(), [](const auto& left, const auto& right) {
             return left.config_id < right.config_id;
@@ -276,8 +405,8 @@ public:
         const std::string key{config_id};
         return condition_.wait_for(lock, timeout, [this, &key] {
             const auto found = jobs_.find(key);
-            return found == jobs_.end()
-                || found->second->phase == JobPhase::completed;
+            return found == jobs_.end() || !found->second.current
+                || found->second.current->phase == JobPhase::completed;
         });
     }
 
@@ -301,6 +430,20 @@ public:
         std::lock_guard lock{mutex_};
         before_drain_hook_ = hook;
         before_drain_context_ = context;
+    }
+
+    void set_after_shutdown_closed_hook(
+        const RuntimeTaskOwnerTestAccess::Hook hook, void* const context) noexcept
+    {
+        std::lock_guard lock{mutex_};
+        after_shutdown_closed_hook_ = hook;
+        after_shutdown_closed_context_ = context;
+    }
+
+    void fail_next_thread_start() noexcept
+    {
+        std::lock_guard lock{mutex_};
+        fail_next_thread_start_ = true;
     }
 #endif
 
@@ -328,17 +471,11 @@ public:
             before_drain_hook(before_drain_context);
         }
 #endif
+        wait_for_reservations();
         drain_workers();
     }
 
 private:
-    struct Job {
-        RuntimeTaskSnapshot snapshot;
-        JobPhase phase{JobPhase::completed};
-        std::stop_source stop_source;
-        std::thread worker;
-    };
-
     class ShutdownGuard final {
     public:
         explicit ShutdownGuard(Impl* owner) noexcept
@@ -477,6 +614,82 @@ private:
         job.snapshot.timestamp = next_timestamp(job.snapshot.timestamp);
     }
 
+    static void commit_reservation_action(void* const opaque) noexcept
+    {
+        auto& state = *static_cast<ReservationState*>(opaque);
+        state.owner->commit_reservation(state.job);
+    }
+
+    static void cancel_reservation_action(void* const opaque) noexcept
+    {
+        auto& state = *static_cast<ReservationState*>(opaque);
+        state.owner->cancel_reservation(state.job);
+    }
+
+    void commit_reservation(const std::shared_ptr<Job>& job) noexcept
+    {
+        bool stop_before_release = false;
+        {
+            std::lock_guard lock{mutex_};
+            const auto found = jobs_.find(job->snapshot.config_id);
+            if (found == jobs_.end()
+                || found->second.reserved.get() != job.get()) {
+                // A live reservation has exactly one action. Missing identity
+                // here indicates an internal ownership violation; silently
+                // dropping a protocol-claimed start would be worse.
+                std::terminate();
+            }
+            found->second.current = job;
+            found->second.reserved.reset();
+            job->phase = accepting_ ? JobPhase::running : JobPhase::stopping;
+            if (!accepting_) {
+                job->snapshot.stopping = true;
+                job->snapshot.is_flag_run = false;
+                job->snapshot.timestamp = next_timestamp(job->snapshot.timestamp);
+                stop_before_release = true;
+            }
+            condition_.notify_all();
+        }
+
+        // When shutdown won the owner-mutex race, request stop while the gate
+        // still makes backend entry impossible. The committed backend then
+        // observes an already-stopped token and still executes exactly once.
+        if (stop_before_release) {
+            StopDeliveryGuard delivery{this};
+            static_cast<void>(job->stop_source.request_stop());
+        }
+        {
+            std::lock_guard gate_lock{job->gate_mutex};
+            if (job->gate != StartGate::pending) std::terminate();
+            job->gate = StartGate::committed;
+        }
+        job->gate_condition.notify_one();
+    }
+
+    void cancel_reservation(const std::shared_ptr<Job>& job) noexcept
+    {
+        bool removed = false;
+        {
+            std::lock_guard lock{mutex_};
+            const auto found = jobs_.find(job->snapshot.config_id);
+            if (found != jobs_.end()
+                && found->second.reserved.get() == job.get()) {
+                found->second.reserved.reset();
+                if (!found->second.current) jobs_.erase(found);
+                removed = true;
+                condition_.notify_all();
+            }
+        }
+        if (!removed) return;
+        {
+            std::lock_guard gate_lock{job->gate_mutex};
+            if (job->gate != StartGate::pending) std::terminate();
+            job->gate = StartGate::cancelled;
+        }
+        job->gate_condition.notify_one();
+        if (job->worker.joinable()) job->worker.join();
+    }
+
     [[nodiscard]] static bool report(
         const std::weak_ptr<Impl>& weak_owner,
         const std::weak_ptr<Job>& weak_job, RuntimeTaskProgress progress)
@@ -495,6 +708,20 @@ private:
         job->snapshot.waiting_tasks = std::move(progress.waiting_tasks);
         job->snapshot.timestamp = next_timestamp(job->snapshot.timestamp);
         return true;
+    }
+
+    void await_commit_and_run(
+        const std::shared_ptr<Job>& job,
+        const RuntimeTaskRequest& request) noexcept
+    {
+        {
+            std::unique_lock gate_lock{job->gate_mutex};
+            job->gate_condition.wait(gate_lock, [&job] {
+                return job->gate != StartGate::pending;
+            });
+            if (job->gate == StartGate::cancelled) return;
+        }
+        run(job, request);
     }
 
     void run(
@@ -533,17 +760,34 @@ private:
     // stop_source shares existing state and does not allocate.
     void initiate_shutdown() noexcept
     {
+#if defined(BAAS_SERVICE_RUNTIME_TASK_OWNER_TEST_HOOKS)
+        RuntimeTaskOwnerTestAccess::Hook after_closed_hook = nullptr;
+        void* after_closed_context = nullptr;
+#endif
         {
             std::lock_guard lock{mutex_};
-            accepting_ = false;
+            if (accepting_) {
+                accepting_ = false;
+#if defined(BAAS_SERVICE_RUNTIME_TASK_OWNER_TEST_HOOKS)
+                after_closed_hook = after_shutdown_closed_hook_;
+                after_closed_context = after_shutdown_closed_context_;
+#endif
+            }
         }
+#if defined(BAAS_SERVICE_RUNTIME_TASK_OWNER_TEST_HOOKS)
+        if (after_closed_hook != nullptr) {
+            after_closed_hook(after_closed_context);
+        }
+#endif
         for (;;) {
             std::stop_source source{std::nostopstate};
             bool found_source = false;
             {
                 std::lock_guard lock{mutex_};
-                for (auto& [config_id, job] : jobs_) {
+                for (auto& [config_id, slot] : jobs_) {
                     static_cast<void>(config_id);
+                    auto& job = slot.current;
+                    if (!job) continue;
                     if (job->phase == JobPhase::running) {
                         job->phase = JobPhase::stopping;
                         job->snapshot.stopping = true;
@@ -569,6 +813,17 @@ private:
         }
     }
 
+    void wait_for_reservations() noexcept
+    {
+        std::unique_lock lock{mutex_};
+        condition_.wait(lock, [this] {
+            return std::none_of(
+                jobs_.begin(), jobs_.end(), [](const auto& entry) {
+                    return static_cast<bool>(entry.second.reserved);
+                });
+        });
+    }
+
     // Allocation-free: shared_ptr copies only increment an existing control
     // block. Admission is already closed, so the set of worker threads cannot
     // grow while this loop drains it.
@@ -578,8 +833,10 @@ private:
             std::shared_ptr<Job> candidate;
             {
                 std::lock_guard lock{mutex_};
-                for (const auto& [config_id, job] : jobs_) {
+                for (const auto& [config_id, slot] : jobs_) {
                     static_cast<void>(config_id);
+                    const auto& job = slot.current;
+                    if (!job) continue;
                     if (job->worker.joinable()) {
                         candidate = job;
                         break;
@@ -598,7 +855,9 @@ private:
         std::lock_guard lock{mutex_};
         return std::any_of(
             jobs_.begin(), jobs_.end(), [](const auto& entry) {
-                return entry.second->worker.joinable();
+                const auto& slot = entry.second;
+                return (slot.current && slot.current->worker.joinable())
+                    || (slot.reserved && slot.reserved->worker.joinable());
             });
     }
 
@@ -607,13 +866,16 @@ private:
     mutable std::mutex mutex_;
     mutable std::condition_variable condition_;
     std::mutex drain_mutex_;
-    std::unordered_map<std::string, std::shared_ptr<Job>> jobs_;
+    std::unordered_map<std::string, ConfigSlot> jobs_;
     bool accepting_{true};
 #if defined(BAAS_SERVICE_RUNTIME_TASK_OWNER_TEST_HOOKS)
     RuntimeTaskOwnerTestAccess::Hook after_stop_linearized_hook_{nullptr};
     void* after_stop_linearized_context_{nullptr};
     RuntimeTaskOwnerTestAccess::Hook before_drain_hook_{nullptr};
     void* before_drain_context_{nullptr};
+    RuntimeTaskOwnerTestAccess::Hook after_shutdown_closed_hook_{nullptr};
+    void* after_shutdown_closed_context_{nullptr};
+    bool fail_next_thread_start_{false};
 #endif
 };
 
@@ -628,6 +890,12 @@ RuntimeTaskOwner::~RuntimeTaskOwner() noexcept
     if (impl_->called_from_worker()) std::terminate();
     impl_->shutdown();
     impl_.reset();
+}
+
+RuntimeTaskPrepareStartResult RuntimeTaskOwner::prepare_start(
+    RuntimeTaskRequest request)
+{
+    return impl_->prepare_start(std::move(request));
 }
 
 RuntimeTaskStartResult RuntimeTaskOwner::start(RuntimeTaskRequest request)
@@ -672,6 +940,18 @@ void RuntimeTaskOwnerTestAccess::set_before_drain_hook(
     RuntimeTaskOwner& owner, const Hook hook, void* const context) noexcept
 {
     owner.impl_->set_before_drain_hook(hook, context);
+}
+
+void RuntimeTaskOwnerTestAccess::set_after_shutdown_closed_hook(
+    RuntimeTaskOwner& owner, const Hook hook, void* const context) noexcept
+{
+    owner.impl_->set_after_shutdown_closed_hook(hook, context);
+}
+
+void RuntimeTaskOwnerTestAccess::fail_next_thread_start(
+    RuntimeTaskOwner& owner) noexcept
+{
+    owner.impl_->fail_next_thread_start();
 }
 #endif
 

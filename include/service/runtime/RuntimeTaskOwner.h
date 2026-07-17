@@ -82,8 +82,48 @@ struct RuntimeTaskSnapshot {
     std::uint64_t timestamp{};
 };
 
+struct RuntimeTaskStartReservationAccess;
+
+// Move-only ownership of a fully prepared start. The worker thread and every
+// allocation required by a successful start already exist, but the backend is
+// gated until commit(). Destroying a pending reservation rolls it back and
+// joins the gated worker without invoking the backend.
+class RuntimeTaskStartReservation final {
+public:
+    RuntimeTaskStartReservation() noexcept = default;
+    ~RuntimeTaskStartReservation() noexcept;
+
+    RuntimeTaskStartReservation(const RuntimeTaskStartReservation&) = delete;
+    RuntimeTaskStartReservation& operator=(
+        const RuntimeTaskStartReservation&) = delete;
+    RuntimeTaskStartReservation(RuntimeTaskStartReservation&& other) noexcept;
+    RuntimeTaskStartReservation& operator=(
+        RuntimeTaskStartReservation&& other) noexcept;
+
+    [[nodiscard]] explicit operator bool() const noexcept;
+
+    // Exactly-once, allocation-free ownership transfer. A successful prepare
+    // guarantees this operation cannot fail. If shutdown linearized first,
+    // the backend still runs once with an already-requested stop token.
+    void commit() noexcept;
+
+private:
+    using Action = void (*)(void*) noexcept;
+
+    RuntimeTaskStartReservation(
+        std::shared_ptr<void> state, Action commit, Action cancel) noexcept;
+    void cancel() noexcept;
+
+    std::shared_ptr<void> state_;
+    Action commit_{nullptr};
+    Action cancel_{nullptr};
+
+    friend struct RuntimeTaskStartReservationAccess;
+};
+
 enum class RuntimeTaskStartDecision : std::uint8_t {
     started,
+    reservation_conflict,
     already_running,
     stopping,
     owner_stopped,
@@ -102,6 +142,18 @@ struct RuntimeTaskStartResult {
     [[nodiscard]] explicit operator bool() const noexcept
     {
         return decision == RuntimeTaskStartDecision::started;
+    }
+};
+
+struct RuntimeTaskPrepareStartResult {
+    RuntimeTaskStartDecision decision{RuntimeTaskStartDecision::invalid_request};
+    std::optional<RuntimeTaskSnapshot> snapshot;
+    RuntimeTaskStartReservation reservation;
+
+    [[nodiscard]] explicit operator bool() const noexcept
+    {
+        return decision == RuntimeTaskStartDecision::started
+            && static_cast<bool>(reservation);
     }
 };
 
@@ -130,6 +182,9 @@ struct RuntimeTaskOwnerTestAccess final {
         RuntimeTaskOwner& owner, Hook hook, void* context) noexcept;
     static void set_before_drain_hook(
         RuntimeTaskOwner& owner, Hook hook, void* context) noexcept;
+    static void set_after_shutdown_closed_hook(
+        RuntimeTaskOwner& owner, Hook hook, void* context) noexcept;
+    static void fail_next_thread_start(RuntimeTaskOwner& owner) noexcept;
 };
 #endif
 
@@ -152,6 +207,13 @@ public:
     RuntimeTaskOwner(RuntimeTaskOwner&&) = delete;
     RuntimeTaskOwner& operator=(RuntimeTaskOwner&&) = delete;
 
+    // Validates and copies the request, reserves the keyed/capacity slot, and
+    // creates a worker blocked before backend entry. A successful result must
+    // be committed or destroyed before external shutdown can finish draining.
+    [[nodiscard]] RuntimeTaskPrepareStartResult prepare_start(
+        RuntimeTaskRequest request);
+
+    // Compatibility wrapper: prepare followed immediately by commit.
     [[nodiscard]] RuntimeTaskStartResult start(RuntimeTaskRequest request);
     [[nodiscard]] RuntimeTaskStopResult request_stop(std::string_view config_id);
     [[nodiscard]] std::optional<RuntimeTaskSnapshot> snapshot(
