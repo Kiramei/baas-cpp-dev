@@ -17,7 +17,7 @@
 #include <utility>
 #include <vector>
 
-namespace pipe = baas::service::pipe;
+namespace service_pipe = baas::service::pipe;
 namespace bpip = baas::service::protocol::bpip;
 using namespace std::chrono_literals;
 
@@ -87,11 +87,11 @@ struct StreamState {
     std::size_t throw_after_partial_on_call{};
 };
 
-class FakeStream final : public pipe::PipeStream {
+class FakeStream final : public service_pipe::PipeStream {
 public:
     explicit FakeStream(std::shared_ptr<StreamState> state) : state_(std::move(state)) {}
 
-    pipe::PipeIoResult read(
+    service_pipe::PipeIoResult read(
         const std::span<std::byte> output,
         const std::chrono::milliseconds timeout) override
     {
@@ -145,7 +145,7 @@ public:
         return {count, false, false, false};
     }
 
-    pipe::PipeIoResult write_all(
+    service_pipe::PipeIoResult write_all(
         const std::span<const std::byte> input,
         std::chrono::milliseconds) override
     {
@@ -187,16 +187,16 @@ private:
     std::shared_ptr<StreamState> state_;
 };
 
-class FakeListener final : public pipe::PipeListener {
+class FakeListener final : public service_pipe::PipeListener {
 public:
-    void push(std::unique_ptr<pipe::PipeStream> stream)
+    void push(std::unique_ptr<service_pipe::PipeStream> stream)
     {
         std::lock_guard lock(mutex_);
         streams_.push_back(std::move(stream));
         changed_.notify_one();
     }
 
-    std::unique_ptr<pipe::PipeStream> accept() override
+    std::unique_ptr<service_pipe::PipeStream> accept() override
     {
         std::unique_lock lock(mutex_);
         changed_.wait(lock, [this] { return closed_ || !streams_.empty(); });
@@ -216,13 +216,13 @@ public:
 private:
     std::mutex mutex_;
     std::condition_variable changed_;
-    std::deque<std::unique_ptr<pipe::PipeStream>> streams_;
+    std::deque<std::unique_ptr<service_pipe::PipeStream>> streams_;
     bool closed_{};
 };
 
 struct FactoryState {
     std::mutex mutex;
-    std::vector<pipe::PipeOpenRequest> requests;
+    std::vector<service_pipe::PipeOpenRequest> requests;
     std::size_t frames{};
     std::size_t opens{};
     std::size_t closes{};
@@ -230,26 +230,26 @@ struct FactoryState {
     bool emit_batch{};
     std::function<void(std::stop_token)> action;
     std::function<void(std::stop_token)> factory_action;
-    pipe::PipeHostError last_write_error{pipe::PipeHostError::none};
+    service_pipe::PipeHostError last_write_error{service_pipe::PipeHostError::none};
     std::size_t emit_payload_size{};
     bool retry_after_write_failure{};
     bool use_write_frame{};
     bool concurrent_retry_during_throw{};
     std::shared_ptr<WriteRaceGate> write_race_gate;
-    pipe::PipeHostError second_write_error{pipe::PipeHostError::none};
+    service_pipe::PipeHostError second_write_error{service_pipe::PipeHostError::none};
     bool callback_entered{};
     bool cancellation_observed{};
     bool emit_on_open{};
 };
 
-class RecordingHandler final : public pipe::PipeChannelHandler {
+class RecordingHandler final : public service_pipe::PipeChannelHandler {
 public:
     explicit RecordingHandler(std::shared_ptr<FactoryState> state)
         : state_(std::move(state))
     {}
 
-    pipe::PipeHandlerResult on_open(
-        pipe::PipeConnectionWriter& writer,
+    service_pipe::PipeHandlerResult on_open(
+        service_pipe::PipeConnectionWriter& writer,
         const std::stop_token) override
     {
         bool emit{};
@@ -261,11 +261,11 @@ public:
         if (!emit) return {};
         const auto error = writer.write_frame(
             bpip::FrameKind::json, bytes(R"({"type":"initial"})"));
-        return {pipe::PipeHandlerAction::continue_connection, error};
+        return {service_pipe::PipeHandlerAction::continue_connection, error};
     }
 
-    pipe::PipeHandlerResult on_frame(
-        const bpip::Frame&, pipe::PipeConnectionWriter& writer,
+    service_pipe::PipeHandlerResult on_frame(
+        const bpip::Frame&, service_pipe::PipeConnectionWriter& writer,
         const std::stop_token stop_token) override
     {
         bool throw_now{};
@@ -301,7 +301,7 @@ public:
                 output[0].payload.assign(bytes(R"({"type":"reply"})").begin(),
                     bytes(R"({"type":"reply"})").end());
             }
-            pipe::PipeHostError concurrent_error{pipe::PipeHostError::none};
+            service_pipe::PipeHostError concurrent_error{service_pipe::PipeHostError::none};
             std::thread concurrent_retry_thread;
             if (concurrent_retry) {
                 concurrent_retry_thread = std::thread([&] {
@@ -321,16 +321,16 @@ public:
                 : writer.write_batch(output);
             if (concurrent_retry_thread.joinable()) concurrent_retry_thread.join();
             const auto second_error = concurrent_retry ? concurrent_error
-                : error != pipe::PipeHostError::none
+                : error != service_pipe::PipeHostError::none
                     && retry_after_write_failure
                 ? writer.write_frame(bpip::FrameKind::json, bytes("{}"))
-                : pipe::PipeHostError::none;
+                : service_pipe::PipeHostError::none;
             {
                 std::lock_guard lock(state_->mutex);
                 state_->last_write_error = error;
                 state_->second_write_error = second_error;
             }
-            return {pipe::PipeHandlerAction::continue_connection, error};
+            return {service_pipe::PipeHandlerAction::continue_connection, error};
         }
         return {};
     }
@@ -345,14 +345,14 @@ private:
     std::shared_ptr<FactoryState> state_;
 };
 
-class RecordingFactory final : public pipe::PipeChannelFactory {
+class RecordingFactory final : public service_pipe::PipeChannelFactory {
 public:
     explicit RecordingFactory(std::shared_ptr<FactoryState> state)
         : state_(std::move(state))
     {}
 
-    std::unique_ptr<pipe::PipeChannelHandler> create(
-        const pipe::PipeOpenRequest& request,
+    std::unique_ptr<service_pipe::PipeChannelHandler> create(
+        const service_pipe::PipeOpenRequest& request,
         const std::stop_token stop_token) override
     {
         std::function<void(std::stop_token)> action;
@@ -395,33 +395,33 @@ void test_bounded_open_codec_and_inventory()
     for (const auto channel : {"provider", "sync", "trigger", "remote"}) {
         const auto json = std::string{"{\"type\":\"open\",\"channel\":\""}
             + channel + "\",\"name\":\"client\",\"extra\":[1,true]}";
-        const auto decoded = pipe::decode_pipe_open(bytes(json));
+        const auto decoded = service_pipe::decode_pipe_open(bytes(json));
         check(decoded && decoded.request->name == "client"
-                  && pipe::pipe_channel_name(decoded.request->channel) == channel,
+                  && service_pipe::pipe_channel_name(decoded.request->channel) == channel,
               "every supported channel must decode through one bounded open codec");
     }
-    check(pipe::decode_pipe_open(bytes(
+    check(service_pipe::decode_pipe_open(bytes(
               R"({"type":"open","channel":"control","name":"x"})"
-          )).error == pipe::PipeHostError::unsupported_channel,
+          )).error == service_pipe::PipeHostError::unsupported_channel,
           "control must remain unavailable over Pipe");
-    check(pipe::decode_pipe_open(bytes(
+    check(service_pipe::decode_pipe_open(bytes(
               R"({"type":"open","channel":"trigger","name":""})"
-          )).error == pipe::PipeHostError::invalid_open_name,
+          )).error == service_pipe::PipeHostError::invalid_open_name,
           "empty names must fail before factory selection");
-    check(pipe::decode_pipe_open(bytes(
+    check(service_pipe::decode_pipe_open(bytes(
               R"({"type":"open","type":"open","channel":"trigger","name":"x"})"
-          )).error == pipe::PipeHostError::duplicate_open_field,
+          )).error == service_pipe::PipeHostError::duplicate_open_field,
           "duplicate fields must not select ambiguous connection identity");
-    check(pipe::decode_pipe_open(bytes("[]")).error
-              == pipe::PipeHostError::malformed_open_json,
+    check(service_pipe::decode_pipe_open(bytes("[]")).error
+              == service_pipe::PipeHostError::malformed_open_json,
           "non-object JSON must fail closed");
-    pipe::PipeHostLimits limits;
+    service_pipe::PipeHostLimits limits;
     limits.max_open_json_bytes = 8;
     limits.max_name_bytes = 4;
-    check(pipe::decode_pipe_open(bytes("123456789"), limits).error
-              == pipe::PipeHostError::open_json_too_large,
+    check(service_pipe::decode_pipe_open(bytes("123456789"), limits).error
+              == service_pipe::PipeHostError::open_json_too_large,
           "open payload must be bounded before parsing");
-    const auto open_ok = pipe::encode_pipe_open_ok(pipe::PipeChannel::trigger);
+    const auto open_ok = service_pipe::encode_pipe_open_ok(service_pipe::PipeChannel::trigger);
     const auto decoded_ok = bpip::Decoder{}.feed(open_ok.bytes);
     check(open_ok && decoded_ok.frames.size() == 1
               && std::string_view{
@@ -446,7 +446,7 @@ void test_fragmented_open_coalesced_business_and_atomic_batch()
     listener_view->push(std::make_unique<FakeStream>(stream));
     const auto factory_state = std::make_shared<FactoryState>();
     factory_state->emit_batch = true;
-    pipe::PipeHost host{std::move(listener),
+    service_pipe::PipeHost host{std::move(listener),
         std::make_shared<RecordingFactory>(factory_state)};
     check(host.start(), "fake host must start exactly once");
     check(wait_until([&] { return host.stats().completed == 1; }),
@@ -456,7 +456,7 @@ void test_fragmented_open_coalesced_business_and_atomic_batch()
 
     std::lock_guard factory_lock(factory_state->mutex);
     check(factory_state->requests.size() == 1
-              && factory_state->requests[0].channel == pipe::PipeChannel::trigger
+              && factory_state->requests[0].channel == service_pipe::PipeChannel::trigger
               && factory_state->requests[0].name == "main"
               && factory_state->frames == 1 && factory_state->closes == 1,
           "factory and handler must receive one opened logical channel");
@@ -489,7 +489,7 @@ void test_open_callback_runs_after_open_ok_before_coalesced_input()
     listener_view->push(std::make_unique<FakeStream>(stream));
     const auto factory_state = std::make_shared<FactoryState>();
     factory_state->emit_on_open = true;
-    pipe::PipeHost host{std::move(listener),
+    service_pipe::PipeHost host{std::move(listener),
         std::make_shared<RecordingFactory>(factory_state)};
     check(host.start(), "open-callback host must start");
     check(wait_until([&] { return host.stats().completed == 1; }),
@@ -533,7 +533,7 @@ void test_protocol_and_handler_failures_are_terminal()
         listener_view->push(std::make_unique<FakeStream>(stream));
         const auto factory_state = std::make_shared<FactoryState>();
         factory_state->throw_on_frame = handler_failure;
-        pipe::PipeHost host{std::move(listener),
+        service_pipe::PipeHost host{std::move(listener),
             std::make_shared<RecordingFactory>(factory_state)};
         check(host.start(), "failure host must start with fake listener");
         check(wait_until([&] { return host.stats().completed == 1; }),
@@ -554,7 +554,7 @@ void test_partial_write_and_connection_limit_close_and_join()
 {
     {
         auto never_started_listener = std::make_unique<FakeListener>();
-        pipe::PipeHost never_started{std::move(never_started_listener),
+        service_pipe::PipeHost never_started{std::move(never_started_listener),
             std::make_shared<RecordingFactory>(std::make_shared<FactoryState>())};
         never_started.stop();
         never_started.join();
@@ -570,7 +570,7 @@ void test_partial_write_and_connection_limit_close_and_join()
             R"({"type":"open","channel":"provider","name":"x"})"));
         view->push(std::make_unique<FakeStream>(stream));
         const auto factory = std::make_shared<FactoryState>();
-        pipe::PipeHost host{std::move(listener),
+        service_pipe::PipeHost host{std::move(listener),
             std::make_shared<RecordingFactory>(factory)};
         check(host.start(), "partial-write fake must start");
         check(wait_until([&] { return host.stats().completed == 1; }),
@@ -582,7 +582,7 @@ void test_partial_write_and_connection_limit_close_and_join()
             check(stream->writes.size() == 1,
                   "partial open_ok must poison the writer and forbid ERROR+CLOSE retry");
         }
-        check(host.state() == pipe::PipeHostState::stopped,
+        check(host.state() == service_pipe::PipeHostState::stopped,
               "stop and join must reach a terminal stopped state");
         check(!host.start(), "a stopped PipeHost must reject restart as one-shot");
     }
@@ -595,10 +595,10 @@ void test_partial_write_and_connection_limit_close_and_join()
         second->block_when_empty = true;
         view->push(std::make_unique<FakeStream>(first));
         view->push(std::make_unique<FakeStream>(second));
-        pipe::PipeHostLimits limits;
+        service_pipe::PipeHostLimits limits;
         limits.max_connections = 1;
         const auto factory = std::make_shared<FactoryState>();
-        pipe::PipeHost host{std::move(listener),
+        service_pipe::PipeHost host{std::move(listener),
             std::make_shared<RecordingFactory>(factory), limits};
         check(host.start(), "bounded host must start");
         check(wait_until([&] { return host.stats().rejected == 1; }),
@@ -633,7 +633,7 @@ void test_partial_handler_write_is_never_followed_by_close()
             factory->write_race_gate = gate;
             factory->concurrent_retry_during_throw = true;
         }
-        pipe::PipeHost host{std::move(listener),
+        service_pipe::PipeHost host{std::move(listener),
             std::make_shared<RecordingFactory>(factory)};
         check(host.start(), "partial handler-write host must start");
         check(wait_until([&] { return host.stats().completed == 1; }),
@@ -646,8 +646,8 @@ void test_partial_handler_write_is_never_followed_by_close()
                   "poisoned handler retry and host terminal path must issue zero writes");
         }
         std::lock_guard lock(factory->mutex);
-        check(factory->last_write_error == pipe::PipeHostError::write_failed
-                  && factory->second_write_error == pipe::PipeHostError::write_failed,
+        check(factory->last_write_error == service_pipe::PipeHostError::write_failed
+                  && factory->second_write_error == service_pipe::PipeHostError::write_failed,
               "partial and throw-after-partial writes must permanently poison writer");
     }
 }
@@ -663,7 +663,7 @@ void test_declared_oversized_open_is_rejected_from_header()
     stream->block_when_empty = true;
     view->push(std::make_unique<FakeStream>(stream));
     const auto factory = std::make_shared<FactoryState>();
-    pipe::PipeHost host{std::move(listener),
+    service_pipe::PipeHost host{std::move(listener),
         std::make_shared<RecordingFactory>(factory)};
     check(host.start(), "oversized-open host must start");
     check(wait_until([&] { return host.stats().completed == 1; }),
@@ -696,12 +696,12 @@ void test_global_retained_byte_budgets()
         streams[index]->block_when_empty = true;
         view->push(std::make_unique<FakeStream>(streams[index]));
     }
-    pipe::PipeHostLimits limits;
+    service_pipe::PipeHostLimits limits;
     limits.max_connections = 2;
     limits.max_total_ingress_retained_bytes = 150;
     limits.max_total_egress_retained_bytes = 128;
     const auto factory = std::make_shared<FactoryState>();
-    pipe::PipeHost host{std::move(listener),
+    service_pipe::PipeHost host{std::move(listener),
         std::make_shared<RecordingFactory>(factory), limits};
     check(host.start(), "aggregate-budget host must start");
     const auto observed_ingress_rejection = wait_until(
@@ -730,14 +730,14 @@ void test_global_retained_byte_budgets()
         R"({"type":"open","channel":"provider","name":"egress"})",
         {frame(bpip::FrameKind::json, "{}") }));
     egress_view->push(std::make_unique<FakeStream>(egress_stream));
-    pipe::PipeHostLimits egress_limits;
+    service_pipe::PipeHostLimits egress_limits;
     egress_limits.max_connections = 1;
     egress_limits.max_total_egress_retained_bytes = 64;
     const auto egress_factory = std::make_shared<FactoryState>();
     egress_factory->emit_batch = true;
     egress_factory->emit_payload_size = 1U * 1'024U * 1'024U;
     egress_factory->use_write_frame = true;
-    pipe::PipeHost egress_host{std::move(egress_listener),
+    service_pipe::PipeHost egress_host{std::move(egress_listener),
         std::make_shared<RecordingFactory>(egress_factory), egress_limits};
     check(egress_host.start(), "egress-budget host must start");
     check(wait_until([&] { return egress_host.stats().completed == 1; }),
@@ -747,7 +747,7 @@ void test_global_retained_byte_budgets()
     {
         std::lock_guard lock(egress_factory->mutex);
         check(egress_factory->last_write_error
-                  == pipe::PipeHostError::egress_budget_exhausted,
+                  == service_pipe::PipeHostError::egress_budget_exhausted,
               "handler must propagate the host-wide egress budget error");
     }
     check(egress_host.stats().peak_egress_retained_bytes <= 64
@@ -779,7 +779,7 @@ void test_stop_token_cancels_factory_and_handler_callbacks()
         };
         if (block_factory) factory->factory_action = blocking;
         else factory->action = blocking;
-        pipe::PipeHost host{std::move(listener),
+        service_pipe::PipeHost host{std::move(listener),
             std::make_shared<RecordingFactory>(factory)};
         check(host.start(), "cancellable callback host must start");
         check(wait_until([&] {
@@ -801,11 +801,11 @@ void test_open_timeout_and_hard_write_limit()
     const auto slow = std::make_shared<StreamState>();
     slow->block_when_empty = true;
     view->push(std::make_unique<FakeStream>(slow));
-    pipe::PipeHostLimits limits;
+    service_pipe::PipeHostLimits limits;
     limits.max_connections = 1;
     limits.open_timeout = 20ms;
     const auto factory = std::make_shared<FactoryState>();
-    pipe::PipeHost host{std::move(listener),
+    service_pipe::PipeHost host{std::move(listener),
         std::make_shared<RecordingFactory>(factory), limits};
     check(host.start(), "slowloris timeout host must start with a fake stream");
     check(wait_until([&] { return host.stats().completed == 1; }),
@@ -820,9 +820,9 @@ void test_open_timeout_and_hard_write_limit()
     bool rejected = false;
     try {
         auto invalid_listener = std::make_unique<FakeListener>();
-        pipe::PipeHostLimits invalid;
+        service_pipe::PipeHostLimits invalid;
         invalid.max_atomic_write_bytes = 129U * 1'024U * 1'024U;
-        [[maybe_unused]] pipe::PipeHost invalid_host{
+        [[maybe_unused]] service_pipe::PipeHost invalid_host{
             std::move(invalid_listener),
             std::make_shared<RecordingFactory>(std::make_shared<FactoryState>()),
             invalid};
@@ -850,11 +850,11 @@ void test_absolute_open_deadline_rejects_drip_feed()
     drip->read_delays = {20ms, 20ms, 20ms};
     view->push(std::make_unique<FakeStream>(drip));
 
-    pipe::PipeHostLimits limits;
+    service_pipe::PipeHostLimits limits;
     limits.max_connections = 1;
     limits.open_timeout = 45ms;
     const auto factory = std::make_shared<FactoryState>();
-    pipe::PipeHost host{std::move(listener),
+    service_pipe::PipeHost host{std::move(listener),
         std::make_shared<RecordingFactory>(factory), limits};
     check(host.start(), "drip-feed timeout host must start with a fake stream");
     check(wait_until([&] { return host.stats().completed == 1; }),
@@ -894,7 +894,7 @@ void test_handler_self_join_and_external_join_orders()
             {frame(bpip::FrameKind::json, "{}") }));
         view->push(std::make_unique<FakeStream>(stream));
         const auto factory = std::make_shared<FactoryState>();
-        pipe::PipeHost host{std::move(listener),
+        service_pipe::PipeHost host{std::move(listener),
             std::make_shared<RecordingFactory>(factory)};
         std::mutex order_mutex;
         std::condition_variable order_changed;
@@ -944,7 +944,7 @@ void test_handler_self_join_and_external_join_orders()
             external = std::thread([&] { host.join(); });
         }
         external.join();
-        check(host.state() == pipe::PipeHostState::stopped
+        check(host.state() == service_pipe::PipeHostState::stopped
                   && host.stats().active == 0,
               "external join must finish every worker after either join order");
     }
@@ -952,17 +952,17 @@ void test_handler_self_join_and_external_join_orders()
 
 void test_error_names_are_stable()
 {
-    using enum pipe::PipeHostError;
-    check(pipe::pipe_host_error_name(first_frame_not_json) == "first_frame_not_json"
-              && pipe::pipe_host_error_name(duplicate_open_field)
+    using enum service_pipe::PipeHostError;
+    check(service_pipe::pipe_host_error_name(first_frame_not_json) == "first_frame_not_json"
+              && service_pipe::pipe_host_error_name(duplicate_open_field)
                   == "duplicate_open_field"
-              && pipe::pipe_host_error_name(atomic_write_too_large)
+              && service_pipe::pipe_host_error_name(atomic_write_too_large)
                   == "atomic_write_too_large"
-              && pipe::pipe_host_error_name(ingress_budget_exhausted)
+              && service_pipe::pipe_host_error_name(ingress_budget_exhausted)
                   == "ingress_budget_exhausted"
-              && pipe::pipe_host_error_name(egress_budget_exhausted)
+              && service_pipe::pipe_host_error_name(egress_budget_exhausted)
                   == "egress_budget_exhausted"
-              && pipe::pipe_host_error_name(write_failed) == "write_failed",
+              && service_pipe::pipe_host_error_name(write_failed) == "write_failed",
           "host errors must retain stable non-sensitive names");
 }
 

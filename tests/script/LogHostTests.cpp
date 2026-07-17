@@ -3,6 +3,7 @@
 
 #include <chrono>
 #include <condition_variable>
+#include <cstdint>
 #include <cstdlib>
 #include <functional>
 #include <iostream>
@@ -331,8 +332,8 @@ void test_sink_failures_and_configuration_limits()
     const auto collision = invoke(
         collision_binding,
         arguments("info", "collision", runtime::JsonObject{
-            {"secret", runtime::JsonValue(1LL)},
-            {"[REDACTED]", runtime::JsonValue(2LL)},
+            {"secret", runtime::JsonValue(std::int64_t{1})},
+            {"[REDACTED]", runtime::JsonValue(std::int64_t{2})},
         }));
     check(!collision.ok() && collision.has_error() &&
               collision.error().code == runtime::HostErrorCode::InvalidArgument,
