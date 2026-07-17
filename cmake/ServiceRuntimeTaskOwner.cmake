@@ -31,9 +31,14 @@ endif()
 
 if(BUILD_SERVICE_RUNTIME_TASK_OWNER_TESTS)
     include(CTest)
+    target_compile_definitions(
+            BAAS_service_runtime_task_owner
+            PRIVATE BAAS_SERVICE_RUNTIME_TASK_OWNER_TEST_HOOKS=1
+    )
     add_executable(
             BAAS_service_runtime_task_owner_tests
             "${BAAS_PROJECT_PATH}/tests/service/RuntimeTaskOwnerTests.cpp"
+            "${BAAS_PROJECT_PATH}/tests/service/RuntimeTaskOwnerOdrConsumer.cpp"
     )
     target_compile_features(
             BAAS_service_runtime_task_owner_tests PRIVATE cxx_std_20
@@ -41,6 +46,11 @@ if(BUILD_SERVICE_RUNTIME_TASK_OWNER_TESTS)
     target_link_libraries(
             BAAS_service_runtime_task_owner_tests
             PRIVATE BAAS_service_runtime_task_owner
+    )
+    set_source_files_properties(
+            "${BAAS_PROJECT_PATH}/tests/service/RuntimeTaskOwnerTests.cpp"
+            PROPERTIES COMPILE_DEFINITIONS
+            BAAS_SERVICE_RUNTIME_TASK_OWNER_TEST_HOOKS=1
     )
     if(MSVC)
         target_compile_options(

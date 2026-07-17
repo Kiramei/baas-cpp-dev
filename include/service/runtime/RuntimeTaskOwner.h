@@ -62,7 +62,9 @@ struct RuntimeTaskTerminal {
 // backends must provide provable stop-safe points and return an intentional
 // RuntimeTaskTerminal after cancellation. C++ cannot safely force-terminate an
 // arbitrary worker thread, so external shutdown drains by joining cooperative
-// backends.
+// backends. Every std::stop_callback registered by a backend must be noexcept:
+// std::stop_source::request_stop() is noexcept and the standard terminates the
+// process if a callback lets an exception escape, before this owner can catch it.
 using RuntimeTaskBackend = std::function<RuntimeTaskTerminal(
     const RuntimeTaskRequest& request, std::stop_token stop_token,
     const RuntimeTaskProgressReporter& report_progress)>;
@@ -118,6 +120,19 @@ struct RuntimeTaskStopResult {
     std::optional<RuntimeTaskSnapshot> snapshot;
 };
 
+class RuntimeTaskOwner;
+struct RuntimeTaskOwnerTestAccess;
+
+#if defined(BAAS_SERVICE_RUNTIME_TASK_OWNER_TEST_HOOKS)
+struct RuntimeTaskOwnerTestAccess final {
+    using Hook = void (*)(void*) noexcept;
+    static void set_after_stop_linearized_hook(
+        RuntimeTaskOwner& owner, Hook hook, void* context) noexcept;
+    static void set_before_drain_hook(
+        RuntimeTaskOwner& owner, Hook hook, void* context) noexcept;
+};
+#endif
+
 // Service-lifetime owner for long-running BAAS jobs. Jobs are keyed by config,
 // so a config has at most one live worker while different configs may execute
 // concurrently. Trigger/WebSocket request lifetimes are deliberately absent
@@ -160,6 +175,8 @@ public:
 private:
     class Impl;
     std::shared_ptr<Impl> impl_;
+
+    friend struct RuntimeTaskOwnerTestAccess;
 };
 
 }  // namespace baas::service::runtime

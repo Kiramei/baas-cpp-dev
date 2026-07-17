@@ -227,12 +227,15 @@ public:
         job.snapshot.stopping = true;
         job.snapshot.is_flag_run = false;
         job.snapshot.timestamp = result.snapshot->timestamp;
+#if defined(BAAS_SERVICE_RUNTIME_TASK_OWNER_TEST_HOOKS)
+        const auto after_stop_hook = after_stop_linearized_hook_;
+        void* const after_stop_context = after_stop_linearized_context_;
+#endif
         lock.unlock();
+#if defined(BAAS_SERVICE_RUNTIME_TASK_OWNER_TEST_HOOKS)
+        if (after_stop_hook != nullptr) after_stop_hook(after_stop_context);
+#endif
         StopDeliveryGuard delivery{this};
-        // Serialize external stop-callback execution with external draining.
-        // A callback reentering shutdown observes delivery and returns before
-        // trying to acquire this mutex.
-        std::lock_guard delivery_lock{drain_mutex_};
         static_cast<void>(stop_source.request_stop());
         return result;
     }
@@ -280,16 +283,26 @@ public:
 
     [[nodiscard]] bool called_from_worker() const noexcept
     {
-        const auto caller = std::this_thread::get_id();
-        std::lock_guard lock{mutex_};
-        for (const auto& [config_id, job] : jobs_) {
-            static_cast<void>(config_id);
-            if (job->worker.joinable() && job->worker.get_id() == caller) {
-                return true;
-            }
-        }
-        return false;
+        return WorkerGuard::active(this);
     }
+
+#if defined(BAAS_SERVICE_RUNTIME_TASK_OWNER_TEST_HOOKS)
+    void set_after_stop_linearized_hook(
+        const RuntimeTaskOwnerTestAccess::Hook hook, void* const context) noexcept
+    {
+        std::lock_guard lock{mutex_};
+        after_stop_linearized_hook_ = hook;
+        after_stop_linearized_context_ = context;
+    }
+
+    void set_before_drain_hook(
+        const RuntimeTaskOwnerTestAccess::Hook hook, void* const context) noexcept
+    {
+        std::lock_guard lock{mutex_};
+        before_drain_hook_ = hook;
+        before_drain_context_ = context;
+    }
+#endif
 
     void shutdown() noexcept
     {
@@ -303,6 +316,18 @@ public:
         // concurrently joining the same std::thread; the recursion guard keeps
         // synchronous stop callbacks from trying to acquire this mutex again.
         std::lock_guard drain_lock{drain_mutex_};
+#if defined(BAAS_SERVICE_RUNTIME_TASK_OWNER_TEST_HOOKS)
+        RuntimeTaskOwnerTestAccess::Hook before_drain_hook = nullptr;
+        void* before_drain_context = nullptr;
+        {
+            std::lock_guard lock{mutex_};
+            before_drain_hook = before_drain_hook_;
+            before_drain_context = before_drain_context_;
+        }
+        if (before_drain_hook != nullptr) {
+            before_drain_hook(before_drain_context);
+        }
+#endif
         drain_workers();
     }
 
@@ -371,6 +396,33 @@ private:
         Impl* owner_;
         StopDeliveryGuard* previous_;
         inline static thread_local StopDeliveryGuard* top_{nullptr};
+    };
+
+    // Worker identity is execution context, not mutable std::thread state.
+    // TLS avoids racing external join() with joinable()/get_id() reads.
+    class WorkerGuard final {
+    public:
+        explicit WorkerGuard(Impl* owner) noexcept
+            : owner_(owner), previous_(top_)
+        {
+            top_ = this;
+        }
+
+        ~WorkerGuard() { top_ = previous_; }
+
+        [[nodiscard]] static bool active(const Impl* owner) noexcept
+        {
+            for (auto* current = top_; current != nullptr;
+                 current = current->previous_) {
+                if (current->owner_ == owner) return true;
+            }
+            return false;
+        }
+
+    private:
+        Impl* owner_;
+        WorkerGuard* previous_;
+        inline static thread_local WorkerGuard* top_{nullptr};
     };
 
     [[nodiscard]] bool valid_request(const RuntimeTaskRequest& request) const
@@ -449,6 +501,7 @@ private:
         const std::shared_ptr<Job>& job,
         const RuntimeTaskRequest& request) noexcept
     {
+        WorkerGuard worker_context{this};
         RuntimeTaskTerminal terminal{false, 1};
         try {
             const RuntimeTaskProgressReporter reporter =
@@ -556,6 +609,12 @@ private:
     std::mutex drain_mutex_;
     std::unordered_map<std::string, std::shared_ptr<Job>> jobs_;
     bool accepting_{true};
+#if defined(BAAS_SERVICE_RUNTIME_TASK_OWNER_TEST_HOOKS)
+    RuntimeTaskOwnerTestAccess::Hook after_stop_linearized_hook_{nullptr};
+    void* after_stop_linearized_context_{nullptr};
+    RuntimeTaskOwnerTestAccess::Hook before_drain_hook_{nullptr};
+    void* before_drain_context_{nullptr};
+#endif
 };
 
 RuntimeTaskOwner::RuntimeTaskOwner(
@@ -601,5 +660,19 @@ bool RuntimeTaskOwner::wait_for_idle(
 }
 
 void RuntimeTaskOwner::shutdown() noexcept { impl_->shutdown(); }
+
+#if defined(BAAS_SERVICE_RUNTIME_TASK_OWNER_TEST_HOOKS)
+void RuntimeTaskOwnerTestAccess::set_after_stop_linearized_hook(
+    RuntimeTaskOwner& owner, const Hook hook, void* const context) noexcept
+{
+    owner.impl_->set_after_stop_linearized_hook(hook, context);
+}
+
+void RuntimeTaskOwnerTestAccess::set_before_drain_hook(
+    RuntimeTaskOwner& owner, const Hook hook, void* const context) noexcept
+{
+    owner.impl_->set_before_drain_hook(hook, context);
+}
+#endif
 
 }  // namespace baas::service::runtime

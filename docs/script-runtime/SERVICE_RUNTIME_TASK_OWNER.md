@@ -39,8 +39,15 @@ workers wait on each other. Later external shutdown or destruction drains.
 The `noexcept` shutdown path does not build temporary vectors or allocate per
 job. It closes admission, copies one existing stop state at a time, delivers it
 without the state mutex held, and drains one already-owned thread at a time.
-Stop delivery and external draining are serialized so a worker destroying its
-`std::stop_callback` cannot mutually wait with a reentrant join.
+Stop delivery never holds the external drain mutex: nested callbacks may stop
+another config. A TLS delivery guard makes callback-reentrant shutdown
+initiation-only; normal `std::stop_callback` destruction supplies callback
+completion synchronization.
+
+Owned-worker detection is also TLS execution context established at the worker
+entry point. It never reads `std::thread::joinable()` or `get_id()` while an
+external shutdown may concurrently call `join()`, avoiding a data race on the
+thread object itself.
 
 The owner never detaches workers. Disconnecting a transport therefore cannot
 cancel a service-owned job, and destroying the owner reliably drains it. C++
@@ -65,6 +72,12 @@ stop token and return after cancellation. The reporter updates `is_flag_run`,
 the bounded raw `button` JSON/string payload, `current_task`, and
 `waiting_tasks`; invalid or oversized progress is rejected without mutating the
 last valid snapshot.
+
+Every backend-owned `std::stop_callback` must be `noexcept`. The standard
+invokes it inside `std::stop_source::request_stop() noexcept`; an escaping
+exception terminates the process before `RuntimeTaskOwner` can translate it.
+Callbacks that call potentially throwing service APIs must catch internally and
+convert failure to backend state rather than let it escape.
 
 The reporter is a weak lifetime lease. A backend may accidentally retain a
 copy, but calls after terminal publication or owner destruction return `false`
@@ -108,4 +121,5 @@ without executing host tests.
 The tests execute injected backends on real worker threads and cover keyed
 concurrency, duplicate admission, stop/start linearization, explicit terminal
 states, timestamp ordering, bounded progress, escaped reporters, worker/self
-shutdown, reentrant stop callbacks, capacity enforcement, and external drain.
+shutdown, nested/reentrant stop callbacks, concurrent external drains, capacity
+enforcement, and external drain.

@@ -11,6 +11,10 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <type_traits>
+#include <vector>
+
+std::size_t runtime_task_owner_size_from_non_hook_tu() noexcept;
 
 namespace {
 
@@ -70,13 +74,19 @@ void test_keyed_concurrency_and_stop_start_linearization()
                     true, "{\"action\":\"live\"}", std::string{"live"},
                     {"queued"}}),
                 "live worker progress is accepted");
-            std::stop_callback on_stop{stop, [&gate, &report] {
-                if (report({
-                        false, "{\"action\":\"stopping\"}",
-                        std::string{"live"}, {}})) {
-                    gate.stop_callbacks.fetch_add(1);
+            auto stop_action = [&gate, &report]() noexcept {
+                try {
+                    if (report({
+                            false, "{\"action\":\"stopping\"}",
+                            std::string{"live"}, {}})) {
+                        gate.stop_callbacks.fetch_add(1);
+                    }
+                } catch (...) {
+                    failures.fetch_add(1);
                 }
-            }};
+            };
+            static_assert(std::is_nothrow_invocable_v<decltype(stop_action)>);
+            std::stop_callback on_stop{stop, stop_action};
             while (!stop.stop_requested()) std::this_thread::sleep_for(1ms);
             std::unique_lock lock{gate.mutex};
             gate.condition.wait(lock, [&gate] { return gate.allow_exit; });
@@ -272,10 +282,12 @@ void test_self_shutdown_and_reentrant_stop_callback()
          &allow_callback_worker_exit](
             const runtime::RuntimeTaskRequest&, const std::stop_token stop,
             const runtime::RuntimeTaskProgressReporter&) {
-            std::stop_callback callback{stop, [&] {
+            auto stop_action = [&]() noexcept {
                 callback_owner->shutdown();
                 callback_returned = true;
-            }};
+            };
+            static_assert(std::is_nothrow_invocable_v<decltype(stop_action)>);
+            std::stop_callback callback{stop, stop_action};
             callback_registered = true;
             while (!stop.stop_requested()) std::this_thread::yield();
             while (!allow_callback_worker_exit.load()) std::this_thread::yield();
@@ -297,6 +309,173 @@ void test_self_shutdown_and_reentrant_stop_callback()
     const auto terminal = reentrant_owner.snapshot("callback");
     check(terminal && terminal->is_flag_run && terminal->exit_code == 0,
           "manual stop does not overwrite explicit backend terminal fields");
+}
+
+void test_nested_stop_delivery_and_join_lock_order()
+{
+    runtime::RuntimeTaskOwner* nested_owner = nullptr;
+    std::atomic<int> registered{};
+    std::atomic<bool> nested_returned{};
+    std::atomic<bool> nested_failed{};
+    std::atomic<bool> second_received_stop{};
+    std::atomic<bool> allow_exit{};
+    runtime::RuntimeTaskOwner owner{
+        [&nested_owner, &registered, &nested_returned, &nested_failed,
+         &second_received_stop, &allow_exit](
+            const runtime::RuntimeTaskRequest& value,
+            const std::stop_token stop,
+            const runtime::RuntimeTaskProgressReporter&) {
+            const bool first = value.config_id == "nested-a";
+            auto stop_action = [&]() noexcept {
+                if (first) {
+                    try {
+                        const auto result =
+                            nested_owner->request_stop("nested-b");
+                        nested_returned =
+                            result.decision
+                            == runtime::RuntimeTaskStopDecision::stop_requested;
+                    } catch (...) {
+                        nested_failed = true;
+                    }
+                } else {
+                    second_received_stop = true;
+                }
+            };
+            static_assert(std::is_nothrow_invocable_v<decltype(stop_action)>);
+            std::stop_callback callback{stop, stop_action};
+            registered.fetch_add(1);
+            while (!stop.stop_requested()) std::this_thread::yield();
+            while (!allow_exit.load()) std::this_thread::yield();
+            return runtime::RuntimeTaskTerminal{false, std::nullopt};
+        }};
+    nested_owner = &owner;
+    check(static_cast<bool>(owner.start(request("nested-a"))),
+          "nested first worker starts");
+    check(static_cast<bool>(owner.start(request("nested-b"))),
+          "nested second worker starts");
+    check(wait_until([&registered] { return registered.load() == 2; }),
+          "both nested callbacks are registered");
+    const auto first_stop = owner.request_stop("nested-a");
+    check(first_stop.decision == runtime::RuntimeTaskStopDecision::stop_requested,
+          "first nested stop is delivered");
+    check(nested_returned.load() && !nested_failed.load(),
+          "stop callback can synchronously request_stop another config");
+    check(second_received_stop.load(), "second config receives nested stop");
+    allow_exit = true;
+    check(owner.wait_for_idle("nested-a", 3s)
+              && owner.wait_for_idle("nested-b", 3s),
+          "nested-stop workers publish terminal state");
+
+    struct HookState {
+        std::atomic<bool> stop_linearized{};
+        std::atomic<bool> allow_stop_delivery{};
+        std::atomic<bool> drain_locked{};
+        std::atomic<bool> allow_drain{};
+    } hooks;
+    runtime::RuntimeTaskOwner* ordering_owner = nullptr;
+    std::atomic<int> ordering_ready{};
+    std::atomic<bool> call_second_stop{};
+    std::atomic<bool> second_stop_returned{};
+    std::atomic<bool> ordering_allow_exit{};
+    runtime::RuntimeTaskOwner ordering{
+        [&ordering_owner, &ordering_ready, &call_second_stop,
+         &second_stop_returned, &ordering_allow_exit](
+            const runtime::RuntimeTaskRequest& value,
+            const std::stop_token stop,
+            const runtime::RuntimeTaskProgressReporter&) {
+            ordering_ready.fetch_add(1);
+            if (value.config_id == "join-a") {
+                while (!call_second_stop.load()) std::this_thread::yield();
+                static_cast<void>(ordering_owner->request_stop("join-b"));
+                second_stop_returned = true;
+            } else {
+                while (!stop.stop_requested()) std::this_thread::yield();
+            }
+            while (!ordering_allow_exit.load()) std::this_thread::yield();
+            return runtime::RuntimeTaskTerminal{false, std::nullopt};
+        }};
+    ordering_owner = &ordering;
+    runtime::RuntimeTaskOwnerTestAccess::set_after_stop_linearized_hook(
+        ordering,
+        +[](void* context) noexcept {
+            auto& state = *static_cast<HookState*>(context);
+            state.stop_linearized = true;
+            while (!state.allow_stop_delivery.load()) std::this_thread::yield();
+        },
+        &hooks);
+    runtime::RuntimeTaskOwnerTestAccess::set_before_drain_hook(
+        ordering,
+        +[](void* context) noexcept {
+            auto& state = *static_cast<HookState*>(context);
+            state.drain_locked = true;
+            while (!state.allow_drain.load()) std::this_thread::yield();
+        },
+        &hooks);
+    check(static_cast<bool>(ordering.start(request("join-a"))),
+          "join-order first worker starts");
+    check(static_cast<bool>(ordering.start(request("join-b"))),
+          "join-order second worker starts");
+    check(wait_until([&ordering_ready] { return ordering_ready.load() == 2; }),
+          "join-order workers are running");
+    call_second_stop = true;
+    check(wait_until([&hooks] { return hooks.stop_linearized.load(); }),
+          "worker linearizes second-config stop before delivery");
+    std::thread external_shutdown{[&ordering] { ordering.shutdown(); }};
+    check(wait_until([&hooks] { return hooks.drain_locked.load(); }),
+          "external shutdown holds exclusive drain ownership");
+    hooks.allow_stop_delivery = true;
+    const bool returned_without_drain_mutex =
+        wait_until([&second_stop_returned] { return second_stop_returned.load(); });
+    check(returned_without_drain_mutex,
+          "worker request_stop returns while external shutdown is joining");
+    ordering_allow_exit = true;
+    hooks.allow_drain = true;
+    external_shutdown.join();
+}
+
+void test_concurrent_external_and_worker_shutdown_stress()
+{
+    constexpr int rounds = 8;
+    constexpr int worker_count = 4;
+    constexpr int external_count = 4;
+    for (int round = 0; round < rounds; ++round) {
+        runtime::RuntimeTaskOwner* owner_pointer = nullptr;
+        std::atomic<int> ready{};
+        std::atomic<int> worker_shutdown_returned{};
+        std::atomic<bool> release{};
+        runtime::RuntimeTaskOwner owner{
+            [&owner_pointer, &ready, &worker_shutdown_returned, &release](
+                const runtime::RuntimeTaskRequest&, std::stop_token,
+                const runtime::RuntimeTaskProgressReporter&) {
+                ready.fetch_add(1);
+                while (!release.load()) std::this_thread::yield();
+                owner_pointer->shutdown();
+                worker_shutdown_returned.fetch_add(1);
+                return runtime::RuntimeTaskTerminal{false, std::nullopt};
+            }};
+        owner_pointer = &owner;
+        for (int worker = 0; worker < worker_count; ++worker) {
+            check(static_cast<bool>(owner.start(request(
+                      "stress-" + std::to_string(round) + "-"
+                      + std::to_string(worker)))),
+                  "stress worker starts");
+        }
+        check(wait_until([&ready] { return ready.load() == worker_count; }),
+              "all stress workers enter backend");
+        std::vector<std::thread> external;
+        external.reserve(external_count);
+        for (int index = 0; index < external_count; ++index) {
+            external.emplace_back([&owner, &release] {
+                while (!release.load()) std::this_thread::yield();
+                owner.shutdown();
+            });
+        }
+        release = true;
+        for (auto& thread : external) thread.join();
+        check(worker_shutdown_returned.load() == worker_count,
+              "worker shutdown calls return during concurrent external drains");
+        owner.shutdown();
+    }
 }
 
 void test_escaped_reporter_and_timestamp_ordering()
@@ -445,9 +624,15 @@ void test_limits_and_external_shutdown_drain()
 
 int main()
 {
+    check(
+        runtime_task_owner_size_from_non_hook_tu()
+            == sizeof(runtime::RuntimeTaskOwner),
+        "hook and non-hook translation units agree on owner layout");
     test_keyed_concurrency_and_stop_start_linearization();
     test_explicit_terminal_outcomes_and_bounded_snapshots();
     test_self_shutdown_and_reentrant_stop_callback();
+    test_nested_stop_delivery_and_join_lock_order();
+    test_concurrent_external_and_worker_shutdown_stress();
     test_escaped_reporter_and_timestamp_ordering();
     test_limits_and_external_shutdown_drain();
     if (failures.load() != 0) {
