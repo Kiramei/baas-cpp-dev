@@ -241,6 +241,10 @@ private:
         {"depth/b.baas", "let value = 1;\n"},
         {"parse/bad.baas", "let = ;\n"},
         {"semantic/bad.baas", "let value = missing_name;\n"},
+        {"limits/ast.baas",
+         "let a = 1; let b = a; let c = b; let d = c;\n"},
+        {"limits/nesting.baas",
+         "{{{{{{{{{{{{let deep = 1;}}}}}}}}}}}}\n"},
     };
 }
 
@@ -417,6 +421,38 @@ void test_all_loader_budgets_and_cancellation(const RepositoryFixture& fixture)
         "reads, parsing, semantics, discovery, and graph validation share a work budget");
     check(payload_read_starts == 0,
           "insufficient work budget must fail before opening a source payload");
+
+    limits = {};
+    limits.max_ast_nodes_per_module = 3;
+    expect_error(
+        package_loader::load_runtime_script_package(
+            fixture.scripts(), "limits/ast", limits),
+        package_loader::RuntimeScriptPackageLoadError::semantic_failed,
+        "the per-module semantic AST budget must be enforced");
+
+    limits = {};
+    limits.max_semantic_nesting_depth = 4;
+    expect_error(
+        package_loader::load_runtime_script_package(
+            fixture.scripts(), "limits/nesting", limits),
+        package_loader::RuntimeScriptPackageLoadError::semantic_failed,
+        "the semantic nesting budget must be enforced");
+
+    limits = {};
+    limits.specifier.max_bytes = 4;
+    expect_error(
+        package_loader::load_runtime_script_package(
+            fixture.scripts(), "success/main", limits),
+        package_loader::RuntimeScriptPackageLoadError::invalid_entry_module,
+        "entry module IDs must obey the shared specifier byte budget");
+
+    limits = {};
+    limits.specifier.max_segments = 1;
+    expect_error(
+        package_loader::load_runtime_script_package(
+            fixture.scripts(), "success/main", limits),
+        package_loader::RuntimeScriptPackageLoadError::invalid_entry_module,
+        "entry module IDs must obey the shared specifier segment budget");
 
     std::stop_source cancelled;
     cancelled.request_stop();

@@ -366,6 +366,7 @@ RuntimeScriptPackageLoadResult load_runtime_script_package(
 
         std::map<std::string, std::size_t, std::less<>> dependency_depth;
         for (const auto& module : graph.initialization_order) {
+            check_cancelled(stop_token);
             const auto record = loaded_indices.find(module);
             if (record == loaded_indices.end()) {
                 fail(
@@ -374,6 +375,7 @@ RuntimeScriptPackageLoadResult load_runtime_script_package(
             }
             std::size_t depth = 0;
             for (const auto& imported : loaded[record->second].imports) {
+                check_cancelled(stop_token);
                 const auto imported_specifier = canonical_specifier(
                     imported, limits,
                     RuntimeScriptPackageLoadError::invalid_import_specifier);
@@ -406,6 +408,7 @@ RuntimeScriptPackageLoadResult load_runtime_script_package(
         package.work = work.used();
         package.modules.reserve(loaded.size());
         for (const auto& module : graph.initialization_order) {
+            check_cancelled(stop_token);
             const auto record = loaded_indices.find(module);
             package.modules.push_back(
                 std::move(loaded[record->second].source));
