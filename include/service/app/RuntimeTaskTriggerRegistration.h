@@ -7,6 +7,7 @@
 #include <memory>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace baas::service::app {
@@ -40,9 +41,6 @@ enum class RuntimeTaskControlError : std::uint8_t {
     RuntimeTaskControlError error) noexcept;
 
 struct RuntimeTaskControlResult {
-    // Exact Python-compatible data object for command_response.data. The
-    // registration validates and bounds it before publication.
-    std::string data_json;
     RuntimeTaskControlError error{RuntimeTaskControlError::none};
 
     [[nodiscard]] explicit operator bool() const noexcept
@@ -51,14 +49,52 @@ struct RuntimeTaskControlResult {
     }
 };
 
+// A reversible reservation prepared by RuntimeTaskControl. Destruction before
+// a successful commit must abort/release the reservation and must not start or
+// stop real work. commit() performs the one-way ownership transfer and must
+// return immediately without waiting for the long-running job.
+class RuntimeTaskPreparedOperation {
+public:
+    virtual ~RuntimeTaskPreparedOperation() = default;
+    [[nodiscard]] virtual RuntimeTaskControlResult commit() = 0;
+};
+
+struct RuntimeTaskPrepareResult {
+    // Exact Python-compatible data object for command_response.data. It is
+    // computed without starting/stopping real work, then bounded before claim.
+    std::string data_json;
+    std::unique_ptr<RuntimeTaskPreparedOperation> operation;
+    RuntimeTaskControlError error{RuntimeTaskControlError::none};
+
+    RuntimeTaskPrepareResult() = default;
+    RuntimeTaskPrepareResult(
+        std::string data,
+        std::unique_ptr<RuntimeTaskPreparedOperation> prepared,
+        RuntimeTaskControlError prepare_error = RuntimeTaskControlError::none)
+        : data_json(std::move(data)), operation(std::move(prepared)),
+          error(prepare_error)
+    {}
+    RuntimeTaskPrepareResult(RuntimeTaskPrepareResult&&) noexcept = default;
+    RuntimeTaskPrepareResult& operator=(
+        RuntimeTaskPrepareResult&&) noexcept = default;
+    RuntimeTaskPrepareResult(const RuntimeTaskPrepareResult&) = delete;
+    RuntimeTaskPrepareResult& operator=(const RuntimeTaskPrepareResult&) = delete;
+
+    [[nodiscard]] explicit operator bool() const noexcept
+    {
+        return error == RuntimeTaskControlError::none
+            && static_cast<bool>(operation);
+    }
+};
+
 // Service-owned lifecycle boundary for scheduler and one-shot task jobs.
 //
-// Every method performs only the bounded ownership transfer/admission needed
-// to start or stop work and returns immediately; it must never wait for a
-// long-running BAAS job to finish. Implementations own accepted work
-// independently of the Trigger connection. In particular, no Trigger stop
-// token is passed across this boundary, so disconnecting a client cannot
-// become job cancellation.
+// Every prepare method creates only a reversible reservation. It must not
+// start/stop a real job. The registration validates data, atomically claims an
+// irrevocable terminal, then invokes RuntimeTaskPreparedOperation::commit() to
+// perform the ownership transfer. Implementations own committed work
+// independently of the Trigger connection; no Trigger stop token crosses this
+// boundary.
 //
 // Implementations may be invoked concurrently and must be thread-safe. A
 // start_task implementation receives the original command/task spelling and
@@ -68,13 +104,13 @@ class RuntimeTaskControl {
 public:
     virtual ~RuntimeTaskControl() = default;
 
-    [[nodiscard]] virtual RuntimeTaskControlResult start_scheduler(
+    [[nodiscard]] virtual RuntimeTaskPrepareResult prepare_start_scheduler(
         std::string_view config_id) = 0;
-    [[nodiscard]] virtual RuntimeTaskControlResult stop_scheduler(
+    [[nodiscard]] virtual RuntimeTaskPrepareResult prepare_stop_scheduler(
         std::string_view config_id) = 0;
-    [[nodiscard]] virtual RuntimeTaskControlResult start_task(
+    [[nodiscard]] virtual RuntimeTaskPrepareResult prepare_start_task(
         std::string_view config_id, std::string_view requested_task) = 0;
-    [[nodiscard]] virtual RuntimeTaskControlResult stop_all_tasks() = 0;
+    [[nodiscard]] virtual RuntimeTaskPrepareResult prepare_stop_all_tasks() = 0;
 };
 
 enum class RuntimeTaskTriggerRegistrationError : std::uint8_t {

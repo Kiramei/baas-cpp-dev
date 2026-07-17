@@ -171,27 +171,30 @@ void stage_cancelled(trigger::TriggerResponseSink& sink)
     return "runtime_task_internal_error";
 }
 
-template <typename Invoke>
-void invoke_control(
+template <typename Prepare>
+void invoke_prepared(
     trigger::TriggerResponseSink& sink,
     const RuntimeTaskTriggerLimits& limits,
-    Invoke&& invoke)
+    Prepare&& prepare)
 {
-    RuntimeTaskControlResult result;
+    RuntimeTaskPrepareResult prepared;
     try {
-        result = std::forward<Invoke>(invoke)();
+        prepared = std::forward<Prepare>(prepare)();
     } catch (...) {
         stage_error(sink, control_exception_error);
         return;
     }
-    if (!result) {
-        stage_error(sink, wire_error(result.error));
+    if (!prepared) {
+        stage_error(
+            sink, wire_error(prepared.error == RuntimeTaskControlError::none
+                                 ? RuntimeTaskControlError::internal_error
+                                 : prepared.error));
         return;
     }
 
     JsonValidation validation{JsonValidation::invalid};
     try {
-        validation = validate_result_json(result.data_json, limits);
+        validation = validate_result_json(prepared.data_json, limits);
     } catch (const std::bad_alloc&) {
         validation = JsonValidation::capacity;
     } catch (...) {
@@ -205,8 +208,28 @@ void invoke_control(
         stage_error(sink, invalid_result_error);
         return;
     }
-    if (!sink.success(std::move(result.data_json))) {
-        stage_error(sink, response_rejected_error);
+
+    const auto claim = sink.irrevocable_success(std::move(prepared.data_json));
+    if (!sink.irrevocable_terminal_claimed()) {
+        // Cancellation or response encoding failure won before the claim.
+        // Destroying the prepared operation aborts its reversible reservation.
+        if (!claim) stage_error(sink, response_rejected_error);
+        return;
+    }
+
+    RuntimeTaskControlResult committed;
+    try {
+        committed = prepared.operation->commit();
+    } catch (...) {
+        static_cast<void>(sink.irrevocable_error(
+            std::string{control_exception_error}));
+        return;
+    }
+    if (!committed) {
+        static_cast<void>(sink.irrevocable_error(
+            std::string{wire_error(committed.error == RuntimeTaskControlError::none
+                                       ? RuntimeTaskControlError::internal_error
+                                       : committed.error)}));
     }
 }
 
@@ -275,8 +298,8 @@ RuntimeTaskTriggerRegistrationResult make_runtime_task_trigger_registrations(
                 if (stop.stop_requested()) return stage_cancelled(sink);
                 const auto config_id = required_config_id(request, sink);
                 if (!config_id) return;
-                invoke_control(sink, limits, [&] {
-                    return control->start_scheduler(*config_id);
+                invoke_prepared(sink, limits, [&] {
+                    return control->prepare_start_scheduler(*config_id);
                 });
             },
         });
@@ -288,8 +311,8 @@ RuntimeTaskTriggerRegistrationResult make_runtime_task_trigger_registrations(
                 if (stop.stop_requested()) return stage_cancelled(sink);
                 const auto config_id = required_config_id(request, sink);
                 if (!config_id) return;
-                invoke_control(sink, limits, [&] {
-                    return control->stop_scheduler(*config_id);
+                invoke_prepared(sink, limits, [&] {
+                    return control->prepare_stop_scheduler(*config_id);
                 });
             },
         });
@@ -309,8 +332,8 @@ RuntimeTaskTriggerRegistrationResult make_runtime_task_trigger_registrations(
                 if (parsed.validation != JsonValidation::valid) {
                     return stage_error(sink, invalid_payload_error);
                 }
-                invoke_control(sink, limits, [&] {
-                    return control->start_task(*config_id, parsed.task);
+                invoke_prepared(sink, limits, [&] {
+                    return control->prepare_start_task(*config_id, parsed.task);
                 });
             },
         });
@@ -327,8 +350,9 @@ RuntimeTaskTriggerRegistrationResult make_runtime_task_trigger_registrations(
                 }
                 // Preserve the original legacy alias. RuntimeTaskControl owns
                 // normalization because it also owns the runtime task catalog.
-                invoke_control(sink, limits, [&] {
-                    return control->start_task(*config_id, request.command());
+                invoke_prepared(sink, limits, [&] {
+                    return control->prepare_start_task(
+                        *config_id, request.command());
                 });
             },
         });
@@ -338,8 +362,8 @@ RuntimeTaskTriggerRegistrationResult make_runtime_task_trigger_registrations(
                               trigger::TriggerResponseSink& sink,
                               const std::stop_token stop) {
                 if (stop.stop_requested()) return stage_cancelled(sink);
-                invoke_control(sink, limits, [&] {
-                    return control->stop_all_tasks();
+                invoke_prepared(sink, limits, [&] {
+                    return control->prepare_stop_all_tasks();
                 });
             },
         });

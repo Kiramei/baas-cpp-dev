@@ -46,62 +46,105 @@ bool wait_until(Predicate predicate)
     return true;
 }
 
+struct OperationMetrics {
+    std::atomic<unsigned int> commit_calls{};
+    std::atomic<unsigned int> transferred{};
+    std::atomic<unsigned int> aborted{};
+};
+
+class TestPreparedOperation final : public app::RuntimeTaskPreparedOperation {
+public:
+    TestPreparedOperation(
+        std::shared_ptr<OperationMetrics> metrics,
+        std::function<app::RuntimeTaskControlResult()> commit)
+        : metrics_(std::move(metrics)), commit_(std::move(commit))
+    {}
+
+    ~TestPreparedOperation() override
+    {
+        if (!committed_) metrics_->aborted.fetch_add(1);
+    }
+
+    app::RuntimeTaskControlResult commit() override
+    {
+        metrics_->commit_calls.fetch_add(1);
+        auto result = commit_
+            ? commit_() : app::RuntimeTaskControlResult{};
+        if (result) {
+            committed_ = true;
+            metrics_->transferred.fetch_add(1);
+        }
+        return result;
+    }
+
+private:
+    std::shared_ptr<OperationMetrics> metrics_;
+    std::function<app::RuntimeTaskControlResult()> commit_;
+    bool committed_{};
+};
+
 class RecordingControl final : public app::RuntimeTaskControl {
 public:
-    using ConfigCall =
-        std::function<app::RuntimeTaskControlResult(std::string_view)>;
-    using TaskCall = std::function<app::RuntimeTaskControlResult(
+    using ConfigPrepare =
+        std::function<app::RuntimeTaskPrepareResult(std::string_view)>;
+    using TaskPrepare = std::function<app::RuntimeTaskPrepareResult(
         std::string_view, std::string_view)>;
-    using GlobalCall = std::function<app::RuntimeTaskControlResult()>;
+    using GlobalPrepare = std::function<app::RuntimeTaskPrepareResult()>;
 
-    app::RuntimeTaskControlResult start_scheduler(
+    [[nodiscard]] app::RuntimeTaskPrepareResult prepared(std::string data)
+    {
+        return {
+            std::move(data),
+            std::make_unique<TestPreparedOperation>(metrics, commit_call)};
+    }
+
+    app::RuntimeTaskPrepareResult prepare_start_scheduler(
         const std::string_view config_id) override
     {
         ++start_scheduler_calls;
         last_config.assign(config_id);
-        return start_scheduler_call
-            ? start_scheduler_call(config_id)
-            : app::RuntimeTaskControlResult{
-                  R"({"status":"started","config_id":"default"})"};
+        return start_scheduler_prepare
+            ? start_scheduler_prepare(config_id)
+            : prepared(R"({"status":"started","config_id":"default"})");
     }
 
-    app::RuntimeTaskControlResult stop_scheduler(
+    app::RuntimeTaskPrepareResult prepare_stop_scheduler(
         const std::string_view config_id) override
     {
         ++stop_scheduler_calls;
         last_config.assign(config_id);
-        return stop_scheduler_call
-            ? stop_scheduler_call(config_id)
-            : app::RuntimeTaskControlResult{
-                  R"({"status":"stopped","config_id":"default"})"};
+        return stop_scheduler_prepare
+            ? stop_scheduler_prepare(config_id)
+            : prepared(R"({"status":"stopped","config_id":"default"})");
     }
 
-    app::RuntimeTaskControlResult start_task(
+    app::RuntimeTaskPrepareResult prepare_start_task(
         const std::string_view config_id,
         const std::string_view requested_task) override
     {
         ++start_task_calls;
         last_config.assign(config_id);
         last_task.assign(requested_task);
-        return start_task_call
-            ? start_task_call(config_id, requested_task)
-            : app::RuntimeTaskControlResult{
-                  R"({"status":"ok","task":"normalized","result":0})"};
+        return start_task_prepare
+            ? start_task_prepare(config_id, requested_task)
+            : prepared(R"({"status":"ok","task":"normalized","result":0})");
     }
 
-    app::RuntimeTaskControlResult stop_all_tasks() override
+    app::RuntimeTaskPrepareResult prepare_stop_all_tasks() override
     {
         ++stop_all_calls;
-        return stop_all_call
-            ? stop_all_call()
-            : app::RuntimeTaskControlResult{
-                  R"({"status":"stopped","results":[]})"};
+        return stop_all_prepare
+            ? stop_all_prepare()
+            : prepared(R"({"status":"stopped","results":[]})");
     }
 
-    ConfigCall start_scheduler_call;
-    ConfigCall stop_scheduler_call;
-    TaskCall start_task_call;
-    GlobalCall stop_all_call;
+    ConfigPrepare start_scheduler_prepare;
+    ConfigPrepare stop_scheduler_prepare;
+    TaskPrepare start_task_prepare;
+    GlobalPrepare stop_all_prepare;
+    std::function<app::RuntimeTaskControlResult()> commit_call;
+    std::shared_ptr<OperationMetrics> metrics =
+        std::make_shared<OperationMetrics>();
     std::atomic<unsigned int> start_scheduler_calls{};
     std::atomic<unsigned int> stop_scheduler_calls{};
     std::atomic<unsigned int> start_task_calls{};
@@ -188,6 +231,17 @@ struct ObservedResponse {
     return result;
 }
 
+[[nodiscard]] protocol::OutboundBatch blocker_batch()
+{
+    protocol::CommandResponse response;
+    response.command = "blocker";
+    response.timestamp = 1;
+    response.data_json = "{}";
+    auto encoded = protocol::encode_command_response(std::move(response));
+    if (!encoded) throw std::runtime_error("blocker encode failed");
+    return std::move(encoded.batch);
+}
+
 void test_factory_is_exact_and_fail_closed()
 {
     auto missing = app::make_runtime_task_trigger_registrations(nullptr);
@@ -249,10 +303,10 @@ void test_ingress_and_adapter_validate_required_fields()
 void test_python_wire_success_and_alias_handoff()
 {
     auto control = std::make_shared<RecordingControl>();
-    control->start_scheduler_call = [](const std::string_view config) {
-        return app::RuntimeTaskControlResult{
+    control->start_scheduler_prepare = [control](const std::string_view config) {
+        return control->prepared(
             std::string{R"({"status":"already-running","config_id":")"}
-            + std::string{config} + R"("})"};
+            + std::string{config} + R"("})");
     };
     auto started = execute_one(control, "start_scheduler", "alpha");
     check(started.status == protocol::ResponseStatus::ok
@@ -280,6 +334,9 @@ void test_python_wire_success_and_alias_handoff()
     check(all.status == protocol::ResponseStatus::ok
               && control->stop_all_calls.load() == 1,
           "stop_all_tasks must transfer one global stop request");
+    check(control->metrics->commit_calls.load() == 5
+              && control->metrics->transferred.load() == 5,
+          "every successful descriptor must claim then commit exactly once");
 }
 
 void test_bounded_payload_before_dom_and_result_validation()
@@ -292,7 +349,7 @@ void test_bounded_payload_before_dom_and_result_validation()
         R"({"task":"x","a":{"b":{"c":1}}})", depth);
     check(deep.status == protocol::ResponseStatus::error
               && control->start_task_calls.load() == 0,
-          "payload depth must be rejected before control and DOM retention");
+          "payload depth must be rejected before control and secondary business DOM retention");
 
     app::RuntimeTaskTriggerLimits nodes;
     nodes.max_payload_nodes = 3;
@@ -303,8 +360,8 @@ void test_bounded_payload_before_dom_and_result_validation()
               && control->start_task_calls.load() == 0,
           "payload node count must be rejected before control admission");
 
-    control->start_task_call = [](std::string_view, std::string_view) {
-        return app::RuntimeTaskControlResult{"[]"};
+    control->start_task_prepare = [control](std::string_view, std::string_view) {
+        return control->prepared("[]");
     };
     auto non_object = execute_one(
         control, "solve", "default", R"({"task":"x"})");
@@ -312,10 +369,13 @@ void test_bounded_payload_before_dom_and_result_validation()
               && non_object.json.find("runtime_task_result_invalid_json")
                   != std::string::npos,
           "control success data must be a valid JSON object");
+    check(control->metrics->commit_calls.load() == 0
+              && control->metrics->aborted.load() == 1,
+          "invalid prepared data must abort before claim and commit");
 
-    control->start_task_call = [](std::string_view, std::string_view) {
-        return app::RuntimeTaskControlResult{
-            R"({"padding":"012345678901234567890123456789"})"};
+    control->start_task_prepare = [control](std::string_view, std::string_view) {
+        return control->prepared(
+            R"({"padding":"012345678901234567890123456789"})");
     };
     app::RuntimeTaskTriggerLimits small;
     small.max_result_json_bytes = 32;
@@ -325,6 +385,9 @@ void test_bounded_payload_before_dom_and_result_validation()
               && oversized.json.find("runtime_task_result_capacity")
                   != std::string::npos,
           "control result JSON must be bounded before publication");
+    check(control->metrics->commit_calls.load() == 0
+              && control->metrics->aborted.load() == 2,
+          "oversized prepared data must abort before claim and commit");
 }
 
 void test_stable_control_errors_and_exception_redaction()
@@ -343,8 +406,8 @@ void test_stable_control_errors_and_exception_redaction()
         "runtime_task_control_unavailable", "runtime_task_internal_error"};
     for (std::size_t index = 0; index < errors.size(); ++index) {
         auto control = std::make_shared<RecordingControl>();
-        control->stop_all_call = [error = errors[index]] {
-            return app::RuntimeTaskControlResult{{}, error};
+        control->stop_all_prepare = [error = errors[index]] {
+            return app::RuntimeTaskPrepareResult{{}, nullptr, error};
         };
         auto observed = execute_one(control, "stop_all_tasks", std::nullopt);
         check(observed.status == protocol::ResponseStatus::error
@@ -355,7 +418,7 @@ void test_stable_control_errors_and_exception_redaction()
     }
 
     auto throwing = std::make_shared<RecordingControl>();
-    throwing->stop_all_call = []() -> app::RuntimeTaskControlResult {
+    throwing->stop_all_prepare = []() -> app::RuntimeTaskPrepareResult {
         throw std::runtime_error("secret device path");
     };
     auto observed = execute_one(throwing, "stop_all_tasks", std::nullopt);
@@ -365,15 +428,15 @@ void test_stable_control_errors_and_exception_redaction()
           "control exceptions must map to a stable non-sensitive error");
 }
 
-void test_disconnect_does_not_cancel_transferred_work()
+void test_backpressure_cancel_before_claim_aborts_without_commit()
 {
     auto control = std::make_shared<RecordingControl>();
     std::mutex mutex;
     std::condition_variable condition;
     bool entered{};
     bool release{};
-    std::atomic<bool> returned{};
-    control->start_task_call = [&](std::string_view, std::string_view) {
+    control->start_task_prepare =
+        [&](std::string_view, std::string_view) {
         {
             std::lock_guard lock(mutex);
             entered = true;
@@ -381,39 +444,132 @@ void test_disconnect_does_not_cancel_transferred_work()
         condition.notify_all();
         std::unique_lock lock(mutex);
         condition.wait(lock, [&] { return release; });
-        returned.store(true, std::memory_order_release);
-        return app::RuntimeTaskControlResult{
-            R"({"status":"ok","task":"x","result":0})"};
+        return control->prepared(
+            R"({"status":"ok","task":"x","result":0})");
     };
 
     auto dispatcher = dispatcher_for(control);
     trigger::TriggerExecutor executor(dispatcher, {1, 1, 1, 1});
-    auto trigger_session = session();
+    protocol::TriggerSessionLimits session_limits;
+    session_limits.max_queued_batches = 1;
+    auto trigger_session =
+        std::make_shared<protocol::TriggerSession>(session_limits);
+    protocol::CommandAdmission admission;
+    admission.command = "blocker";
+    admission.timestamp = 1;
+    admission.payload_bytes = 2;
+    auto blocker = trigger_session->admit(std::move(admission));
+    check(blocker && trigger_session->publish(
+                         *blocker.receipt, blocker_batch()),
+          "backpressure fixture must fill the response queue");
+
     auto connection = executor.connect(trigger_session);
     auto item = ingress_item(
         "solve", 11, "default", R"({"task":"x"})");
     check(item && connection.submit(std::move(*item)),
-          "disconnect fixture must submit");
+          "cancel-before-claim fixture must submit");
     {
         std::unique_lock lock(mutex);
         check(condition.wait_for(lock, 3s, [&] { return entered; }),
-              "control ownership transfer must begin");
+              "reversible preparation must begin");
     }
-    const auto closed = connection.close();
-    check(closed.cancellations_consumed == 1,
-          "closing Trigger must consume the admitted correlation");
+    const auto cancelled = connection.request_cancel(11);
+    check(cancelled.task_found && cancelled.stop_requested,
+          "cancel-before-claim must mark the admitted handler");
     {
         std::lock_guard lock(mutex);
         release = true;
     }
     condition.notify_all();
     check(wait_until([&] {
-              return returned.load(std::memory_order_acquire)
-                  && executor.stats().active_tasks == 0;
+              return connection.stats().completed == 1;
           }),
-          "connection stop must not interrupt service-owned control transfer");
-    check(control->start_task_calls.load() == 1,
-          "disconnect must not retry or cancel transferred runtime work");
+          "cancelled terminal must remain pending under backpressure");
+    check(control->metrics->commit_calls.load() == 0
+              && control->metrics->transferred.load() == 0
+              && control->metrics->aborted.load() == 1,
+          "cancellation before claim must abort reservation without commit");
+
+    auto first = trigger_session->begin_send();
+    check(first && first.lease->batch().command() == "blocker",
+          "blocker must be the first queued batch");
+    if (first) {
+        const auto completed = connection.complete_send(*first.lease);
+        check(completed && completed.retry.published == 1,
+              "draining blocker must publish retained cancellation");
+    }
+    auto terminal = trigger_session->begin_send();
+    check(terminal
+              && terminal.lease->batch().status()
+                  == protocol::ResponseStatus::cancelled,
+          "cancel-before-claim must retain a cancelled terminal");
+    if (terminal) static_cast<void>(connection.complete_send(*terminal.lease));
+}
+
+void test_cancel_after_claim_cannot_replace_success_and_commits_once()
+{
+    auto control = std::make_shared<RecordingControl>();
+    trigger::TriggerConnectionOwner* owner{};
+    protocol::CancelDecision decision{protocol::CancelDecision::requested};
+    control->commit_call = [&] {
+        const auto cancelled = owner->request_cancel(12);
+        decision = cancelled.session_decision;
+        return app::RuntimeTaskControlResult{};
+    };
+
+    auto dispatcher = dispatcher_for(control);
+    trigger::TriggerExecutor executor(dispatcher, {1, 1, 1, 1});
+    auto trigger_session = session();
+    auto connection = executor.connect(trigger_session);
+    owner = &connection;
+    auto item = ingress_item(
+        "solve", 12, "default", R"({"task":"x"})");
+    check(item && connection.submit(std::move(*item)),
+          "claim-before-cancel fixture must submit");
+    check(wait_until([&] { return trigger_session->stats().queued_batches == 1; }),
+          "claimed terminal must be published");
+    auto terminal = trigger_session->begin_send();
+    check(terminal
+              && terminal.lease->batch().status() == protocol::ResponseStatus::ok
+              && decision == protocol::CancelDecision::terminal_already_queued,
+          "cancellation after claim must not replace the success terminal");
+    check(control->metrics->commit_calls.load() == 1
+              && control->metrics->transferred.load() == 1
+              && control->metrics->aborted.load() == 0,
+          "claimed operation must transfer ownership exactly once");
+    if (terminal) static_cast<void>(connection.complete_send(*terminal.lease));
+}
+
+void test_commit_failure_replaces_claimed_success_with_error()
+{
+    auto control = std::make_shared<RecordingControl>();
+    control->commit_call = [] {
+        return app::RuntimeTaskControlResult{
+            app::RuntimeTaskControlError::unavailable};
+    };
+    auto failed = execute_one(
+        control, "solve", "default", R"({"task":"x"})");
+    check(failed.status == protocol::ResponseStatus::error
+              && failed.json.find("runtime_task_control_unavailable")
+                  != std::string::npos,
+          "commit failure must replace claimed success with stable error");
+    check(control->metrics->commit_calls.load() == 1
+              && control->metrics->transferred.load() == 0
+              && control->metrics->aborted.load() == 1,
+          "failed commit must not transfer ownership and must release reservation");
+
+    auto throwing = std::make_shared<RecordingControl>();
+    throwing->commit_call = []() -> app::RuntimeTaskControlResult {
+        throw std::runtime_error("private commit detail");
+    };
+    auto exception = execute_one(
+        throwing, "solve", "default", R"({"task":"x"})");
+    check(exception.status == protocol::ResponseStatus::error
+              && exception.json.find("runtime_task_control_exception")
+                  != std::string::npos
+              && exception.json.find("private commit detail")
+                  == std::string::npos,
+          "commit exception must replace claimed success with redacted error");
 }
 
 void test_stable_registration_error_names()
@@ -440,7 +596,9 @@ int main()
     test_python_wire_success_and_alias_handoff();
     test_bounded_payload_before_dom_and_result_validation();
     test_stable_control_errors_and_exception_redaction();
-    test_disconnect_does_not_cancel_transferred_work();
+    test_backpressure_cancel_before_claim_aborts_without_commit();
+    test_cancel_after_claim_cannot_replace_success_and_commits_once();
+    test_commit_failure_replaces_claimed_success_with_error();
     test_stable_registration_error_names();
     if (failures != 0) {
         std::cerr << failures << " runtime task trigger test(s) failed\n";
