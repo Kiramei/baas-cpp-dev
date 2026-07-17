@@ -14,6 +14,8 @@ class BAASCppHttplibConan(ConanFile):
     default_options = {
         "openssl/*:shared": False,
         "openssl/*:no_apps": True,
+        "openssl/*:no_fips": True,
+        "openssl/*:no_legacy": True,
         "openssl/*:no_zlib": True,
     }
 
@@ -49,6 +51,7 @@ class BAASCppHttplibConan(ConanFile):
         # individual consumers.
         self.cpp_info.defines = [
             "CPPHTTPLIB_OPENSSL_SUPPORT=1",
+            "CPPHTTPLIB_LISTEN_BACKLOG=65536",
             "CPPHTTPLIB_WEBSOCKET_MAX_PAYLOAD_LENGTH=67108864",
         ]
         if str(self.version) == "0.50.1":

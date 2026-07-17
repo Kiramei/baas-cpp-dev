@@ -241,8 +241,9 @@ private:
 [[nodiscard]] UniqueFd open_unix_directory_at(const int parent, const std::string_view component) {
     const std::string owned(component);
     const auto fd = openat(parent, owned.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
-    if (fd < 0) fail(errno == ELOOP ? RuntimeRepositoryReadErrorCode::path_violation
-                                    : RuntimeRepositoryReadErrorCode::io,
+    if (fd < 0) fail((errno == ELOOP || errno == ENOTDIR)
+                         ? RuntimeRepositoryReadErrorCode::path_violation
+                         : RuntimeRepositoryReadErrorCode::io,
                      "repository directory open failed");
     struct stat info{};
     if (fstat(fd, &info) != 0 || !S_ISDIR(info.st_mode)) { close(fd); fail(
@@ -255,10 +256,14 @@ void enumerate_unix(const int root, const std::string& prefix, EnumeratedTree& t
                     const std::stop_token stop_token) {
     if (stop_token.stop_requested())
         fail(RuntimeRepositoryReadErrorCode::cancelled, "repository enumeration cancelled");
-    const auto duplicate = dup(root);
-    if (duplicate < 0) fail(RuntimeRepositoryReadErrorCode::io, "directory duplicate failed");
-    DIR* raw = fdopendir(duplicate);
-    if (!raw) { close(duplicate); fail(RuntimeRepositoryReadErrorCode::io,
+    // dup() shares the directory stream offset with the pinned descriptor.  A
+    // second sealing pass can therefore start at end-of-directory on platforms
+    // such as macOS.  Reopen "." relative to the pinned descriptor so every
+    // pass has an independent cursor without resolving the repository path.
+    const auto scan = openat(root, ".", O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+    if (scan < 0) fail(RuntimeRepositoryReadErrorCode::io, "directory scan open failed");
+    DIR* raw = fdopendir(scan);
+    if (!raw) { close(scan); fail(RuntimeRepositoryReadErrorCode::io,
                                       "directory enumeration open failed"); }
     struct DirOwner { DIR* value; ~DirOwner(){closedir(value);} } owner{raw};
     errno = 0;

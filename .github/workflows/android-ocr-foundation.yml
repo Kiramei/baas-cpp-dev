@@ -70,11 +70,30 @@ jobs:
       - name: Install pinned Android NDK
         shell: pwsh
         run: |
-          $sdkmanager = Get-Command sdkmanager.bat -ErrorAction Stop
-          & $sdkmanager.Source 'ndk;29.0.13846066'
+          $androidSdk = if ($env:ANDROID_SDK_ROOT) {
+            $env:ANDROID_SDK_ROOT
+          } elseif ($env:ANDROID_HOME) {
+            $env:ANDROID_HOME
+          } else {
+            throw 'Neither ANDROID_SDK_ROOT nor ANDROID_HOME is set.'
+          }
+          $sdkmanager = Join-Path $androidSdk 'cmdline-tools\latest\bin\sdkmanager.bat'
+          if (-not (Test-Path -LiteralPath $sdkmanager -PathType Leaf)) {
+            throw "Could not find sdkmanager at $sdkmanager."
+          }
+          1..100 | ForEach-Object { 'y' } | & $sdkmanager "--sdk_root=$androidSdk" --licenses
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Could not accept Android SDK licenses.'
+          }
+          & $sdkmanager "--sdk_root=$androidSdk" 'ndk;29.0.13846066'
           if ($LASTEXITCODE -ne 0) {
             throw 'Could not install Android NDK 29.0.13846066.'
           }
+          $ndk = Join-Path $androidSdk 'ndk\29.0.13846066'
+          if (-not (Test-Path -LiteralPath $ndk -PathType Container)) {
+            throw "Could not find Android NDK 29.0.13846066 at $ndk."
+          }
+          "ANDROID_NDK_HOME=$ndk" >> $env:GITHUB_ENV
 
       - name: Create repository Python environment
         shell: pwsh
@@ -94,9 +113,8 @@ jobs:
       - name: Build and verify OCR library
         shell: pwsh
         run: |
-          $ndk = Join-Path $env:ANDROID_HOME 'ndk\29.0.13846066'
           .\scripts\dev\Build-AndroidOcr.ps1 `
-            -Abi '${{ matrix.abi }}' -Jobs 8 -NdkPath $ndk
+            -Abi '${{ matrix.abi }}' -Jobs 8 -NdkPath $env:ANDROID_NDK_HOME
 
       - name: Upload verified native libraries
         uses: actions/upload-artifact@v4

@@ -219,18 +219,29 @@ public:
 
     void shutdown() noexcept
     {
+        bool first_close = false;
         {
             std::lock_guard admission_lock{admission_mutex_};
             std::lock_guard state_lock{state_mutex_};
-            if (closed_) return;
-            closed_ = true;
+            if (!closed_) {
+                closed_ = true;
+                first_close = true;
+            }
         }
-        subscription_.reset();
-        {
-            std::lock_guard lock{ingress_mutex_};
-            ingress_.close();
+        if (first_close) {
+            subscription_.reset();
+            {
+                std::lock_guard lock{ingress_mutex_};
+                ingress_.close();
+            }
         }
-        try { static_cast<void>(owner_.close()); } catch (...) {}
+        // External WebSocket shutdown must not return while this connection
+        // still owns task slots. TriggerConnectionOwner keeps shutdown
+        // non-blocking when reentered by its executor worker or by a task stop
+        // callback, so those synchronous self-call contexts cannot wait on
+        // their own slot. A later external call still reaches shutdown again
+        // and provides the required drain after an earlier non-blocking call.
+        owner_.shutdown();
         {
             std::unique_lock state_lock{state_mutex_};
             if (current_trigger_sink_call != this) {

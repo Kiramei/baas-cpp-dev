@@ -7,3 +7,7 @@
 docs/script-runtime/evidence/*.json text eol=lf
 docs/script-runtime/MIGRATION_MATRIX.md text eol=lf
 scripts/migration/*.json text eol=lf
+
+# Conformance spans refer to the original UTF-8 bytes, so checkout must not
+# rewrite fixture newlines and change byte offsets between host platforms.
+tests/script/conformance/** text eol=lf

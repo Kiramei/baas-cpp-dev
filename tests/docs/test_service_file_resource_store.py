@@ -29,7 +29,7 @@ class ServiceFileResourceStoreDocsTests(unittest.TestCase):
         self.assertIn("callback_slot", source)
         self.assertIn("BAAS_service_file_resource_store_tests", module)
         self.assertIn(
-            'EXCLUDE REGEX "/src/service/adapters/.*\\\\.cpp$"',
+            'EXCLUDE REGEX "/src/service/.*\\\\.cpp$"',
             root_cmake,
         )
         self.assertIn("BUILD_SERVICE_FILE_RESOURCE_STORE_TESTS=ON", workflow)

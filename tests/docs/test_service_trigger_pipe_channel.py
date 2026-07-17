@@ -64,6 +64,7 @@ class ServiceTriggerPipeChannelTests(unittest.TestCase):
         self.assertIn("BAAS_service_trigger_pipe_channel", self.cmake)
         self.assertIn("BAAS_service_trigger_pipe_channel_tests", self.cmake)
         self.assertIn("BUILD_SERVICE_TRIGGER_PIPE_CHANNEL_TESTS", self.root_cmake)
+        self.assertIn('/src/service/.*\\\\.cpp$', self.root_cmake)
         self.assertIn("BUILD_SERVICE_TRIGGER_PIPE_CHANNEL_TESTS=ON", self.workflow)
         self.assertIn("BAAS_service_trigger_pipe_channel_tests", self.workflow)
         self.assertEqual(

@@ -1,8 +1,10 @@
+{% set msvc_version = os.getenv("BAAS_CONAN_MSVC_VERSION", "194") %}
+
 [settings]
 os=Windows
 arch=x86_64
 compiler=msvc
-compiler.version=194
+compiler.version={{ msvc_version }}
 compiler.runtime=dynamic
 compiler.runtime_type=Release
 build_type=Release

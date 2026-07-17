@@ -17,8 +17,13 @@ on:
       - 'CMakeLists.txt'
       - 'CMakePresets.json'
       - 'cmake/BAASResources.cmake'
+      - 'cmake/BAASDependency.cmake'
+      - 'cmake/BAASConanRuntime.cmake'
+      - 'cmake/BAASTarget.cmake'
+      - 'deploy/conan/**'
       - 'resources.lock.json'
       - 'scripts/fetch_resources.py'
+      - 'tests/docs/test_baas_app_ci.py'
       - 'tests/docs/test_external_resource_boundary.py'
       - 'tests/build/external_resource_boundary/**'
       - 'apps/BAAS/**'
@@ -43,15 +48,21 @@ concurrency:
 env:
   BUILD_TYPE: Release
   BUILD_APP_BAAS: ON
-  ONNXRUNTIME_URL: 'https://github.com/microsoft/onnxruntime/releases/download/v1.22.0/onnxruntime-win-x64-gpu-1.22.0.zip'
+  BAAS_CONAN_MSVC_VERSION: '195'
 
 
 jobs:
   Windows-latest-cmake-x64:
     strategy:
       matrix:
-        BAAS_APP_USE_CUDA: [ON, OFF]
-    name: 'Build Binary for Windows x64'
+        include:
+          - BAAS_APP_USE_CUDA: ON
+            CONAN_CUDA: 'True'
+            BUILD_SUFFIX: '-cuda'
+          - BAAS_APP_USE_CUDA: OFF
+            CONAN_CUDA: 'False'
+            BUILD_SUFFIX: ''
+    name: 'Build Binary for Windows x64 / CUDA ${{ matrix.BAAS_APP_USE_CUDA }}'
     runs-on: windows-latest
     outputs:
       APP_VERSION: ${{ steps.save_version_to_env.outputs.APP_VERSION }}
@@ -66,31 +77,55 @@ jobs:
           fetch-depth: 1
           path: "baas"
 
-      - name: Fetch onnxruntime
-        id: fetch_onnxruntime
-        run: | 
-          Invoke-WebRequest -Uri ${{ env.ONNXRUNTIME_URL }} -OutFile onnxruntime.zip
-          Expand-Archive -Path onnxruntime.zip -DestinationPath . -Force
-          Move-Item -Path ".\onnxruntime-win-x64-gpu-1.22.0\lib\onnxruntime_providers_cuda.dll" -Destination "dll\Windows\" -Force
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install pinned Conan and Ninja
+        run: python -m pip install --disable-pip-version-check conan==2.30.0 ninja==1.11.1.1
 
       - name: Setup MSVC Dev Cmd   # Setup Developer Command Prompt for Microsotf Visual C++
         uses: TheMrMilchmann/setup-msvc-dev@v3
         with:
           arch: x64
 
+      - name: Verify dependency workflow metadata
+        run: python -B -m unittest tests.docs.test_baas_app_ci -v
+
+      - name: Export pinned private recipes
+        run: python deploy/conan/scripts/manage_recipes.py export
+
+      - name: Install Conan dependency graph
+        run: >-
+          conan install deploy/conan
+          -of "build/conan/windows-msvc-release-baas${{ matrix.BUILD_SUFFIX }}"
+          -pr:h=deploy/conan/profiles/windows-msvc-release
+          -pr:h=deploy/conan/profiles/dependency-versions-default
+          -pr:b=deploy/conan/profiles/windows-msvc-release
+          -pr:b=deploy/conan/profiles/dependency-versions-default
+          -o "&:onnxruntime_use_cuda=${{ matrix.CONAN_CUDA }}"
+          -o "&:use_ffmpeg=True"
+          -o "&:use_benchmark=True"
+          -o "&:use_opencv_dnn=False"
+          -o "&:use_libsodium=False"
+          -o "&:use_libgit2=False"
+          -c:a tools.build:jobs=4
+          --build=missing
+
       - name: Build
         id: cmake_build
         run: |
           Write-Output "::group::Generate CUDA ${{ matrix.BAAS_APP_USE_CUDA }}"
-          cmake -S . -B build -DBUILD_APP_BAAS=${{ env.BUILD_APP_BAAS }} -DBUILD_APP_ISA=OFF -DBUILD_BAAS_OCR=OFF -DBUILD_BAAS_AW_CHECKER=OFF -DBAAS_APP_USE_CUDA=${{ matrix.BAAS_APP_USE_CUDA }} -DBAAS_FETCH_RESOURCES=ON -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} -G Ninja
+          cmake -S . -B "build/conan-windows-msvc-release-baas${{ matrix.BUILD_SUFFIX }}" "-DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}/baas/build/conan/windows-msvc-release-baas${{ matrix.BUILD_SUFFIX }}/generators/conan_toolchain.cmake" -DBUILD_APP_BAAS=${{ env.BUILD_APP_BAAS }} -DBUILD_APP_ISA=OFF -DBUILD_BAAS_OCR=OFF -DBUILD_BAAS_AW_CHECKER=OFF -DBAAS_APP_USE_CUDA=${{ matrix.BAAS_APP_USE_CUDA }} -DBAAS_FETCH_RESOURCES=ON -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} -G Ninja
           Write-Output "::endgroup::"
           Write-Output "::group::Build"
-          cmake --build build --config Release -j 4
+          cmake --build "build/conan-windows-msvc-release-baas${{ matrix.BUILD_SUFFIX }}" --config Release --parallel 4 --target BAAS_APP
           Write-Output "::endgroup::"
 
       - name: Save Version To Env
         id: save_version_to_env
-        working-directory: baas/build
+        working-directory: baas/build/conan-windows-msvc-release-baas${{ matrix.BUILD_SUFFIX }}
         run: | 
           $APP_VERSION = Get-Content -Path "BAAS_APP_version.txt" -TotalCount 1
           Add-Content -Path $env:GITHUB_OUTPUT -Value "APP_VERSION=$APP_VERSION"
@@ -98,7 +133,7 @@ jobs:
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          path: baas/build/bin
+          path: baas/build/conan-windows-msvc-release-baas${{ matrix.BUILD_SUFFIX }}/bin
           name: baas-app-bin-windows-x64-CUDA-${{ matrix.BAAS_APP_USE_CUDA }}
 
   legacy-resource-profile-smoke:

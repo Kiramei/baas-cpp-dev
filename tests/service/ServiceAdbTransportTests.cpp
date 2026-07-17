@@ -700,13 +700,15 @@ void independent_connections()
 
 void native_connector_deadline_edges()
 {
-    LoopbackAdbServer server(1, false);
+    // Requests rejected before a usable connection exists are not ADB
+    // sessions. Whether a just-expired loopback TCP handshake reaches accept
+    // is platform- and scheduler-dependent, so the server must expect none.
+    LoopbackAdbServer server(0, false);
     const auto expired = open_native_adb_stream(
         {"127.0.0.1", server.port()},
-        std::chrono::steady_clock::now() + 1ns);
+        std::chrono::steady_clock::now() - 1s);
     CHECK(expired.error == AdbTransportError::timeout);
     CHECK(expired.stream == nullptr);
-    server.finish();
 
     std::stop_source source;
     source.request_stop();
@@ -715,6 +717,7 @@ void native_connector_deadline_edges()
         std::chrono::steady_clock::now() + 1s, source.get_token());
     CHECK(cancelled.error == AdbTransportError::cancelled);
     CHECK(cancelled.stream == nullptr);
+    server.finish();
 }
 
 void native_close_io_lease_stress()

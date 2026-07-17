@@ -39,6 +39,8 @@ class HttplibUpgradeContractTests(unittest.TestCase):
         self.assertIn('self.requires("openssl/3.5.7")', conanfile)
         self.assertIn('"openssl/*:shared": False', conanfile)
         self.assertIn('"openssl/*:no_apps": True', conanfile)
+        self.assertIn('"openssl/*:no_fips": True', conanfile)
+        self.assertIn('"openssl/*:no_legacy": True', conanfile)
         self.assertIn('"openssl/*:no_zlib": True', conanfile)
         self.assertIn('self.cpp_info.requires = ["openssl::openssl"]', conanfile)
         self.assertIn('exports_sources = "patches/*", "LICENSE"', conanfile)
@@ -46,6 +48,7 @@ class HttplibUpgradeContractTests(unittest.TestCase):
         self.assertIn('Path(self.package_folder) / "licenses"', conanfile)
         self.assertTrue((RECIPE / "LICENSE").is_file())
         self.assertIn('"CPPHTTPLIB_OPENSSL_SUPPORT=1"', conanfile)
+        self.assertIn('"CPPHTTPLIB_LISTEN_BACKLOG=65536"', conanfile)
         self.assertIn('"CPPHTTPLIB_WEBSOCKET_MAX_PAYLOAD_LENGTH=67108864"', conanfile)
         self.assertIn('self.cpp_info.system_libs.append("crypt32")', conanfile)
         self.assertIn(
@@ -81,6 +84,7 @@ class HttplibUpgradeContractTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
         self.assertIn('CPPHTTPLIB_VERSION} == "0.50.1"', contract)
         self.assertIn("CPPHTTPLIB_WEBSOCKET_MAX_PAYLOAD_LENGTH == 67'108'864", contract)
+        self.assertIn("CPPHTTPLIB_LISTEN_BACKLOG == 65'536", contract)
         self.assertIn("CPPHTTPLIB_HEADER_MAX_TOTAL_LENGTH == 32'768", contract)
 
     def test_thread_pool_and_ocr_multipart_api_match_v050(self) -> None:
@@ -155,6 +159,7 @@ class HttplibUpgradeContractTests(unittest.TestCase):
         self.assertIn("cpp-httplib 0.50.1", documentation)
         self.assertIn("BAAS_(httplib_upgrade_contract|service_", documentation)
         self.assertIn("CPPHTTPLIB_HEADER_MAX_TOTAL_LENGTH=32768", documentation)
+        self.assertIn("CPPHTTPLIB_LISTEN_BACKLOG=65536", documentation)
         self.assertIn("SERVICE_WEBSOCKET_OWNER.md", documentation)
         self.assertIn(
             "CPPHTTPLIB_WEBSOCKET_INTERRUPT_POLL_INTERVAL_MICROSECONDS=100000",

@@ -7,6 +7,16 @@ get_filename_component(BAAS_PROJECT_PATH "${CMAKE_CURRENT_LIST_DIR}" ABSOLUTE)
 include("${CMAKE_CURRENT_LIST_DIR}/cmake/utils.cmake")
 include("${CMAKE_CURRENT_LIST_DIR}/cmake/platform.cmake")
 
+option(BUILD_WEBUI_SERVICE_SUPERVISOR "Build the pure WebUI BAAS_service process-owner foundation" OFF)
+option(BUILD_WEBUI_SERVICE_SUPERVISOR_TESTS "Build deterministic WebUI service process-owner tests" OFF)
+
+if((BUILD_WEBUI_SERVICE_SUPERVISOR OR BUILD_WEBUI_SERVICE_SUPERVISOR_TESTS)
+   AND (ANDROID OR CMAKE_SYSTEM_NAME STREQUAL "Android"
+        OR BAAS_OCR_ANDROID_BUILD))
+    message(FATAL_ERROR
+        "The pure WebUI BAAS_service process supervisor is desktop-only")
+endif()
+
 BAAS_hr_LOG("PROJECT BAAS")
 
 # Build type
@@ -168,6 +178,24 @@ option(BUILD_SERVICE_SHUTDOWN_COORDINATOR "Build the service main-thread shutdow
 option(BUILD_SERVICE_SHUTDOWN_COORDINATOR_TESTS "Build deterministic service shutdown coordinator tests" OFF)
 option(BUILD_SERVICE_APP "Build the production BAAS_service executable" OFF)
 option(BUILD_SERVICE_APP_TESTS "Build real loopback BAAS_service application tests" OFF)
+if(BUILD_WEBUI_SERVICE_SUPERVISOR_TESTS
+   AND NOT BUILD_WEBUI_SERVICE_SUPERVISOR)
+    set(BUILD_WEBUI_SERVICE_SUPERVISOR ON CACHE BOOL
+        "Build the pure WebUI BAAS_service process-owner foundation" FORCE)
+endif()
+
+if(BUILD_WEBUI_SERVICE_SUPERVISOR_TESTS
+   AND NOT BUILD_SERVICE_COMMAND_LINE)
+    set(BUILD_SERVICE_COMMAND_LINE ON CACHE BOOL
+        "Build the bounded service command-line contract" FORCE)
+endif()
+
+if(BUILD_WEBUI_SERVICE_SUPERVISOR
+   AND (ANDROID OR CMAKE_SYSTEM_NAME STREQUAL "Android"
+        OR TARGET_OS_NAME STREQUAL "Android"))
+    message(FATAL_ERROR
+        "The pure WebUI BAAS_service process supervisor is desktop-only")
+endif()
 
 if(BUILD_SERVICE_APP_TESTS AND NOT BUILD_SERVICE_APP)
     set(BUILD_SERVICE_APP ON CACHE BOOL "Build the production BAAS_service executable" FORCE)
@@ -717,18 +745,7 @@ file(
 # core sources.
 list(FILTER BAAS_CORE_SOURCES EXCLUDE REGEX "/src/script/.*\\.cpp$")
 list(FILTER BAAS_CORE_SOURCES EXCLUDE REGEX "/src/runtime/repository/.*\\.cpp$")
-list(FILTER BAAS_CORE_SOURCES EXCLUDE REGEX "/src/service/protocol/.*\\.cpp$")
-list(FILTER BAAS_CORE_SOURCES EXCLUDE REGEX "/src/service/trigger/.*\\.cpp$")
-list(FILTER BAAS_CORE_SOURCES EXCLUDE REGEX "/src/service/router/.*\\.cpp$")
-list(FILTER BAAS_CORE_SOURCES EXCLUDE REGEX "/src/service/http/.*\\.cpp$")
-list(FILTER BAAS_CORE_SOURCES EXCLUDE REGEX "/src/service/websocket/.*\\.cpp$")
-list(FILTER BAAS_CORE_SOURCES EXCLUDE REGEX "/src/service/auth/.*\\.cpp$")
-list(FILTER BAAS_CORE_SOURCES EXCLUDE REGEX "/src/service/adapters/.*\\.cpp$")
-list(FILTER BAAS_CORE_SOURCES EXCLUDE REGEX "/src/service/adb/.*\\.cpp$")
-list(FILTER BAAS_CORE_SOURCES EXCLUDE REGEX "/src/service/app/.*\\.cpp$")
-list(FILTER BAAS_CORE_SOURCES EXCLUDE REGEX "/src/service/channels/SyncHandler\\.cpp$")
-list(FILTER BAAS_CORE_SOURCES EXCLUDE REGEX "/src/service/channels/RemoteHandler\\.cpp$")
-list(FILTER BAAS_CORE_SOURCES EXCLUDE REGEX "/src/service/channels/TriggerHandler\\.cpp$")
+list(FILTER BAAS_CORE_SOURCES EXCLUDE REGEX "/src/service/.*\\.cpp$")
 
 if(TARGET_OS_NAME STREQUAL "Windows")
     list(REMOVE_ITEM BAAS_CORE_SOURCES "${CMAKE_CURRENT_LIST_DIR}/src/simdutf.cpp")
@@ -845,6 +862,14 @@ if(BUILD_SERVICE_RUNTIME_REPOSITORY_UPDATE_APP)
     include("${CMAKE_CURRENT_LIST_DIR}/cmake/ServiceRuntimeRepositoryUpdateApplication.cmake")
 endif()
 
+if(BUILD_SERVICE_COMMAND_LINE)
+    include("${CMAKE_CURRENT_LIST_DIR}/cmake/ServiceCommandLine.cmake")
+endif()
+
+if(BUILD_WEBUI_SERVICE_SUPERVISOR)
+    include("${CMAKE_CURRENT_LIST_DIR}/cmake/WebUiServiceSupervisor.cmake")
+endif()
+
 if(BUILD_SERVICE_AUTH_HTTP)
     include("${CMAKE_CURRENT_LIST_DIR}/cmake/ServiceAuthHttp.cmake")
 endif()
@@ -915,10 +940,6 @@ endif()
 
 if(BUILD_SERVICE_PRODUCTION_HTTP_HOST)
     include("${CMAKE_CURRENT_LIST_DIR}/cmake/ServiceProductionHttpHost.cmake")
-endif()
-
-if(BUILD_SERVICE_COMMAND_LINE)
-    include("${CMAKE_CURRENT_LIST_DIR}/cmake/ServiceCommandLine.cmake")
 endif()
 
 if(BUILD_SERVICE_SHUTDOWN_COORDINATOR)

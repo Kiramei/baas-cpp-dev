@@ -91,21 +91,21 @@ void test_pipe_platform_policy()
               == ServiceCommandLineError::invalid_pipe_name,
           "Windows pipe endpoint length must be bounded");
 
-    auto unix = required_arguments();
-    unix.emplace_back("--pipe-name=/tmp/baas-contract.sock");
-    check(static_cast<bool>(parse(unix, ServiceCommandLinePlatform::unix_like)),
+    auto unix_arguments = required_arguments();
+    unix_arguments.emplace_back("--pipe-name=/tmp/baas-contract.sock");
+    check(static_cast<bool>(parse(unix_arguments, ServiceCommandLinePlatform::unix_like)),
           "Unix absolute socket endpoint must parse");
-    unix.back() = "--pipe-name=tmp/baas-contract.sock";
-    check(parse(unix, ServiceCommandLinePlatform::unix_like).error
+    unix_arguments.back() = "--pipe-name=tmp/baas-contract.sock";
+    check(parse(unix_arguments, ServiceCommandLinePlatform::unix_like).error
               == ServiceCommandLineError::invalid_pipe_name,
           "Unix relative socket endpoint must fail");
-    unix.back() = "--pipe-name="
+    unix_arguments.back() = "--pipe-name="
         + std::string(service_command_line_max_unix_pipe_bytes + 1, '/');
-    check(parse(unix, ServiceCommandLinePlatform::unix_like).error
+    check(parse(unix_arguments, ServiceCommandLinePlatform::unix_like).error
               == ServiceCommandLineError::invalid_pipe_name,
           "Unix socket endpoint length must be bounded");
-    unix.back() = "--pipe-name=/tmp/baas-contract.sock";
-    check(parse(unix, ServiceCommandLinePlatform::android).error
+    unix_arguments.back() = "--pipe-name=/tmp/baas-contract.sock";
+    check(parse(unix_arguments, ServiceCommandLinePlatform::android).error
               == ServiceCommandLineError::pipe_not_supported,
           "Android must explicitly reject local Pipe mode");
 }

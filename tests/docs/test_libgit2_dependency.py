@@ -36,6 +36,8 @@ class LibGit2DependencyContractTests(unittest.TestCase):
             '"Macos": "SecureTransport"',
             '"Linux": "OpenSSL"',
             '"Android": "OpenSSL"',
+            '"openssl/*:no_fips": True',
+            '"openssl/*:no_legacy": True',
             'toolchain.variables["USE_THREADS"] = True',
             'toolchain.variables["USE_SSH"] = False',
             'toolchain.variables["USE_SHA1"] = "CollisionDetection"',

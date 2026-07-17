@@ -17,6 +17,23 @@ DEPENDENCY_ORDER = [
     "baas-spdlog",
     "baas-simdutf",
 ]
+DEPENDENCY_SETS = {
+    "full": DEPENDENCY_ORDER,
+    "ocr": [
+        "baas-opencv",
+        "baas-onnxruntime",
+        "baas-nlohmann-json",
+        "baas-cpp-httplib",
+        "baas-spdlog",
+        "baas-simdutf",
+    ],
+    "afwc": [
+        "baas-opencv",
+        "baas-nlohmann-json",
+        "baas-spdlog",
+        "baas-simdutf",
+    ],
+}
 
 
 def _dependency_conf_key(dependency):
@@ -36,6 +53,7 @@ class BAASDepsConan(ConanFile):
     generators = "CMakeToolchain", "CMakeDeps"
 
     options = {
+        "dependency_set": ["full", "ocr", "afwc"],
         "onnxruntime_use_cuda": [True, False],
         "use_ffmpeg": [True, False],
         "use_benchmark": [True, False],
@@ -45,6 +63,7 @@ class BAASDepsConan(ConanFile):
     }
 
     default_options = {
+        "dependency_set": "full",
         "onnxruntime_use_cuda": False,
         "use_ffmpeg": True,
         "use_benchmark": True,
@@ -60,8 +79,13 @@ class BAASDepsConan(ConanFile):
         self.folders.generators = "generators"
 
     def configure(self):
-        self.options["baas-onnxruntime"].provider = "cuda" if self.options.onnxruntime_use_cuda else "cpu"
-        self.options["baas-opencv"].with_dnn = bool(self.options.use_opencv_dnn)
+        selected = DEPENDENCY_SETS[str(self.options.dependency_set)]
+        if "baas-onnxruntime" in selected:
+            self.options["baas-onnxruntime"].provider = (
+                "cuda" if self.options.onnxruntime_use_cuda else "cpu"
+            )
+        if "baas-opencv" in selected:
+            self.options["baas-opencv"].with_dnn = bool(self.options.use_opencv_dnn)
 
     def requirements(self):
         if self.options.use_libsodium:
@@ -74,7 +98,7 @@ class BAASDepsConan(ConanFile):
                 f"baas-libgit2/{self._selected_dependency_version('baas-libgit2')}"
             )
 
-        for dependency in DEPENDENCY_ORDER:
+        for dependency in DEPENDENCY_SETS[str(self.options.dependency_set)]:
             self.requires(f"{dependency}/{self._selected_dependency_version(dependency)}")
 
         if self.options.use_ffmpeg:
