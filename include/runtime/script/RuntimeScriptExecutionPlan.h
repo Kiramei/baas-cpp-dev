@@ -45,6 +45,7 @@ enum class RuntimeScriptExecutionPlanError : std::uint8_t {
     package_load_failed,
     cancelled,
     resource_exhausted,
+    procedure_requirements_missing,
 };
 
 [[nodiscard]] std::string_view runtime_script_execution_plan_error_name(
@@ -55,6 +56,7 @@ struct RuntimeScriptExecutionPlanLimits {
     std::size_t max_json_depth{16};
     std::size_t max_json_nodes{200'000};
     std::size_t max_modules{4'096};
+    std::size_t max_procedures{4'096};
     std::size_t max_host_modules{256};
     std::size_t max_capabilities{65'536};
     std::size_t max_string_bytes{1'024};
@@ -104,6 +106,7 @@ public:
     [[nodiscard]] const std::string& package_build() const noexcept;
     [[nodiscard]] std::span<const std::string> capabilities() const noexcept;
     [[nodiscard]] std::span<const RuntimeScriptExecutionModule> modules() const noexcept;
+    [[nodiscard]] std::span<const std::string> procedure_ids() const noexcept;
     [[nodiscard]] const RuntimeScriptPackage& package() const noexcept;
 
 private:

@@ -140,6 +140,37 @@ struct File { std::string path; std::string bytes; };
         R"("limits":{"source_bytes":4096,"resource_bytes":0,"module_count":2,"resource_count":0}})";
 }
 
+void replace_once(std::string& value, std::string_view from, std::string_view to);
+
+[[nodiscard]] std::string schema_two_manifest(std::string manifest,
+                                              std::string_view procedures)
+{
+    replace_once(manifest, R"("manifest_schema":1)", R"("manifest_schema":2)");
+    replace_once(manifest, R"("profiles":[])",
+                 R"("procedures":)" + std::string{procedures} + R"(,"profiles":[])");
+    return manifest;
+}
+
+[[nodiscard]] std::string procedure_catalog_json()
+{
+    auto result = catalog_json(
+        "tasks/main", R"({"major":1,"minor":2})", "0", R"(["procedure.run"])");
+    replace_once(result, "baas/log", "baas/procedure");
+    return result;
+}
+
+[[nodiscard]] std::string procedure_manifest(std::string_view source,
+                                             std::string_view procedures,
+                                             std::size_t schema = 2)
+{
+    auto result = valid_manifest(source, "let answer = 42;\n");
+    replace_once(result, "baas/log", "baas/procedure");
+    replace_once(result, R"(["log.emit"])", R"(["procedure.run"])");
+    if (schema == 2)
+        return schema_two_manifest(std::move(result), procedures);
+    return result;
+}
+
 [[nodiscard]] std::string single_manifest(std::string_view package_id,
                                           std::string_view source)
 {
@@ -267,6 +298,10 @@ private:
 constexpr std::string_view main_source =
     "import \"tasks/dep\" as dep;\nimport \"baas/log\" as log;\nlet ready = true;\n";
 constexpr std::string_view dep_source = "let answer = 42;\n";
+constexpr std::string_view procedure_source =
+    "import \"tasks/dep\" as dep;\n"
+    "import \"baas/procedure\" as procedure;\n"
+    "let ready = true;\n";
 
 void expect_error(const runtime_script::RuntimeScriptExecutionPlanResult& result,
                   runtime_script::RuntimeScriptExecutionPlanError error,
@@ -307,6 +342,124 @@ void test_success_and_lifetime()
     check(retained && retained->task().entry_export == "run"
           && retained->package().modules[1].source.find("ready") != std::string::npos,
           "plan must outlive catalog resolution, repository, and fixture");
+}
+
+void test_schema_two_procedure_closure()
+{
+    std::optional<runtime_script::RuntimeScriptExecutionPlan> retained;
+    {
+        RepositoryFixture fixture{
+            procedure_manifest(procedure_source, R"(["group/reward","group/menu"] )"),
+            procedure_catalog_json(), std::string{procedure_source}, std::string{dep_source}};
+        auto resolution = fixture.resolution();
+        const auto result = build_trusted(fixture, resolution);
+        check(static_cast<bool>(result),
+              "schema 2 package importing baas/procedure with an explicit closure must plan");
+        if (!result) return;
+        check(result.plan->procedure_ids().size() == 2
+              && result.plan->procedure_ids()[0] == "group/menu"
+              && result.plan->procedure_ids()[1] == "group/reward",
+              "procedure closure must be an owned canonical sorted set");
+        retained = *result.plan;
+    }
+    check(retained && retained->procedure_ids().size() == 2
+          && retained->procedure_ids()[0] == "group/menu",
+          "procedure closure must outlive manifest and repository handles");
+
+    RepositoryFixture schema_one{
+        procedure_manifest(procedure_source, "[]", 1), procedure_catalog_json(),
+        std::string{procedure_source}, std::string{dep_source}};
+    auto schema_one_resolution = schema_one.resolution();
+    expect_error(build_trusted(schema_one, schema_one_resolution),
+                 runtime_script::RuntimeScriptExecutionPlanError::procedure_requirements_missing,
+                 "schema 1 cannot activate baas/procedure without an explicit closure");
+
+    RepositoryFixture empty{
+        procedure_manifest(procedure_source, "[]"), procedure_catalog_json(),
+        std::string{procedure_source}, std::string{dep_source}};
+    auto empty_resolution = empty.resolution();
+    expect_error(build_trusted(empty, empty_resolution),
+                 runtime_script::RuntimeScriptExecutionPlanError::procedure_requirements_missing,
+                 "schema 2 baas/procedure requirement must declare a nonempty closure");
+
+    RepositoryFixture implicit{
+        schema_two_manifest(valid_manifest(main_source, dep_source), R"(["group/menu"] )"),
+        catalog_json(), std::string{main_source}, std::string{dep_source}};
+    auto implicit_resolution = implicit.resolution();
+    expect_error(build_trusted(implicit, implicit_resolution),
+                 runtime_script::RuntimeScriptExecutionPlanError::host_requirement_mismatch,
+                 "procedure ids without baas/procedure must not grant implicit privilege");
+
+    RepositoryFixture no_procedures{
+        schema_two_manifest(valid_manifest(main_source, dep_source), "[]"), catalog_json(),
+        std::string{main_source}, std::string{dep_source}};
+    auto no_procedures_resolution = no_procedures.resolution();
+    const auto no_procedures_result = build_trusted(no_procedures, no_procedures_resolution);
+    check(no_procedures_result && no_procedures_result.plan->procedure_ids().empty(),
+          "schema 2 package without procedure Host must own an empty closure");
+
+    auto run_bad = [](std::string_view procedures,
+                      const runtime_script::RuntimeScriptExecutionPlanLimits& limits = {}) {
+        RepositoryFixture fixture{
+            procedure_manifest(procedure_source, procedures), procedure_catalog_json(),
+            std::string{procedure_source}, std::string{dep_source}};
+        auto resolution = fixture.resolution();
+        return build_trusted(fixture, resolution, limits);
+    };
+    expect_error(run_bad(R"(["group/menu","group/menu"] )"),
+                 runtime_script::RuntimeScriptExecutionPlanError::invalid_value,
+                 "duplicate procedure ids must fail closed");
+    expect_error(run_bad(R"(["group/menu","Group/menu"] )"),
+                 runtime_script::RuntimeScriptExecutionPlanError::invalid_value,
+                 "ASCII case-colliding procedure ids must fail closed");
+    expect_error(run_bad(R"(["../group/menu"] )"),
+                 runtime_script::RuntimeScriptExecutionPlanError::invalid_value,
+                 "noncanonical procedure ids must fail closed");
+    expect_error(run_bad(R"([""] )"),
+                 runtime_script::RuntimeScriptExecutionPlanError::invalid_value,
+                 "empty procedure ids must fail closed");
+    const auto long_id = std::string{"group/"} + std::string(1'024, 'a');
+    expect_error(run_bad("[\"" + long_id + "\"]"),
+                 runtime_script::RuntimeScriptExecutionPlanError::limit_exceeded,
+                 "procedure ids must share the bounded manifest string budget");
+
+    auto procedure_limits = runtime_script::RuntimeScriptExecutionPlanLimits{};
+    procedure_limits.max_procedures = 1;
+    expect_error(run_bad(R"(["group/menu","group/reward"] )", procedure_limits),
+                 runtime_script::RuntimeScriptExecutionPlanError::limit_exceeded,
+                 "procedure cardinality must be independently bounded");
+    procedure_limits = {};
+    procedure_limits.max_procedures = 0;
+    expect_error(run_bad(R"(["group/menu"] )", procedure_limits),
+                 runtime_script::RuntimeScriptExecutionPlanError::invalid_limits,
+                 "zero procedure limit must fail before repository access");
+
+    auto unknown_field = procedure_manifest(procedure_source, R"(["group/menu"] )");
+    replace_once(unknown_field, R"("procedures":[)", R"("unknown":[],"procedures":[)");
+    RepositoryFixture unknown_fixture{unknown_field, procedure_catalog_json(),
+                                      std::string{procedure_source}, std::string{dep_source}};
+    auto unknown_resolution = unknown_fixture.resolution();
+    expect_error(build_trusted(unknown_fixture, unknown_resolution),
+                 runtime_script::RuntimeScriptExecutionPlanError::invalid_field_set,
+                 "schema 2 top-level fields must be exact");
+
+    auto missing_field = valid_manifest(main_source, dep_source);
+    replace_once(missing_field, R"("manifest_schema":1)", R"("manifest_schema":2)");
+    RepositoryFixture missing_fixture{missing_field, catalog_json(),
+                                      std::string{main_source}, std::string{dep_source}};
+    auto missing_resolution = missing_fixture.resolution();
+    expect_error(build_trusted(missing_fixture, missing_resolution),
+                 runtime_script::RuntimeScriptExecutionPlanError::invalid_field_set,
+                 "schema 2 procedures field is mandatory");
+
+    auto unsupported = valid_manifest(main_source, dep_source);
+    replace_once(unsupported, R"("manifest_schema":1)", R"("manifest_schema":3)");
+    RepositoryFixture unsupported_fixture{unsupported, catalog_json(),
+                                          std::string{main_source}, std::string{dep_source}};
+    auto unsupported_resolution = unsupported_fixture.resolution();
+    expect_error(build_trusted(unsupported_fixture, unsupported_resolution),
+                 runtime_script::RuntimeScriptExecutionPlanError::manifest_schema_unsupported,
+                 "unknown future schema must fail instead of guessing");
 }
 
 void test_catalog_manifest_consistency()
@@ -602,6 +755,7 @@ void test_stable_error_names()
         std::pair{Error::package_load_failed, std::string_view{"RSE025_PACKAGE_LOAD_FAILED"}},
         std::pair{Error::cancelled, std::string_view{"RSE026_CANCELLED"}},
         std::pair{Error::resource_exhausted, std::string_view{"RSE027_RESOURCE_EXHAUSTED"}},
+        std::pair{Error::procedure_requirements_missing, std::string_view{"RSE028_PROCEDURE_REQUIREMENTS_MISSING"}},
     };
     for (const auto& [error, name] : expected)
         check(runtime_script::runtime_script_execution_plan_error_name(error) == name,
@@ -614,6 +768,7 @@ int main()
 {
     try {
         test_success_and_lifetime();
+        test_schema_two_procedure_closure();
         test_catalog_manifest_consistency();
         test_module_boundary_and_pin();
         test_json_limits_and_cancellation();
