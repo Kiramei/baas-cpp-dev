@@ -838,9 +838,11 @@ private:
                 || static_cast<pid_t>(event.ident) != process_) {
                 return PollResult::failed;
             }
-            if ((event.fflags & NOTE_EXITSTATUS) == 0) {
-                return PollResult::failed;
-            }
+            // NOTE_EXITSTATUS requests event.data, but Darwin's legacy kevent
+            // translation does not consistently echo that request bit in the
+            // returned fflags.  The owned queue/filter/PID tuple above is the
+            // event authenticity boundary; do not reject its terminal payload
+            // solely because an advisory output bit was omitted.
             mac_exit_observed_ = true;
             mac_exit_status_ = static_cast<int>(event.data);
         }
