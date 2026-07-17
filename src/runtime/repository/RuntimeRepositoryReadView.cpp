@@ -331,6 +331,7 @@ struct RuntimeRepositoryStateRootAnchor final {
 struct RuntimeRepositoryReadView::Impl final {
     std::string generation;
     std::string repository_id;
+    std::string commit;
     std::string manifest;
     RuntimeRepositoryReadLimits limits;
     std::vector<RuntimeRepositoryReadEntry> entries;
@@ -580,6 +581,7 @@ std::unique_ptr<RuntimeRepositoryReadView> RuntimeRepositoryReadViewFactory::ope
     auto impl = std::make_unique<RuntimeRepositoryReadView::Impl>();
     impl->generation = generation;
     impl->repository_id = repository.id;
+    impl->commit = repository.commit;
     impl->manifest = repository.manifest;
     impl->limits = limits;
 #ifdef _WIN32
@@ -667,6 +669,7 @@ RuntimeRepositoryReadView::RuntimeRepositoryReadView(std::unique_ptr<Impl> impl)
 RuntimeRepositoryReadView::~RuntimeRepositoryReadView() = default;
 const std::string& RuntimeRepositoryReadView::generation() const noexcept { return impl_->generation; }
 const std::string& RuntimeRepositoryReadView::repository_id() const noexcept { return impl_->repository_id; }
+const std::string& RuntimeRepositoryReadView::commit() const noexcept { return impl_->commit; }
 std::span<const RuntimeRepositoryReadEntry> RuntimeRepositoryReadView::entries() const noexcept {
     return impl_->entries;
 }

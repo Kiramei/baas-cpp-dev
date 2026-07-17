@@ -104,6 +104,8 @@ option(BUILD_RUNTIME_REPOSITORY_GIT2 "Build the optional libgit2 repository depe
 option(BUILD_RUNTIME_REPOSITORY_GIT2_TESTS "Build real optional libgit2 repository backend tests" OFF)
 option(BUILD_RUNTIME_SCRIPT_PACKAGE_LOADER "Build pathless BAAS Script package discovery from a runtime repository" OFF)
 option(BUILD_RUNTIME_SCRIPT_PACKAGE_LOADER_TESTS "Build runtime BAAS Script package loader tests" OFF)
+option(BUILD_RUNTIME_SCRIPT_CATALOG "Build the immutable runtime BAAS Script task catalog" OFF)
+option(BUILD_RUNTIME_SCRIPT_CATALOG_TESTS "Build runtime BAAS Script catalog tests" OFF)
 option(BUILD_SCRIPT_RESOURCE_HOST "Build baas/resource script Host adapter" OFF)
 option(BUILD_SCRIPT_RESOURCE_HOST_TESTS "Build baas/resource script Host tests" OFF)
 option(BUILD_SERVICE_PROTOCOL   "Build the standalone BAAS service protocol library" OFF)
@@ -340,6 +342,22 @@ if(BUILD_RUNTIME_SCRIPT_PACKAGE_LOADER_TESTS)
 endif()
 
 if(BUILD_RUNTIME_SCRIPT_PACKAGE_LOADER)
+    set(BUILD_RUNTIME_REPOSITORY ON CACHE BOOL
+        "Build read-only runtime repository activation" FORCE)
+    set(BUILD_SCRIPT_RUNTIME ON CACHE BOOL
+        "Build the standalone BAAS script runtime" FORCE)
+endif()
+
+if(BUILD_RUNTIME_SCRIPT_CATALOG_TESTS)
+    set(BUILD_RUNTIME_SCRIPT_CATALOG ON CACHE BOOL
+        "Build the immutable runtime BAAS Script task catalog" FORCE)
+    set(BUILD_RUNTIME_REPOSITORY_TESTS ON CACHE BOOL
+        "Build runtime repository activation tests" FORCE)
+    set(BUILD_RESOURCE_CORE ON CACHE BOOL
+        "Build immutable resource snapshot core" FORCE)
+endif()
+
+if(BUILD_RUNTIME_SCRIPT_CATALOG)
     set(BUILD_RUNTIME_REPOSITORY ON CACHE BOOL
         "Build read-only runtime repository activation" FORCE)
     set(BUILD_SCRIPT_RUNTIME ON CACHE BOOL
@@ -866,6 +884,10 @@ endif()
 
 if(BUILD_RUNTIME_SCRIPT_PACKAGE_LOADER)
     include("${CMAKE_CURRENT_LIST_DIR}/cmake/RuntimeScriptPackageLoader.cmake")
+endif()
+
+if(BUILD_RUNTIME_SCRIPT_CATALOG)
+    include("${CMAKE_CURRENT_LIST_DIR}/cmake/RuntimeScriptCatalog.cmake")
 endif()
 
 if(BUILD_SCRIPT_RESOURCE_HOST)
