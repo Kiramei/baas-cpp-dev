@@ -826,9 +826,14 @@ private:
             } while (observed < 0 && errno == EINTR);
             if (observed < 0) return PollResult::failed;
             if (observed == 0) return PollResult::pending;
+            // This queue owns exactly one EVFILT_PROC registration and that
+            // registration requests only NOTE_EXIT.  Darwin may report the
+            // terminal state primarily through EV_EOF, so matching the queue,
+            // filter, and process identity is the authoritative boundary;
+            // requiring the output fflags to echo NOTE_EXIT can reject a
+            // genuine terminal event and strand the zombie.
             if ((event.flags & EV_ERROR) != 0
                 || event.filter != EVFILT_PROC
-                || (event.fflags & NOTE_EXIT) == 0
                 || static_cast<pid_t>(event.ident) != process_) {
                 return PollResult::failed;
             }
