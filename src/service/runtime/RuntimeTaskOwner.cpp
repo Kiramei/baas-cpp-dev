@@ -324,12 +324,14 @@ private:
         std::string config_id;
         std::shared_ptr<Job> job;
         std::uint64_t generation{};
+        std::uint64_t commit_timestamp{};
         std::stop_source source{std::nostopstate};
     };
 
     struct StopAllItem {
         std::shared_ptr<Job> job;
         std::uint64_t generation{};
+        std::uint64_t commit_timestamp{};
         std::stop_source source{std::nostopstate};
         bool deliver{};
     };
@@ -548,6 +550,7 @@ public:
                 result.snapshot->is_flag_run = false;
                 result.snapshot->timestamp =
                     next_timestamp(state->job->snapshot.timestamp);
+                state->commit_timestamp = result.snapshot->timestamp;
                 state->source = state->job->stop_source;
             } else if (state->job->phase == JobPhase::stopping) {
                 result.decision = RuntimeTaskStopDecision::already_stopping;
@@ -575,6 +578,10 @@ public:
         if (prepared.decision == RuntimeTaskStopDecision::owner_stopped) {
             return request_stop_after_shutdown(config_id);
         }
+        if (prepared.decision == RuntimeTaskStopDecision::capacity_exceeded) {
+            return {
+                RuntimeTaskStopDecision::unknown_config, std::nullopt};
+        }
         RuntimeTaskStopResult result{
             prepared.decision, std::move(prepared.snapshot)};
         if (prepared) prepared.reservation.commit();
@@ -599,7 +606,7 @@ public:
                 result.decision = RuntimeTaskStopDecision::unknown_config;
                 return result;
             }
-            if (found->second.reserved || found->second.stop_reserved) {
+            if (found->second.stop_reserved) {
                 result.decision =
                     RuntimeTaskStopDecision::reservation_conflict;
                 return result;
@@ -661,6 +668,7 @@ public:
                 response.stopping = true;
                 response.is_flag_run = false;
                 response.timestamp = next_timestamp(response.timestamp);
+                item.commit_timestamp = response.timestamp;
             }
             state->items.push_back(std::move(item));
             result.snapshots.push_back(std::move(response));
@@ -1026,8 +1034,7 @@ private:
                 state.job->phase = JobPhase::stopping;
                 state.job->snapshot.stopping = true;
                 state.job->snapshot.is_flag_run = false;
-                state.job->snapshot.timestamp =
-                    next_timestamp(state.job->snapshot.timestamp);
+                state.job->snapshot.timestamp = state.commit_timestamp;
                 deliver = true;
 #if defined(BAAS_SERVICE_RUNTIME_TASK_OWNER_TEST_HOOKS)
                 after_stop_hook = after_stop_linearized_hook_;
@@ -1077,8 +1084,7 @@ private:
                 item.job->phase = JobPhase::stopping;
                 item.job->snapshot.stopping = true;
                 item.job->snapshot.is_flag_run = false;
-                item.job->snapshot.timestamp =
-                    next_timestamp(item.job->snapshot.timestamp);
+                item.job->snapshot.timestamp = item.commit_timestamp;
                 item.deliver = true;
 #if defined(BAAS_SERVICE_RUNTIME_TASK_OWNER_TEST_HOOKS)
                 delivered_any = true;
@@ -1201,6 +1207,16 @@ private:
 
         std::lock_guard lock{owner->mutex_};
         if (job->phase == JobPhase::completed) return false;
+        const auto found = owner->jobs_.find(job->snapshot.config_id);
+        if (found != owner->jobs_.end()
+            && found->second.current.get() == job.get()
+            && (found->second.stop_reserved || owner->stop_all_reserved_)) {
+            // A prepared stop reply already owns the next ordered snapshot.
+            // Reject, rather than block, backend publication until that
+            // transaction commits or aborts so its prebuilt timestamp cannot
+            // be overtaken while the backend continues to make progress.
+            return false;
+        }
         job->snapshot.is_flag_run = job->phase == JobPhase::stopping
             ? false
             : progress.is_flag_run;

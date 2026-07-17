@@ -58,6 +58,13 @@ Each retained config occupies one bounded status slot:
   changes only the captured generation from `running` to `stopping`; natural
   completion between prepare and commit remains terminal and receives no stale
   stop request.
+- While a keyed or global stop reply is prepared, progress reporters for its
+  captured live jobs return `false` immediately and leave the public snapshot
+  unchanged. They never block the backend. This reserves the next ordered
+  timestamp for the prebuilt reply, so a commit that wins against completion
+  publishes exactly that reply instead of a later timestamp. Abort merely
+  releases the publication gate; shutdown and natural completion remain
+  authoritative terminal transitions and may independently supersede it.
 - Unknown and already-completed stops deliberately acquire the same keyed
   no-op reservation. An unknown key occupies a temporary invisible status slot
   and counts toward `max_configs` until commit or abort. This makes the reply
@@ -79,7 +86,11 @@ Each retained config occupies one bounded status slot:
   completion already won the phase transition, commit only releases its gate.
   The legacy `request_stop()` wrapper continues to report an existing job as
   `already-stopping` or `already-stopped` after shutdown rather than exposing
-  the prepared API's `owner-stopped` admission result.
+  the prepared API's `owner-stopped` admission result. It also preserves the
+  old current-generation view behind a pending start (`unknown-config` for a
+  new key, the retained terminal decision for a replacement), and maps a valid
+  unknown key to `unknown-config` even when the reversible API cannot allocate
+  its temporary slot because `max_configs` is full.
 - Job generations are monotonically increasing nonzero identities. Exhausting
   the 64-bit space fails subsequent starts closed as `capacity-exceeded`; zero
   is never reused, so wraparound cannot create an ABA match.
@@ -145,7 +156,9 @@ thread-safe. Long-running implementations must poll or register against the
 stop token and return after cancellation. The reporter updates `is_flag_run`,
 the bounded raw `button` JSON/string payload, `current_task`, and
 `waiting_tasks`; invalid or oversized progress is rejected without mutating the
-last valid snapshot.
+last valid snapshot. Publication during a prepared keyed/global stop is also
+rejected immediately: this is a nonblocking ordered-reply barrier, not backend
+cancellation, and the reporter becomes usable again if the reservation aborts.
 
 Every backend-owned `std::stop_callback` must be `noexcept`. The standard
 invokes it inside `std::stop_source::request_stop() noexcept`; an escaping
