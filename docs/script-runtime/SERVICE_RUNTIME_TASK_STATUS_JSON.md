@@ -12,12 +12,16 @@ owner's internal `stopping` field is deliberately omitted from the v1 wire
 contract. Explicit exit code zero remains distinct from `null`.
 
 `button` is the legacy signal boundary: bounded valid JSON remains a JSON value,
-while other valid UTF-8 text is encoded as a string. The encoder rejects invalid
-UTF-8, duplicate config ids, timestamps outside JavaScript's safe-integer range,
-invalid limits, and independently bounded config counts, waiting-task counts,
-button JSON, and output bytes. It never substitutes `{}` after an encoding
-failure; the future production composition must fail closed instead of erasing
-the last observable task state.
+while other valid UTF-8 text is encoded as a string. JSON syntax validation is
+dependency-free and non-DOM; depth, node count, and duplicate decoded object
+keys are bounded before the value is retained as JSON. The encoder rejects
+invalid UTF-8, duplicate config ids, timestamps outside JavaScript's safe-integer
+range, invalid limits, and independently bounded config counts, waiting-task
+counts, button JSON, and output bytes. Resource exhaustion is reported with its
+stable error classification and an empty result; it is never downgraded to a
+legacy string. The encoder never substitutes `{}` after an encoding failure;
+the future production composition must fail closed instead of erasing the last
+observable task state.
 
 This component prepares provider publication but does not claim that production
 task execution is already connected. A later composition layer will encode a

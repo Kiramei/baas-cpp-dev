@@ -13,7 +13,6 @@ target_include_directories(
 target_link_libraries(
         BAAS_service_runtime_task_status_json
         PUBLIC BAAS_service_runtime_task_owner
-        PRIVATE BAAS::nlohmann_json
 )
 if(MSVC)
     target_compile_options(
@@ -29,6 +28,10 @@ else()
 endif()
 
 if(BUILD_SERVICE_RUNTIME_TASK_STATUS_JSON_TESTS)
+    target_compile_definitions(
+            BAAS_service_runtime_task_status_json
+            PRIVATE BAAS_SERVICE_RUNTIME_TASK_STATUS_JSON_TEST_HOOKS=1
+    )
     include(CTest)
     add_executable(
             BAAS_service_runtime_task_status_json_tests
@@ -40,6 +43,10 @@ if(BUILD_SERVICE_RUNTIME_TASK_STATUS_JSON_TESTS)
     target_link_libraries(
             BAAS_service_runtime_task_status_json_tests
             PRIVATE BAAS_service_runtime_task_status_json
+    )
+    target_compile_definitions(
+            BAAS_service_runtime_task_status_json_tests
+            PRIVATE BAAS_SERVICE_RUNTIME_TASK_STATUS_JSON_TEST_HOOKS=1
     )
     if(MSVC)
         target_compile_options(

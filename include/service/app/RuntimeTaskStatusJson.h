@@ -41,6 +41,12 @@ struct RuntimeTaskStatusJsonResult {
     }
 };
 
+#if defined(BAAS_SERVICE_RUNTIME_TASK_STATUS_JSON_TEST_HOOKS)
+struct RuntimeTaskStatusJsonTestAccess final {
+    static void fail_next_button_parse_allocation() noexcept;
+};
+#endif
+
 // Encodes the exact Python-compatible current_status() object. Input ordering
 // is irrelevant; config keys are emitted in bytewise order. The internal
 // `stopping` state is intentionally not exposed on this v1 wire shape.

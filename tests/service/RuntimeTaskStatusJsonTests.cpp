@@ -75,6 +75,41 @@ void test_button_json_and_string_boundary()
           "button must retain bounded JSON values and encode legacy text");
 }
 
+void test_button_json_is_bounded_and_duplicate_free()
+{
+    auto duplicate = snapshot("duplicate");
+    duplicate.button = R"({"a":1,"\u0061":2})";
+    const auto duplicate_encoded = app::encode_runtime_task_status_json(
+        std::span<const runtime::RuntimeTaskSnapshot>{&duplicate, 1});
+    check(duplicate_encoded
+              && duplicate_encoded.json.find(
+                     R"("button":"{\"a\":1,\"\\u0061\":2}")")
+                  != std::string::npos,
+          "duplicate decoded object keys must use the legacy string boundary");
+
+    app::RuntimeTaskStatusJsonLimits limits;
+    limits.max_button_json_depth = 1;
+    auto deep = snapshot("deep");
+    deep.button = "[[]]";
+    const auto depth_encoded = app::encode_runtime_task_status_json(
+        std::span<const runtime::RuntimeTaskSnapshot>{&deep, 1}, limits);
+    check(depth_encoded
+              && depth_encoded.json.find(R"("button":"[[]]")")
+                  != std::string::npos,
+          "button JSON depth overflow must use the legacy string boundary");
+
+    limits = {};
+    limits.max_button_json_nodes = 1;
+    auto nodes = snapshot("nodes");
+    nodes.button = "[1]";
+    const auto node_encoded = app::encode_runtime_task_status_json(
+        std::span<const runtime::RuntimeTaskSnapshot>{&nodes, 1}, limits);
+    check(node_encoded
+              && node_encoded.json.find(R"("button":"[1]")")
+                  != std::string::npos,
+          "button JSON node overflow must use the legacy string boundary");
+}
+
 void test_rejects_ambiguous_or_invalid_snapshots()
 {
     auto duplicate_left = snapshot("same");
@@ -132,6 +167,25 @@ void test_independent_bounds()
           "invalid limits must fail before encoding");
 }
 
+void test_resource_exhaustion_fails_closed()
+{
+    auto value = snapshot("alpha");
+    value.button = R"({"kind":"continue"})";
+    const auto input = std::span<const runtime::RuntimeTaskSnapshot>{&value, 1};
+
+    app::RuntimeTaskStatusJsonTestAccess::fail_next_button_parse_allocation();
+    const auto exhausted = app::encode_runtime_task_status_json(input);
+    check(exhausted.error == app::RuntimeTaskStatusJsonError::resource_exhausted
+              && exhausted.json.empty(),
+          "button parse allocation failure must fail closed with a stable error");
+
+    const auto recovered = app::encode_runtime_task_status_json(input);
+    check(recovered
+              && recovered.json.find(R"("button":{"kind":"continue"})")
+                  != std::string::npos,
+          "allocation injection must be one-shot and must not stringify JSON");
+}
+
 void test_error_names_are_stable()
 {
     constexpr std::array errors{
@@ -154,8 +208,10 @@ int main()
 {
     test_empty_and_python_field_shape();
     test_button_json_and_string_boundary();
+    test_button_json_is_bounded_and_duplicate_free();
     test_rejects_ambiguous_or_invalid_snapshots();
     test_independent_bounds();
+    test_resource_exhaustion_fails_closed();
     test_error_names_are_stable();
     if (failures != 0) {
         std::cerr << failures << " failure(s)\n";
