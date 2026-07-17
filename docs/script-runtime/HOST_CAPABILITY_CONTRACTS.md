@@ -59,11 +59,14 @@ MUST NOT cross the language ABI.
 Schema-1 binding objects accept only the common fields `budget`, `cancellation`,
 `capability`, `errors`, `export`, `id`, `parameters`, `parity_test`, and
 `returns`, plus the declared extension fields `argument_contract`,
-`composite_effects`, `control_contract`, and `result_schema`. Unknown or
-misspelled binding, parameter, result-schema, or result-field keys MUST be
-rejected by catalog validation. `composite_effects` is an ordered audit list of
-effect kinds; it does not grant the corresponding lower-level capabilities.
+`composite_effects`, `control_contract`, `error_variants`, and `result_schema`.
+Unknown or misspelled binding, parameter, result-schema, or result-field keys
+MUST be rejected by catalog validation. `composite_effects` is an ordered audit
+list of effect kinds; it does not grant the corresponding lower-level
+capabilities.
 `control_contract` is an ordered list of mandatory control-flow properties.
+`error_variants` is an ordered list of exact code, safe-details discriminator,
+effect-state, language-mapping, and legacy-parity normalization contracts.
 `result_schema` fixes field order, requiredness, field type/unit/semantics, and
 unknown-field policy for named ordered-map results.
 Parameter objects accept only `name`, `required`, `type`, and optional
@@ -129,6 +132,9 @@ Registry resolution MUST reject an imported module absent from manifest
 narrowing order is service/user policy, platform availability, then per-task
 narrowing. Successful results contain only their four-way intersection; no
 denial may be converted into a weaker export or adapter fallback.
+Because this capability gate applies to every binding, every complete catalog
+`errors` list MUST include `HOST001_CAPABILITY_DENIED`; catalog validation MUST
+reject an omission.
 
 ### HST-005 — Deadlines, cancellation, and effect visibility
 
@@ -144,6 +150,15 @@ translation, an execution-context deadline becomes terminal `DeadlineExceeded`;
 a narrower call deadline becomes catchable `Timeout`, as required by ERR-004.
 The adapter MUST set `details.deadline_scope` to exactly `context` or `call`
 before returning `HOST004_DEADLINE_EXCEEDED`.
+
+The common `invoke_host_callback` boundary MUST check deadline first and then
+cancellation before every callback, independent of whether the binding's mode
+is `preflight` or `cooperative`. Consequently every binding's complete catalog
+`errors` list MUST include both `HOST003_CANCELLED` and
+`HOST004_DEADLINE_EXCEEDED`. `preflight` means no further adapter polling is
+required after that entry check; `cooperative` additionally polls during each
+bounded work/wait chunk. Catalog validation MUST reject any binding that omits
+either framework error.
 
 ### HST-006 — Reservation and incremental budgets
 
@@ -292,6 +307,23 @@ catalog errors; a possibly committed input effect MUST retain the HST-003
 `effect_state` rules. This catalog and taxonomy evidence specify the contract
 only: no ProcedureHost adapter, native procedure registry, or parity completion
 is claimed.
+
+If the foreground package differs from the execution context's expected package,
+ProcedureHost MUST return `HOST006_UNAVAILABLE` with the only public detail
+`unavailable_reason = foreground_package_mismatch`; the actual/expected package
+names are not exposed. Its language mapping is the existing catchable
+`HostUnavailable`. `effect_state` is `not_started` only when no input effect was
+committed before the mismatch, `committed` when at least one input effect is
+confirmed committed, and `unknown` when an input may have committed but its
+completion cannot be proven. A mismatch MUST NOT erase or downgrade an earlier
+input effect.
+
+The Python-versus-C++ parity harness MUST normalize Python `PackageIncorrect`
+to that exact Host error and detail. It derives `effect_state` from the recorded
+input-effect trace: no committed input becomes `not_started`, confirmed input
+becomes `committed`, and an injected indeterminate completion becomes `unknown`.
+Message text and package names are ignored; code, detail discriminator,
+language mapping, and normalized effect state are compared.
 
 ### HST-010 — Configuration, logging, and notification contracts
 

@@ -31,6 +31,9 @@ CORE_BOUNDARY_ADR_PATH = ROOT / "docs" / "script-runtime" / "ADR-0004-core-runti
 ASYNC_PATH = ROOT / "docs" / "script-runtime" / "ASYNC_TASKS.md"
 ERRORS_PATH = ROOT / "docs" / "script-runtime" / "ERRORS_AND_CLEANUP.md"
 WORKFLOW_PATH = ROOT / ".github" / "workflows" / "foundation-runtime.yml"
+SYNCHRONOUS_HOST_SOURCE_PATH = (
+    ROOT / "src" / "script" / "runtime" / "SynchronousHost.cpp"
+)
 
 EXPECTED_CLAUSES = tuple(f"HST-{number:03d}" for number in range(1, 17))
 CLAUSE_TERMS = {
@@ -127,6 +130,7 @@ class HostCapabilityContractTests(unittest.TestCase):
         cls.async_spec = read(ASYNC_PATH)
         cls.errors_spec = read(ERRORS_PATH)
         cls.workflow = read(WORKFLOW_PATH)
+        cls.synchronous_host_source = read(SYNCHRONOUS_HOST_SOURCE_PATH)
 
     def test_complete_normative_clause_inventory_and_terms(self) -> None:
         bodies = clause_bodies(self.spec)
@@ -167,7 +171,8 @@ class HostCapabilityContractTests(unittest.TestCase):
             "parameters", "parity_test", "returns",
         }
         extension_binding_fields = {
-            "argument_contract", "composite_effects", "control_contract", "result_schema",
+            "argument_contract", "composite_effects", "control_contract", "error_variants",
+            "result_schema",
         }
         for module in modules:
             self.assertRegex(module["id"], r"^baas/[a-z]+$")
@@ -196,6 +201,14 @@ class HostCapabilityContractTests(unittest.TestCase):
                 self.assertRegex(binding["parity_test"], r"^PARITY-[A-Z-]+$")
                 self.assertTrue(binding["errors"])
                 self.assertTrue(set(binding["errors"]).issubset(known_errors))
+                self.assertTrue(
+                    {
+                        "HOST001_CAPABILITY_DENIED",
+                        "HOST003_CANCELLED",
+                        "HOST004_DEADLINE_EXCEEDED",
+                    }.issubset(binding["errors"]),
+                    f"framework/gate errors missing from {binding['id']}",
+                )
                 parameter_names = [item["name"] for item in binding["parameters"]]
                 self.assertEqual(len(parameter_names), len(set(parameter_names)))
                 for parameter in binding["parameters"]:
@@ -227,7 +240,44 @@ class HostCapabilityContractTests(unittest.TestCase):
                     self.assertEqual(binding["id"], "host.procedure.run.v1")
                 if "argument_contract" in binding:
                     self.assertEqual(binding["id"], "host.device.lifecycle.v1")
+                if "error_variants" in binding:
+                    self.assertEqual(binding["id"], "host.procedure.run.v1")
+                    self.assertTrue(binding["error_variants"])
+                    for variant in binding["error_variants"]:
+                        self.assertEqual(
+                            set(variant),
+                            {
+                                "code", "details", "effect_state", "language_mapping",
+                                "python_parity",
+                            },
+                        )
+                        self.assertIn(variant["code"], binding["errors"])
+                        self.assertEqual(
+                            set(variant["effect_state"]),
+                            {"not_started", "committed", "unknown"},
+                        )
+                        self.assertEqual(
+                            set(variant["python_parity"]),
+                            {"exception", "normalization"},
+                        )
         self.assertEqual(len(binding_ids), 44)
+        callback = self.synchronous_host_source.split(
+            "HostResult invoke_host_callback(", 1
+        )[1].split("std::vector<InMemoryLogEvent>", 1)[0]
+        self.assertLess(
+            callback.index("context.deadline_exceeded()"),
+            callback.index("context.cancelled()"),
+        )
+        normalized = re.sub(r"\s+", " ", self.spec)
+        for anchor in (
+            "before every callback",
+            "independent of whether the binding's mode is `preflight` or `cooperative`",
+            "every binding's complete catalog `errors` list MUST include both",
+            "every complete catalog `errors` list MUST include `HOST001_CAPABILITY_DENIED`",
+            "HOST003_CANCELLED",
+            "HOST004_DEADLINE_EXCEEDED",
+        ):
+            self.assertIn(anchor, normalized)
 
     def test_catalog_covers_every_requested_domain_and_privileged_capability(self) -> None:
         capabilities = {
@@ -387,6 +437,38 @@ class HostCapabilityContractTests(unittest.TestCase):
                 "unknown_fields": "forbidden",
             },
         )
+        self.assertEqual(
+            binding["error_variants"],
+            [
+                {
+                    "code": "HOST006_UNAVAILABLE",
+                    "details": {
+                        "unavailable_reason": "foreground_package_mismatch",
+                    },
+                    "effect_state": {
+                        "committed": (
+                            "one or more input effects are confirmed committed before the mismatch"
+                        ),
+                        "not_started": "no input effect was committed before the mismatch",
+                        "unknown": (
+                            "an input effect may have committed but completion cannot be proven"
+                        ),
+                    },
+                    "language_mapping": "HostUnavailable",
+                    "python_parity": {
+                        "exception": "PackageIncorrect",
+                        "normalization": (
+                            "foreground package differs from the execution context's expected package"
+                        ),
+                    },
+                }
+            ],
+        )
+        unavailable = next(
+            item for item in self.catalog["error_codes"]
+            if item["code"] == "HOST006_UNAVAILABLE"
+        )
+        self.assertEqual(unavailable["language_mapping"], {"default": "HostUnavailable"})
         self.assertTrue(
             {
                 "HOST003_CANCELLED",
@@ -514,6 +596,11 @@ class HostCapabilityContractTests(unittest.TestCase):
             "host.device.lifecycle.v1",
             "DeviceHost::lifecycle",
             "deterministic empty ordered-map",
+            "unavailable_reason = foreground_package_mismatch",
+            "Python `PackageIncorrect`",
+            "no committed input becomes `not_started`",
+            "confirmed input becomes `committed`",
+            "indeterminate completion becomes `unknown`",
         ):
             self.assertIn(anchor, normalized_spec)
 
