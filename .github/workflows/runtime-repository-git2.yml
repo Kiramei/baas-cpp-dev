@@ -11,13 +11,20 @@ on:
       - 'cmake/RuntimeRepository.cmake'
       - 'cmake/RuntimeRepositoryGit2.cmake'
       - 'cmake/RuntimeRepositoryUpdater.cmake'
+      - 'cmake/ServiceRuntimeRepositoryPlan.cmake'
+      - 'cmake/ServiceRuntimeRepositoryUpdateApplication.cmake'
+      - 'cmake/ServiceAuth.cmake'
+      - 'apps/BAAS_runtime_repository_update/**'
       - 'deploy/conan/conanfile.py'
       - 'deploy/conan/profiles/dependency-versions-default'
       - 'deploy/conan/recipes/baas-libgit2/**'
       - 'deploy/conan/recipes/baas-miniz/**'
       - 'deploy/conan/recipes/baas-cpp-httplib/**'
+      - 'deploy/conan/recipes/baas-libsodium/**'
+      - 'deploy/conan/recipes/baas-nlohmann-json/**'
       - 'deploy/conan/scripts/manage_recipes.py'
       - 'docs/script-runtime/RUNTIME_REPOSITORY_GIT2_DEPENDENCY.md'
+      - 'docs/script-runtime/RUNTIME_REPOSITORY_UPDATE_APPLICATION.md'
       - 'src/runtime/repository/RuntimeRepositoryGit2.cpp'
       - 'src/runtime/repository/RuntimeRepositorySnapshot.cpp'
       - 'src/runtime/repository/RuntimeRepositoryReadView.cpp'
@@ -29,6 +36,13 @@ on:
       - 'include/runtime/repository/RuntimeRepositorySnapshot.h'
       - 'include/runtime/repository/RuntimeRepositoryReadView.h'
       - 'include/runtime/repository/RuntimeRepositoryUpdater.h'
+      - 'include/service/app/RuntimeRepositoryTrustedPlan*.h'
+      - 'include/service/app/RuntimeRepositoryUpdateApplication.h'
+      - 'src/service/app/RuntimeRepositoryTrustedPlan*.cpp'
+      - 'src/service/app/RuntimeRepositoryUpdateApplication.cpp'
+      - 'include/service/auth/Crypto.h'
+      - 'src/service/auth/Crypto.cpp'
+      - 'include/service/adapters/BoundedJson.h'
       - 'tests/docs/test_libgit2_dependency.py'
       - 'tests/docs/test_httplib_upgrade.py'
       - 'tests/runtime/RuntimeRepositorySnapshotTests.cpp'
@@ -36,6 +50,8 @@ on:
       - 'tests/runtime/RuntimeRepositoryGit2BackendTests.cpp'
       - 'tests/runtime/RuntimeRepositoryGit2TestHooks.h'
       - 'tests/runtime/RuntimeRepositoryUpdaterTests.cpp'
+      - 'tests/service/RuntimeRepositoryTrustedPlanTests.cpp'
+      - 'tests/service/RuntimeRepositoryUpdateApplicationTests.cpp'
   pull_request:
     paths:
       - '.github/workflows/runtime-repository-git2.yml'
@@ -44,13 +60,20 @@ on:
       - 'cmake/RuntimeRepository.cmake'
       - 'cmake/RuntimeRepositoryGit2.cmake'
       - 'cmake/RuntimeRepositoryUpdater.cmake'
+      - 'cmake/ServiceRuntimeRepositoryPlan.cmake'
+      - 'cmake/ServiceRuntimeRepositoryUpdateApplication.cmake'
+      - 'cmake/ServiceAuth.cmake'
+      - 'apps/BAAS_runtime_repository_update/**'
       - 'deploy/conan/conanfile.py'
       - 'deploy/conan/profiles/dependency-versions-default'
       - 'deploy/conan/recipes/baas-libgit2/**'
       - 'deploy/conan/recipes/baas-miniz/**'
       - 'deploy/conan/recipes/baas-cpp-httplib/**'
+      - 'deploy/conan/recipes/baas-libsodium/**'
+      - 'deploy/conan/recipes/baas-nlohmann-json/**'
       - 'deploy/conan/scripts/manage_recipes.py'
       - 'docs/script-runtime/RUNTIME_REPOSITORY_GIT2_DEPENDENCY.md'
+      - 'docs/script-runtime/RUNTIME_REPOSITORY_UPDATE_APPLICATION.md'
       - 'src/runtime/repository/RuntimeRepositoryGit2.cpp'
       - 'src/runtime/repository/RuntimeRepositorySnapshot.cpp'
       - 'src/runtime/repository/RuntimeRepositoryReadView.cpp'
@@ -62,6 +85,13 @@ on:
       - 'include/runtime/repository/RuntimeRepositorySnapshot.h'
       - 'include/runtime/repository/RuntimeRepositoryReadView.h'
       - 'include/runtime/repository/RuntimeRepositoryUpdater.h'
+      - 'include/service/app/RuntimeRepositoryTrustedPlan*.h'
+      - 'include/service/app/RuntimeRepositoryUpdateApplication.h'
+      - 'src/service/app/RuntimeRepositoryTrustedPlan*.cpp'
+      - 'src/service/app/RuntimeRepositoryUpdateApplication.cpp'
+      - 'include/service/auth/Crypto.h'
+      - 'src/service/auth/Crypto.cpp'
+      - 'include/service/adapters/BoundedJson.h'
       - 'tests/docs/test_libgit2_dependency.py'
       - 'tests/docs/test_httplib_upgrade.py'
       - 'tests/runtime/RuntimeRepositorySnapshotTests.cpp'
@@ -69,6 +99,8 @@ on:
       - 'tests/runtime/RuntimeRepositoryGit2BackendTests.cpp'
       - 'tests/runtime/RuntimeRepositoryGit2TestHooks.h'
       - 'tests/runtime/RuntimeRepositoryUpdaterTests.cpp'
+      - 'tests/service/RuntimeRepositoryTrustedPlanTests.cpp'
+      - 'tests/service/RuntimeRepositoryUpdateApplicationTests.cpp'
 
 permissions:
   contents: read
@@ -174,11 +206,31 @@ jobs:
           --build=missing
           --no-remote
 
+      - name: Build pinned libsodium trust dependency offline
+        run: >-
+          conan create deploy/conan/recipes/baas-libsodium
+          -s:h build_type=${{ matrix.build_type }}
+          -s:b build_type=Release
+          ${{ matrix.conan_settings }}
+          --build=missing
+          --no-remote
+
+      - name: Build pinned nlohmann-json plan dependency offline
+        run: >-
+          conan create deploy/conan/recipes/baas-nlohmann-json
+          -s:h build_type=${{ matrix.build_type }}
+          -s:b build_type=Release
+          ${{ matrix.conan_settings }}
+          --build=missing
+          --no-remote
+
       - name: Generate optional CMake dependency
         run: >-
           conan install --requires=baas-libgit2/1.9.3
           --requires=baas-miniz/3.1.2
           --requires=baas-cpp-httplib/0.50.1
+          --requires=baas-libsodium/1.0.22
+          --requires=baas-nlohmann-json/3.11.3
           -of build/conan/runtime-repository-git2
           -s:h build_type=${{ matrix.build_type }}
           -s:b build_type=Release
@@ -196,6 +248,9 @@ jobs:
           -DBUILD_TESTING=ON
           -DBUILD_RUNTIME_REPOSITORY_GIT2_TESTS=ON
           -DBUILD_RUNTIME_REPOSITORY_UPDATER_TESTS=ON
+          -DBUILD_SERVICE_RUNTIME_REPOSITORY_PLAN_TESTS=ON
+          -DBUILD_SERVICE_RUNTIME_REPOSITORY_UPDATE_APP_TESTS=ON
+          -DBAAS_RUNTIME_REPOSITORY_TRUSTED_PUBLIC_KEY_HEX=3b6a27bcceb6a42d62a3a8d02a6f0d73653215771de243a63ac048a18b59da29
           -DBUILD_APP_BAAS=OFF
           -DBUILD_APP_ISA=OFF
           -DBUILD_BAAS_OCR=OFF
@@ -208,14 +263,14 @@ jobs:
           cmake --build build/runtime-repository-git2
           --config ${{ matrix.build_type }}
           --parallel 4
-          --target BAAS_runtime_repository_git2_backend_tests BAAS_runtime_repository_git2_link_tests BAAS_runtime_repository_updater_tests
+          --target BAAS_runtime_repository_git2_backend_tests BAAS_runtime_repository_git2_link_tests BAAS_runtime_repository_updater_tests BAAS_service_runtime_repository_plan_tests BAAS_runtime_repository_update BAAS_service_runtime_repository_update_application_tests
 
       - name: Run real static link check
         run: >-
           ctest --test-dir build/runtime-repository-git2
           --build-config ${{ matrix.build_type }}
           --output-on-failure
-          -R "^BAAS_runtime_repository_(git2_(backend|link)_tests|updater_tests)$"
+          -R "^BAAS_(runtime_repository_(git2_(backend|link)_tests|updater_tests|update_(version|help)_cli)|service_runtime_repository_(plan_tests|update_application_tests))$"
 
   android-static:
     name: Android ${{ matrix.abi }} / Release

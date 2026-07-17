@@ -40,6 +40,18 @@ struct RuntimeRepositoryTrustedPlanUpdateOwnerResult {
   }
 };
 
+namespace detail {
+
+// Rebinds an ambiguous committed result to the authoritative current pin
+// obtained by successful recovery. This is internal policy-owner plumbing,
+// exposed only so the old-pin recovery regression is deterministic in tests.
+void replace_ambiguous_update_pin_after_recovery(
+    runtime::repository::RuntimeRepositoryUpdateResult &update,
+    const runtime::repository::RuntimeRepositoryUpdateResult &recovered,
+    std::string_view actual_generation);
+
+} // namespace detail
+
 // Standalone publisher composition boundary. recover() must succeed before
 // apply(). The owner serializes verification, updater publication, and trusted
 // policy-state completion. A browser-facing handler receives only
