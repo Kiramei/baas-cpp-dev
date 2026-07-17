@@ -506,6 +506,80 @@ void test_budget_failure_cache_and_exception_translation()
               && read_string("detached_detail") == "call",
           "Host failures must expose allowlisted metadata and detached read-only detail projections");
 
+    auto foreground_binding = runtime::make_in_memory_log_binding(host);
+    foreground_binding.callback = [](const runtime::HostCallContext&,
+                                      const runtime::HostArguments&) {
+        return runtime::HostResult::failure({
+            runtime::HostErrorCode::Unavailable,
+            "redacted foreground mismatch",
+            true,
+            runtime::HostEffectState::Committed,
+            runtime::JsonValue(runtime::JsonObject{{
+                "unavailable_reason",
+                runtime::JsonValue("foreground_package_mismatch")}})});
+    };
+    auto foreground_bindings =
+        std::make_shared<const runtime::SynchronousNativeBindingSet>(
+            std::vector<runtime::SynchronousNativeBinding>{
+                std::move(foreground_binding)});
+    runtime::SynchronousEvaluator caught_foreground_mismatch(
+        {{"main",
+          "import \"baas/log\" as log;\n"
+          "let code = \"\"; let host_code = \"\"; let effect = \"\";\n"
+          "let retryable = false; let reason = \"\";\n"
+          "try { log.emit(\"i\", \"m\"); } catch (error) {\n"
+          "  code = error.code; host_code = error.details.host_code;\n"
+          "  effect = error.details.effect_state;\n"
+          "  retryable = error.details.retryable;\n"
+          "  reason = error.details.host_details.unavailable_reason;\n"
+          "}\n"}},
+        log_options(foreground_bindings));
+    static_cast<void>(caught_foreground_mismatch.execute("main"));
+    const auto mismatch_string = [&](const std::string_view name) {
+        return caught_foreground_mismatch.heap().string_copy(
+            caught_foreground_mismatch.module_export("main", name).as_heap_ref());
+    };
+    check(mismatch_string("code") == "HostUnavailable"
+              && mismatch_string("host_code") == "HOST006_UNAVAILABLE"
+              && mismatch_string("effect") == "committed"
+              && caught_foreground_mismatch.module_export(
+                     "main", "retryable").as_boolean()
+              && mismatch_string("reason") == "foreground_package_mismatch",
+          "foreground mismatch discriminator, retryability, and effect state must reach the script Error envelope");
+
+    auto hidden_unavailable_binding = runtime::make_in_memory_log_binding(host);
+    hidden_unavailable_binding.callback = [](const runtime::HostCallContext&,
+                                              const runtime::HostArguments&) {
+        return runtime::HostResult::failure({
+            runtime::HostErrorCode::Unavailable,
+            "safe unavailable",
+            false,
+            runtime::HostEffectState::NotStarted,
+            runtime::JsonValue(runtime::JsonObject{
+                {"unavailable_reason", runtime::JsonValue("device_secret_reason")},
+                {"actual_package", runtime::JsonValue("private.package")}})});
+    };
+    auto hidden_unavailable_bindings =
+        std::make_shared<const runtime::SynchronousNativeBindingSet>(
+            std::vector<runtime::SynchronousNativeBinding>{
+                std::move(hidden_unavailable_binding)});
+    runtime::SynchronousEvaluator hidden_unavailable(
+        {{"main",
+          "import \"baas/log\" as log;\n"
+          "let code = \"\"; let has_host_details = true;\n"
+          "try { log.emit(\"i\", \"m\"); } catch (error) {\n"
+          "  code = error.code;\n"
+          "  has_host_details = \"host_details\" in error.details;\n"
+          "}\n"}},
+        log_options(hidden_unavailable_bindings));
+    static_cast<void>(hidden_unavailable.execute("main"));
+    check(hidden_unavailable.heap().string_copy(
+              hidden_unavailable.module_export("main", "code").as_heap_ref())
+                  == "HostUnavailable"
+              && !hidden_unavailable.module_export(
+                     "main", "has_host_details").as_boolean(),
+          "unrecognized unavailable details and package names must stay redacted");
+
     struct RejectedDetailCase {
         runtime::HostErrorCode code;
         runtime::JsonObject details;
