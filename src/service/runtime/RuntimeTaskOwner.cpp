@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <chrono>
 #include <condition_variable>
+#include <exception>
 #include <mutex>
 #include <stdexcept>
 #include <thread>
@@ -34,7 +35,22 @@ inline constexpr std::uint64_t json_safe_integer_max =
         static_cast<std::uint64_t>(elapsed.count()), json_safe_integer_max);
 }
 
+[[nodiscard]] std::uint64_t next_timestamp(
+    const std::uint64_t previous) noexcept
+{
+    const auto now = unix_timestamp_ms();
+    if (now > previous) return now;
+    if (previous < json_safe_integer_max) return previous + 1;
+    return json_safe_integer_max;
+}
+
 }  // namespace
+
+RuntimeTaskTerminal runtime_task_terminal_from_result(
+    const bool succeeded, const bool is_flag_run) noexcept
+{
+    return {is_flag_run, succeeded ? std::nullopt : std::optional<int>{1}};
+}
 
 std::string_view runtime_task_start_decision_name(
     const RuntimeTaskStartDecision decision) noexcept
@@ -69,7 +85,8 @@ std::string_view runtime_task_stop_decision_name(
     return "unknown-config";
 }
 
-class RuntimeTaskOwner::Impl final {
+class RuntimeTaskOwner::Impl final
+    : public std::enable_shared_from_this<RuntimeTaskOwner::Impl> {
 public:
     Impl(RuntimeTaskBackend backend, RuntimeTaskLimits limits)
         : backend_(std::move(backend)), limits_(limits)
@@ -84,7 +101,12 @@ public:
         }
     }
 
-    ~Impl() noexcept { shutdown(); }
+    ~Impl() noexcept
+    {
+        // RuntimeTaskOwner's external destructor must have drained every
+        // std::thread before releasing its shared ownership.
+        if (has_joinable_worker()) std::terminate();
+    }
 
     [[nodiscard]] RuntimeTaskStartResult start(RuntimeTaskRequest request)
     {
@@ -98,64 +120,75 @@ public:
         }
 
         auto found = jobs_.find(request.config_id);
-        if (found == jobs_.end()) {
-            if (jobs_.size() >= limits_.max_configs) {
+        std::shared_ptr<Job> previous;
+        if (found != jobs_.end()) {
+            previous = found->second;
+            if (previous->phase == JobPhase::running) {
                 return {
-                    RuntimeTaskStartDecision::capacity_exceeded, std::nullopt};
+                    RuntimeTaskStartDecision::already_running,
+                    previous->snapshot};
             }
-            auto job = std::make_unique<Job>();
-            job->snapshot.config_id = request.config_id;
-            touch(*job);
-            found = jobs_.emplace(request.config_id, std::move(job)).first;
-        }
-        Job& job = *found->second;
-        if (job.phase == JobPhase::running) {
+            if (previous->phase == JobPhase::stopping) {
+                return {
+                    RuntimeTaskStartDecision::stopping, previous->snapshot};
+            }
+            // completed is published only after the worker's final use of the
+            // owner mutex, so this join cannot wait for the same lock.
+            if (previous->worker.joinable()) previous->worker.join();
+        } else if (jobs_.size() >= limits_.max_configs) {
             return {
-                RuntimeTaskStartDecision::already_running, job.snapshot};
-        }
-        if (job.phase == JobPhase::stopping) {
-            return {RuntimeTaskStartDecision::stopping, job.snapshot};
+                RuntimeTaskStartDecision::capacity_exceeded, std::nullopt};
         }
 
-        // Completed workers publish their final state after releasing mutex_.
-        // Joining here cannot wait on a worker that still needs this lock and
-        // prevents the prior thread object from escaping service ownership.
-        if (job.worker.joinable()) job.worker.join();
+        // Prepare every allocation/copy needed by the successful response and
+        // worker before changing registry state or starting a thread. If an
+        // allocation throws, no task has been admitted.
+        RuntimeTaskSnapshot next;
+        next.config_id = request.config_id;
+        next.running = true;
+        next.is_flag_run = true;
+        if (previous) next.button = previous->snapshot.button;
+        next.current_task = request.current_task;
+        next.waiting_tasks = request.waiting_tasks;
+        next.run_mode = request.run_mode;
+        next.timestamp = next_timestamp(
+            previous ? previous->snapshot.timestamp : 0);
 
-        ++job.generation;
-        const auto generation = job.generation;
-        job.stop_source = std::stop_source{};
-        job.manual_stop_requested = false;
-        job.phase = JobPhase::running;
-        job.snapshot.running = true;
-        job.snapshot.stopping = false;
-        job.snapshot.is_flag_run = true;
-        job.snapshot.exit_code.reset();
-        job.snapshot.run_mode = request.run_mode;
-        job.snapshot.current_task = request.current_task;
-        job.snapshot.waiting_tasks = request.waiting_tasks;
-        touch(job);
+        RuntimeTaskStartResult result{
+            RuntimeTaskStartDecision::started, next};
+        auto job = std::make_shared<Job>();
+        job->phase = JobPhase::running;
+        job->snapshot = std::move(next);
+
+        if (found == jobs_.end()) {
+            found = jobs_.emplace(job->snapshot.config_id, job).first;
+        } else {
+            found->second = job;
+        }
 
         try {
-            Job* const stable_job = &job;
-            job.worker = std::thread{
-                [this, stable_job, generation, request = std::move(request)] {
-                    run(*stable_job, generation, request);
+            auto self = shared_from_this();
+            job->worker = std::thread{
+                [self = std::move(self), job,
+                 request = std::move(request)]() mutable {
+                    self->run(job, request);
                 }};
         } catch (...) {
-            job.phase = JobPhase::completed;
-            job.snapshot.running = false;
-            job.snapshot.stopping = false;
-            job.snapshot.is_flag_run = false;
-            job.snapshot.current_task.reset();
-            job.snapshot.waiting_tasks.clear();
-            job.snapshot.exit_code = 1;
-            touch(job);
+            job->phase = JobPhase::completed;
+            set_thread_start_failure(*job);
+            result.decision = RuntimeTaskStartDecision::thread_start_failed;
+            if (result.snapshot) {
+                result.snapshot->running = false;
+                result.snapshot->stopping = false;
+                result.snapshot->is_flag_run = false;
+                result.snapshot->current_task.reset();
+                result.snapshot->waiting_tasks.clear();
+                result.snapshot->exit_code = 1;
+                result.snapshot->timestamp = job->snapshot.timestamp;
+            }
             condition_.notify_all();
-            return {
-                RuntimeTaskStartDecision::thread_start_failed, job.snapshot};
         }
-        return {RuntimeTaskStartDecision::started, job.snapshot};
+        return result;
     }
 
     [[nodiscard]] RuntimeTaskStopResult request_stop(
@@ -164,6 +197,7 @@ public:
         if (!bounded_text(config_id, limits_.max_config_id_bytes)) {
             return {RuntimeTaskStopDecision::unknown_config, std::nullopt};
         }
+
         std::unique_lock lock{mutex_};
         const auto found = jobs_.find(std::string{config_id});
         if (found == jobs_.end()) {
@@ -176,10 +210,29 @@ public:
         if (job.phase == JobPhase::stopping) {
             return {RuntimeTaskStopDecision::already_stopping, job.snapshot};
         }
-        auto stop_source = mark_stopping_locked(job);
-        const auto result = RuntimeTaskStopResult{
-            RuntimeTaskStopDecision::stop_requested, job.snapshot};
+
+        // Build the complete response before the linearization point. Once the
+        // state changes below, no exception-capable response copy remains and
+        // the stop request is unconditionally delivered before return.
+        RuntimeTaskSnapshot response_snapshot = job.snapshot;
+        response_snapshot.stopping = true;
+        response_snapshot.is_flag_run = false;
+        response_snapshot.timestamp = next_timestamp(job.snapshot.timestamp);
+        RuntimeTaskStopResult result{
+            RuntimeTaskStopDecision::stop_requested,
+            std::move(response_snapshot)};
+        auto stop_source = job.stop_source;
+
+        job.phase = JobPhase::stopping;
+        job.snapshot.stopping = true;
+        job.snapshot.is_flag_run = false;
+        job.snapshot.timestamp = result.snapshot->timestamp;
         lock.unlock();
+        StopDeliveryGuard delivery{this};
+        // Serialize external stop-callback execution with external draining.
+        // A callback reentering shutdown observes delivery and returns before
+        // trying to acquire this mutex.
+        std::lock_guard delivery_lock{drain_mutex_};
         static_cast<void>(stop_source.request_stop());
         return result;
     }
@@ -225,34 +278,32 @@ public:
         });
     }
 
-    void shutdown() noexcept
+    [[nodiscard]] bool called_from_worker() const noexcept
     {
-        std::lock_guard shutdown_lock{shutdown_mutex_};
-        std::vector<Job*> jobs;
-        std::vector<std::stop_source> stop_sources;
-        {
-            std::lock_guard lock{mutex_};
-            accepting_ = false;
-            jobs.reserve(jobs_.size());
-            stop_sources.reserve(jobs_.size());
-            for (auto& [config_id, job] : jobs_) {
-                static_cast<void>(config_id);
-                if (job->phase == JobPhase::running) {
-                    stop_sources.push_back(mark_stopping_locked(*job));
-                } else if (job->phase == JobPhase::stopping) {
-                    stop_sources.push_back(job->stop_source);
-                }
-                jobs.push_back(job.get());
+        const auto caller = std::this_thread::get_id();
+        std::lock_guard lock{mutex_};
+        for (const auto& [config_id, job] : jobs_) {
+            static_cast<void>(config_id);
+            if (job->worker.joinable() && job->worker.get_id() == caller) {
+                return true;
             }
         }
-        // std::stop_callback executes synchronously in request_stop(). Never
-        // invoke user backend callbacks while holding the owner state mutex.
-        for (auto& source : stop_sources) {
-            static_cast<void>(source.request_stop());
-        }
-        for (Job* const job : jobs) {
-            if (job->worker.joinable()) job->worker.join();
-        }
+        return false;
+    }
+
+    void shutdown() noexcept
+    {
+        ShutdownGuard recursion{this};
+        if (recursion.reentrant()) return;
+
+        initiate_shutdown();
+        if (called_from_worker() || StopDeliveryGuard::active(this)) return;
+
+        // Only external callers drain. Serialization prevents two callers from
+        // concurrently joining the same std::thread; the recursion guard keeps
+        // synchronous stop callbacks from trying to acquire this mutex again.
+        std::lock_guard drain_lock{drain_mutex_};
+        drain_workers();
     }
 
 private:
@@ -261,8 +312,65 @@ private:
         JobPhase phase{JobPhase::completed};
         std::stop_source stop_source;
         std::thread worker;
-        std::uint64_t generation{};
-        bool manual_stop_requested{false};
+    };
+
+    class ShutdownGuard final {
+    public:
+        explicit ShutdownGuard(Impl* owner) noexcept
+            : owner_(owner), previous_(top_)
+        {
+            for (auto* current = top_; current != nullptr;
+                 current = current->previous_) {
+                if (current->owner_ == owner_) {
+                    reentrant_ = true;
+                    return;
+                }
+            }
+            top_ = this;
+        }
+
+        ~ShutdownGuard()
+        {
+            if (!reentrant_) top_ = previous_;
+        }
+
+        [[nodiscard]] bool reentrant() const noexcept { return reentrant_; }
+
+    private:
+        Impl* owner_;
+        ShutdownGuard* previous_;
+        bool reentrant_{false};
+        inline static thread_local ShutdownGuard* top_{nullptr};
+    };
+
+    // A stop_callback may destroy itself on its backend worker and wait for a
+    // callback currently executing on the requesting thread. A shutdown
+    // reentered from that callback must never join the worker, or both threads
+    // would wait on each other. The outer stop delivery remains responsible for
+    // returning; a later ordinary external shutdown performs the drain.
+    class StopDeliveryGuard final {
+    public:
+        explicit StopDeliveryGuard(Impl* owner) noexcept
+            : owner_(owner), previous_(top_)
+        {
+            top_ = this;
+        }
+
+        ~StopDeliveryGuard() { top_ = previous_; }
+
+        [[nodiscard]] static bool active(const Impl* owner) noexcept
+        {
+            for (auto* current = top_; current != nullptr;
+                 current = current->previous_) {
+                if (current->owner_ == owner) return true;
+            }
+            return false;
+        }
+
+    private:
+        Impl* owner_;
+        StopDeliveryGuard* previous_;
+        inline static thread_local StopDeliveryGuard* top_{nullptr};
     };
 
     [[nodiscard]] bool valid_request(const RuntimeTaskRequest& request) const
@@ -306,94 +414,162 @@ private:
             });
     }
 
-    void touch(Job& job) noexcept
+    void set_thread_start_failure(Job& job) noexcept
     {
-        const auto now = unix_timestamp_ms();
-        if (now > job.snapshot.timestamp) {
-            job.snapshot.timestamp = now;
-        } else if (job.snapshot.timestamp < json_safe_integer_max) {
-            ++job.snapshot.timestamp;
-        }
-    }
-
-    [[nodiscard]] std::stop_source mark_stopping_locked(Job& job) noexcept
-    {
-        job.phase = JobPhase::stopping;
-        job.manual_stop_requested = true;
-        job.snapshot.stopping = true;
-        job.snapshot.is_flag_run = false;
-        touch(job);
-        return job.stop_source;
-    }
-
-    [[nodiscard]] bool report(
-        Job& job, const std::uint64_t generation,
-        RuntimeTaskProgress progress)
-    {
-        if (!valid_progress(progress)) return false;
-        std::lock_guard lock{mutex_};
-        if (job.generation != generation || job.phase == JobPhase::completed) {
-            return false;
-        }
-        job.snapshot.is_flag_run = job.phase == JobPhase::stopping
-            ? false
-            : progress.is_flag_run;
-        job.snapshot.button = std::move(progress.button);
-        job.snapshot.current_task = std::move(progress.current_task);
-        job.snapshot.waiting_tasks = std::move(progress.waiting_tasks);
-        touch(job);
-        return true;
-    }
-
-    void run(
-        Job& job, const std::uint64_t generation,
-        const RuntimeTaskRequest& request) noexcept
-    {
-        bool succeeded = false;
-        try {
-            const RuntimeTaskProgressReporter reporter =
-                [this, &job, generation](RuntimeTaskProgress progress) {
-                    return report(job, generation, std::move(progress));
-                };
-            succeeded = backend_(
-                request, job.stop_source.get_token(), reporter);
-        } catch (...) {
-            succeeded = false;
-        }
-
-        std::lock_guard lock{mutex_};
-        if (job.generation != generation) return;
-        const bool manually_stopped = job.manual_stop_requested;
-        job.phase = JobPhase::completed;
         job.snapshot.running = false;
         job.snapshot.stopping = false;
         job.snapshot.is_flag_run = false;
         job.snapshot.current_task.reset();
         job.snapshot.waiting_tasks.clear();
-        if (!manually_stopped && !succeeded) {
-            job.snapshot.exit_code = 1;
-        } else {
-            job.snapshot.exit_code.reset();
+        job.snapshot.exit_code = 1;
+        job.snapshot.timestamp = next_timestamp(job.snapshot.timestamp);
+    }
+
+    [[nodiscard]] static bool report(
+        const std::weak_ptr<Impl>& weak_owner,
+        const std::weak_ptr<Job>& weak_job, RuntimeTaskProgress progress)
+    {
+        const auto owner = weak_owner.lock();
+        const auto job = weak_job.lock();
+        if (!owner || !job || !owner->valid_progress(progress)) return false;
+
+        std::lock_guard lock{owner->mutex_};
+        if (job->phase == JobPhase::completed) return false;
+        job->snapshot.is_flag_run = job->phase == JobPhase::stopping
+            ? false
+            : progress.is_flag_run;
+        job->snapshot.button = std::move(progress.button);
+        job->snapshot.current_task = std::move(progress.current_task);
+        job->snapshot.waiting_tasks = std::move(progress.waiting_tasks);
+        job->snapshot.timestamp = next_timestamp(job->snapshot.timestamp);
+        return true;
+    }
+
+    void run(
+        const std::shared_ptr<Job>& job,
+        const RuntimeTaskRequest& request) noexcept
+    {
+        RuntimeTaskTerminal terminal{false, 1};
+        try {
+            const RuntimeTaskProgressReporter reporter =
+                [weak_owner = weak_from_this(),
+                 weak_job = std::weak_ptr<Job>{job}](
+                    RuntimeTaskProgress progress) {
+                    return report(
+                        weak_owner, weak_job, std::move(progress));
+                };
+            terminal = backend_(
+                request, job->stop_source.get_token(), reporter);
+        } catch (...) {
+            terminal = {false, 1};
         }
-        touch(job);
+
+        std::lock_guard lock{mutex_};
+        job->phase = JobPhase::completed;
+        job->snapshot.running = false;
+        job->snapshot.stopping = false;
+        job->snapshot.is_flag_run = terminal.is_flag_run;
+        job->snapshot.current_task.reset();
+        job->snapshot.waiting_tasks.clear();
+        job->snapshot.exit_code = terminal.exit_code;
+        job->snapshot.timestamp = next_timestamp(job->snapshot.timestamp);
         condition_.notify_all();
+    }
+
+    // Allocation-free stop iteration for the noexcept shutdown path. A copied
+    // stop_source shares existing state and does not allocate.
+    void initiate_shutdown() noexcept
+    {
+        {
+            std::lock_guard lock{mutex_};
+            accepting_ = false;
+        }
+        for (;;) {
+            std::stop_source source{std::nostopstate};
+            bool found_source = false;
+            {
+                std::lock_guard lock{mutex_};
+                for (auto& [config_id, job] : jobs_) {
+                    static_cast<void>(config_id);
+                    if (job->phase == JobPhase::running) {
+                        job->phase = JobPhase::stopping;
+                        job->snapshot.stopping = true;
+                        job->snapshot.is_flag_run = false;
+                        job->snapshot.timestamp =
+                            next_timestamp(job->snapshot.timestamp);
+                        source = job->stop_source;
+                        found_source = true;
+                        break;
+                    }
+                    if (job->phase == JobPhase::stopping
+                        && !job->stop_source.stop_requested()) {
+                        source = job->stop_source;
+                        found_source = true;
+                        break;
+                    }
+                }
+            }
+            if (!found_source) return;
+            // Synchronous stop callbacks run with no owner/drain mutex held.
+            StopDeliveryGuard delivery{this};
+            static_cast<void>(source.request_stop());
+        }
+    }
+
+    // Allocation-free: shared_ptr copies only increment an existing control
+    // block. Admission is already closed, so the set of worker threads cannot
+    // grow while this loop drains it.
+    void drain_workers() noexcept
+    {
+        for (;;) {
+            std::shared_ptr<Job> candidate;
+            {
+                std::lock_guard lock{mutex_};
+                for (const auto& [config_id, job] : jobs_) {
+                    static_cast<void>(config_id);
+                    if (job->worker.joinable()) {
+                        candidate = job;
+                        break;
+                    }
+                }
+            }
+            if (!candidate) return;
+            // called_from_worker() is checked before entering the drain and
+            // drain_mutex_ gives this caller exclusive join ownership.
+            candidate->worker.join();
+        }
+    }
+
+    [[nodiscard]] bool has_joinable_worker() const noexcept
+    {
+        std::lock_guard lock{mutex_};
+        return std::any_of(
+            jobs_.begin(), jobs_.end(), [](const auto& entry) {
+                return entry.second->worker.joinable();
+            });
     }
 
     RuntimeTaskBackend backend_;
     RuntimeTaskLimits limits_;
     mutable std::mutex mutex_;
     mutable std::condition_variable condition_;
-    std::mutex shutdown_mutex_;
-    std::unordered_map<std::string, std::unique_ptr<Job>> jobs_;
+    std::mutex drain_mutex_;
+    std::unordered_map<std::string, std::shared_ptr<Job>> jobs_;
     bool accepting_{true};
 };
 
 RuntimeTaskOwner::RuntimeTaskOwner(
     RuntimeTaskBackend backend, RuntimeTaskLimits limits)
-    : impl_(std::make_unique<Impl>(std::move(backend), limits))
+    : impl_(std::make_shared<Impl>(std::move(backend), limits))
 {}
 
-RuntimeTaskOwner::~RuntimeTaskOwner() noexcept = default;
+RuntimeTaskOwner::~RuntimeTaskOwner() noexcept
+{
+    if (!impl_) return;
+    if (impl_->called_from_worker()) std::terminate();
+    impl_->shutdown();
+    impl_.reset();
+}
 
 RuntimeTaskStartResult RuntimeTaskOwner::start(RuntimeTaskRequest request)
 {

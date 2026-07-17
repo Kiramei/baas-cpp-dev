@@ -25,12 +25,22 @@ completed --start--> running --request_stop--> stopping --worker exit--> complet
 - A start while `stopping` returns `stopping`. The old worker remains owned and
   the config cannot restart until it has actually exited. This closes the
   Python implementation's thread-handle stop/start race.
-- A natural backend `false` return or exception produces exit code `1`.
-- A backend `true` return preserves the Python `null` exit code.
-- A requested cooperative stop preserves the Python `null` exit code after the
-  backend returns, even when cancellation makes the backend return `false`.
-- `shutdown()` closes admission, requests stop on every live job, and joins all
-  owned worker threads before returning.
+- `runtime_task_terminal_from_result(false)` and an exception produce exit code
+  `1`; `runtime_task_terminal_from_result(true)` preserves the Python `null`.
+- The richer `RuntimeTaskTerminal` is authoritative: its final `is_flag_run`
+  and optional exit code are preserved exactly, including explicit zero.
+- A cooperative stop does not rewrite that terminal. The backend decides
+  whether cancellation is normal (`null`) or has a meaningful exit code.
+- External `shutdown()` closes admission, requests stop on every live job, and
+  joins all owned worker threads before returning. A call from an owned worker
+  is initiation-only, so simultaneous self-shutdown cannot self-join or make
+workers wait on each other. Later external shutdown or destruction drains.
+
+The `noexcept` shutdown path does not build temporary vectors or allocate per
+job. It closes admission, copies one existing stop state at a time, delivers it
+without the state mutex held, and drains one already-owned thread at a time.
+Stop delivery and external draining are serialized so a worker destroying its
+`std::stop_callback` cannot mutually wait with a reentrant join.
 
 The owner never detaches workers. Disconnecting a transport therefore cannot
 cancel a service-owned job, and destroying the owner reliably drains it. C++
@@ -39,6 +49,11 @@ have provable stop-safe points, observe its `std::stop_token`, and return after
 cancellation. A backend that violates this contract will intentionally keep
 `shutdown()` waiting rather than leave an unowned worker accessing torn-down
 service state.
+
+Destruction is stricter than public shutdown: `RuntimeTaskOwner` must be
+destroyed by its external service owner, never inside its own backend callback.
+That precondition is fail-fast enforced with `std::terminate()` so a joinable
+`std::thread` can never be silently detached or abandoned.
 
 ## Backend and progress contract
 
@@ -51,11 +66,19 @@ the bounded raw `button` JSON/string payload, `current_task`, and
 `waiting_tasks`; invalid or oversized progress is rejected without mutating the
 last valid snapshot.
 
+The reporter is a weak lifetime lease. A backend may accidentally retain a
+copy, but calls after terminal publication or owner destruction return `false`
+without dereferencing released owner/job state.
+
 Snapshots include `config_id`, `running`, `stopping`, `is_flag_run`, `button`,
 `current_task`, `waiting_tasks`, `exit_code`, `run_mode`, and a monotonically
 advancing millisecond timestamp capped at JavaScript's 53-bit safe-integer
 maximum. Multi-config snapshots are sorted by config id for deterministic
 service serialization.
+
+`wait_for_idle()` waits for terminal snapshot publication, not for thread
+reaping. Unknown or invalid config ids are already idle. Completed threads are
+reaped by the next same-config start, external shutdown, or destruction.
 
 ## Bounds
 
@@ -78,6 +101,11 @@ ctest --test-dir build/runtime-task-owner -C Debug \
   -R BAAS_service_runtime_task_owner_tests --output-on-failure
 ```
 
+Foundation CI builds and executes the target on Windows, Linux, and macOS in
+Debug and Release. Its Android arm64-v8a and x86_64 jobs compile the library
+without executing host tests.
+
 The tests execute injected backends on real worker threads and cover keyed
-concurrency, duplicate admission, stop/start linearization, bounded progress,
-failure translation, capacity enforcement, shutdown cancellation, and drain.
+concurrency, duplicate admission, stop/start linearization, explicit terminal
+states, timestamp ordering, bounded progress, escaped reporters, worker/self
+shutdown, reentrant stop callbacks, capacity enforcement, and external drain.

@@ -4,27 +4,26 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
-#include <exception>
+#include <functional>
 #include <iostream>
 #include <mutex>
 #include <stdexcept>
 #include <string>
 #include <string_view>
 #include <thread>
-#include <vector>
 
 namespace {
 
 namespace runtime = baas::service::runtime;
 using namespace std::chrono_literals;
 
-int failures = 0;
+std::atomic<int> failures{};
 
 void check(const bool condition, const std::string_view message)
 {
     if (!condition) {
         std::cerr << "FAILED: " << message << '\n';
-        ++failures;
+        failures.fetch_add(1);
     }
 }
 
@@ -55,7 +54,7 @@ void test_keyed_concurrency_and_stop_start_linearization()
         std::atomic<int> stop_callbacks{};
         std::mutex mutex;
         std::condition_variable condition;
-        bool allow_stopped_workers_to_exit{false};
+        bool allow_exit{false};
     } gate;
 
     runtime::RuntimeTaskOwner owner{
@@ -80,11 +79,9 @@ void test_keyed_concurrency_and_stop_start_linearization()
             }};
             while (!stop.stop_requested()) std::this_thread::sleep_for(1ms);
             std::unique_lock lock{gate.mutex};
-            gate.condition.wait(lock, [&gate] {
-                return gate.allow_stopped_workers_to_exit;
-            });
+            gate.condition.wait(lock, [&gate] { return gate.allow_exit; });
             gate.active.fetch_sub(1);
-            return true;
+            return runtime::RuntimeTaskTerminal{false, std::nullopt};
         }};
 
     const auto alpha = owner.start(request("alpha"));
@@ -96,6 +93,8 @@ void test_keyed_concurrency_and_stop_start_linearization()
     check(wait_until([&gate] { return gate.active.load() == 2; }),
           "different configs execute concurrently");
     check(gate.maximum.load() >= 2, "backend observed concurrent execution");
+    check(!owner.wait_for_idle("alpha", 0ms),
+          "wait_for_idle is false before terminal publication");
 
     const auto duplicate = owner.start(request("alpha"));
     check(
@@ -111,7 +110,7 @@ void test_keyed_concurrency_and_stop_start_linearization()
     check(stop.decision == runtime::RuntimeTaskStopDecision::stop_requested,
           "stop requests cooperative cancellation");
     check(gate.stop_callbacks.load() == 1,
-          "synchronous stop callback can reenter progress without deadlock");
+          "synchronous stop callback can report without owner-lock deadlock");
     const auto while_stopping = owner.start(request("alpha"));
     check(
         while_stopping.decision == runtime::RuntimeTaskStartDecision::stopping,
@@ -124,24 +123,26 @@ void test_keyed_concurrency_and_stop_start_linearization()
     static_cast<void>(owner.request_stop("beta"));
     {
         std::lock_guard lock{gate.mutex};
-        gate.allow_stopped_workers_to_exit = true;
+        gate.allow_exit = true;
     }
     gate.condition.notify_all();
-    check(owner.wait_for_idle("alpha", 3s), "first stopped worker drains");
-    check(owner.wait_for_idle("beta", 3s), "second stopped worker drains");
+    check(owner.wait_for_idle("alpha", 3s),
+          "first backend publishes terminal state");
+    check(owner.wait_for_idle("beta", 3s),
+          "second backend publishes terminal state");
     const auto stopped = owner.snapshot("alpha");
     check(stopped && !stopped->running && !stopped->stopping
               && !stopped->exit_code,
-          "manual stop preserves the Python null exit code");
+          "backend explicitly publishes normal manual-stop terminal state");
 
     const auto restarted = owner.start(request("alpha", "single"));
     check(restarted.decision == runtime::RuntimeTaskStartDecision::started,
-          "same config can restart after prior worker is joined");
+          "restart reaps the completed old thread before admission");
     static_cast<void>(owner.request_stop("alpha"));
-    check(owner.wait_for_idle("alpha", 3s), "restarted worker drains");
+    check(owner.wait_for_idle("alpha", 3s), "restarted backend completes");
 }
 
-void test_natural_outcomes_and_stable_snapshots()
+void test_explicit_terminal_outcomes_and_bounded_snapshots()
 {
     std::atomic<bool> valid_progress{};
     std::atomic<bool> invalid_progress_rejected{};
@@ -150,6 +151,7 @@ void test_natural_outcomes_and_stable_snapshots()
     limits.max_waiting_tasks = 2;
     limits.max_waiting_task_bytes = 8;
     limits.max_button_bytes = 8;
+
     runtime::RuntimeTaskOwner owner{
         [&valid_progress, &invalid_progress_rejected,
          &oversized_button_rejected](
@@ -162,13 +164,18 @@ void test_natural_outcomes_and_stable_snapshots()
                     {true, "button", std::string{"task"}, {"a", "b", "c"}});
                 oversized_button_rejected = !report(
                     {true, "123456789", std::string{"task"}, {"a"}});
-                return true;
+                return runtime::RuntimeTaskTerminal{false, std::nullopt};
             }
-            if (value.run_mode == "false") return false;
+            if (value.run_mode == "failure") {
+                return runtime::runtime_task_terminal_from_result(false);
+            }
+            if (value.run_mode == "zero") {
+                return runtime::RuntimeTaskTerminal{true, 0};
+            }
             if (value.run_mode == "throw") {
                 throw std::runtime_error{"backend failure"};
             }
-            return true;
+            return runtime::runtime_task_terminal_from_result(true);
         },
         limits};
 
@@ -176,48 +183,198 @@ void test_natural_outcomes_and_stable_snapshots()
         return runtime::RuntimeTaskRequest{
             std::move(config), std::move(mode), std::nullopt, {}};
     };
-    check(static_cast<bool>(owner.start(plain("success", "success"))),
-          "success task starts");
-    check(static_cast<bool>(owner.start(plain("false", "false"))),
-          "false task starts");
-    check(static_cast<bool>(owner.start(plain("throw", "throw"))),
-          "throwing task starts");
-    check(static_cast<bool>(owner.start(plain("progress", "progress"))),
-          "progress task starts");
-    for (const auto name : {"success", "false", "throw", "progress"}) {
-        check(owner.wait_for_idle(name, 3s), "natural task reaches idle");
+    for (const auto& [config, mode] : {
+             std::pair{"success", "success"},
+             std::pair{"failure", "failure"},
+             std::pair{"zero", "zero"},
+             std::pair{"throw", "throw"},
+             std::pair{"progress", "progress"}}) {
+        check(static_cast<bool>(owner.start(plain(config, mode))),
+              "terminal-outcome task starts");
+    }
+    for (const auto name : {
+             "success", "failure", "zero", "throw", "progress"}) {
+        check(owner.wait_for_idle(name, 3s), "natural task reaches terminal");
     }
 
     check(!owner.snapshot("success")->exit_code,
-          "true backend result preserves the Python null exit code");
-    check(owner.snapshot("false")->exit_code == 1,
-          "false backend result maps to exit code one");
+          "legacy true maps to null exit code");
+    check(owner.snapshot("failure")->exit_code == 1,
+          "legacy false maps to exit code one");
     check(owner.snapshot("throw")->exit_code == 1,
           "backend exception maps to exit code one");
+    const auto explicit_zero = owner.snapshot("zero");
+    check(explicit_zero && explicit_zero->is_flag_run
+              && explicit_zero->exit_code == 0,
+          "backend terminal preserves final flag and explicit exit code zero");
     check(valid_progress.load(), "bounded progress update is accepted");
     check(invalid_progress_rejected.load(),
-          "oversized progress update is rejected");
+          "oversized waiting list is rejected");
     check(oversized_button_rejected.load(),
           "oversized raw button payload is rejected");
     check(owner.snapshot("progress")->button == "button",
-          "bounded raw button payload remains in the stable snapshot");
+          "last bounded raw button payload remains in terminal snapshot");
 
     const auto all = owner.snapshots();
-    check(all.size() == 4, "snapshot retains one bounded entry per config");
+    check(all.size() == 5, "snapshot retains one bounded entry per config");
     check(std::is_sorted(all.begin(), all.end(), [](const auto& left, const auto& right) {
               return left.config_id < right.config_id;
           }),
           "multi-config snapshot ordering is deterministic");
     check(std::all_of(all.begin(), all.end(), [](const auto& value) {
-              return !value.running && !value.is_flag_run
-                  && !value.current_task && value.waiting_tasks.empty()
-                  && value.run_mode && value.timestamp != 0
+              return !value.running && !value.current_task
+                  && value.waiting_tasks.empty() && value.run_mode
+                  && value.timestamp != 0
                   && value.timestamp <= 9'007'199'254'740'991ULL;
           }),
-          "terminal snapshots are complete and stable");
+          "terminal snapshots are bounded and JSON-safe");
 }
 
-void test_limits_and_shutdown_drain()
+void test_self_shutdown_and_reentrant_stop_callback()
+{
+    runtime::RuntimeTaskOwner* self_owner = nullptr;
+    std::atomic<int> ready{};
+    std::atomic<bool> release{};
+    std::atomic<int> self_shutdown_returned{};
+    runtime::RuntimeTaskOwner owner{
+        [&self_owner, &ready, &release, &self_shutdown_returned](
+            const runtime::RuntimeTaskRequest&, std::stop_token,
+            const runtime::RuntimeTaskProgressReporter&) {
+            ready.fetch_add(1);
+            while (!release.load()) std::this_thread::yield();
+            self_owner->shutdown();
+            self_shutdown_returned.fetch_add(1);
+            return runtime::RuntimeTaskTerminal{false, std::nullopt};
+        }};
+    self_owner = &owner;
+    check(static_cast<bool>(owner.start(request("self-a"))),
+          "first self-shutdown worker starts");
+    check(static_cast<bool>(owner.start(request("self-b"))),
+          "second self-shutdown worker starts");
+    check(wait_until([&ready] { return ready.load() == 2; }),
+          "both self-shutdown workers are live");
+    release = true;
+    check(wait_until([&self_shutdown_returned] {
+              return self_shutdown_returned.load() == 2;
+          }),
+          "concurrent worker shutdown calls return without self/mutual join");
+    check(owner.wait_for_idle("self-a", 3s)
+              && owner.wait_for_idle("self-b", 3s),
+          "self-initiated shutdown publishes both terminals");
+    owner.shutdown();
+
+    runtime::RuntimeTaskOwner* callback_owner = nullptr;
+    std::atomic<bool> callback_registered{};
+    std::atomic<bool> callback_returned{};
+    std::atomic<bool> allow_callback_worker_exit{};
+    runtime::RuntimeTaskOwner reentrant_owner{
+        [&callback_owner, &callback_registered, &callback_returned,
+         &allow_callback_worker_exit](
+            const runtime::RuntimeTaskRequest&, const std::stop_token stop,
+            const runtime::RuntimeTaskProgressReporter&) {
+            std::stop_callback callback{stop, [&] {
+                callback_owner->shutdown();
+                callback_returned = true;
+            }};
+            callback_registered = true;
+            while (!stop.stop_requested()) std::this_thread::yield();
+            while (!allow_callback_worker_exit.load()) std::this_thread::yield();
+            return runtime::RuntimeTaskTerminal{true, 0};
+        }};
+    callback_owner = &reentrant_owner;
+    check(static_cast<bool>(reentrant_owner.start(request("callback"))),
+          "reentrant-callback worker starts");
+    check(wait_until([&callback_registered] { return callback_registered.load(); }),
+          "stop callback is registered");
+    const auto stopped = reentrant_owner.request_stop("callback");
+    check(stopped.decision == runtime::RuntimeTaskStopDecision::stop_requested,
+          "outer request_stop returns after reentrant shutdown");
+    check(wait_until([&callback_returned] { return callback_returned.load(); }),
+          "stop callback reentrant shutdown returns without deadlock");
+    allow_callback_worker_exit = true;
+    check(reentrant_owner.wait_for_idle("callback", 3s),
+          "reentrant shutdown drains backend");
+    const auto terminal = reentrant_owner.snapshot("callback");
+    check(terminal && terminal->is_flag_run && terminal->exit_code == 0,
+          "manual stop does not overwrite explicit backend terminal fields");
+}
+
+void test_escaped_reporter_and_timestamp_ordering()
+{
+    runtime::RuntimeTaskProgressReporter escaped;
+    std::mutex escaped_mutex;
+    std::condition_variable escaped_condition;
+    bool escaped_ready = false;
+    {
+        runtime::RuntimeTaskOwner owner{
+            [&escaped, &escaped_mutex, &escaped_condition, &escaped_ready](
+                const runtime::RuntimeTaskRequest&, std::stop_token,
+                const runtime::RuntimeTaskProgressReporter& report) {
+                {
+                    std::lock_guard lock{escaped_mutex};
+                    escaped = report;
+                    escaped_ready = true;
+                }
+                escaped_condition.notify_one();
+                return runtime::RuntimeTaskTerminal{false, std::nullopt};
+            }};
+        check(static_cast<bool>(owner.start(request("escaped"))),
+              "escaped-reporter task starts");
+        {
+            std::unique_lock lock{escaped_mutex};
+            escaped_condition.wait_for(lock, 3s, [&escaped_ready] {
+                return escaped_ready;
+            });
+        }
+        check(owner.wait_for_idle("escaped", 3s),
+              "escaped-reporter task publishes terminal");
+        check(!escaped({true, std::nullopt, std::string{"late"}, {}}),
+              "reporter called after backend completion returns false");
+    }
+    check(!escaped({true, std::nullopt, std::string{"later"}, {}}),
+          "reporter called after owner destruction returns false without UAF");
+
+    std::atomic<int> phase{};
+    std::atomic<int> advance{};
+    runtime::RuntimeTaskOwner timestamp_owner{
+        [&phase, &advance](
+            const runtime::RuntimeTaskRequest&, const std::stop_token stop,
+            const runtime::RuntimeTaskProgressReporter& report) {
+            check(report({true, std::nullopt, std::string{"one"}, {}}),
+                  "first timestamp progress is accepted");
+            phase = 1;
+            while (advance.load() < 1) std::this_thread::yield();
+            check(report({true, std::nullopt, std::string{"two"}, {}}),
+                  "second timestamp progress is accepted");
+            phase = 2;
+            while (!stop.stop_requested()) std::this_thread::yield();
+            return runtime::RuntimeTaskTerminal{false, std::nullopt};
+        }};
+    const auto started = timestamp_owner.start(request("timestamps"));
+    const auto start_timestamp = started.snapshot->timestamp;
+    check(wait_until([&phase] { return phase.load() == 1; }),
+          "first progress is visible");
+    const auto first_timestamp =
+        timestamp_owner.snapshot("timestamps")->timestamp;
+    advance = 1;
+    check(wait_until([&phase] { return phase.load() == 2; }),
+          "second progress is visible");
+    const auto second_timestamp =
+        timestamp_owner.snapshot("timestamps")->timestamp;
+    const auto stop = timestamp_owner.request_stop("timestamps");
+    const auto stop_timestamp = stop.snapshot->timestamp;
+    check(timestamp_owner.wait_for_idle("timestamps", 3s),
+          "timestamp task publishes terminal");
+    const auto terminal_timestamp =
+        timestamp_owner.snapshot("timestamps")->timestamp;
+    check(start_timestamp < first_timestamp
+              && first_timestamp < second_timestamp
+              && second_timestamp < stop_timestamp
+              && stop_timestamp < terminal_timestamp,
+          "start/progress/stop/terminal timestamps advance monotonically");
+}
+
+void test_limits_and_external_shutdown_drain()
 {
     runtime::RuntimeTaskLimits limits;
     limits.max_configs = 3;
@@ -235,9 +392,9 @@ void test_limits_and_shutdown_drain()
             const runtime::RuntimeTaskRequest&, const std::stop_token stop,
             const runtime::RuntimeTaskProgressReporter&) {
             entered.fetch_add(1);
-            while (!stop.stop_requested()) std::this_thread::sleep_for(1ms);
+            while (!stop.stop_requested()) std::this_thread::yield();
             exited.fetch_add(1);
-            return false;
+            return runtime::RuntimeTaskTerminal{false, std::nullopt};
         },
         limits};
 
@@ -265,15 +422,16 @@ void test_limits_and_shutdown_drain()
     check(
         owner.start({"four", "mode", std::nullopt, {}}).decision
             == runtime::RuntimeTaskStartDecision::capacity_exceeded,
-        "config status registry has a fixed capacity");
+        "config status registry has fixed capacity");
 
     owner.shutdown();
-    check(exited.load() == 3, "shutdown reliably joins every backend worker");
+    check(exited.load() == 3,
+          "external shutdown stops and joins every backend worker");
     const auto stopped = owner.snapshots();
     check(std::all_of(stopped.begin(), stopped.end(), [](const auto& value) {
               return !value.running && !value.exit_code;
           }),
-          "shutdown cancellation remains a normal completion");
+          "shutdown preserves backend-provided normal terminal state");
     check(
         owner.start({"one", "mode", std::nullopt, {}}).decision
             == runtime::RuntimeTaskStartDecision::owner_stopped,
@@ -288,10 +446,12 @@ void test_limits_and_shutdown_drain()
 int main()
 {
     test_keyed_concurrency_and_stop_start_linearization();
-    test_natural_outcomes_and_stable_snapshots();
-    test_limits_and_shutdown_drain();
-    if (failures != 0) {
-        std::cerr << failures << " runtime task owner test(s) failed\n";
+    test_explicit_terminal_outcomes_and_bounded_snapshots();
+    test_self_shutdown_and_reentrant_stop_callback();
+    test_escaped_reporter_and_timestamp_ordering();
+    test_limits_and_external_shutdown_drain();
+    if (failures.load() != 0) {
+        std::cerr << failures.load() << " runtime task owner test(s) failed\n";
         return 1;
     }
     std::cout << "Runtime task owner tests passed\n";
