@@ -711,7 +711,7 @@ private:
         struct kevent change {};
         EV_SET(
             &change, static_cast<uintptr_t>(child), EVFILT_PROC,
-            EV_ADD | EV_ENABLE, NOTE_EXIT, 0, nullptr);
+            EV_ADD | EV_ENABLE, NOTE_EXIT | NOTE_EXITSTATUS, 0, nullptr);
         if (::kevent(exit_observer, &change, 1, nullptr, 0, nullptr) != 0) {
             cleanup_unobserved_child(child, exit_observer);
             return {ServiceProcessError::launch_failed, 0};
@@ -724,6 +724,7 @@ private:
         }
         exit_observer_ = exit_observer;
         mac_exit_observed_ = false;
+        mac_exit_status_.reset();
 #endif
         process_ = child;
         return {
@@ -827,7 +828,7 @@ private:
             if (observed < 0) return PollResult::failed;
             if (observed == 0) return PollResult::pending;
             // This queue owns exactly one EVFILT_PROC registration and that
-            // registration requests only NOTE_EXIT.  Darwin may report the
+            // registration requests only terminal state.  Darwin may report the
             // terminal state primarily through EV_EOF, so matching the queue,
             // filter, and process identity is the authoritative boundary;
             // requiring the output fflags to echo NOTE_EXIT can reject a
@@ -837,7 +838,11 @@ private:
                 || static_cast<pid_t>(event.ident) != process_) {
                 return PollResult::failed;
             }
+            if ((event.fflags & NOTE_EXITSTATUS) == 0) {
+                return PollResult::failed;
+            }
             mac_exit_observed_ = true;
+            mac_exit_status_ = static_cast<int>(event.data);
         }
 #else
         siginfo_t information{};
@@ -862,6 +867,15 @@ private:
             waited = ::waitpid(process_, &status, WNOHANG);
         } while (waited < 0 && errno == EINTR);
         if (waited == 0) return PollResult::pending;
+#if defined(__APPLE__)
+        if (waited < 0 && errno == ECHILD && mac_exit_status_) {
+            // Darwin may finish reaping before the NOTE_EXIT consumer runs.
+            // NOTE_EXITSTATUS carries the same p_xstat value returned by
+            // waitpid, so the owned kqueue event still preserves the exact
+            // terminal result without accepting another process identity.
+            status = *mac_exit_status_;
+        } else
+#endif
         if (waited != process_) return PollResult::failed;
         if (WIFEXITED(status)) {
             process_exit = ServiceProcessExit{WEXITSTATUS(status), false, 0};
@@ -876,6 +890,7 @@ private:
         static_cast<void>(::close(exit_observer_));
         exit_observer_ = -1;
         mac_exit_observed_ = false;
+        mac_exit_status_.reset();
 #endif
         return PollResult::exited;
 #endif
@@ -895,6 +910,31 @@ private:
             return ServiceProcessError::terminate_failed;
         }
 #endif
+#if defined(__APPLE__)
+        // Group termination was issued while the direct child identity was
+        // still owned, so stop no longer needs the asynchronous NOTE_EXIT path.
+        // Reap directly and accept ECHILD only as "already reaped"; stop does
+        // not publish a natural exit status.
+        for (;;) {
+            int status = 0;
+            pid_t waited = -1;
+            do {
+                waited = ::waitpid(process_, &status, WNOHANG);
+            } while (waited < 0 && errno == EINTR);
+            if (waited == process_ || (waited < 0 && errno == ECHILD)) {
+                process_ = -1;
+                static_cast<void>(::close(exit_observer_));
+                exit_observer_ = -1;
+                mac_exit_observed_ = false;
+                mac_exit_status_.reset();
+                return ServiceProcessError::none;
+            }
+            if (waited < 0 || deadline_reached(deadline)) {
+                return ServiceProcessError::wait_failed;
+            }
+            std::this_thread::sleep_until(next_poll(deadline));
+        }
+#else
         for (;;) {
             ServiceProcessExit ignored{};
             const auto result = poll_and_reap_platform(ignored);
@@ -907,6 +947,7 @@ private:
             }
             std::this_thread::sleep_until(next_poll(deadline));
         }
+#endif
     }
 
     void emergency_release_noexcept() noexcept
@@ -932,6 +973,7 @@ private:
                 static_cast<void>(::close(exit_observer_));
                 exit_observer_ = -1;
                 mac_exit_observed_ = false;
+                mac_exit_status_.reset();
             }
 #endif
             static_cast<void>(::kill(-child, SIGKILL));
@@ -980,6 +1022,7 @@ private:
 #if defined(__APPLE__)
     int exit_observer_ = -1;
     bool mac_exit_observed_ = false;
+    std::optional<int> mac_exit_status_;
 #endif
     std::shared_ptr<PosixEmergencyReaperState> emergency_reaper_;
     bool emergency_reaper_handed_off_ = false;
