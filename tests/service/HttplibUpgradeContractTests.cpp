@@ -26,6 +26,7 @@ static_assert(requires(httplib::ws::WebSocket& socket) {
     { socket.interrupt() } noexcept;
 });
 static_assert(CPPHTTPLIB_HEADER_MAX_TOTAL_LENGTH == 32'768);
+static_assert(CPPHTTPLIB_LISTEN_BACKLOG == 65'536);
 static_assert(
     CPPHTTPLIB_WEBSOCKET_INTERRUPT_POLL_INTERVAL_MICROSECONDS == 100'000
 );
@@ -48,6 +49,8 @@ void test_pinned_version_and_process_wide_configuration()
           "the imported package must expose cpp-httplib 0.50.1");
     check(CPPHTTPLIB_WEBSOCKET_MAX_PAYLOAD_LENGTH == 67'108'864,
           "all header-only consumers must observe the BAAS 64 MiB WebSocket limit");
+    check(CPPHTTPLIB_LISTEN_BACKLOG == 65'536,
+          "all header-only consumers must admit the bounded host concurrency burst");
     check(CPPHTTPLIB_WEBSOCKET_INTERRUPT_POLL_INTERVAL_MICROSECONDS == 100'000,
           "all header-only consumers must observe the bounded interrupt poll");
     check(BAAS_OCR::http_contract::image_max_length == 67'108'864

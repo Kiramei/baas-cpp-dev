@@ -12,6 +12,10 @@
 #error "BAAS::httplib did not propagate its required OpenSSL configuration"
 #endif
 
+#if !defined(CPPHTTPLIB_LISTEN_BACKLOG)
+#error "BAAS::httplib did not propagate its required listen backlog"
+#endif
+
 #if defined(BAAS_CPP_HTTPLIB_HAS_WEBSOCKET_INTERRUPT)
 static_assert(requires(httplib::ws::WebSocket& socket) {
     { socket.request_close() } noexcept -> std::same_as<bool>;
@@ -49,6 +53,7 @@ void consume_websocket_extension_symbols(
 
 int main()
 {
+    static_assert(CPPHTTPLIB_LISTEN_BACKLOG == 65'536);
     if (CPPHTTPLIB_WEBSOCKET_MAX_PAYLOAD_LENGTH != 67'108'864) return EXIT_FAILURE;
 
     httplib::Request request;

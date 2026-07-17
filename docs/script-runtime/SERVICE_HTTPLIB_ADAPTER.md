@@ -142,7 +142,11 @@ header and fail closed before JSON parsing or image decoding.
 The Conan `BAAS::httplib` target publishes `CPPHTTPLIB_OPENSSL_SUPPORT=1` and
 links the pinned static OpenSSL 3.5.7 closure on every supported platform. It also publishes both
 `CPPHTTPLIB_WEBSOCKET_MAX_PAYLOAD_LENGTH=67108864` and
-`CPPHTTPLIB_HEADER_MAX_TOTAL_LENGTH=32768` to every 0.50.1 consumer. Because
+`CPPHTTPLIB_HEADER_MAX_TOTAL_LENGTH=32768` to every 0.50.1 consumer. The target
+also replaces cpp-httplib's five-connection listen default with
+`CPPHTTPLIB_LISTEN_BACKLOG=65536`; the operating system may clamp that hint,
+but ordinary bounded worker/queue bursts are no longer rejected before they
+reach the host's explicit admission queue. Because
 cpp-httplib is header-only, these process-wide target definitions prevent
 different service/OCR translation units from compiling incompatible inline
 definitions. The repository-owned 0.50.1 patch enforces the raw 32 KiB header
