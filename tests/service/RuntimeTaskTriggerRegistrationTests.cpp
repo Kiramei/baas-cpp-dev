@@ -56,7 +56,7 @@ class TestPreparedOperation final : public app::RuntimeTaskPreparedOperation {
 public:
     TestPreparedOperation(
         std::shared_ptr<OperationMetrics> metrics,
-        std::function<app::RuntimeTaskControlResult()> commit)
+        std::function<void()> commit)
         : metrics_(std::move(metrics)), commit_(std::move(commit))
     {}
 
@@ -65,21 +65,17 @@ public:
         if (!committed_) metrics_->aborted.fetch_add(1);
     }
 
-    app::RuntimeTaskControlResult commit() override
+    void commit() noexcept override
     {
         metrics_->commit_calls.fetch_add(1);
-        auto result = commit_
-            ? commit_() : app::RuntimeTaskControlResult{};
-        if (result) {
-            committed_ = true;
-            metrics_->transferred.fetch_add(1);
-        }
-        return result;
+        if (commit_) commit_();
+        committed_ = true;
+        metrics_->transferred.fetch_add(1);
     }
 
 private:
     std::shared_ptr<OperationMetrics> metrics_;
-    std::function<app::RuntimeTaskControlResult()> commit_;
+    std::function<void()> commit_;
     bool committed_{};
 };
 
@@ -142,7 +138,7 @@ public:
     ConfigPrepare stop_scheduler_prepare;
     TaskPrepare start_task_prepare;
     GlobalPrepare stop_all_prepare;
-    std::function<app::RuntimeTaskControlResult()> commit_call;
+    std::function<void()> commit_call;
     std::shared_ptr<OperationMetrics> metrics =
         std::make_shared<OperationMetrics>();
     std::atomic<unsigned int> start_scheduler_calls{};
@@ -514,7 +510,6 @@ void test_cancel_after_claim_cannot_replace_success_and_commits_once()
     control->commit_call = [&] {
         const auto cancelled = owner->request_cancel(12);
         decision = cancelled.session_decision;
-        return app::RuntimeTaskControlResult{};
     };
 
     auto dispatcher = dispatcher_for(control);
@@ -540,11 +535,14 @@ void test_cancel_after_claim_cannot_replace_success_and_commits_once()
     if (terminal) static_cast<void>(connection.complete_send(*terminal.lease));
 }
 
-void test_commit_failure_replaces_claimed_success_with_error()
+void test_prepare_failure_errors_before_claim_and_never_commits()
 {
     auto control = std::make_shared<RecordingControl>();
-    control->commit_call = [] {
-        return app::RuntimeTaskControlResult{
+    control->start_task_prepare = [control](std::string_view, std::string_view) {
+        return app::RuntimeTaskPrepareResult{
+            R"({"status":"ok","task":"x","result":0})",
+            std::make_unique<TestPreparedOperation>(
+                control->metrics, std::function<void()>{}),
             app::RuntimeTaskControlError::unavailable};
     };
     auto failed = execute_one(
@@ -552,24 +550,11 @@ void test_commit_failure_replaces_claimed_success_with_error()
     check(failed.status == protocol::ResponseStatus::error
               && failed.json.find("runtime_task_control_unavailable")
                   != std::string::npos,
-          "commit failure must replace claimed success with stable error");
-    check(control->metrics->commit_calls.load() == 1
+          "prepare failure must publish a stable error before claim");
+    check(control->metrics->commit_calls.load() == 0
               && control->metrics->transferred.load() == 0
               && control->metrics->aborted.load() == 1,
-          "failed commit must not transfer ownership and must release reservation");
-
-    auto throwing = std::make_shared<RecordingControl>();
-    throwing->commit_call = []() -> app::RuntimeTaskControlResult {
-        throw std::runtime_error("private commit detail");
-    };
-    auto exception = execute_one(
-        throwing, "solve", "default", R"({"task":"x"})");
-    check(exception.status == protocol::ResponseStatus::error
-              && exception.json.find("runtime_task_control_exception")
-                  != std::string::npos
-              && exception.json.find("private commit detail")
-                  == std::string::npos,
-          "commit exception must replace claimed success with redacted error");
+          "prepare failure must roll back reservation without side effects");
 }
 
 void test_stable_registration_error_names()
@@ -598,7 +583,7 @@ int main()
     test_stable_control_errors_and_exception_redaction();
     test_backpressure_cancel_before_claim_aborts_without_commit();
     test_cancel_after_claim_cannot_replace_success_and_commits_once();
-    test_commit_failure_replaces_claimed_success_with_error();
+    test_prepare_failure_errors_before_claim_and_never_commits();
     test_stable_registration_error_names();
     if (failures != 0) {
         std::cerr << failures << " runtime task trigger test(s) failed\n";

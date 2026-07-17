@@ -31,16 +31,21 @@ normal Python/Tauri requests.
 
 `RuntimeTaskControl` is an abstract service-owned two-phase lifecycle boundary.
 A `prepare_*` method creates a reversible reservation and its response data but
-must not start or stop real work. The adapter validates that data and calls
+must not start or stop real work. It completes every potentially failing
+validation, conflict check, allocation, and resource reservation. Returning a
+prepared operation is therefore a guarantee that the later ownership transfer
+cannot fail or throw. The adapter validates response data and calls
 `TriggerResponseSink::irrevocable_success` to atomically close the cancellation
 window. Only a successful claim is followed by
-`RuntimeTaskPreparedOperation::commit()`, which performs the ownership transfer
-and returns immediately without waiting for the job.
+`RuntimeTaskPreparedOperation::commit() noexcept`, which performs the
+infallible, exactly-once ownership transfer and returns immediately without
+waiting for the job.
 
 Cancellation before claim destroys/aborts the reservation and never calls
 `commit()`. Cancellation after claim cannot replace the terminal or cancel the
-committed service-owned job. A commit failure or exception replaces the staged
-success with `irrevocable_error`. The control interface receives no Trigger
+committed service-owned job. There is intentionally no error-correction branch
+after claim: an implementation that can still fail has not completed prepare
+and does not satisfy this interface. The control interface receives no Trigger
 `stop_token`.
 
 The `start_*` registration deliberately passes the original command to the
@@ -53,8 +58,8 @@ objects, not protocol errors.
 
 Successful prepare results provide the exact JSON object placed in
 `command_response.data`; the adapter validates it against explicit byte,
-depth, node and UTF-8 limits before publication. Control failure categories
-map to stable wire strings:
+depth, node and UTF-8 limits before claim. All control failures occur during
+prepare and map to stable wire strings:
 
 | Control error | Wire error |
 |---|---|
@@ -77,4 +82,5 @@ Configure with `BUILD_SERVICE_RUNTIME_TASK_TRIGGERS=ON` to build the library or
 test. The test covers every descriptor, Python response data, alias handoff,
 the secondary bounded input/result boundary, stable errors, exception
 redaction, cancel-before-claim under backpressure, cancel-after-claim, and
-commit failure correction.
+prepare-failure rollback before claim. Successful and claimed operations also
+verify exactly one commit with no rollback after ownership transfer.

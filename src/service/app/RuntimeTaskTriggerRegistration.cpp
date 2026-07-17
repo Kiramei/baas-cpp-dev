@@ -217,20 +217,9 @@ void invoke_prepared(
         return;
     }
 
-    RuntimeTaskControlResult committed;
-    try {
-        committed = prepared.operation->commit();
-    } catch (...) {
-        static_cast<void>(sink.irrevocable_error(
-            std::string{control_exception_error}));
-        return;
-    }
-    if (!committed) {
-        static_cast<void>(sink.irrevocable_error(
-            std::string{wire_error(committed.error == RuntimeTaskControlError::none
-                                       ? RuntimeTaskControlError::internal_error
-                                       : committed.error)}));
-    }
+    // prepare completed all fallible work. After the cancellation window is
+    // closed, commit is the infallible exactly-once ownership transfer.
+    prepared.operation->commit();
 }
 
 [[nodiscard]] std::optional<std::string_view> required_config_id(

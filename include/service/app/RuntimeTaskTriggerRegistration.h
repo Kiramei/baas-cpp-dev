@@ -40,23 +40,15 @@ enum class RuntimeTaskControlError : std::uint8_t {
 [[nodiscard]] std::string_view runtime_task_control_error_name(
     RuntimeTaskControlError error) noexcept;
 
-struct RuntimeTaskControlResult {
-    RuntimeTaskControlError error{RuntimeTaskControlError::none};
-
-    [[nodiscard]] explicit operator bool() const noexcept
-    {
-        return error == RuntimeTaskControlError::none;
-    }
-};
-
 // A reversible reservation prepared by RuntimeTaskControl. Destruction before
 // a successful commit must abort/release the reservation and must not start or
-// stop real work. commit() performs the one-way ownership transfer and must
-// return immediately without waiting for the long-running job.
+// stop real work. prepare must complete every fallible validation and resource
+// reservation. commit() is therefore an infallible, non-throwing, exactly-once
+// ownership transfer and must return immediately without waiting for the job.
 class RuntimeTaskPreparedOperation {
 public:
     virtual ~RuntimeTaskPreparedOperation() = default;
-    [[nodiscard]] virtual RuntimeTaskControlResult commit() = 0;
+    virtual void commit() noexcept = 0;
 };
 
 struct RuntimeTaskPrepareResult {
