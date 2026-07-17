@@ -118,6 +118,23 @@ class LegacyConanWorkflowTests(unittest.TestCase):
         self.assertIn('"--no-remote"', self.android_script)
         self.assertIn("conan/recipes/baas-cpp-httplib", self.android_script)
 
+    def test_ocr_tests_use_the_legacy_wheel_compatible_python(self) -> None:
+        self.assertNotIn("python-version: '3.13'", self.ocr)
+        self.assertEqual(self.ocr.count("python-version: '3.11'"), 7)
+        self.assertEqual(
+            self.ocr.count("apps/ocr_server/test/requirements.txt"), 3
+        )
+        self.assertIn(
+            'Remove-Item -LiteralPath ".\\build\\bin\\output" '
+            "-Recurse -Force -ErrorAction SilentlyContinue",
+            self.ocr,
+        )
+        self.assertIn(
+            'Remove-Item -LiteralPath ".\\build\\bin\\config" '
+            "-Recurse -Force -ErrorAction SilentlyContinue",
+            self.ocr,
+        )
+
     def test_emscripten_job_has_explicit_host_and_build_contexts(self) -> None:
         self.assertIn('ref: "6.0.3"', self.afwc)
         self.assertIn("./emsdk install 6.0.3", self.afwc)

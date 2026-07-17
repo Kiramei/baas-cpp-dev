@@ -166,7 +166,7 @@ jobs:
         id: install_python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.13'
+          python-version: '3.11'
           cache: 'pip'
 
       - name: Install Test Dependencies
@@ -301,7 +301,7 @@ jobs:
         id: install_python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.13'
+          python-version: '3.11'
           cache: 'pip'
   
       - name: Install Test Dependencies
@@ -436,7 +436,7 @@ jobs:
         id: install_python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.13'
+          python-version: '3.11'
           cache: 'pip'
   
       - name: Install Test Dependencies
@@ -450,8 +450,8 @@ jobs:
         id: run_test
         run: |
           python -m unittest discover -s .\apps\ocr_server\test -p "*.py"
-          Remove-Item -Path ".\build\bin\output" -Recurse -Force
-          Remove-Item -Path ".\build\bin\config" -Recurse -Force
+          Remove-Item -LiteralPath ".\build\bin\output" -Recurse -Force -ErrorAction SilentlyContinue
+          Remove-Item -LiteralPath ".\build\bin\config" -Recurse -Force -ErrorAction SilentlyContinue
 
       - name: Upload Artifacts
         if: ${{ ( github.event_name == 'push' && github.ref == 'refs/heads/main' ) || github.event.inputs.create_release == 'true' }}
