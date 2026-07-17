@@ -82,7 +82,7 @@ host::ProcedureDescriptorInput descriptor(
 {
     host::ProcedureDescriptorInput result{
         std::move(id), std::move(terminals), std::move(effects),
-        std::move(resource_ids), {}};
+        std::move(resource_ids), resources::sha256_hex(*bytes("legacy.test-implementation/v1")), {}};
     result.sha256 = host::procedure_descriptor_sha256(result);
     return result;
 }
@@ -246,6 +246,21 @@ void test_snapshot_validation_identity_and_ownership()
               other->snapshot_id() != host::ProcedureSnapshot::build(
                   {descriptor()}, resources)->snapshot_id(),
           "procedure identity must bind the exact external resource snapshot");
+
+    auto changed_implementation = descriptor();
+    changed_implementation.implementation_sha256 =
+        resources::sha256_hex(*bytes("legacy.test-implementation/v2"));
+    changed_implementation.sha256 =
+        host::procedure_descriptor_sha256(changed_implementation);
+    check(host::ProcedureSnapshot::build({descriptor()}, resources)->snapshot_id() !=
+              host::ProcedureSnapshot::build({changed_implementation}, resources)->snapshot_id(),
+          "procedure identity must bind the executable implementation digest");
+
+    auto invalid_implementation = descriptor();
+    invalid_implementation.implementation_sha256 = "not-a-digest";
+    expect_snapshot_error(host::ProcedureSnapshotErrorCode::InvalidDigest, [&] {
+        (void)host::procedure_descriptor_sha256(invalid_implementation);
+    }, "implementation identity must be a lowercase SHA-256 digest");
 
     auto bad_digest = descriptor();
     bad_digest.sha256.assign(64, '0');

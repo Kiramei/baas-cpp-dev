@@ -21,7 +21,11 @@ strings and vectors, checks lowercase logical IDs, ASCII case collisions,
 duplicates, terminal order, effect/resource sets, SHA-256 descriptors, bounded
 work, and the presence of every logical resource in the exact external
 snapshot. Snapshot identity includes that resource snapshot identity, so a
-resource generation cannot be substituted after activation.
+resource generation cannot be substituted after activation. Descriptor
+canonical domain v2 additionally binds `implementation_sha256`; production
+activation derives it from the engine, complete definition-file digest, and
+ordered source-to-terminal mapping. Definition-only changes therefore cannot
+reuse a stale snapshot identity. See `RUNTIME_PROCEDURE_ACTIVATION.md`.
 
 The injected `ProcedureExecutor` receives the owned snapshot, immutable
 descriptor, frozen physical `device_id`, copied options, cancellation/deadline

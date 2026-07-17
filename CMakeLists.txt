@@ -110,6 +110,9 @@ option(BUILD_RUNTIME_SCRIPT_CATALOG "Build the immutable runtime BAAS Script tas
 option(BUILD_RUNTIME_SCRIPT_CATALOG_TESTS "Build runtime BAAS Script catalog tests" OFF)
 option(BUILD_RUNTIME_SCRIPT_EXECUTION_PLAN "Build immutable runtime BAAS Script execution plans" OFF)
 option(BUILD_RUNTIME_SCRIPT_EXECUTION_PLAN_TESTS "Build runtime BAAS Script execution plan tests" OFF)
+option(BUILD_SCRIPT_PROCEDURE_SNAPSHOT "Build immutable procedure descriptor snapshots" OFF)
+option(BUILD_RUNTIME_PROCEDURE_ACTIVATION "Build generation-bound runtime procedure activation" OFF)
+option(BUILD_RUNTIME_PROCEDURE_ACTIVATION_TESTS "Build runtime procedure activation tests" OFF)
 option(BUILD_SCRIPT_RESOURCE_HOST "Build baas/resource script Host adapter" OFF)
 option(BUILD_SCRIPT_RESOURCE_HOST_TESTS "Build baas/resource script Host tests" OFF)
 option(BUILD_SCRIPT_PROCEDURE_HOST "Build snapshot-owned baas/procedure script Host" OFF)
@@ -367,6 +370,34 @@ if(BUILD_RUNTIME_SCRIPT_EXECUTION_PLAN)
         "Build pathless BAAS Script package discovery from a runtime repository" FORCE)
 endif()
 
+if(BUILD_RUNTIME_PROCEDURE_ACTIVATION_TESTS)
+    set(BUILD_RUNTIME_PROCEDURE_ACTIVATION ON CACHE BOOL
+        "Build generation-bound runtime procedure activation" FORCE)
+    set(BUILD_RUNTIME_REPOSITORY_TESTS ON CACHE BOOL
+        "Build runtime repository activation tests" FORCE)
+endif()
+
+if(BUILD_RUNTIME_PROCEDURE_ACTIVATION)
+    set(BUILD_RUNTIME_RESOURCE_SNAPSHOT_LOADER ON CACHE BOOL
+        "Build pinned runtime resource snapshot loader" FORCE)
+    set(BUILD_RUNTIME_SCRIPT_EXECUTION_PLAN ON CACHE BOOL
+        "Build immutable runtime BAAS Script execution plans" FORCE)
+    set(BUILD_SCRIPT_PROCEDURE_SNAPSHOT ON CACHE BOOL
+        "Build immutable procedure descriptor snapshots" FORCE)
+    # This block follows the individual dependency propagators above, so keep
+    # the complete production closure explicit for direct Android builds.
+    set(BUILD_RUNTIME_REPOSITORY ON CACHE BOOL
+        "Build read-only runtime repository activation" FORCE)
+    set(BUILD_RESOURCE_CORE ON CACHE BOOL
+        "Build immutable resource snapshot core" FORCE)
+    set(BUILD_RUNTIME_SCRIPT_CATALOG ON CACHE BOOL
+        "Build the immutable runtime BAAS Script task catalog" FORCE)
+    set(BUILD_RUNTIME_SCRIPT_PACKAGE_LOADER ON CACHE BOOL
+        "Build pathless BAAS Script package discovery from a runtime repository" FORCE)
+    set(BUILD_SCRIPT_RUNTIME ON CACHE BOOL
+        "Build the standalone BAAS script runtime" FORCE)
+endif()
+
 if(BUILD_RUNTIME_SCRIPT_PACKAGE_LOADER_TESTS)
     set(BUILD_RUNTIME_SCRIPT_PACKAGE_LOADER ON CACHE BOOL
         "Build pathless BAAS Script package discovery from a runtime repository" FORCE)
@@ -415,8 +446,13 @@ if(BUILD_SCRIPT_PROCEDURE_HOST_TESTS AND NOT BUILD_SCRIPT_PROCEDURE_HOST)
 endif()
 
 if(BUILD_SCRIPT_PROCEDURE_HOST)
-    set(BUILD_RESOURCE_CORE ON CACHE BOOL "Build immutable resource snapshot core" FORCE)
+    set(BUILD_SCRIPT_PROCEDURE_SNAPSHOT ON CACHE BOOL
+        "Build immutable procedure descriptor snapshots" FORCE)
     set(BUILD_SCRIPT_RUNTIME ON CACHE BOOL "Build the standalone BAAS script runtime" FORCE)
+endif()
+
+if(BUILD_SCRIPT_PROCEDURE_SNAPSHOT)
+    set(BUILD_RESOURCE_CORE ON CACHE BOOL "Build immutable resource snapshot core" FORCE)
 endif()
 
 if(BUILD_SERVICE_PROTOCOL_TESTS AND NOT BUILD_SERVICE_PROTOCOL)
@@ -877,6 +913,7 @@ list(FILTER BAAS_CORE_SOURCES EXCLUDE REGEX "/src/script/.*\\.cpp$")
 list(FILTER BAAS_CORE_SOURCES EXCLUDE REGEX "/src/scheduler/.*\\.cpp$")
 list(FILTER BAAS_CORE_SOURCES EXCLUDE REGEX "/src/runtime/repository/.*\\.cpp$")
 list(FILTER BAAS_CORE_SOURCES EXCLUDE REGEX "/src/runtime/script/.*\\.cpp$")
+list(FILTER BAAS_CORE_SOURCES EXCLUDE REGEX "/src/runtime/procedure/.*\\.cpp$")
 list(FILTER BAAS_CORE_SOURCES EXCLUDE REGEX "/src/service/.*\\.cpp$")
 
 if(TARGET_OS_NAME STREQUAL "Windows")
@@ -944,6 +981,14 @@ endif()
 
 if(BUILD_RUNTIME_SCRIPT_EXECUTION_PLAN)
     include("${CMAKE_CURRENT_LIST_DIR}/cmake/RuntimeScriptExecutionPlan.cmake")
+endif()
+
+if(BUILD_SCRIPT_PROCEDURE_SNAPSHOT)
+    include("${CMAKE_CURRENT_LIST_DIR}/cmake/ScriptProcedureSnapshot.cmake")
+endif()
+
+if(BUILD_RUNTIME_PROCEDURE_ACTIVATION)
+    include("${CMAKE_CURRENT_LIST_DIR}/cmake/RuntimeProcedureActivation.cmake")
 endif()
 
 if(BUILD_SCRIPT_RESOURCE_HOST)

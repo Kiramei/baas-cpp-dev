@@ -117,6 +117,7 @@ struct CanonicalDescriptor {
     preflight_string(source.procedure_id);
     for (const auto& terminal : source.terminal_ids) preflight_string(terminal);
     for (const auto& resource : source.resource_ids) preflight_string(resource);
+    preflight_string(source.implementation_sha256);
     if (check_digest) preflight_string(source.sha256);
 
     // Copy only after every attacker-controlled cardinality and string byte
@@ -166,6 +167,10 @@ struct CanonicalDescriptor {
         throw ProcedureSnapshotError(
             ProcedureSnapshotErrorCode::DuplicateResource, "duplicate procedure resource id");
 
+    if (!valid_digest(result.value.implementation_sha256))
+        throw ProcedureSnapshotError(
+            ProcedureSnapshotErrorCode::InvalidDigest,
+            "procedure implementation digest is not lowercase SHA-256");
     if (check_digest) {
         if (!valid_digest(result.value.sha256))
             throw ProcedureSnapshotError(
@@ -178,8 +183,9 @@ struct CanonicalDescriptor {
 [[nodiscard]] std::string digest_canonical(const ProcedureDescriptorInput& value)
 {
     std::string material;
-    add_length_prefixed(material, "baas.procedure.descriptor/v1");
+    add_length_prefixed(material, "baas.procedure.descriptor/v2");
     add_length_prefixed(material, value.procedure_id);
+    add_length_prefixed(material, value.implementation_sha256);
     add_length_prefixed(material, std::to_string(value.terminal_ids.size()));
     for (const auto& terminal : value.terminal_ids) add_length_prefixed(material, terminal);
     add_length_prefixed(material, std::to_string(value.declared_effects.size()));
@@ -299,6 +305,11 @@ std::span<const std::string> ProcedureDescriptor::resource_ids() const noexcept
 
 const std::string& ProcedureDescriptor::sha256() const noexcept { return input_.sha256; }
 
+const std::string& ProcedureDescriptor::implementation_sha256() const noexcept
+{
+    return input_.implementation_sha256;
+}
+
 bool ProcedureDescriptor::accepts_terminal(const std::string_view terminal_id) const noexcept
 {
     return std::find(input_.terminal_ids.begin(), input_.terminal_ids.end(), terminal_id) !=
@@ -374,7 +385,7 @@ std::shared_ptr<const ProcedureSnapshot> ProcedureSnapshot::build(
     std::size_t total_strings{};
     std::size_t total_work{folded_work};
     std::string identity;
-    add_length_prefixed(identity, "baas.procedure.snapshot/v1");
+    add_length_prefixed(identity, "baas.procedure.snapshot/v2");
     add_length_prefixed(identity, impl->resources->snapshot_id());
     add_length_prefixed(identity, std::to_string(descriptors.size()));
     std::string previous;
