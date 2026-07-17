@@ -137,6 +137,8 @@ option(BUILD_SERVICE_RUNTIME_PROVIDER_BRIDGE_TESTS "Build runtime/provider bridg
 option(BUILD_SERVICE_RUNTIME_REPOSITORY_OWNER "Build the immutable service runtime repository owner" OFF)
 option(BUILD_SERVICE_RUNTIME_REPOSITORY_OWNER_TESTS "Build service runtime repository owner tests" OFF)
 option(BUILD_SERVICE_RUNTIME_CONFIGURATION_DEFAULTS "Build generation-bound service configuration defaults" OFF)
+option(BUILD_SERVICE_RUNTIME_REPOSITORY_PLAN "Build signed service runtime repository plan verification" OFF)
+option(BUILD_SERVICE_RUNTIME_REPOSITORY_PLAN_TESTS "Build signed runtime repository plan tests" OFF)
 option(BUILD_SERVICE_ADB_TRANSPORT "Build the standalone ADB smart-socket transport" OFF)
 option(BUILD_SERVICE_ADB_TRANSPORT_TESTS "Build deterministic ADB transport tests" OFF)
 option(BUILD_SERVICE_ADB_SYNC "Build the bounded production ADB SYNC client" OFF)
@@ -190,6 +192,19 @@ endif()
 
 if(BUILD_SERVICE_RUNTIME_CONFIGURATION_DEFAULTS AND NOT BUILD_RUNTIME_REPOSITORY)
     set(BUILD_RUNTIME_REPOSITORY ON CACHE BOOL "Build read-only runtime repository activation" FORCE)
+endif()
+
+if(BUILD_SERVICE_RUNTIME_REPOSITORY_PLAN_TESTS
+   AND NOT BUILD_SERVICE_RUNTIME_REPOSITORY_PLAN)
+    set(BUILD_SERVICE_RUNTIME_REPOSITORY_PLAN ON CACHE BOOL
+        "Build signed service runtime repository plan verification" FORCE)
+endif()
+
+if(BUILD_SERVICE_RUNTIME_REPOSITORY_PLAN)
+    set(BUILD_RUNTIME_REPOSITORY_UPDATER ON CACHE BOOL
+        "Build the transport-independent runtime repository updater" FORCE)
+    set(BUILD_SERVICE_AUTH_CRYPTO ON CACHE BOOL
+        "Build the service v1 cryptographic foundation" FORCE)
 endif()
 
 if(BUILD_SERVICE_RUNTIME_REPOSITORY_OWNER_TESTS
@@ -633,7 +648,8 @@ endif()
 
 if(BUILD_SERVICE_SYNC_HANDLER OR BUILD_SERVICE_REMOTE_HANDLER
    OR BUILD_SERVICE_FILE_RESOURCE_STORE
-   OR BUILD_SERVICE_RUNTIME_CONFIGURATION_DEFAULTS)
+   OR BUILD_SERVICE_RUNTIME_CONFIGURATION_DEFAULTS
+   OR BUILD_SERVICE_RUNTIME_REPOSITORY_PLAN)
     baas_request_dependencies(nlohmann_json)
 endif()
 
@@ -788,6 +804,10 @@ endif()
 
 if(BUILD_SERVICE_AUTH_CRYPTO OR BUILD_SERVICE_AUTH_OWNER)
     include("${CMAKE_CURRENT_LIST_DIR}/cmake/ServiceAuth.cmake")
+endif()
+
+if(BUILD_SERVICE_RUNTIME_REPOSITORY_PLAN)
+    include("${CMAKE_CURRENT_LIST_DIR}/cmake/ServiceRuntimeRepositoryPlan.cmake")
 endif()
 
 if(BUILD_SERVICE_AUTH_HTTP)

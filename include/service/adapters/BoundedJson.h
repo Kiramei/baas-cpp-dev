@@ -20,6 +20,62 @@ struct JsonBounds {
     std::size_t nodes;
 };
 
+class ShapeSax final : public nlohmann::json_sax<Json> {
+public:
+    ShapeSax(const std::size_t maximum_depth,
+             const std::size_t maximum_nodes) noexcept
+        : maximum_depth_(maximum_depth), maximum_nodes_(maximum_nodes)
+    {}
+
+    bool null() override { return scalar(); }
+    bool boolean(bool) override { return scalar(); }
+    bool number_integer(Json::number_integer_t) override { return scalar(); }
+    bool number_unsigned(Json::number_unsigned_t) override { return scalar(); }
+    bool number_float(Json::number_float_t, const Json::string_t&) override
+    {
+        return scalar();
+    }
+    bool string(Json::string_t&) override { return scalar(); }
+    bool binary(Json::binary_t&) override { return scalar(); }
+    bool start_object(std::size_t) override { return container_start(); }
+    bool key(Json::string_t&) override { return true; }
+    bool end_object() override { return container_end(); }
+    bool start_array(std::size_t) override { return container_start(); }
+    bool end_array() override { return container_end(); }
+    bool parse_error(std::size_t, const std::string&,
+                     const nlohmann::detail::exception&) override
+    {
+        return false;
+    }
+
+private:
+    [[nodiscard]] bool node() noexcept
+    {
+        return depth_ <= maximum_depth_ && ++nodes_ <= maximum_nodes_;
+    }
+
+    [[nodiscard]] bool scalar() noexcept { return node(); }
+
+    [[nodiscard]] bool container_start() noexcept
+    {
+        if (!node()) return false;
+        ++depth_;
+        return true;
+    }
+
+    [[nodiscard]] bool container_end() noexcept
+    {
+        if (depth_ == 0) return false;
+        --depth_;
+        return true;
+    }
+
+    std::size_t maximum_depth_{};
+    std::size_t maximum_nodes_{};
+    std::size_t depth_{};
+    std::size_t nodes_{};
+};
+
 [[nodiscard]] inline bool is_valid_utf8(const std::string_view input) noexcept
 {
     const auto* bytes = reinterpret_cast<const unsigned char*>(input.data());
@@ -88,6 +144,12 @@ struct JsonBounds {
 {
     if (text.size() > bounds.bytes || !is_valid_utf8(text)) return std::nullopt;
     try {
+        // Reject excessive nesting and node counts before constructing a DOM.
+        // This parser is reachable with unauthenticated input, so a post-parse
+        // tree walk alone is not an allocation or recursion boundary.
+        ShapeSax shape{bounds.depth, bounds.nodes};
+        if (!Json::sax_parse(text, &shape)) return std::nullopt;
+
         bool duplicate{};
         std::vector<std::unordered_set<std::string>> object_keys;
         const auto callback = [&duplicate, &object_keys](

@@ -184,6 +184,7 @@ jobs:
           -DBUILD_SERVICE_ADB_DISCOVERY_TRIGGER_TESTS=ON
           -DBUILD_SERVICE_AUTH_OWNER_TESTS=ON
           -DBUILD_SERVICE_RUNTIME_PROVIDER_BRIDGE_TESTS=ON
+          -DBUILD_SERVICE_RUNTIME_REPOSITORY_PLAN_TESTS=ON
           -DBUILD_APP_BAAS=OFF -DBUILD_APP_ISA=OFF -DBUILD_BAAS_OCR=OFF
           -DBUILD_BAAS_AW_CHECKER=OFF -DBUILD_BAAS_NMS_BENCHMARK=OFF
           -DBAAS_FETCH_RESOURCES=OFF
@@ -199,9 +200,10 @@ jobs:
           BAAS_service_adb_discovery_trigger_tests
           BAAS_service_runtime_provider_bridge_tests
           BAAS_service_runtime_repository_owner_tests
+          BAAS_service_runtime_repository_plan_tests
 
       - name: Run real loopback and CLI tests
         run: >-
           ctest --test-dir build/service-application
           --build-config ${{ matrix.build_type }} --output-on-failure --timeout 90
-          -R "^BAAS_service_(application_tests|file_resource_store_tests|config_archive_codec_tests|configuration_trigger_tests|adb_discovery_trigger_tests|auth_owner_tests|runtime_provider_bridge_tests|runtime_repository_owner_tests|version_cli|help_cli|no_embedded_configuration_defaults)$"
+          -R "^BAAS_service_(application_tests|file_resource_store_tests|config_archive_codec_tests|configuration_trigger_tests|adb_discovery_trigger_tests|auth_owner_tests|runtime_provider_bridge_tests|runtime_repository_owner_tests|runtime_repository_plan_tests|version_cli|help_cli|no_embedded_configuration_defaults)$"
