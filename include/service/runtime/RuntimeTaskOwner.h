@@ -158,10 +158,13 @@ struct RuntimeTaskPrepareStartResult {
 };
 
 enum class RuntimeTaskStopDecision : std::uint8_t {
-    stop_requested,
-    already_stopping,
-    already_stopped,
-    unknown_config,
+    stop_requested = 0,
+    already_stopping = 1,
+    already_stopped = 2,
+    unknown_config = 3,
+    owner_stopped = 4,
+    capacity_exceeded = 5,
+    reservation_conflict = 6,
 };
 
 [[nodiscard]] std::string_view runtime_task_stop_decision_name(
@@ -170,6 +173,112 @@ enum class RuntimeTaskStopDecision : std::uint8_t {
 struct RuntimeTaskStopResult {
     RuntimeTaskStopDecision decision{RuntimeTaskStopDecision::unknown_config};
     std::optional<RuntimeTaskSnapshot> snapshot;
+};
+
+struct RuntimeTaskStopReservationAccess;
+
+// Move-only ownership of one prepared keyed stop, including unknown and
+// already-completed no-op decisions. Preparation owns the per-config operation
+// gate and every response/source copy. Destruction aborts without changing the
+// public task phase or requesting stop.
+class RuntimeTaskStopReservation final {
+public:
+    RuntimeTaskStopReservation() noexcept = default;
+    ~RuntimeTaskStopReservation() noexcept;
+
+    RuntimeTaskStopReservation(const RuntimeTaskStopReservation&) = delete;
+    RuntimeTaskStopReservation& operator=(
+        const RuntimeTaskStopReservation&) = delete;
+    RuntimeTaskStopReservation(RuntimeTaskStopReservation&& other) noexcept;
+    RuntimeTaskStopReservation& operator=(
+        RuntimeTaskStopReservation&& other) noexcept;
+
+    [[nodiscard]] explicit operator bool() const noexcept;
+    void commit() noexcept;
+
+private:
+    using Action = void (*)(void*) noexcept;
+    RuntimeTaskStopReservation(
+        std::shared_ptr<void> state, Action commit, Action abort) noexcept;
+    void abort() noexcept;
+
+    std::shared_ptr<void> state_;
+    Action commit_{nullptr};
+    Action abort_{nullptr};
+
+    friend struct RuntimeTaskStopReservationAccess;
+};
+
+struct RuntimeTaskPrepareStopResult {
+    RuntimeTaskStopDecision decision{RuntimeTaskStopDecision::unknown_config};
+    std::optional<RuntimeTaskSnapshot> snapshot;
+    RuntimeTaskStopReservation reservation;
+
+    [[nodiscard]] explicit operator bool() const noexcept
+    {
+        return static_cast<bool>(reservation);
+    }
+};
+
+enum class RuntimeTaskStopAllDecision : std::uint8_t {
+    stop_requested = 0,
+    nothing_to_stop = 1,
+    owner_stopped = 2,
+    reservation_conflict = 3,
+};
+
+[[nodiscard]] std::string_view runtime_task_stop_all_decision_name(
+    RuntimeTaskStopAllDecision decision) noexcept;
+
+struct RuntimeTaskStopAllResult {
+    RuntimeTaskStopAllDecision decision{
+        RuntimeTaskStopAllDecision::nothing_to_stop};
+    std::vector<RuntimeTaskSnapshot> snapshots;
+};
+
+struct RuntimeTaskStopAllReservationAccess;
+
+// Global counterpart of RuntimeTaskStopReservation. Even an empty prepared
+// stop-all owns the global operation gate until commit or destruction.
+class RuntimeTaskStopAllReservation final {
+public:
+    RuntimeTaskStopAllReservation() noexcept = default;
+    ~RuntimeTaskStopAllReservation() noexcept;
+
+    RuntimeTaskStopAllReservation(const RuntimeTaskStopAllReservation&) = delete;
+    RuntimeTaskStopAllReservation& operator=(
+        const RuntimeTaskStopAllReservation&) = delete;
+    RuntimeTaskStopAllReservation(
+        RuntimeTaskStopAllReservation&& other) noexcept;
+    RuntimeTaskStopAllReservation& operator=(
+        RuntimeTaskStopAllReservation&& other) noexcept;
+
+    [[nodiscard]] explicit operator bool() const noexcept;
+    void commit() noexcept;
+
+private:
+    using Action = void (*)(void*) noexcept;
+    RuntimeTaskStopAllReservation(
+        std::shared_ptr<void> state, Action commit, Action abort) noexcept;
+    void abort() noexcept;
+
+    std::shared_ptr<void> state_;
+    Action commit_{nullptr};
+    Action abort_{nullptr};
+
+    friend struct RuntimeTaskStopAllReservationAccess;
+};
+
+struct RuntimeTaskPrepareStopAllResult {
+    RuntimeTaskStopAllDecision decision{
+        RuntimeTaskStopAllDecision::nothing_to_stop};
+    std::vector<RuntimeTaskSnapshot> snapshots;
+    RuntimeTaskStopAllReservation reservation;
+
+    [[nodiscard]] explicit operator bool() const noexcept
+    {
+        return static_cast<bool>(reservation);
+    }
 };
 
 class RuntimeTaskOwner;
@@ -187,6 +296,8 @@ struct RuntimeTaskOwnerTestAccess final {
     static void set_after_reservation_cancelled_gate_hook(
         RuntimeTaskOwner& owner, Hook hook, void* context) noexcept;
     static void fail_next_thread_start(RuntimeTaskOwner& owner) noexcept;
+    static void exhaust_generation_after_next_start(
+        RuntimeTaskOwner& owner) noexcept;
 };
 #endif
 
@@ -217,7 +328,21 @@ public:
 
     // Compatibility wrapper: prepare followed immediately by commit.
     [[nodiscard]] RuntimeTaskStartResult start(RuntimeTaskRequest request);
+
+    // Reserves one config operation without publishing stopping or requesting
+    // cancellation. Unknown and completed configs also return a keyed no-op
+    // reservation so the protocol layer can make its reply/commit atomic.
+    [[nodiscard]] RuntimeTaskPrepareStopResult prepare_stop(
+        std::string_view config_id);
+
+    // Compatibility wrapper: prepare followed immediately by commit. After
+    // shutdown it preserves the legacy already-stopping/already-stopped view.
     [[nodiscard]] RuntimeTaskStopResult request_stop(std::string_view config_id);
+
+    // Captures every current generation and a sorted response under one global
+    // operation gate. Even an empty result must be resolved.
+    [[nodiscard]] RuntimeTaskPrepareStopAllResult prepare_stop_all();
+    [[nodiscard]] RuntimeTaskStopAllResult request_stop_all();
     [[nodiscard]] std::optional<RuntimeTaskSnapshot> snapshot(
         std::string_view config_id) const;
     [[nodiscard]] std::vector<RuntimeTaskSnapshot> snapshots() const;

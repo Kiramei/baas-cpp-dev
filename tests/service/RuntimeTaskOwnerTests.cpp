@@ -487,6 +487,361 @@ void test_keyed_concurrency_and_stop_start_linearization()
     check(owner.wait_for_idle("alpha", 3s), "restarted backend completes");
 }
 
+void test_stop_reservation_prepare_abort_commit_and_capacity()
+{
+    static_assert(static_cast<std::uint8_t>(
+                      runtime::RuntimeTaskStopDecision::stop_requested) == 0);
+    static_assert(static_cast<std::uint8_t>(
+                      runtime::RuntimeTaskStopDecision::already_stopping) == 1);
+    static_assert(static_cast<std::uint8_t>(
+                      runtime::RuntimeTaskStopDecision::already_stopped) == 2);
+    static_assert(static_cast<std::uint8_t>(
+                      runtime::RuntimeTaskStopDecision::unknown_config) == 3);
+    static_assert(static_cast<std::uint8_t>(
+                      runtime::RuntimeTaskStopDecision::owner_stopped) == 4);
+    static_assert(static_cast<std::uint8_t>(
+                      runtime::RuntimeTaskStopDecision::capacity_exceeded) == 5);
+    static_assert(static_cast<std::uint8_t>(
+                      runtime::RuntimeTaskStopDecision::reservation_conflict) == 6);
+    static_assert(!std::is_copy_constructible_v<
+                  runtime::RuntimeTaskStopReservation>);
+    static_assert(std::is_nothrow_move_constructible_v<
+                  runtime::RuntimeTaskStopReservation>);
+
+    std::atomic<int> entered{};
+    std::atomic<int> stop_callbacks{};
+    std::atomic<bool> allow_progress{};
+    std::atomic<bool> progressed{};
+    std::atomic<bool> allow_exit{};
+    runtime::RuntimeTaskOwner owner{
+        [&entered, &stop_callbacks, &allow_progress, &progressed, &allow_exit](
+            const runtime::RuntimeTaskRequest&, const std::stop_token stop,
+            const runtime::RuntimeTaskProgressReporter& report) {
+            entered.fetch_add(1);
+            auto callback = [&stop_callbacks]() noexcept {
+                stop_callbacks.fetch_add(1);
+            };
+            std::stop_callback on_stop{stop, callback};
+            while (!allow_progress.load()) std::this_thread::yield();
+            check(report({true, "prepared-progress", std::string{"live"}, {}}),
+                  "stop fixture publishes progress");
+            progressed = true;
+            while (!stop.stop_requested()) std::this_thread::yield();
+            while (!allow_exit.load()) std::this_thread::yield();
+            return runtime::RuntimeTaskTerminal{false, std::nullopt};
+        }};
+    check(static_cast<bool>(owner.start(request("reserved-stop"))),
+          "stop reservation fixture starts");
+    check(wait_until([&entered] { return entered.load() == 1; }),
+          "stop reservation fixture enters backend");
+
+    auto aborted = owner.prepare_stop("reserved-stop");
+    check(aborted.decision == runtime::RuntimeTaskStopDecision::stop_requested
+              && aborted.reservation && aborted.snapshot
+              && aborted.snapshot->stopping,
+          "prepare_stop returns a complete projected response");
+    allow_progress = true;
+    check(wait_until([&progressed] { return progressed.load(); }),
+          "running backend may publish progress after stop prepare");
+    const auto still_running = owner.snapshot("reserved-stop");
+    check(still_running && still_running->running && !still_running->stopping
+              && still_running->current_task == "live"
+              && stop_callbacks.load() == 0,
+          "post-prepare progress stays public without a stop-token side effect");
+    check(owner.prepare_start(request("reserved-stop")).decision
+              == runtime::RuntimeTaskStartDecision::reservation_conflict,
+          "pending stop blocks same-config start");
+    check(owner.prepare_stop("reserved-stop").decision
+              == runtime::RuntimeTaskStopDecision::reservation_conflict,
+          "pending stop blocks same-config stop");
+    aborted.reservation = runtime::RuntimeTaskStopReservation{};
+    check(owner.snapshot("reserved-stop")->running
+              && stop_callbacks.load() == 0,
+          "stop abort is side-effect-free");
+
+    auto committed = owner.prepare_stop("reserved-stop");
+    check(owner.prepare_stop_all().decision
+              == runtime::RuntimeTaskStopAllDecision::reservation_conflict,
+          "stop-all atomically rejects an active keyed stop reservation");
+    committed.reservation.commit();
+    committed.reservation.commit();
+    check(stop_callbacks.load() == 1,
+          "stop commit consumes the reservation and delivers exactly once");
+    auto stopping = owner.prepare_stop("reserved-stop");
+    check(stopping.decision
+              == runtime::RuntimeTaskStopDecision::already_stopping
+              && stopping.reservation,
+          "already-stopping stop still acquires a keyed no-op reservation");
+    check(owner.prepare_start(request("reserved-stop")).decision
+              == runtime::RuntimeTaskStartDecision::reservation_conflict,
+          "already-stopping reservation blocks same-config restart");
+    stopping.reservation = runtime::RuntimeTaskStopReservation{};
+    allow_exit = true;
+    check(owner.wait_for_idle("reserved-stop", 3s),
+          "committed stop reaches terminal state");
+
+    auto completed = owner.prepare_stop("reserved-stop");
+    check(completed.decision == runtime::RuntimeTaskStopDecision::already_stopped
+              && completed.reservation,
+          "already-stopped stop still owns a keyed no-op reservation");
+    check(owner.prepare_start(request("reserved-stop")).decision
+              == runtime::RuntimeTaskStartDecision::reservation_conflict,
+          "already-stopped reservation blocks restart until resolution");
+    completed.reservation.commit();
+
+    runtime::RuntimeTaskLimits limits;
+    limits.max_configs = 1;
+    runtime::RuntimeTaskOwner capacity_owner{
+        [](const runtime::RuntimeTaskRequest&, std::stop_token,
+           const runtime::RuntimeTaskProgressReporter&) {
+            return runtime::RuntimeTaskTerminal{false, std::nullopt};
+        },
+        limits};
+    auto unknown = capacity_owner.prepare_stop("unknown-a");
+    check(unknown.decision == runtime::RuntimeTaskStopDecision::unknown_config
+              && unknown.reservation && !capacity_owner.snapshot("unknown-a"),
+          "unknown stop owns an invisible temporary keyed slot");
+    check(capacity_owner.prepare_stop("unknown-b").decision
+              == runtime::RuntimeTaskStopDecision::capacity_exceeded
+              && capacity_owner.prepare_start(request("unknown-b")).decision
+                  == runtime::RuntimeTaskStartDecision::capacity_exceeded,
+          "unknown stop reservation is charged to max_configs");
+    unknown.reservation = runtime::RuntimeTaskStopReservation{};
+    auto released = capacity_owner.prepare_start(request("unknown-b"));
+    check(static_cast<bool>(released.reservation),
+          "resolving unknown stop releases its temporary capacity slot");
+    released.reservation = runtime::RuntimeTaskStartReservation{};
+}
+
+void test_stop_reservation_natural_completion_and_shutdown_race()
+{
+    std::atomic<bool> entered{};
+    std::atomic<bool> release{};
+    std::atomic<int> stop_callbacks{};
+    runtime::RuntimeTaskOwner owner{
+        [&entered, &release, &stop_callbacks](
+            const runtime::RuntimeTaskRequest&, const std::stop_token stop,
+            const runtime::RuntimeTaskProgressReporter&) {
+            auto callback = [&stop_callbacks]() noexcept {
+                stop_callbacks.fetch_add(1);
+            };
+            std::stop_callback on_stop{stop, callback};
+            entered = true;
+            while (!release.load()) std::this_thread::yield();
+            return runtime::RuntimeTaskTerminal{true, 0};
+        }};
+    check(static_cast<bool>(owner.start(request("natural")))
+              && wait_until([&entered] { return entered.load(); }),
+          "natural-completion fixture starts");
+    auto prepared = owner.prepare_stop("natural");
+    release = true;
+    check(owner.wait_for_idle("natural", 3s),
+          "backend may complete naturally after prepare");
+    prepared.reservation.commit();
+    const auto terminal = owner.snapshot("natural");
+    check(stop_callbacks.load() == 0 && terminal && terminal->is_flag_run
+              && terminal->exit_code == 0,
+          "late commit preserves terminal state and does not deliver stale stop");
+
+    struct ShutdownGate {
+        std::atomic<bool> closed{};
+        std::atomic<bool> release{};
+    } gate;
+    std::atomic<bool> shutdown_entered{};
+    runtime::RuntimeTaskOwner shutdown_owner{
+        [&shutdown_entered](
+            const runtime::RuntimeTaskRequest&, const std::stop_token stop,
+            const runtime::RuntimeTaskProgressReporter&) {
+            shutdown_entered = true;
+            while (!stop.stop_requested()) std::this_thread::yield();
+            return runtime::RuntimeTaskTerminal{false, std::nullopt};
+        }};
+    runtime::RuntimeTaskOwnerTestAccess::set_after_shutdown_closed_hook(
+        shutdown_owner,
+        +[](void* context) noexcept {
+            auto& value = *static_cast<ShutdownGate*>(context);
+            value.closed = true;
+            while (!value.release.load()) std::this_thread::yield();
+        },
+        &gate);
+    check(static_cast<bool>(shutdown_owner.start(request("shutdown-stop")))
+              && wait_until([&shutdown_entered] {
+                     return shutdown_entered.load();
+                 }),
+          "shutdown-stop fixture starts");
+    auto shutdown_stop = shutdown_owner.prepare_stop("shutdown-stop");
+    std::thread shutdown{[&shutdown_owner] { shutdown_owner.shutdown(); }};
+    check(wait_until([&gate] { return gate.closed.load(); }),
+          "shutdown closes admission with claimed stop outstanding");
+    check(shutdown_owner.request_stop("shutdown-stop").decision
+              == runtime::RuntimeTaskStopDecision::reservation_conflict,
+          "shutdown does not bypass an outstanding keyed stop gate");
+    shutdown_stop.reservation.commit();
+    gate.release = true;
+    shutdown.join();
+    check(shutdown_owner.prepare_stop("shutdown-stop").decision
+              == runtime::RuntimeTaskStopDecision::owner_stopped,
+          "prepared stop admission is closed after shutdown");
+    const auto compatible = shutdown_owner.request_stop("shutdown-stop");
+    check(compatible.decision
+              == runtime::RuntimeTaskStopDecision::already_stopped,
+          "legacy request_stop preserves terminal decision after shutdown");
+}
+
+void test_stop_all_reservation_gates_and_reentrant_delivery()
+{
+    static_assert(static_cast<std::uint8_t>(
+                      runtime::RuntimeTaskStopAllDecision::stop_requested) == 0);
+    static_assert(static_cast<std::uint8_t>(
+                      runtime::RuntimeTaskStopAllDecision::nothing_to_stop) == 1);
+    static_assert(static_cast<std::uint8_t>(
+                      runtime::RuntimeTaskStopAllDecision::owner_stopped) == 2);
+    static_assert(static_cast<std::uint8_t>(
+                      runtime::RuntimeTaskStopAllDecision::reservation_conflict)
+                  == 3);
+    static_assert(!std::is_copy_constructible_v<
+                  runtime::RuntimeTaskStopAllReservation>);
+    static_assert(std::is_nothrow_move_constructible_v<
+                  runtime::RuntimeTaskStopAllReservation>);
+
+    runtime::RuntimeTaskOwner empty{
+        [](const runtime::RuntimeTaskRequest&, std::stop_token,
+           const runtime::RuntimeTaskProgressReporter&) {
+            return runtime::RuntimeTaskTerminal{false, std::nullopt};
+        }};
+    auto empty_all = empty.prepare_stop_all();
+    check(empty_all.decision
+              == runtime::RuntimeTaskStopAllDecision::nothing_to_stop
+              && empty_all.reservation,
+          "empty stop-all still acquires the global gate");
+    check(empty.prepare_start(request("blocked")).decision
+              == runtime::RuntimeTaskStartDecision::reservation_conflict
+              && empty.prepare_stop("blocked").decision
+                  == runtime::RuntimeTaskStopDecision::reservation_conflict
+              && empty.prepare_stop_all().decision
+                  == runtime::RuntimeTaskStopAllDecision::reservation_conflict,
+          "empty stop-all blocks every start and stop reservation");
+    empty_all.reservation = runtime::RuntimeTaskStopAllReservation{};
+    auto after_empty_abort = empty.prepare_start(request("after-abort"));
+    check(static_cast<bool>(after_empty_abort.reservation),
+          "aborting empty stop-all releases the global gate");
+    check(empty.prepare_stop_all().decision
+              == runtime::RuntimeTaskStopAllDecision::reservation_conflict,
+          "stop-all atomically rejects an active start reservation");
+    after_empty_abort.reservation = runtime::RuntimeTaskStartReservation{};
+    const auto wrapped_empty = empty.request_stop_all();
+    check(wrapped_empty.decision
+              == runtime::RuntimeTaskStopAllDecision::nothing_to_stop
+              && empty.prepare_start(request("after-wrapper")).reservation,
+          "request_stop_all wraps prepare and commit without retaining its gate");
+
+    runtime::RuntimeTaskOwner* owner_pointer = nullptr;
+    std::atomic<int> entered{};
+    std::atomic<int> callbacks{};
+    std::atomic<bool> reentrant_returned{};
+    std::atomic<bool> reentrant_shutdown_returned{};
+    runtime::RuntimeTaskOwner owner{
+        [&owner_pointer, &entered, &callbacks, &reentrant_returned,
+         &reentrant_shutdown_returned](
+            const runtime::RuntimeTaskRequest& value,
+            const std::stop_token stop,
+            const runtime::RuntimeTaskProgressReporter&) {
+            auto callback = [&]() noexcept {
+                callbacks.fetch_add(1);
+                if (value.config_id == "alpha") {
+                    const auto nested = owner_pointer->request_stop("beta");
+                    const auto restart = owner_pointer->start(request("alpha"));
+                    reentrant_returned =
+                        nested.decision
+                            == runtime::RuntimeTaskStopDecision::already_stopping
+                        && restart.decision
+                            == runtime::RuntimeTaskStartDecision::stopping;
+                    owner_pointer->shutdown();
+                    reentrant_shutdown_returned = true;
+                }
+            };
+            std::stop_callback on_stop{stop, callback};
+            entered.fetch_add(1);
+            while (!stop.stop_requested()) std::this_thread::yield();
+            return runtime::RuntimeTaskTerminal{false, std::nullopt};
+        }};
+    owner_pointer = &owner;
+    check(static_cast<bool>(owner.start(request("beta")))
+              && static_cast<bool>(owner.start(request("alpha")))
+              && wait_until([&entered] { return entered.load() == 2; }),
+          "stop-all fixtures are live");
+    auto aborted = owner.prepare_stop_all();
+    check(aborted.decision == runtime::RuntimeTaskStopAllDecision::stop_requested
+              && aborted.snapshots.size() == 2
+              && aborted.snapshots[0].config_id == "alpha"
+              && aborted.snapshots[1].config_id == "beta",
+          "prepared stop-all response is complete and sorted");
+    check(owner.snapshot("alpha")->running
+              && !owner.snapshot("alpha")->stopping
+              && owner.prepare_start(request("other")).decision
+                  == runtime::RuntimeTaskStartDecision::reservation_conflict
+              && owner.prepare_stop("alpha").decision
+                  == runtime::RuntimeTaskStopDecision::reservation_conflict,
+          "prepared stop-all is invisible and globally exclusive");
+    aborted.reservation = runtime::RuntimeTaskStopAllReservation{};
+    check(callbacks.load() == 0,
+          "aborting stop-all requests no stop tokens");
+
+    auto committed = owner.prepare_stop_all();
+    committed.reservation.commit();
+    check(callbacks.load() == 2 && reentrant_returned.load()
+              && reentrant_shutdown_returned.load(),
+          "stop-all releases its gate before stop/start/shutdown callbacks");
+    check(owner.wait_for_idle("alpha", 3s)
+              && owner.wait_for_idle("beta", 3s),
+          "stop-all workers reach terminal state");
+}
+
+void test_stop_transactions_generation_exhaustion_and_stress()
+{
+    runtime::RuntimeTaskOwner exhausted{
+        [](const runtime::RuntimeTaskRequest&, std::stop_token,
+           const runtime::RuntimeTaskProgressReporter&) {
+            return runtime::RuntimeTaskTerminal{false, std::nullopt};
+        }};
+    runtime::RuntimeTaskOwnerTestAccess::exhaust_generation_after_next_start(
+        exhausted);
+    check(static_cast<bool>(exhausted.start(request("last-generation")))
+              && exhausted.wait_for_idle("last-generation", 3s),
+          "maximum nonzero generation is usable once");
+    check(exhausted.prepare_start(request("no-wrap")).decision
+              == runtime::RuntimeTaskStartDecision::capacity_exceeded,
+          "generation wrap fails closed instead of reusing an ABA identity");
+
+    constexpr int rounds = 100;
+    for (int round = 0; round < rounds; ++round) {
+        std::atomic<bool> entered{};
+        runtime::RuntimeTaskOwner owner{
+            [&entered](
+                const runtime::RuntimeTaskRequest&, const std::stop_token stop,
+                const runtime::RuntimeTaskProgressReporter&) {
+                entered = true;
+                while (!stop.stop_requested()) std::this_thread::yield();
+                return runtime::RuntimeTaskTerminal{false, std::nullopt};
+            }};
+        const std::string config = "transaction-" + std::to_string(round);
+        check(static_cast<bool>(owner.start(request(config)))
+                  && wait_until([&entered] { return entered.load(); }),
+              "transaction stress worker starts");
+        auto prepared = owner.prepare_stop(config);
+        if ((round % 2) == 0) {
+            prepared.reservation = runtime::RuntimeTaskStopReservation{};
+            check(owner.request_stop(config).decision
+                      == runtime::RuntimeTaskStopDecision::stop_requested,
+                  "aborted stress reservation leaves wrapper usable");
+        } else {
+            prepared.reservation.commit();
+        }
+        check(owner.wait_for_idle(config, 3s),
+              "transaction stress worker reaches terminal state");
+    }
+}
+
 void test_explicit_terminal_outcomes_and_bounded_snapshots()
 {
     std::atomic<bool> valid_progress{};
@@ -968,6 +1323,10 @@ int main()
     test_reservation_abort_remains_owned_until_join();
     test_start_reservation_shutdown_linearization();
     test_keyed_concurrency_and_stop_start_linearization();
+    test_stop_reservation_prepare_abort_commit_and_capacity();
+    test_stop_reservation_natural_completion_and_shutdown_race();
+    test_stop_all_reservation_gates_and_reentrant_delivery();
+    test_stop_transactions_generation_exhaustion_and_stress();
     test_explicit_terminal_outcomes_and_bounded_snapshots();
     test_self_shutdown_and_reentrant_stop_callback();
     test_nested_stop_delivery_and_join_lock_order();

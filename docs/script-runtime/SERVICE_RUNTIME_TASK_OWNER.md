@@ -50,6 +50,39 @@ Each retained config occupies one bounded status slot:
 - The legacy `start()` API is implemented as `prepare_start()` followed
   immediately by `commit()`. Its private compatibility path alone preserves
   the existing visible terminal thread-creation-failure snapshot.
+- `prepare_stop()` is the reversible counterpart. It validates and copies the
+  key, pre-copies the exact job generation and stop source, constructs the
+  projected reply, and acquires a keyed operation gate without changing the
+  public phase or requesting cancellation. Its move-only RAII reservation
+  aborts without side effects. `commit() noexcept` is allocation-free and
+  changes only the captured generation from `running` to `stopping`; natural
+  completion between prepare and commit remains terminal and receives no stale
+  stop request.
+- Unknown and already-completed stops deliberately acquire the same keyed
+  no-op reservation. An unknown key occupies a temporary invisible status slot
+  and counts toward `max_configs` until commit or abort. This makes the reply
+  and operation ordering deterministic instead of letting a same-key start
+  cross an apparently harmless stop.
+- A pending keyed start or stop rejects another operation for that config with
+  `reservation-conflict`. `prepare_stop_all()` atomically rejects if any keyed
+  reservation is active, then captures every current job/source identity and a
+  config-id-sorted response under a global gate. The gate is acquired even
+  when there are no jobs and blocks every start/stop until resolved.
+- Stop-all commit first linearizes every still-live captured generation to
+  `stopping`, then releases the global gate, and only then delivers all copied
+  stop sources outside the owner mutex. Synchronous callbacks may therefore
+  reenter stop, start, or shutdown without deadlock; captured configs are
+  already stopping and cannot restart through the callback.
+- Shutdown stops live jobs independently of a pending stop transaction and an
+  external shutdown waits for all reservations to resolve. A commit claimed
+  before shutdown closed admission remains valid; if shutdown or natural
+  completion already won the phase transition, commit only releases its gate.
+  The legacy `request_stop()` wrapper continues to report an existing job as
+  `already-stopping` or `already-stopped` after shutdown rather than exposing
+  the prepared API's `owner-stopped` admission result.
+- Job generations are monotonically increasing nonzero identities. Exhausting
+  the 64-bit space fails subsequent starts closed as `capacity-exceeded`; zero
+  is never reused, so wraparound cannot create an ABA match.
 - A start while `running` returns `already-running`.
 - A start while `stopping` returns `stopping`. The old worker remains owned and
   the config cannot restart until it has actually exited. This closes the
@@ -163,7 +196,11 @@ The tests execute injected backends on real worker threads and cover keyed
 concurrency, gated prepare/commit, rollback without backend entry, deterministic
 same-config reservation conflicts, forced thread-creation failure with public
 rollback and legacy-only publication, abort visibility through worker join,
-shutdown vs commit/rollback linearization, duplicate admission, stop/start
-linearization, explicit terminal states, timestamp ordering, bounded progress,
-escaped reporters, worker/self shutdown, nested/reentrant stop callbacks,
-concurrent external drains, capacity enforcement, and external drain.
+shutdown vs commit/rollback linearization, reversible keyed and global stops,
+unknown/completed no-op gates, temporary-slot capacity, empty stop-all,
+generation/ABA safety, natural completion before commit, callback-reentrant
+stop-all delivery, 100-round transaction stress, duplicate admission,
+stop/start linearization, explicit terminal states, timestamp ordering, bounded
+progress, escaped reporters, worker/self shutdown, nested/reentrant stop
+callbacks, concurrent external drains, capacity enforcement, and external
+drain.

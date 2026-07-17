@@ -4,6 +4,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <exception>
+#include <limits>
 #include <mutex>
 #include <stdexcept>
 #include <system_error>
@@ -59,6 +60,28 @@ struct RuntimeTaskStartReservationAccess final {
     }
 };
 
+struct RuntimeTaskStopReservationAccess final {
+    [[nodiscard]] static RuntimeTaskStopReservation create(
+        std::shared_ptr<void> state,
+        const RuntimeTaskStopReservation::Action commit,
+        const RuntimeTaskStopReservation::Action abort) noexcept
+    {
+        return RuntimeTaskStopReservation{
+            std::move(state), commit, abort};
+    }
+};
+
+struct RuntimeTaskStopAllReservationAccess final {
+    [[nodiscard]] static RuntimeTaskStopAllReservation create(
+        std::shared_ptr<void> state,
+        const RuntimeTaskStopAllReservation::Action commit,
+        const RuntimeTaskStopAllReservation::Action abort) noexcept
+    {
+        return RuntimeTaskStopAllReservation{
+            std::move(state), commit, abort};
+    }
+};
+
 RuntimeTaskStartReservation::RuntimeTaskStartReservation(
     std::shared_ptr<void> state, const Action commit,
     const Action cancel) noexcept
@@ -109,6 +132,106 @@ void RuntimeTaskStartReservation::cancel() noexcept
     if (state && action != nullptr) action(state.get());
 }
 
+RuntimeTaskStopReservation::RuntimeTaskStopReservation(
+    std::shared_ptr<void> state, const Action commit,
+    const Action abort) noexcept
+    : state_(std::move(state)), commit_(commit), abort_(abort)
+{}
+
+RuntimeTaskStopReservation::~RuntimeTaskStopReservation() noexcept
+{
+    abort();
+}
+
+RuntimeTaskStopReservation::RuntimeTaskStopReservation(
+    RuntimeTaskStopReservation&& other) noexcept
+    : state_(std::move(other.state_)),
+      commit_(std::exchange(other.commit_, nullptr)),
+      abort_(std::exchange(other.abort_, nullptr))
+{}
+
+RuntimeTaskStopReservation& RuntimeTaskStopReservation::operator=(
+    RuntimeTaskStopReservation&& other) noexcept
+{
+    if (this == &other) return *this;
+    abort();
+    state_ = std::move(other.state_);
+    commit_ = std::exchange(other.commit_, nullptr);
+    abort_ = std::exchange(other.abort_, nullptr);
+    return *this;
+}
+
+RuntimeTaskStopReservation::operator bool() const noexcept
+{
+    return state_ != nullptr;
+}
+
+void RuntimeTaskStopReservation::commit() noexcept
+{
+    auto state = std::move(state_);
+    const auto action = std::exchange(commit_, nullptr);
+    abort_ = nullptr;
+    if (state && action != nullptr) action(state.get());
+}
+
+void RuntimeTaskStopReservation::abort() noexcept
+{
+    auto state = std::move(state_);
+    const auto action = std::exchange(abort_, nullptr);
+    commit_ = nullptr;
+    if (state && action != nullptr) action(state.get());
+}
+
+RuntimeTaskStopAllReservation::RuntimeTaskStopAllReservation(
+    std::shared_ptr<void> state, const Action commit,
+    const Action abort) noexcept
+    : state_(std::move(state)), commit_(commit), abort_(abort)
+{}
+
+RuntimeTaskStopAllReservation::~RuntimeTaskStopAllReservation() noexcept
+{
+    abort();
+}
+
+RuntimeTaskStopAllReservation::RuntimeTaskStopAllReservation(
+    RuntimeTaskStopAllReservation&& other) noexcept
+    : state_(std::move(other.state_)),
+      commit_(std::exchange(other.commit_, nullptr)),
+      abort_(std::exchange(other.abort_, nullptr))
+{}
+
+RuntimeTaskStopAllReservation& RuntimeTaskStopAllReservation::operator=(
+    RuntimeTaskStopAllReservation&& other) noexcept
+{
+    if (this == &other) return *this;
+    abort();
+    state_ = std::move(other.state_);
+    commit_ = std::exchange(other.commit_, nullptr);
+    abort_ = std::exchange(other.abort_, nullptr);
+    return *this;
+}
+
+RuntimeTaskStopAllReservation::operator bool() const noexcept
+{
+    return state_ != nullptr;
+}
+
+void RuntimeTaskStopAllReservation::commit() noexcept
+{
+    auto state = std::move(state_);
+    const auto action = std::exchange(commit_, nullptr);
+    abort_ = nullptr;
+    if (state && action != nullptr) action(state.get());
+}
+
+void RuntimeTaskStopAllReservation::abort() noexcept
+{
+    auto state = std::move(state_);
+    const auto action = std::exchange(abort_, nullptr);
+    commit_ = nullptr;
+    if (state && action != nullptr) action(state.get());
+}
+
 RuntimeTaskTerminal runtime_task_terminal_from_result(
     const bool succeeded, const bool is_flag_run) noexcept
 {
@@ -146,8 +269,29 @@ std::string_view runtime_task_stop_decision_name(
         case RuntimeTaskStopDecision::already_stopped:
             return "already-stopped";
         case RuntimeTaskStopDecision::unknown_config: return "unknown-config";
+        case RuntimeTaskStopDecision::owner_stopped: return "owner-stopped";
+        case RuntimeTaskStopDecision::capacity_exceeded:
+            return "capacity-exceeded";
+        case RuntimeTaskStopDecision::reservation_conflict:
+            return "reservation-conflict";
     }
     return "unknown-config";
+}
+
+std::string_view runtime_task_stop_all_decision_name(
+    const RuntimeTaskStopAllDecision decision) noexcept
+{
+    switch (decision) {
+        case RuntimeTaskStopAllDecision::stop_requested:
+            return "stop-requested";
+        case RuntimeTaskStopAllDecision::nothing_to_stop:
+            return "nothing-to-stop";
+        case RuntimeTaskStopAllDecision::owner_stopped:
+            return "owner-stopped";
+        case RuntimeTaskStopAllDecision::reservation_conflict:
+            return "reservation-conflict";
+    }
+    return "nothing-to-stop";
 }
 
 class RuntimeTaskOwner::Impl final
@@ -155,6 +299,7 @@ class RuntimeTaskOwner::Impl final
 private:
     struct Job {
         RuntimeTaskSnapshot snapshot;
+        std::uint64_t generation{};
         JobPhase phase{JobPhase::completed};
         std::stop_source stop_source;
         std::mutex gate_mutex;
@@ -166,11 +311,32 @@ private:
     struct ConfigSlot {
         std::shared_ptr<Job> current;
         std::shared_ptr<Job> reserved;
+        bool stop_reserved{};
     };
 
     struct ReservationState {
         std::shared_ptr<Impl> owner;
         std::shared_ptr<Job> job;
+    };
+
+    struct StopReservationState {
+        std::shared_ptr<Impl> owner;
+        std::string config_id;
+        std::shared_ptr<Job> job;
+        std::uint64_t generation{};
+        std::stop_source source{std::nostopstate};
+    };
+
+    struct StopAllItem {
+        std::shared_ptr<Job> job;
+        std::uint64_t generation{};
+        std::stop_source source{std::nostopstate};
+        bool deliver{};
+    };
+
+    struct StopAllReservationState {
+        std::shared_ptr<Impl> owner;
+        std::vector<StopAllItem> items;
     };
 
 public:
@@ -207,11 +373,16 @@ public:
             return {
                 RuntimeTaskStartDecision::owner_stopped, std::nullopt, {}};
         }
+        if (stop_all_reserved_) {
+            return {
+                RuntimeTaskStartDecision::reservation_conflict,
+                std::nullopt, {}};
+        }
 
         auto found = jobs_.find(request.config_id);
         std::shared_ptr<Job> previous;
         if (found != jobs_.end()) {
-            if (found->second.reserved) {
+            if (found->second.reserved || found->second.stop_reserved) {
                 return {
                     RuntimeTaskStartDecision::reservation_conflict,
                     std::nullopt, {}};
@@ -253,7 +424,13 @@ public:
         RuntimeTaskPrepareStartResult result;
         result.decision = RuntimeTaskStartDecision::started;
         result.snapshot = next;
+        if (next_job_generation_ == 0) {
+            return {
+                RuntimeTaskStartDecision::capacity_exceeded,
+                std::nullopt, {}};
+        }
         auto job = std::make_shared<Job>();
+        job->generation = next_job_generation_++;
         job->snapshot = std::move(next);
         auto reservation_state = std::make_shared<ReservationState>(
             ReservationState{shared_from_this(), job});
@@ -264,6 +441,7 @@ public:
         } else {
             found->second.reserved = job;
         }
+        ++active_reservations_;
 
         bool create_thread = true;
 #if defined(BAAS_SERVICE_RUNTIME_TASK_OWNER_TEST_HOOKS)
@@ -287,6 +465,7 @@ public:
             job->phase = JobPhase::completed;
             set_thread_start_failure(*job);
             found->second.reserved.reset();
+            --active_reservations_;
             if (publish_thread_failure) {
                 // The compatibility start() API historically publishes a
                 // terminal thread-start failure. Reversible prepare_start()
@@ -323,55 +502,197 @@ public:
         return result;
     }
 
-    [[nodiscard]] RuntimeTaskStopResult request_stop(
+    [[nodiscard]] RuntimeTaskPrepareStopResult prepare_stop(
         const std::string_view config_id)
     {
         if (!bounded_text(config_id, limits_.max_config_id_bytes)) {
-            return {RuntimeTaskStopDecision::unknown_config, std::nullopt};
+            return {RuntimeTaskStopDecision::unknown_config, std::nullopt, {}};
         }
-
+        std::string key{config_id};
         std::unique_lock lock{mutex_};
-        const auto found = jobs_.find(std::string{config_id});
+        if (!accepting_) {
+            return {RuntimeTaskStopDecision::owner_stopped, std::nullopt, {}};
+        }
+        if (stop_all_reserved_) {
+            return {
+                RuntimeTaskStopDecision::reservation_conflict,
+                std::nullopt, {}};
+        }
+
+        auto found = jobs_.find(key);
+        if (found != jobs_.end()
+            && (found->second.reserved || found->second.stop_reserved)) {
+            return {
+                RuntimeTaskStopDecision::reservation_conflict,
+                std::nullopt, {}};
+        }
+        if (found == jobs_.end() && jobs_.size() >= limits_.max_configs) {
+            return {
+                RuntimeTaskStopDecision::capacity_exceeded,
+                std::nullopt, {}};
+        }
+
+        RuntimeTaskPrepareStopResult result;
+        auto state = std::make_shared<StopReservationState>();
+        state->owner = shared_from_this();
+        state->config_id = key;
+        if (found == jobs_.end() || !found->second.current) {
+            result.decision = RuntimeTaskStopDecision::unknown_config;
+        } else {
+            state->job = found->second.current;
+            state->generation = state->job->generation;
+            result.snapshot = state->job->snapshot;
+            if (state->job->phase == JobPhase::running) {
+                result.decision = RuntimeTaskStopDecision::stop_requested;
+                result.snapshot->stopping = true;
+                result.snapshot->is_flag_run = false;
+                result.snapshot->timestamp =
+                    next_timestamp(state->job->snapshot.timestamp);
+                state->source = state->job->stop_source;
+            } else if (state->job->phase == JobPhase::stopping) {
+                result.decision = RuntimeTaskStopDecision::already_stopping;
+                state->source = state->job->stop_source;
+            } else {
+                result.decision = RuntimeTaskStopDecision::already_stopped;
+            }
+        }
+
         if (found == jobs_.end()) {
-            return {RuntimeTaskStopDecision::unknown_config, std::nullopt};
+            found = jobs_.emplace(key, ConfigSlot{}).first;
         }
-        if (!found->second.current) {
-            return {RuntimeTaskStopDecision::unknown_config, std::nullopt};
-        }
-        Job& job = *found->second.current;
-        if (job.phase == JobPhase::completed) {
-            return {RuntimeTaskStopDecision::already_stopped, job.snapshot};
-        }
-        if (job.phase == JobPhase::stopping) {
-            return {RuntimeTaskStopDecision::already_stopping, job.snapshot};
-        }
+        found->second.stop_reserved = true;
+        ++active_reservations_;
+        result.reservation = RuntimeTaskStopReservationAccess::create(
+            std::move(state), &commit_stop_reservation_action,
+            &abort_stop_reservation_action);
+        return result;
+    }
 
-        // Build the complete response before the linearization point. Once the
-        // state changes below, no exception-capable response copy remains and
-        // the stop request is unconditionally delivered before return.
-        RuntimeTaskSnapshot response_snapshot = job.snapshot;
-        response_snapshot.stopping = true;
-        response_snapshot.is_flag_run = false;
-        response_snapshot.timestamp = next_timestamp(job.snapshot.timestamp);
+    [[nodiscard]] RuntimeTaskStopResult request_stop(
+        const std::string_view config_id)
+    {
+        auto prepared = prepare_stop(config_id);
+        if (prepared.decision == RuntimeTaskStopDecision::owner_stopped) {
+            return request_stop_after_shutdown(config_id);
+        }
         RuntimeTaskStopResult result{
-            RuntimeTaskStopDecision::stop_requested,
-            std::move(response_snapshot)};
-        auto stop_source = job.stop_source;
+            prepared.decision, std::move(prepared.snapshot)};
+        if (prepared) prepared.reservation.commit();
+        return result;
+    }
 
-        job.phase = JobPhase::stopping;
-        job.snapshot.stopping = true;
-        job.snapshot.is_flag_run = false;
-        job.snapshot.timestamp = result.snapshot->timestamp;
-#if defined(BAAS_SERVICE_RUNTIME_TASK_OWNER_TEST_HOOKS)
-        const auto after_stop_hook = after_stop_linearized_hook_;
-        void* const after_stop_context = after_stop_linearized_context_;
-#endif
-        lock.unlock();
-#if defined(BAAS_SERVICE_RUNTIME_TASK_OWNER_TEST_HOOKS)
-        if (after_stop_hook != nullptr) after_stop_hook(after_stop_context);
-#endif
-        StopDeliveryGuard delivery{this};
-        static_cast<void>(stop_source.request_stop());
+    [[nodiscard]] RuntimeTaskStopResult request_stop_after_shutdown(
+        const std::string_view config_id)
+    {
+        std::stop_source source{std::nostopstate};
+        RuntimeTaskStopResult result;
+        bool deliver = false;
+        {
+            std::lock_guard lock{mutex_};
+            if (stop_all_reserved_) {
+                result.decision =
+                    RuntimeTaskStopDecision::reservation_conflict;
+                return result;
+            }
+            const auto found = jobs_.find(std::string{config_id});
+            if (found == jobs_.end() || !found->second.current) {
+                result.decision = RuntimeTaskStopDecision::unknown_config;
+                return result;
+            }
+            if (found->second.reserved || found->second.stop_reserved) {
+                result.decision =
+                    RuntimeTaskStopDecision::reservation_conflict;
+                return result;
+            }
+            auto& job = found->second.current;
+            result.snapshot = job->snapshot;
+            if (job->phase == JobPhase::running) {
+                job->phase = JobPhase::stopping;
+                job->snapshot.stopping = true;
+                job->snapshot.is_flag_run = false;
+                job->snapshot.timestamp = next_timestamp(job->snapshot.timestamp);
+                result.snapshot = job->snapshot;
+                result.decision = RuntimeTaskStopDecision::stop_requested;
+                source = job->stop_source;
+                deliver = true;
+            } else if (job->phase == JobPhase::stopping) {
+                result.decision = RuntimeTaskStopDecision::already_stopping;
+            } else {
+                result.decision = RuntimeTaskStopDecision::already_stopped;
+            }
+        }
+        if (deliver) {
+            StopDeliveryGuard delivery{this};
+            static_cast<void>(source.request_stop());
+        }
+        return result;
+    }
+
+    [[nodiscard]] RuntimeTaskPrepareStopAllResult prepare_stop_all()
+    {
+        std::unique_lock lock{mutex_};
+        if (!accepting_) {
+            return {RuntimeTaskStopAllDecision::owner_stopped, {}, {}};
+        }
+        if (stop_all_reserved_ || active_reservations_ != 0) {
+            return {
+                RuntimeTaskStopAllDecision::reservation_conflict,
+                {}, {}};
+        }
+
+        RuntimeTaskPrepareStopAllResult result;
+        auto state = std::make_shared<StopAllReservationState>();
+        state->owner = shared_from_this();
+        state->items.reserve(jobs_.size());
+        result.snapshots.reserve(jobs_.size());
+        bool has_running = false;
+        for (const auto& [config_id, slot] : jobs_) {
+            static_cast<void>(config_id);
+            if (!slot.current) continue;
+            StopAllItem item;
+            item.job = slot.current;
+            item.generation = item.job->generation;
+            if (item.job->phase != JobPhase::completed) {
+                item.source = item.job->stop_source;
+            }
+            auto response = item.job->snapshot;
+            if (item.job->phase == JobPhase::running) {
+                has_running = true;
+                response.stopping = true;
+                response.is_flag_run = false;
+                response.timestamp = next_timestamp(response.timestamp);
+            }
+            state->items.push_back(std::move(item));
+            result.snapshots.push_back(std::move(response));
+        }
+        const auto by_job_config = [](const StopAllItem& left,
+                                      const StopAllItem& right) {
+            return left.job->snapshot.config_id < right.job->snapshot.config_id;
+        };
+        std::sort(state->items.begin(), state->items.end(), by_job_config);
+        std::sort(
+            result.snapshots.begin(), result.snapshots.end(),
+            [](const RuntimeTaskSnapshot& left,
+               const RuntimeTaskSnapshot& right) {
+                return left.config_id < right.config_id;
+            });
+        result.decision = has_running
+            ? RuntimeTaskStopAllDecision::stop_requested
+            : RuntimeTaskStopAllDecision::nothing_to_stop;
+        stop_all_reserved_ = true;
+        ++active_reservations_;
+        result.reservation = RuntimeTaskStopAllReservationAccess::create(
+            std::move(state), &commit_stop_all_reservation_action,
+            &abort_stop_all_reservation_action);
+        return result;
+    }
+
+    [[nodiscard]] RuntimeTaskStopAllResult request_stop_all()
+    {
+        auto prepared = prepare_stop_all();
+        RuntimeTaskStopAllResult result{
+            prepared.decision, std::move(prepared.snapshots)};
+        if (prepared) prepared.reservation.commit();
         return result;
     }
 
@@ -459,6 +780,12 @@ public:
     {
         std::lock_guard lock{mutex_};
         fail_next_thread_start_ = true;
+    }
+
+    void exhaust_generation_after_next_start() noexcept
+    {
+        std::lock_guard lock{mutex_};
+        next_job_generation_ = std::numeric_limits<std::uint64_t>::max();
     }
 #endif
 
@@ -641,6 +968,155 @@ private:
         state.owner->cancel_reservation(state.job);
     }
 
+    static void commit_stop_reservation_action(void* const opaque) noexcept
+    {
+        auto& state = *static_cast<StopReservationState*>(opaque);
+        state.owner->commit_stop_reservation(state);
+    }
+
+    static void abort_stop_reservation_action(void* const opaque) noexcept
+    {
+        auto& state = *static_cast<StopReservationState*>(opaque);
+        state.owner->abort_stop_reservation(state);
+    }
+
+    static void commit_stop_all_reservation_action(void* const opaque) noexcept
+    {
+        auto& state = *static_cast<StopAllReservationState*>(opaque);
+        state.owner->commit_stop_all_reservation(state);
+    }
+
+    static void abort_stop_all_reservation_action(void* const opaque) noexcept
+    {
+        auto& state = *static_cast<StopAllReservationState*>(opaque);
+        state.owner->abort_stop_all_reservation(state);
+    }
+
+    void resolve_stop_gate_locked(const std::string& config_id) noexcept
+    {
+        const auto found = jobs_.find(config_id);
+        if (found == jobs_.end() || !found->second.stop_reserved
+            || active_reservations_ == 0) {
+            std::terminate();
+        }
+        found->second.stop_reserved = false;
+        if (!found->second.current && !found->second.reserved) {
+            jobs_.erase(found);
+        }
+        --active_reservations_;
+        condition_.notify_all();
+    }
+
+    void commit_stop_reservation(StopReservationState& state) noexcept
+    {
+        bool deliver = false;
+#if defined(BAAS_SERVICE_RUNTIME_TASK_OWNER_TEST_HOOKS)
+        RuntimeTaskOwnerTestAccess::Hook after_stop_hook = nullptr;
+        void* after_stop_context = nullptr;
+#endif
+        {
+            std::lock_guard lock{mutex_};
+            const auto found = jobs_.find(state.config_id);
+            if (found == jobs_.end() || !found->second.stop_reserved) {
+                std::terminate();
+            }
+            if (state.job && found->second.current.get() == state.job.get()
+                && state.job->generation == state.generation
+                && state.job->phase == JobPhase::running) {
+                state.job->phase = JobPhase::stopping;
+                state.job->snapshot.stopping = true;
+                state.job->snapshot.is_flag_run = false;
+                state.job->snapshot.timestamp =
+                    next_timestamp(state.job->snapshot.timestamp);
+                deliver = true;
+#if defined(BAAS_SERVICE_RUNTIME_TASK_OWNER_TEST_HOOKS)
+                after_stop_hook = after_stop_linearized_hook_;
+                after_stop_context = after_stop_linearized_context_;
+#endif
+            }
+            resolve_stop_gate_locked(state.config_id);
+        }
+#if defined(BAAS_SERVICE_RUNTIME_TASK_OWNER_TEST_HOOKS)
+        if (deliver && after_stop_hook != nullptr) {
+            after_stop_hook(after_stop_context);
+        }
+#endif
+        if (deliver) {
+            StopDeliveryGuard delivery{this};
+            static_cast<void>(state.source.request_stop());
+        }
+    }
+
+    void abort_stop_reservation(StopReservationState& state) noexcept
+    {
+        std::lock_guard lock{mutex_};
+        resolve_stop_gate_locked(state.config_id);
+    }
+
+    void commit_stop_all_reservation(
+        StopAllReservationState& state) noexcept
+    {
+#if defined(BAAS_SERVICE_RUNTIME_TASK_OWNER_TEST_HOOKS)
+        bool delivered_any = false;
+        RuntimeTaskOwnerTestAccess::Hook after_stop_hook = nullptr;
+        void* after_stop_context = nullptr;
+#endif
+        {
+            std::lock_guard lock{mutex_};
+            if (!stop_all_reserved_ || active_reservations_ == 0) {
+                std::terminate();
+            }
+            for (auto& item : state.items) {
+                const auto found = jobs_.find(item.job->snapshot.config_id);
+                if (found == jobs_.end()
+                    || found->second.current.get() != item.job.get()
+                    || item.job->generation != item.generation
+                    || item.job->phase != JobPhase::running) {
+                    continue;
+                }
+                item.job->phase = JobPhase::stopping;
+                item.job->snapshot.stopping = true;
+                item.job->snapshot.is_flag_run = false;
+                item.job->snapshot.timestamp =
+                    next_timestamp(item.job->snapshot.timestamp);
+                item.deliver = true;
+#if defined(BAAS_SERVICE_RUNTIME_TASK_OWNER_TEST_HOOKS)
+                delivered_any = true;
+#endif
+            }
+            stop_all_reserved_ = false;
+            --active_reservations_;
+#if defined(BAAS_SERVICE_RUNTIME_TASK_OWNER_TEST_HOOKS)
+            if (delivered_any) {
+                after_stop_hook = after_stop_linearized_hook_;
+                after_stop_context = after_stop_linearized_context_;
+            }
+#endif
+            condition_.notify_all();
+        }
+#if defined(BAAS_SERVICE_RUNTIME_TASK_OWNER_TEST_HOOKS)
+        if (after_stop_hook != nullptr) after_stop_hook(after_stop_context);
+#endif
+        StopDeliveryGuard delivery{this};
+        for (auto& item : state.items) {
+            if (item.deliver) {
+                static_cast<void>(item.source.request_stop());
+            }
+        }
+    }
+
+    void abort_stop_all_reservation(
+        StopAllReservationState&) noexcept
+    {
+        std::lock_guard lock{mutex_};
+        if (!stop_all_reserved_ || active_reservations_ == 0) {
+            std::terminate();
+        }
+        stop_all_reserved_ = false;
+        --active_reservations_;
+        condition_.notify_all();
+    }
+
     void commit_reservation(const std::shared_ptr<Job>& job) noexcept
     {
         bool stop_before_release = false;
@@ -656,6 +1132,8 @@ private:
             }
             found->second.current = job;
             found->second.reserved.reset();
+            if (active_reservations_ == 0) std::terminate();
+            --active_reservations_;
             job->phase = accepting_ ? JobPhase::running : JobPhase::stopping;
             if (!accepting_) {
                 job->snapshot.stopping = true;
@@ -707,6 +1185,8 @@ private:
             }
             found->second.reserved.reset();
             if (!found->second.current) jobs_.erase(found);
+            if (active_reservations_ == 0) std::terminate();
+            --active_reservations_;
             condition_.notify_all();
         }
     }
@@ -850,10 +1330,7 @@ private:
     {
         std::unique_lock lock{mutex_};
         condition_.wait(lock, [this] {
-            return std::none_of(
-                jobs_.begin(), jobs_.end(), [](const auto& entry) {
-                    return static_cast<bool>(entry.second.reserved);
-                });
+            return active_reservations_ == 0;
         });
     }
 
@@ -901,6 +1378,9 @@ private:
     std::mutex drain_mutex_;
     std::unordered_map<std::string, ConfigSlot> jobs_;
     bool accepting_{true};
+    bool stop_all_reserved_{false};
+    std::size_t active_reservations_{};
+    std::uint64_t next_job_generation_{1};
 #if defined(BAAS_SERVICE_RUNTIME_TASK_OWNER_TEST_HOOKS)
     RuntimeTaskOwnerTestAccess::Hook after_stop_linearized_hook_{nullptr};
     void* after_stop_linearized_context_{nullptr};
@@ -939,10 +1419,26 @@ RuntimeTaskStartResult RuntimeTaskOwner::start(RuntimeTaskRequest request)
     return impl_->start(std::move(request));
 }
 
+RuntimeTaskPrepareStopResult RuntimeTaskOwner::prepare_stop(
+    const std::string_view config_id)
+{
+    return impl_->prepare_stop(config_id);
+}
+
 RuntimeTaskStopResult RuntimeTaskOwner::request_stop(
     const std::string_view config_id)
 {
     return impl_->request_stop(config_id);
+}
+
+RuntimeTaskPrepareStopAllResult RuntimeTaskOwner::prepare_stop_all()
+{
+    return impl_->prepare_stop_all();
+}
+
+RuntimeTaskStopAllResult RuntimeTaskOwner::request_stop_all()
+{
+    return impl_->request_stop_all();
 }
 
 std::optional<RuntimeTaskSnapshot> RuntimeTaskOwner::snapshot(
@@ -994,6 +1490,12 @@ void RuntimeTaskOwnerTestAccess::fail_next_thread_start(
     RuntimeTaskOwner& owner) noexcept
 {
     owner.impl_->fail_next_thread_start();
+}
+
+void RuntimeTaskOwnerTestAccess::exhaust_generation_after_next_start(
+    RuntimeTaskOwner& owner) noexcept
+{
+    owner.impl_->exhaust_generation_after_next_start();
 }
 #endif
 
