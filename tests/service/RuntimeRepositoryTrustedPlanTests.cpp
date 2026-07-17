@@ -17,6 +17,7 @@
 #include <memory>
 #include <optional>
 #include <span>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -109,6 +110,28 @@ public:
 private:
   bool accept_{};
   std::size_t calls_{};
+};
+
+class OneShotFileOperationFaultHooks final
+    : public baas::runtime::repository::RuntimeRepositoryUpdaterHooks {
+public:
+  std::optional<baas::runtime::repository::RuntimeRepositoryFileOperation>
+      fail_at;
+
+  void checkpoint(
+      baas::runtime::repository::RuntimeRepositoryUpdaterCheckpoint) override {}
+
+  void before_file_operation(
+      const baas::runtime::repository::RuntimeRepositoryFileOperation operation)
+      override {
+    if (!failed_ && fail_at && *fail_at == operation) {
+      failed_ = true;
+      throw std::runtime_error{"one-shot file operation fault"};
+    }
+  }
+
+private:
+  bool failed_{};
 };
 
 void check(const bool condition, const std::string_view message) {
@@ -501,6 +524,71 @@ void test_update_owner_coordinates_updater_and_policy_state() {
   }
 }
 
+void test_update_owner_returns_authoritative_generation_after_recovery() {
+  TemporaryDirectory root;
+  FakeFetchBackend backend;
+  FakeTreeValidator validator;
+  auto hooks = std::make_shared<OneShotFileOperationFaultHooks>();
+  app::RuntimeRepositoryTrustedPlanUpdateOwner owner{root.path(), public_key(),
+                                                     hooks};
+  check(static_cast<bool>(owner.recover(validator)),
+        "fault fixture startup recovery succeeds");
+
+  const auto initial_payload = payload();
+  const auto initial =
+      owner.apply(signed_envelope(initial_payload.dump()), backend, validator);
+  check(static_cast<bool>(initial), "fault fixture baseline publish succeeds");
+
+  auto successor = payload();
+  successor["sequence"] = "43";
+  successor["previous_generations"] =
+      Json::array({initial.update.pinned_generation});
+  successor["repositories"] = Json::array(
+      {repository("resources", '3', 'c'), repository("scripts", '4', 'd')});
+  hooks->fail_at = baas::runtime::repository::RuntimeRepositoryFileOperation::
+      CurrentPhaseJournalReplace;
+  const auto uncertain =
+      owner.apply(signed_envelope(successor.dump()), backend, validator);
+
+  baas::runtime::repository::RuntimeRepositoryUpdater reader{root.path()};
+  check(static_cast<bool>(reader.recover(validator)),
+        "authoritative reader recovery succeeds");
+  const auto current = reader.pin_current();
+  check(!uncertain &&
+            uncertain.update.disposition ==
+                baas::runtime::repository::PublishDisposition::
+                    CommittedDurabilityUncertain &&
+            current &&
+            uncertain.update.pinned_generation == current->generation() &&
+            uncertain.update.pinned_generation !=
+                initial.update.pinned_generation,
+        "post-current fault returns the generation established by recovery");
+}
+
+void test_authoritative_recovery_overwrites_an_old_uncertain_pin() {
+  baas::runtime::repository::RuntimeRepositoryUpdateResult uncertain;
+  uncertain.error = baas::runtime::repository::RuntimeRepositoryUpdateError{
+      baas::runtime::repository::RuntimeRepositoryUpdateErrorCode::Io,
+      "post-rename directory sync failed"};
+  uncertain.disposition = baas::runtime::repository::PublishDisposition::
+      CommittedDurabilityUncertain;
+  uncertain.pinned_generation = std::string(64, '1');
+  baas::runtime::repository::RuntimeRepositoryUpdateResult recovered;
+  recovered.pinned_generation = std::string(64, '2');
+
+  app::detail::replace_ambiguous_update_pin_after_recovery(
+      uncertain, recovered, recovered.pinned_generation);
+  check(uncertain.pinned_generation == recovered.pinned_generation,
+        "outer post-rename failure cannot retain the pre-update pin");
+
+  baas::runtime::repository::RuntimeRepositoryUpdateResult not_committed;
+  not_committed.pinned_generation = std::string(64, '1');
+  app::detail::replace_ambiguous_update_pin_after_recovery(
+      not_committed, recovered, recovered.pinned_generation);
+  check(not_committed.pinned_generation == std::string(64, '1'),
+        "recovery never promotes a not-committed result");
+}
+
 void test_existing_generation_requires_noop_policy_adoption() {
   TemporaryDirectory root;
   FakeFetchBackend backend;
@@ -582,6 +670,8 @@ int main() {
   test_strict_shape_limits_and_error_names();
   test_durable_state_transaction_reconciliation();
   test_update_owner_coordinates_updater_and_policy_state();
+  test_update_owner_returns_authoritative_generation_after_recovery();
+  test_authoritative_recovery_overwrites_an_old_uncertain_pin();
   test_existing_generation_requires_noop_policy_adoption();
   test_policy_writer_lock_rejects_unsafe_paths();
   std::cout << "Runtime repository trusted plan tests passed\n";

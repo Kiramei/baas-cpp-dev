@@ -339,6 +339,7 @@ class ExternalResourceBoundaryTests(unittest.TestCase):
         self.assertIn("can then be adopted only by a\nsigned plan", documentation)
         self.assertIn("terminal `RuntimeRepositoryCommitClaim`", documentation)
         self.assertIn("The existing Tauri\nexact-generation launch path remains a reader-only path", documentation)
+        self.assertIn("`BAAS_runtime_repository_update` publisher", documentation)
         trusted_plan_header = (
             ROOT / "include/service/app/RuntimeRepositoryTrustedPlan.h"
         ).read_text(encoding="utf-8")

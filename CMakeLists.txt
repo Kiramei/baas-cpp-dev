@@ -139,6 +139,10 @@ option(BUILD_SERVICE_RUNTIME_REPOSITORY_OWNER_TESTS "Build service runtime repos
 option(BUILD_SERVICE_RUNTIME_CONFIGURATION_DEFAULTS "Build generation-bound service configuration defaults" OFF)
 option(BUILD_SERVICE_RUNTIME_REPOSITORY_PLAN "Build signed service runtime repository plan verification" OFF)
 option(BUILD_SERVICE_RUNTIME_REPOSITORY_PLAN_TESTS "Build signed runtime repository plan tests" OFF)
+option(BUILD_SERVICE_RUNTIME_REPOSITORY_UPDATE_APP "Build the standalone signed runtime repository update publisher" OFF)
+option(BUILD_SERVICE_RUNTIME_REPOSITORY_UPDATE_APP_TESTS "Build standalone runtime repository update publisher tests" OFF)
+set(BAAS_RUNTIME_REPOSITORY_TRUSTED_PUBLIC_KEY_HEX "" CACHE STRING
+    "Fixed lowercase Ed25519 public key for the standalone update publisher")
 option(BUILD_SERVICE_ADB_TRANSPORT "Build the standalone ADB smart-socket transport" OFF)
 option(BUILD_SERVICE_ADB_TRANSPORT_TESTS "Build deterministic ADB transport tests" OFF)
 option(BUILD_SERVICE_ADB_SYNC "Build the bounded production ADB SYNC client" OFF)
@@ -203,6 +207,33 @@ endif()
 if(BUILD_SERVICE_RUNTIME_REPOSITORY_PLAN)
     set(BUILD_RUNTIME_REPOSITORY_UPDATER ON CACHE BOOL
         "Build the transport-independent runtime repository updater" FORCE)
+    set(BUILD_SERVICE_AUTH_CRYPTO ON CACHE BOOL
+        "Build the service v1 cryptographic foundation" FORCE)
+endif()
+
+if(BUILD_SERVICE_RUNTIME_REPOSITORY_UPDATE_APP_TESTS
+   AND NOT BUILD_SERVICE_RUNTIME_REPOSITORY_UPDATE_APP)
+    set(BUILD_SERVICE_RUNTIME_REPOSITORY_UPDATE_APP ON CACHE BOOL
+        "Build the standalone signed runtime repository update publisher" FORCE)
+endif()
+
+if(BUILD_SERVICE_RUNTIME_REPOSITORY_UPDATE_APP)
+    if(TARGET_OS_NAME STREQUAL "Android")
+        message(FATAL_ERROR
+            "The standalone runtime repository update publisher is desktop-only")
+    endif()
+    string(LENGTH "${BAAS_RUNTIME_REPOSITORY_TRUSTED_PUBLIC_KEY_HEX}"
+        _baas_runtime_repository_public_key_length)
+    if(NOT _baas_runtime_repository_public_key_length EQUAL 64
+       OR NOT BAAS_RUNTIME_REPOSITORY_TRUSTED_PUBLIC_KEY_HEX MATCHES
+          "^[0-9a-f]+$")
+        message(FATAL_ERROR
+            "BUILD_SERVICE_RUNTIME_REPOSITORY_UPDATE_APP requires a fixed 64-character lowercase BAAS_RUNTIME_REPOSITORY_TRUSTED_PUBLIC_KEY_HEX")
+    endif()
+    set(BUILD_RUNTIME_REPOSITORY_GIT2 ON CACHE BOOL
+        "Build the optional libgit2 repository backend" FORCE)
+    set(BUILD_SERVICE_RUNTIME_REPOSITORY_PLAN ON CACHE BOOL
+        "Build signed service runtime repository plan verification" FORCE)
     set(BUILD_SERVICE_AUTH_CRYPTO ON CACHE BOOL
         "Build the service v1 cryptographic foundation" FORCE)
 endif()
@@ -808,6 +839,10 @@ endif()
 
 if(BUILD_SERVICE_RUNTIME_REPOSITORY_PLAN)
     include("${CMAKE_CURRENT_LIST_DIR}/cmake/ServiceRuntimeRepositoryPlan.cmake")
+endif()
+
+if(BUILD_SERVICE_RUNTIME_REPOSITORY_UPDATE_APP)
+    include("${CMAKE_CURRENT_LIST_DIR}/cmake/ServiceRuntimeRepositoryUpdateApplication.cmake")
 endif()
 
 if(BUILD_SERVICE_AUTH_HTTP)

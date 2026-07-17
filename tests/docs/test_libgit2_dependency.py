@@ -88,6 +88,53 @@ class LibGit2DependencyContractTests(unittest.TestCase):
         self.assertIn('"baas-libgit2",', manager)
         self.assertIn("user.baas.dependencies:libgit2_version=1.9.3", profile)
 
+    def test_standalone_publisher_links_the_real_backend_without_changing_default(self) -> None:
+        root_cmake = (ROOT / "CMakeLists.txt").read_text(encoding="utf-8")
+        publisher_cmake = (
+            ROOT / "cmake" / "ServiceRuntimeRepositoryUpdateApplication.cmake"
+        ).read_text(encoding="utf-8")
+        publisher_header = (
+            ROOT / "include" / "service" / "app" / "RuntimeRepositoryUpdateApplication.h"
+        ).read_text(encoding="utf-8")
+        publisher_source = (
+            ROOT / "src" / "service" / "app" / "RuntimeRepositoryUpdateApplication.cpp"
+        ).read_text(encoding="utf-8")
+        publisher_main = (
+            ROOT / "apps" / "BAAS_runtime_repository_update" / "main.cpp"
+        ).read_text(encoding="utf-8")
+        workflow = (
+            ROOT / ".github" / "workflows" / "runtime-repository-git2.yml"
+        ).read_text(encoding="utf-8")
+        documentation = (
+            ROOT / "docs" / "script-runtime" / "RUNTIME_REPOSITORY_UPDATE_APPLICATION.md"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn(
+            'option(BUILD_SERVICE_RUNTIME_REPOSITORY_UPDATE_APP "Build the standalone signed runtime repository update publisher" OFF)',
+            root_cmake,
+        )
+        self.assertIn("set(BUILD_RUNTIME_REPOSITORY_GIT2 ON CACHE BOOL", root_cmake)
+        self.assertIn("set(BUILD_SERVICE_RUNTIME_REPOSITORY_PLAN ON CACHE BOOL", root_cmake)
+        self.assertIn("TARGET_OS_NAME STREQUAL \"Android\"", root_cmake)
+        self.assertIn("BAAS_runtime_repository_git2", publisher_cmake)
+        self.assertIn("BAAS_service_runtime_repository_plan", publisher_cmake)
+        self.assertIn("add_executable(\n        BAAS_runtime_repository_update", publisher_cmake)
+        self.assertIn("runtime_repository_update_input_max_bytes", publisher_header)
+        self.assertIn("Libgit2RuntimeRepositoryFetchBackend backend", publisher_source)
+        self.assertIn("owner.recover(validator)", publisher_source)
+        self.assertIn("owner.apply(signed_envelope", publisher_source)
+        self.assertIn("BAAS_RUNTIME_REPOSITORY_TRUSTED_PUBLIC_KEY_HEX", publisher_source)
+        self.assertNotIn("product_public_key", publisher_header)
+        self.assertNotIn("getenv", publisher_main)
+        self.assertIn("BAAS_service_runtime_repository_update_application_tests", workflow)
+        self.assertIn("--requires=baas-libgit2/1.9.3", workflow)
+        self.assertIn("--requires=baas-libsodium/1.0.22", workflow)
+        self.assertIn("'cmake/ServiceAuth.cmake'", workflow)
+        self.assertIn("'include/service/adapters/BoundedJson.h'", workflow)
+        self.assertIn("BAAS_service_runtime_repository_plan_tests", workflow)
+        self.assertIn("Windows, Linux, and macOS", documentation)
+        self.assertIn("browser never invokes libgit2 directly", documentation)
+
 
 if __name__ == "__main__":
     unittest.main()

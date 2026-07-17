@@ -252,3 +252,9 @@ Only that provider crosses into the updater/libgit2 layer. The existing Tauri
 exact-generation launch path remains a reader-only path and performs no fetch;
 the standalone updater publishes a complete generation first and then starts
 or restarts the service pinned to that exact generation.
+
+The concrete desktop process boundary is documented in
+`RUNTIME_REPOSITORY_UPDATE_APPLICATION.md`. It links the libgit2 backend only
+into the separate `BAAS_runtime_repository_update` publisher, accepts the
+signed envelope over bounded stdin, and returns the exact generation required
+for the service restart handoff.

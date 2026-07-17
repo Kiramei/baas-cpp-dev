@@ -208,6 +208,21 @@ private:
 
 } // namespace
 
+namespace detail {
+
+void replace_ambiguous_update_pin_after_recovery(
+    RuntimeRepositoryUpdateResult &update,
+    const RuntimeRepositoryUpdateResult &recovered,
+    const std::string_view actual_generation) {
+  if (update.disposition == PublishDisposition::NotCommitted ||
+      actual_generation.empty())
+    return;
+  update.pinned_generation = actual_generation;
+  update.pinned_bundle = recovered.pinned_bundle;
+}
+
+} // namespace detail
+
 struct RuntimeRepositoryTrustedPlanUpdateOwner::Impl final {
   Impl(
       std::filesystem::path state_root,
@@ -366,6 +381,9 @@ RuntimeRepositoryTrustedPlanUpdateOwner::apply(
               std::move(update), RuntimeRepositoryTrustedPlanError::none,
               reconciled.error);
         }
+        if (actual)
+          detail::replace_ambiguous_update_pin_after_recovery(update, recovered,
+                                                              *actual);
       }
       if (claim.terminal_rejected())
         return fail(RuntimeRepositoryTrustedPlanUpdateOwnerError::cancelled,
