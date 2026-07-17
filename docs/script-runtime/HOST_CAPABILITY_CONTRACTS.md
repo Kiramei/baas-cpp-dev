@@ -56,6 +56,28 @@ singleton MUST NOT cross it. A synchronous binding returns `HostResult<T>` and
 an asynchronous binding completes an equivalent task result. C++ exceptions
 MUST NOT cross the language ABI.
 
+Schema-1 binding objects accept only the common fields `budget`, `cancellation`,
+`capability`, `errors`, `export`, `id`, `parameters`, `parity_test`, and
+`returns`, plus the declared extension fields `argument_contract`,
+`composite_effects`, `control_contract`, `error_variants`, and `result_schema`.
+Unknown or misspelled binding, parameter, result-schema, or result-field keys
+MUST be rejected by catalog validation. `composite_effects` is an ordered audit
+list of effect kinds; it does not grant the corresponding lower-level
+capabilities.
+`control_contract` is an ordered list of mandatory control-flow properties.
+`error_variants` is an ordered list of exact code, safe-details discriminator,
+effect-state, `retryable` boolean, language-mapping, and legacy-parity
+normalization contracts. Every variant MUST declare `retryable` explicitly;
+missing or non-boolean values are invalid.
+`result_schema` fixes field order, requiredness, field type/unit/semantics, and
+unknown-field policy for named ordered-map results.
+Parameter objects accept only `name`, `required`, `type`, and optional
+`default`; a default is valid only for an optional ordered-map parameter in v1.
+A result schema accepts only `field_order`, `fields`, and `unknown_fields`; each
+field descriptor accepts only `required`, `type`, `semantics`, and optional
+`unit`. Every current named result field is required, and `field_order` MUST
+contain every field exactly once.
+
 ### HST-003 — Stable HostError envelope
 
 Every failure MUST be a structured `HostError` with `code`, safe `message`,
@@ -112,6 +134,9 @@ Registry resolution MUST reject an imported module absent from manifest
 narrowing order is service/user policy, platform availability, then per-task
 narrowing. Successful results contain only their four-way intersection; no
 denial may be converted into a weaker export or adapter fallback.
+Because this capability gate applies to every binding, every complete catalog
+`errors` list MUST include `HOST001_CAPABILITY_DENIED`; catalog validation MUST
+reject an omission.
 
 ### HST-005 — Deadlines, cancellation, and effect visibility
 
@@ -127,6 +152,15 @@ translation, an execution-context deadline becomes terminal `DeadlineExceeded`;
 a narrower call deadline becomes catchable `Timeout`, as required by ERR-004.
 The adapter MUST set `details.deadline_scope` to exactly `context` or `call`
 before returning `HOST004_DEADLINE_EXCEEDED`.
+
+The common `invoke_host_callback` boundary MUST check deadline first and then
+cancellation before every callback, independent of whether the binding's mode
+is `preflight` or `cooperative`. Consequently every binding's complete catalog
+`errors` list MUST include both `HOST003_CANCELLED` and
+`HOST004_DEADLINE_EXCEEDED`. `preflight` means no further adapter polling is
+required after that entry check; `cooperative` additionally polls during each
+bounded work/wait chunk. Catalog validation MUST reject any binding that omits
+either framework error.
 
 ### HST-006 — Reservation and incremental budgets
 
@@ -160,10 +194,12 @@ materialization rules in ASY-015.
 | `baas/vision` | `bounded_cpu_pool` | none | `vision_work_units` |
 | `baas/ocr` | `bounded_cpu_pool` | `model_id` | `ocr_work_units` |
 | `baas/device` | `device_strand` | `device_id` | `device_operations` |
+| `baas/clock` | `context_strand` | `execution_context_id` | `clock_reads` |
 | `baas/config` | `config_strand` | `config_id` | `config_read_operations` |
 | `baas/log` | `thread_safe` | none | `log_events` |
 | `baas/notify` | `context_strand` | `execution_context_id` | `notification_events` |
 | `baas/scheduler` | `context_strand` | `execution_context_id` | `scheduler_operations` |
+| `baas/procedure` | `device_strand` | `device_id` | `procedure_steps` |
 | `baas/resource` | `thread_safe` | `snapshot_id` | `resource_bytes` |
 | `baas/fs` | `root_strand` | `root_handle` | `filesystem_operations` |
 | `baas/service` | `session_strand` | `service_session_id` | `service_messages` |
@@ -202,19 +238,99 @@ until `destruction_safe()` is true. Destroying the final dispatcher owner while
 `destruction_safe()` is false MUST fail-fast; it MUST NOT silently discard
 queued, native-released/awaiting-ACK, or detached native ownership.
 
-### HST-009 — Vision, OCR, and device contracts
+### HST-009 — Vision, OCR, device, clock, and procedure contracts
 
 `baas/vision` MUST expose deterministic `match`, `detect`, and `color` over
 explicit image/resource handles, ordered options, and bounded numeric work.
 `baas/ocr` MUST expose explicit model loading and `recognize`; locale, region,
 candidate, filtering, and pass-method choices belong in the options map and
 MUST NOT use process-global defaults. `baas/device` MUST expose `capture`,
-`click`, `swipe`, and `app_control`; coordinates identify the captured frame or
-declared logical resolution, input is serialized on `device_id`, and
+`click`, `swipe`, `app_control`, and `lifecycle`; coordinates identify the
+captured frame or declared logical resolution, input is serialized on
+`device_id`, and
 `HOST008_DEVICE_DISCONNECTED` is distinct from cancellation. Vision/OCR CPU
 work MUST NOT hold the device strand. Click options carry any long-click
 duration; swipe options cover scroll semantics without introducing an ambient
 gesture mode.
+
+`baas/device.lifecycle(device, target_kind, target_id, action, options?)` is the
+explicit device-strand boundary for the refresh-uiautomator migration. Binding
+`host.device.lifecycle.v1` accepts logical `target_kind` values `application`
+and `automation_service`. Applications allow `stop` and `start`; automation
+services additionally allow `wait_ready`. Omitted options are the deterministic
+empty ordered-map. `wait_ready` MUST cooperatively wait only until the earlier
+context/call deadline; `stop` and `start` MUST also check cancellation between
+bounded native steps. Success returns exactly the required ordered fields
+`target_kind`, `target_id`, and `state`, where state is the observed
+postcondition `stopped`, `started`, or `ready`. Invalid kind/action pairs return
+`HOST002_INVALID_ARGUMENT`; cancellation, deadline, unavailable service, device
+loss, budget exhaustion, and internal failures use the exact catalog errors.
+The `self.u2.app_stop`, `self.u2.uiautomator.start`, and
+`self.wait_uiautomator_start` inventory maps to `DeviceHost::lifecycle`, not a
+script-language helper.
+
+`baas/clock.now` MUST read the execution context's injected `ClockHost`, not
+ambient process time. Production injects its policy-approved clock when the
+execution context is created; tests inject a fixed or explicitly advancing fake
+clock. The evaluator MUST NOT read an ambient process clock as a fallback. It
+returns exactly the required ordered integer fields `unix_time_ns`, signed
+nanoseconds since `1970-01-01T00:00:00Z` excluding leap seconds, then
+`monotonic_time_ns`, a nondecreasing elapsed-time value with an unspecified
+epoch. A Python `time.time()` migration derives seconds only from
+`unix_time_ns`; timeout measurement uses `monotonic_time_ns`. The `clock.read`
+capability, `clock_reads` budget, `host.clock.now.v1` errors, and context strand
+are fixed in the machine catalog. This is a specified gap contract; no ClockHost
+adapter is claimed here.
+
+`baas/procedure.run(procedure_id, options?) -> ordered-map<ProcedureResult>` is
+the only v1 composite automation entry. Its binding is
+`host.procedure.run.v1`, capability is `procedure.execute`, and
+`procedure_steps` is its stable host-operation budget. `procedure_id` MUST be a
+logical ID registered in the immutable host procedure catalog; it MUST NOT be a
+native source path, Python module path, filesystem path, symbol address, or
+callable supplied by the script. `options` is optional; omission supplies the
+deterministic empty ordered-map. A successful `ProcedureResult` contains
+exactly one required ordered field, `end: string`. `end` is the logical terminal
+match ID selected by the registered procedure's deterministic ordered-match
+rules; it is never a resource/native path, and timeout/cancellation do not
+manufacture a successful `end`. The migrated `group` task consumes this field
+for `group_sign-up-reward`, `group_menu`, or `group_join-club`. The current
+`core.picture.co_detect` migration maps to this boundary
+because it composes capture, vision, input, wait, and foreground-package checks;
+it MUST NOT be represented as the pure `vision.analyze` capability.
+
+The ProcedureHost MUST execute on the current execution context's `device_id`
+strand and narrow `procedure.execute` to the registered procedure's declared
+composite effects. It MUST cooperatively observe the context stop token and the
+earlier of the context/call timeout at every capture, analysis, input, wait, and
+foreground-check boundary. Cancellation, timeout, device loss, missing logical
+procedure, budget exhaustion, backpressure, and internal failure use exactly the
+catalog errors; a possibly committed input effect MUST retain the HST-003
+`effect_state` rules. This catalog and taxonomy evidence specify the contract
+only: no ProcedureHost adapter, native procedure registry, or parity completion
+is claimed.
+
+If the foreground package differs from the execution context's expected package,
+ProcedureHost MUST return `HOST006_UNAVAILABLE` with the only public detail
+`unavailable_reason = foreground_package_mismatch`; the actual/expected package
+names are not exposed. Its language mapping is the existing catchable
+`HostUnavailable`, and `retryable` MUST be `true` because the legacy
+`PackageIncorrect` path is retried after foreground recovery. `effect_state` is
+`not_started` only when no input effect was committed before the mismatch,
+`committed` when at least one input effect is
+confirmed committed, and `unknown` when an input may have committed but its
+completion cannot be proven. A mismatch MUST NOT erase or downgrade an earlier
+input effect.
+
+The Python-versus-C++ parity harness MUST normalize Python `PackageIncorrect`
+to that exact Host error and detail. It derives `effect_state` from the recorded
+input-effect trace: no committed input becomes `not_started`, confirmed input
+becomes `committed`, and an injected indeterminate completion becomes `unknown`.
+Message text and package names are ignored; code, detail discriminator,
+`retryable`, language mapping, and normalized effect state are compared. The
+implementation ERR-016 bridge MUST preserve the allowlisted
+`details.unavailable_reason` discriminator unchanged; it MUST NOT drop it while
+translating `HOST006_UNAVAILABLE` to `HostUnavailable`.
 
 ### HST-010 — Configuration, logging, and notification contracts
 
@@ -435,11 +551,13 @@ normative in `host-capabilities.v1.json`.
 | --- | --- |
 | `baas/vision` | `host.vision.match.v1(image, template, options) -> MatchResult?`; `host.vision.detect.v1(image, rules, options) -> list<Detection>`; `host.vision.color.v1(image, feature, options) -> bool` |
 | `baas/ocr` | `host.ocr.load_model.v1(resource_id, options) -> OcrModel`; `host.ocr.recognize.v1(model, image, region, options) -> list<OcrLine>` |
-| `baas/device` | `host.device.capture.v1`; `host.device.click.v1`; `host.device.swipe.v1`; `host.device.app_control.v1` |
+| `baas/device` | `host.device.capture.v1`; `host.device.click.v1`; `host.device.swipe.v1`; `host.device.app_control.v1`; `host.device.lifecycle.v1` |
+| `baas/clock` | `host.clock.now.v1() -> ordered-map<ClockReading>` |
 | `baas/config` | `host.config.snapshot.v1`; `host.config.get.v1`; `host.config.transact.v1` |
 | `baas/log` | `host.log.emit.v1(level, message, fields) -> null` |
 | `baas/notify` | `host.notify.show.v1(title, body, options) -> null`; `host.notify.prompt.v1(title, body, actions, options) -> NotificationAction?` |
 | `baas/scheduler` | `host.scheduler.register.v1`; `host.scheduler.dispatch.v1`; `host.scheduler.sleep.v1`; `host.scheduler.schedule.v1`; `host.scheduler.cancel.v1` |
+| `baas/procedure` | `host.procedure.run.v1(procedure_id, options?) -> ordered-map<ProcedureResult{end:string}>` |
 | `baas/resource` | `host.resource.resolve.v1`; `host.resource.read.v1` |
 | `baas/fs` | `host.fs.open_root.v1`; `host.fs.read.v1`; `host.fs.list.v1`; `host.fs.write_atomic.v1`; `host.fs.mutate.v1` |
 | `baas/service` | `host.service.publish.v1`; `host.service.request.v1` |
@@ -450,7 +568,8 @@ normative in `host-capabilities.v1.json`.
 ## Explicitly pending implementation evidence
 
 The production adapter set and metadata registry do not define or invoke
-`ProcessHost`, `HttpHost`, `SocketHost`, `ServiceHost`, or the other real named
+`ProcedureHost`, `ClockHost`, `ProcessHost`, `HttpHost`, `SocketHost`,
+`ServiceHost`, or the other real named
 adapters. `QueuedLogHost` and `BAASLoggerLogSink` are implemented foundations,
 but live package/task composition is not. Real adapter integrations for
 the checked `host<T>` foundation, async completion, bounded pools, keyed

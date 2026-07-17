@@ -333,6 +333,59 @@
       "symbol_patterns": ["shell.CreateShortCut", "win32com.client.Dispatch"]
     },
     {
+      "cpp_host_binding": "baas::script::host::ProcedureHost",
+      "disposition": "HOST_BINDING_REQUIRED",
+      "family": "automation.procedure",
+      "id": "procedure-host-v5",
+      "migration_status": "INVENTORIED",
+      "owner": "Runtime Automation Procedure",
+      "parity_test_id": "PARITY-PROCEDURE-HOST",
+      "reason": "core.picture.co_detect is a cooperative composite procedure spanning capture, vision, input, wait, foreground checks, cancellation, and timeout handling; it is not a pure vision.analyze call",
+      "source_scopes": [
+        "SCRIPT_RUNTIME",
+        "GENERATED_RESOURCE"
+      ],
+      "symbol_patterns": [
+        "core.picture.co_detect"
+      ]
+    },
+    {
+      "cpp_host_binding": "baas::script::host::DeviceHost::lifecycle",
+      "disposition": "HOST_BINDING_REQUIRED",
+      "family": "device.lifecycle",
+      "id": "device-lifecycle-host-v5",
+      "migration_status": "INVENTORIED",
+      "owner": "Runtime Device",
+      "parity_test_id": "PARITY-DEVICE-HOST",
+      "reason": "uiautomator stop, start, and readiness waits are device lifecycle effects and must remain on the device strand",
+      "source_scopes": [
+        "SCRIPT_RUNTIME",
+        "GENERATED_RESOURCE"
+      ],
+      "symbol_patterns": [
+        "self.u2.app_stop",
+        "self.u2.uiautomator.start",
+        "self.wait_uiautomator_start"
+      ]
+    },
+    {
+      "cpp_host_binding": "baas::script::host::ClockHost",
+      "disposition": "HOST_BINDING_REQUIRED",
+      "family": "time.clock",
+      "id": "clock-host-v5",
+      "migration_status": "INVENTORIED",
+      "owner": "Runtime Clock",
+      "parity_test_id": "PARITY-CLOCK-HOST",
+      "reason": "wall-clock reads must use the execution context's injectable clock instead of ambient process time",
+      "source_scopes": [
+        "SCRIPT_RUNTIME",
+        "GENERATED_RESOURCE"
+      ],
+      "symbol_patterns": [
+        "time.time"
+      ]
+    },
+    {
       "cpp_host_binding": "baas::script::host::DeviceHost",
       "disposition": "HOST_BINDING_REQUIRED",
       "family": "device.emulator-discovery",
