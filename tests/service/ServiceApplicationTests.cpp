@@ -345,7 +345,11 @@ void test_information_and_pipe_fail_before_side_effect()
 #if defined(_WIN32)
     const std::string pipe = R"(\\.\pipe\baas-service-app-test)";
 #else
-    const std::string pipe = (root.path / "service.sock").string();
+    // Hosted macOS temporary roots can exceed sockaddr_un::sun_path even
+    // though the pipe contract itself is valid.  Keep this process-boundary
+    // fixture below the portable 103-byte payload limit.
+    const std::string pipe =
+        (std::filesystem::path{"/tmp"} / root.path.filename()).string() + ".sock";
 #endif
     auto direct = options(root.path, unused_loopback_port());
     direct.pipe_name = pipe;

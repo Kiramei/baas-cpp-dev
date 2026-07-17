@@ -286,7 +286,13 @@ void test_list_pull_and_resource_shapes()
     auto cancelled = store.pull(config_key(), stopped.get_token());
     check(!cancelled && cancelled.error == channels::ResourceStoreError::internal_error,
           "pre-cancelled pull does not enter filesystem work");
-    check(store.project_root() == std::filesystem::absolute(project.root).lexically_normal(),
+    std::error_code root_identity_error;
+    const auto anchored_root = store.project_root();
+    check(anchored_root.is_absolute()
+              && anchored_root == anchored_root.lexically_normal()
+              && std::filesystem::equivalent(
+                  anchored_root, project.root, root_identity_error)
+              && !root_identity_error,
           "store exposes its normalized project root");
 }
 
