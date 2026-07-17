@@ -37,6 +37,14 @@ class LegacyConanWorkflowTests(unittest.TestCase):
         cls.android_script = (ROOT / "scripts/dev/Build-AndroidOcr.ps1").read_text(
             encoding="utf-8"
         )
+        cls.android_bash_workflows = [
+            (ROOT / path).read_text(encoding="utf-8")
+            for path in (
+                ".github/workflows/foundation-runtime.yml",
+                ".github/workflows/runtime-repository-git2.yml",
+                ".github/workflows/service-auth.yml",
+            )
+        ]
         cls.conanfile = ROOT / "deploy/conan/conanfile.py"
 
     def test_dependency_sets_match_the_cmake_targets(self) -> None:
@@ -125,6 +133,19 @@ class LegacyConanWorkflowTests(unittest.TestCase):
         self.assertNotIn("emcmake cmake", self.afwc)
         self.assertNotIn("-DCMAKE_TOOLCHAIN_FILE=\"../emsdk/", self.afwc)
 
+    def test_android_bash_jobs_feed_license_acceptance_to_ndk_install(self) -> None:
+        for workflow in self.android_bash_workflows:
+            self.assertIn(
+                'license_answers="$(printf \'y\\n%.0s\' {1..100})"', workflow
+            )
+            self.assertIn(
+                '"${sdkmanager}" --sdk_root="${android_sdk}" '
+                "'ndk;29.0.13846066' <<< \"${license_answers}\"",
+                workflow,
+            )
+            self.assertNotIn('yes | "${sdkmanager}"', workflow)
+            self.assertNotIn('sdk_root="${android_sdk}" --licenses', workflow)
+
     def test_emscripten_profile_pins_static_private_packages(self) -> None:
         profile = (ROOT / "deploy/conan/profiles/emscripten-wasm-release").read_text(
             encoding="utf-8"
@@ -151,8 +172,15 @@ class LegacyConanWorkflowTests(unittest.TestCase):
         opencv_data = (
             ROOT / "deploy/conan/recipes/baas-opencv/conandata.yml"
         ).read_text(encoding="utf-8")
+        opencv_recipe = (
+            ROOT / "deploy/conan/recipes/baas-opencv/conanfile.py"
+        ).read_text(encoding="utf-8")
         self.assertEqual(opencv_data.count('WITH_ITT: "OFF"'), 2)
         self.assertEqual(opencv_data.count('BUILD_WITH_STATIC_CRT: "OFF"'), 2)
+        self.assertIn('str(self.settings.os) == "Emscripten"', opencv_recipe)
+        self.assertIn('options["CPU_BASELINE"] = ""', opencv_recipe)
+        self.assertIn('options["CPU_DISPATCH"] = ""', opencv_recipe)
+        self.assertIn('options["CV_ENABLE_INTRINSICS"] = "ON"', opencv_recipe)
 
     def test_workflow_filters_cover_the_conan_contract(self) -> None:
         for workflow in (self.ocr, self.afwc):

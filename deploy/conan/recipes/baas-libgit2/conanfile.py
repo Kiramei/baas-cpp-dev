@@ -24,6 +24,7 @@ class BAASLibGit2Conan(ConanFile):
         "fPIC": True,
         "openssl/*:shared": False,
         "openssl/*:no_apps": True,
+        "openssl/*:no_fips": True,
         "openssl/*:no_zlib": True,
     }
 

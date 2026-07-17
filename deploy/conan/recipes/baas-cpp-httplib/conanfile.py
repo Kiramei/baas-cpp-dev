@@ -14,6 +14,7 @@ class BAASCppHttplibConan(ConanFile):
     default_options = {
         "openssl/*:shared": False,
         "openssl/*:no_apps": True,
+        "openssl/*:no_fips": True,
         "openssl/*:no_zlib": True,
     }
 

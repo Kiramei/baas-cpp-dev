@@ -57,6 +57,13 @@ class BAASOpenCVConan(ConanFile):
         if not self.options.with_dnn:
             selected = build.get("cmake_options_by_config", {}).get(str(self.settings.build_type).lower(), {})
             options.update(selected)
+        if str(self.settings.os) == "Emscripten":
+            # Match OpenCV's supported WebAssembly build contract: keep the
+            # generic CPU baseline/dispatch empty so CMake cannot infer an x86
+            # SSE baseline, while -msimd128 selects intrin_wasm.hpp.
+            options["CPU_BASELINE"] = ""
+            options["CPU_DISPATCH"] = ""
+            options["CV_ENABLE_INTRINSICS"] = "ON"
         return options
 
     def _check_minimum_package(self):

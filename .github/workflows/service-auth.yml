@@ -490,8 +490,8 @@ jobs:
             echo "Could not find executable sdkmanager at ${sdkmanager}." >&2
             exit 1
           fi
-          yes | "${sdkmanager}" --sdk_root="${android_sdk}" --licenses >/dev/null
-          "${sdkmanager}" --sdk_root="${android_sdk}" 'ndk;29.0.13846066'
+          license_answers="$(printf 'y\n%.0s' {1..100})"
+          "${sdkmanager}" --sdk_root="${android_sdk}" 'ndk;29.0.13846066' <<< "${license_answers}"
           test -d "${android_sdk}/ndk/29.0.13846066"
           echo "ANDROID_NDK_HOME=${android_sdk}/ndk/29.0.13846066" >> "$GITHUB_ENV"
 
