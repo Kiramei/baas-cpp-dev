@@ -27,19 +27,23 @@ path.
 
 ## Schema
 
-The exact schema is `baas.runtime-script.catalog/v1`. Unknown fields, duplicate
+The exact schema is `baas.runtime-script.catalog/v2`. Schema v2 makes
+`package_root` mandatory; v1 lacked enough information to distinguish relative
+package paths and is rejected instead of being guessed. This contract is still
+pre-release and had not been published as an executable catalog. Unknown fields, duplicate
 JSON object keys, non-UTF-8 input, decoded NUL, unsupported JSON value kinds,
 invalid versions, duplicate routes, and missing references are errors.
 
 ```json
 {
-  "schema": "baas.runtime-script.catalog/v1",
+  "schema": "baas.runtime-script.catalog/v2",
   "tasks": [
     {
       "run_mode": "solve",
       "task": "main_story",
-      "package_manifest": "packages/story.json",
-      "entry_module": "tasks/story/main",
+      "package_root": "packages/story",
+      "package_manifest": "packages/story/baas.package.json",
+      "entry_module": "main",
       "entry_export": "run",
       "language_version": {"major": 1, "minor": 0},
       "host_modules": [
@@ -47,7 +51,7 @@ invalid versions, duplicate routes, and missing references are errors.
           "module": "baas/log",
           "major": 1,
           "min_minor": 0,
-          "capabilities": ["log.write"]
+          "capabilities": ["log.emit"]
         }
       ],
       "legacy_aliases": ["start_main_story"]
@@ -56,9 +60,12 @@ invalid versions, duplicate routes, and missing references are errors.
 }
 ```
 
-`package_manifest` is an exact logical repository entry; it is not derived
-from task input. `entry_module` is an extensionless canonical package module,
-and its exact `.baas` source entry must also be manifested. Host module ids,
+`package_root` is the exact canonical repository directory that contains one
+package. `package_manifest` must be exactly
+`<package_root>/baas.package.json`; neither value is derived from task input.
+Manifest module paths and `entry_module` are canonical paths relative to that
+root. The catalog verifies the exact joined entry source without stripping a
+suffix, probing a parent, or case-folding. Host module ids,
 API requirements, and dotted lowercase capability ids are declarative. A later
 execution boundary must still negotiate the language version and resolve the
 declared Host contract; catalog acceptance is not execution acceptance.

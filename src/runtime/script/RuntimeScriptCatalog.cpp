@@ -489,11 +489,18 @@ RuntimeScriptCatalogResolution::RuntimeScriptCatalogResolution(
     std::shared_ptr<const void> owner,
     const RuntimeScriptTaskDescriptor* const task_value,
     const std::string_view requested_task_value,
-    const bool legacy_alias_value) noexcept
+    const bool legacy_alias_value,
+    const std::string_view generation_value,
+    const std::string_view commit_value) noexcept
     : task(task_value),
       requested_task(requested_task_value),
       legacy_alias(legacy_alias_value),
-      owner_(std::move(owner))
+      owner_(std::move(owner)),
+      generation_(generation_value),
+      commit_(commit_value),
+      resolved_task_(task_value),
+      resolved_requested_task_(requested_task_value),
+      resolved_legacy_alias_(legacy_alias_value)
 {
 }
 
@@ -502,7 +509,12 @@ RuntimeScriptCatalogResolution::RuntimeScriptCatalogResolution(
     : task(other.task),
       requested_task(other.requested_task),
       legacy_alias(other.legacy_alias),
-      owner_(other.owner_)
+      owner_(other.owner_),
+      generation_(other.generation_),
+      commit_(other.commit_),
+      resolved_task_(other.resolved_task_),
+      resolved_requested_task_(other.resolved_requested_task_),
+      resolved_legacy_alias_(other.resolved_legacy_alias_)
 {
 }
 
@@ -514,6 +526,11 @@ RuntimeScriptCatalogResolution& RuntimeScriptCatalogResolution::operator=(
     requested_task = other.requested_task;
     legacy_alias = other.legacy_alias;
     owner_ = other.owner_;
+    generation_ = other.generation_;
+    commit_ = other.commit_;
+    resolved_task_ = other.resolved_task_;
+    resolved_requested_task_ = other.resolved_requested_task_;
+    resolved_legacy_alias_ = other.resolved_legacy_alias_;
     return *this;
 }
 
@@ -585,7 +602,9 @@ std::optional<RuntimeScriptCatalogResolution> RuntimeScriptCatalog::resolve(
         impl_,
         &impl_->tasks[found->task_index],
         found->requested_task,
-        found->legacy_alias};
+        found->legacy_alias,
+        impl_->generation,
+        impl_->commit};
 }
 
 RuntimeScriptCatalogLoadResult load_runtime_script_catalog(
@@ -657,6 +676,7 @@ RuntimeScriptCatalogLoadResult load_runtime_script_catalog(
             const auto& task = as_object(task_value);
             constexpr std::array task_fields{
                 std::string_view{"run_mode"}, std::string_view{"task"},
+                std::string_view{"package_root"},
                 std::string_view{"package_manifest"}, std::string_view{"entry_module"},
                 std::string_view{"entry_export"}, std::string_view{"language_version"},
                 std::string_view{"host_modules"}, std::string_view{"legacy_aliases"}};
@@ -666,18 +686,25 @@ RuntimeScriptCatalogLoadResult load_runtime_script_catalog(
             RuntimeScriptTaskDescriptor descriptor;
             descriptor.run_mode = required_text(task.at("run_mode"));
             descriptor.canonical_task = required_text(task.at("task"));
+            descriptor.package_root = required_text(task.at("package_root"));
             descriptor.package_manifest = required_text(task.at("package_manifest"));
             descriptor.entry_module = required_text(task.at("entry_module"));
             descriptor.entry_export = required_text(task.at("entry_export"));
             validate_module(
+                descriptor.package_root,
+                ::baas::script::runtime::ModuleKind::Package,
+                limits);
+            validate_module(
                 descriptor.entry_module,
                 ::baas::script::runtime::ModuleKind::Package,
                 limits);
-            if (descriptor.package_manifest == runtime_script_catalog_manifest
+            const auto expected_manifest = descriptor.package_root + "/baas.package.json";
+            if (descriptor.package_manifest != expected_manifest
                 || manifested(scripts, descriptor.package_manifest) == nullptr) {
                 fail(RuntimeScriptCatalogError::missing_package_manifest);
             }
-            const auto entry_source =
+            const auto entry_source = descriptor.package_root + "/"
+                +
                 ::baas::script::runtime::ModuleSpecifier{
                     ::baas::script::runtime::ModuleKind::Package,
                     descriptor.entry_module}.manifest_source_path();

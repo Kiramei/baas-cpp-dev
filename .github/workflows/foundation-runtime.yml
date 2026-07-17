@@ -88,6 +88,7 @@ on:
       - 'docs/script-runtime/SERVICE_RUNTIME_TASK_OWNER.md'
       - 'docs/script-runtime/RUNTIME_SCRIPT_PACKAGE_LOADER.md'
       - 'docs/script-runtime/RUNTIME_SCRIPT_CATALOG.md'
+      - 'docs/script-runtime/RUNTIME_SCRIPT_EXECUTION_PLAN.md'
       - 'docs/script-runtime/SERVICE_RUNTIME_TASK_STATUS_JSON.md'
   pull_request:
     branches:
@@ -176,6 +177,7 @@ on:
       - 'docs/script-runtime/SERVICE_RUNTIME_TASK_OWNER.md'
       - 'docs/script-runtime/RUNTIME_SCRIPT_PACKAGE_LOADER.md'
       - 'docs/script-runtime/RUNTIME_SCRIPT_CATALOG.md'
+      - 'docs/script-runtime/RUNTIME_SCRIPT_EXECUTION_PLAN.md'
       - 'docs/script-runtime/SERVICE_RUNTIME_TASK_STATUS_JSON.md'
 
 permissions:
@@ -227,10 +229,10 @@ jobs:
       # No -G is intentional: official Windows images select their installed
       # Visual Studio generator; Ubuntu/macOS select bundled Unix Makefiles.
       - name: Configure foundation targets
-        run: cmake -S . -B build/foundation -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} -DBUILD_TESTING=ON -DBUILD_SCRIPT_TESTS=ON -DBUILD_SCRIPT_TOOLS=ON -DBUILD_RESOURCE_CORE_TESTS=ON -DBUILD_RUNTIME_REPOSITORY_TESTS=ON -DBUILD_RUNTIME_REPOSITORY_UPDATER_TESTS=ON -DBUILD_RUNTIME_SCRIPT_PACKAGE_LOADER_TESTS=ON -DBUILD_RUNTIME_SCRIPT_CATALOG_TESTS=ON -DBUILD_SCRIPT_RESOURCE_HOST_TESTS=ON -DBUILD_SERVICE_PROTOCOL_TESTS=ON -DBUILD_SERVICE_TRIGGER_CATALOG_TESTS=ON -DBUILD_SERVICE_TRIGGER_DISPATCH_TESTS=ON -DBUILD_SERVICE_TRIGGER_EXECUTOR_TESTS=ON -DBUILD_SERVICE_RUNTIME_TASK_OWNER_TESTS=ON -DBUILD_SERVICE_RUNTIME_TASK_STATUS_JSON_TESTS=ON -DBUILD_SERVICE_PIPE_HOST_TESTS=ON -DBUILD_SERVICE_TRIGGER_PIPE_CHANNEL_TESTS=ON -DBUILD_SERVICE_ROUTER_TESTS=ON -DBUILD_SERVICE_ORIGIN_POLICY_TESTS=ON -DBUILD_SERVICE_ADB_DISCOVERY_TRIGGER_TESTS=ON -DBUILD_SERVICE_ADB_TRANSPORT_TESTS=ON -DBUILD_SERVICE_ADB_SYNC_TESTS=ON -DBUILD_SERVICE_COMMAND_LINE_TESTS=ON -DBUILD_SERVICE_SHUTDOWN_COORDINATOR_TESTS=ON -DBUILD_SERVICE_STATUS_TRIGGER_TESTS=ON -DBUILD_APP_BAAS=OFF -DBUILD_APP_ISA=OFF -DBUILD_BAAS_OCR=OFF -DBUILD_BAAS_AW_CHECKER=OFF -DBUILD_BAAS_NMS_BENCHMARK=OFF -DBAAS_FETCH_RESOURCES=OFF
+        run: cmake -S . -B build/foundation -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} -DBUILD_TESTING=ON -DBUILD_SCRIPT_TESTS=ON -DBUILD_SCRIPT_TOOLS=ON -DBUILD_RESOURCE_CORE_TESTS=ON -DBUILD_RUNTIME_REPOSITORY_TESTS=ON -DBUILD_RUNTIME_REPOSITORY_UPDATER_TESTS=ON -DBUILD_RUNTIME_SCRIPT_PACKAGE_LOADER_TESTS=ON -DBUILD_RUNTIME_SCRIPT_CATALOG_TESTS=ON -DBUILD_RUNTIME_SCRIPT_EXECUTION_PLAN_TESTS=ON -DBUILD_SCRIPT_RESOURCE_HOST_TESTS=ON -DBUILD_SERVICE_PROTOCOL_TESTS=ON -DBUILD_SERVICE_TRIGGER_CATALOG_TESTS=ON -DBUILD_SERVICE_TRIGGER_DISPATCH_TESTS=ON -DBUILD_SERVICE_TRIGGER_EXECUTOR_TESTS=ON -DBUILD_SERVICE_RUNTIME_TASK_OWNER_TESTS=ON -DBUILD_SERVICE_RUNTIME_TASK_STATUS_JSON_TESTS=ON -DBUILD_SERVICE_PIPE_HOST_TESTS=ON -DBUILD_SERVICE_TRIGGER_PIPE_CHANNEL_TESTS=ON -DBUILD_SERVICE_ROUTER_TESTS=ON -DBUILD_SERVICE_ORIGIN_POLICY_TESTS=ON -DBUILD_SERVICE_ADB_DISCOVERY_TRIGGER_TESTS=ON -DBUILD_SERVICE_ADB_TRANSPORT_TESTS=ON -DBUILD_SERVICE_ADB_SYNC_TESTS=ON -DBUILD_SERVICE_COMMAND_LINE_TESTS=ON -DBUILD_SERVICE_SHUTDOWN_COORDINATOR_TESTS=ON -DBUILD_SERVICE_STATUS_TRIGGER_TESTS=ON -DBUILD_APP_BAAS=OFF -DBUILD_APP_ISA=OFF -DBUILD_BAAS_OCR=OFF -DBUILD_BAAS_AW_CHECKER=OFF -DBUILD_BAAS_NMS_BENCHMARK=OFF -DBAAS_FETCH_RESOURCES=OFF
 
       - name: Build foundation tests
-        run: cmake --build build/foundation --config ${{ matrix.build_type }} --parallel 4 --target BAAS_script_check BAAS_script_run BAAS_resource_snapshot_tests BAAS_runtime_repository_tests BAAS_runtime_repository_updater_tests BAAS_runtime_script_package_loader_tests BAAS_runtime_script_catalog_tests BAAS_script_resource_host_tests BAAS_script_lexer_tests BAAS_script_parser_tests BAAS_script_semantic_tests BAAS_script_executor_tests BAAS_script_value_heap_tests BAAS_script_structured_error_heap_tests BAAS_script_error_envelope_tests BAAS_script_environment_tests BAAS_script_error_translation_tests BAAS_script_syntax_check_tests BAAS_script_json_bridge_tests BAAS_script_module_specifier_tests BAAS_script_module_graph_tests BAAS_script_host_registry_tests BAAS_script_sync_evaluator_tests BAAS_script_sync_host_tests BAAS_script_sync_host_evaluator_tests BAAS_script_typed_host_handle_tests BAAS_script_log_host_tests BAAS_service_pipe_framing_tests BAAS_service_pipe_host_tests BAAS_service_trigger_pipe_channel_tests BAAS_service_trigger_session_tests BAAS_service_trigger_egress_tests BAAS_service_trigger_envelope_tests BAAS_service_trigger_ingress_tests BAAS_service_trigger_catalog_tests BAAS_service_trigger_dispatch_tests BAAS_service_trigger_executor_tests BAAS_service_runtime_task_owner_tests BAAS_service_runtime_task_status_json_tests BAAS_service_router_tests BAAS_service_health_foundation_tests BAAS_service_origin_policy_tests BAAS_service_adb_discovery_trigger_tests BAAS_service_adb_transport_tests BAAS_service_adb_sync_tests BAAS_service_command_line_tests BAAS_service_shutdown_coordinator_tests BAAS_service_status_trigger_tests
+        run: cmake --build build/foundation --config ${{ matrix.build_type }} --parallel 4 --target BAAS_script_check BAAS_script_run BAAS_resource_snapshot_tests BAAS_runtime_repository_tests BAAS_runtime_repository_updater_tests BAAS_runtime_script_package_loader_tests BAAS_runtime_script_catalog_tests BAAS_runtime_script_execution_plan_tests BAAS_script_resource_host_tests BAAS_script_lexer_tests BAAS_script_parser_tests BAAS_script_semantic_tests BAAS_script_executor_tests BAAS_script_value_heap_tests BAAS_script_structured_error_heap_tests BAAS_script_error_envelope_tests BAAS_script_environment_tests BAAS_script_error_translation_tests BAAS_script_syntax_check_tests BAAS_script_json_bridge_tests BAAS_script_module_specifier_tests BAAS_script_module_graph_tests BAAS_script_host_registry_tests BAAS_script_sync_evaluator_tests BAAS_script_sync_host_tests BAAS_script_sync_host_evaluator_tests BAAS_script_typed_host_handle_tests BAAS_script_log_host_tests BAAS_service_pipe_framing_tests BAAS_service_pipe_host_tests BAAS_service_trigger_pipe_channel_tests BAAS_service_trigger_session_tests BAAS_service_trigger_egress_tests BAAS_service_trigger_envelope_tests BAAS_service_trigger_ingress_tests BAAS_service_trigger_catalog_tests BAAS_service_trigger_dispatch_tests BAAS_service_trigger_executor_tests BAAS_service_runtime_task_owner_tests BAAS_service_runtime_task_status_json_tests BAAS_service_router_tests BAAS_service_health_foundation_tests BAAS_service_origin_policy_tests BAAS_service_adb_discovery_trigger_tests BAAS_service_adb_transport_tests BAAS_service_adb_sync_tests BAAS_service_command_line_tests BAAS_service_shutdown_coordinator_tests BAAS_service_status_trigger_tests
 
       - name: Run foundation tests
         run: ctest --test-dir build/foundation --build-config ${{ matrix.build_type }} --output-on-failure --timeout 120
@@ -300,6 +302,7 @@ jobs:
           -DBUILD_SERVICE_RUNTIME_TASK_OWNER=ON
           -DBUILD_RUNTIME_SCRIPT_PACKAGE_LOADER=ON
           -DBUILD_RUNTIME_SCRIPT_CATALOG=ON
+          -DBUILD_RUNTIME_SCRIPT_EXECUTION_PLAN=ON
           -DBUILD_SERVICE_RUNTIME_TASK_STATUS_JSON=ON
           -DBUILD_APP_BAAS=OFF
           -DBUILD_APP_ISA=OFF
@@ -317,4 +320,5 @@ jobs:
           --target BAAS_runtime_repository_updater BAAS_service_runtime_task_owner
           BAAS_runtime_script_package_loader
           BAAS_runtime_script_catalog
+          BAAS_runtime_script_execution_plan
           BAAS_service_runtime_task_status_json

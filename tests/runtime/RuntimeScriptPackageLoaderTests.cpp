@@ -509,6 +509,11 @@ void test_stable_error_names()
         std::pair{Error::graph_validation_failed, std::string_view{"RSP018_GRAPH_VALIDATION_FAILED"}},
         std::pair{Error::cancelled, std::string_view{"RSP019_CANCELLED"}},
         std::pair{Error::resource_exhausted, std::string_view{"RSP020_RESOURCE_EXHAUSTED"}},
+        std::pair{Error::invalid_package_manifest, std::string_view{"RSP021_INVALID_PACKAGE_MANIFEST"}},
+        std::pair{Error::package_pin_mismatch, std::string_view{"RSP022_PACKAGE_PIN_MISMATCH"}},
+        std::pair{Error::module_outside_package, std::string_view{"RSP023_MODULE_OUTSIDE_PACKAGE"}},
+        std::pair{Error::module_manifest_mismatch, std::string_view{"RSP024_MODULE_MANIFEST_MISMATCH"}},
+        std::pair{Error::unexpected_package_module, std::string_view{"RSP025_UNEXPECTED_PACKAGE_MODULE"}},
     };
     for (const auto& [error, name] : expected) {
         check(

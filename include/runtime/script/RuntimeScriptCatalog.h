@@ -18,7 +18,7 @@ namespace baas::runtime::script {
 inline constexpr std::string_view runtime_script_catalog_manifest =
     "baas-script-catalog.json";
 inline constexpr std::string_view runtime_script_catalog_schema =
-    "baas.runtime-script.catalog/v1";
+    "baas.runtime-script.catalog/v2";
 
 enum class RuntimeScriptCatalogError : std::uint8_t {
     none,
@@ -87,6 +87,7 @@ struct RuntimeScriptHostRequirement {
 struct RuntimeScriptTaskDescriptor {
     std::string run_mode;
     std::string canonical_task;
+    std::string package_root;
     std::string package_manifest;
     std::string entry_module;
     std::string entry_export;
@@ -114,16 +115,41 @@ public:
     std::string_view requested_task;
     bool legacy_alias{};
 
+    [[nodiscard]] std::string_view generation() const noexcept
+    {
+        return generation_;
+    }
+    [[nodiscard]] std::string_view commit() const noexcept { return commit_; }
+    [[nodiscard]] const RuntimeScriptTaskDescriptor* resolved_task() const noexcept
+    {
+        return resolved_task_;
+    }
+    [[nodiscard]] std::string_view resolved_requested_task() const noexcept
+    {
+        return resolved_requested_task_;
+    }
+    [[nodiscard]] bool resolved_legacy_alias() const noexcept
+    {
+        return resolved_legacy_alias_;
+    }
+
 private:
     RuntimeScriptCatalogResolution(
         std::shared_ptr<const void> owner,
         const RuntimeScriptTaskDescriptor* task,
         std::string_view requested_task,
-        bool legacy_alias) noexcept;
+        bool legacy_alias,
+        std::string_view generation,
+        std::string_view commit) noexcept;
 
     // Type-erased so the resolution can be declared before the catalog's
     // private Impl. Callers cannot reset the owner independently of the views.
     std::shared_ptr<const void> owner_;
+    std::string_view generation_;
+    std::string_view commit_;
+    const RuntimeScriptTaskDescriptor* resolved_task_{};
+    std::string_view resolved_requested_task_;
+    bool resolved_legacy_alias_{};
 
     friend class RuntimeScriptCatalog;
 };
