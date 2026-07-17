@@ -172,6 +172,8 @@ option(BUILD_SERVICE_ADB_DISCOVERY_TRIGGER "Build the production detect_adb trig
 option(BUILD_SERVICE_ADB_DISCOVERY_TRIGGER_TESTS "Build deterministic detect_adb trigger tests" OFF)
 option(BUILD_SERVICE_CONFIGURATION_TRIGGERS "Build production configuration trigger registrations" OFF)
 option(BUILD_SERVICE_CONFIGURATION_TRIGGER_TESTS "Build configuration trigger production tests" OFF)
+option(BUILD_SERVICE_RUNTIME_TASK_TRIGGERS "Build scheduler/task trigger registrations" OFF)
+option(BUILD_SERVICE_RUNTIME_TASK_TRIGGER_TESTS "Build scheduler/task trigger registration tests" OFF)
 option(BUILD_SERVICE_COMMAND_LINE "Build the bounded service command-line contract" OFF)
 option(BUILD_SERVICE_COMMAND_LINE_TESTS "Build deterministic service command-line tests" OFF)
 option(BUILD_SERVICE_SHUTDOWN_COORDINATOR "Build the service main-thread shutdown coordinator" OFF)
@@ -516,6 +518,18 @@ if(BUILD_SERVICE_CONFIGURATION_TRIGGER_TESTS AND NOT BUILD_SERVICE_TRIGGER_EXECU
     set(BUILD_SERVICE_TRIGGER_EXECUTOR ON CACHE BOOL "Build the bounded trigger execution owner" FORCE)
 endif()
 
+if(BUILD_SERVICE_RUNTIME_TASK_TRIGGER_TESTS AND NOT BUILD_SERVICE_RUNTIME_TASK_TRIGGERS)
+    set(BUILD_SERVICE_RUNTIME_TASK_TRIGGERS ON CACHE BOOL "Build scheduler/task trigger registrations" FORCE)
+endif()
+
+if(BUILD_SERVICE_RUNTIME_TASK_TRIGGERS AND NOT BUILD_SERVICE_TRIGGER_DISPATCH)
+    set(BUILD_SERVICE_TRIGGER_DISPATCH ON CACHE BOOL "Build the transport-independent trigger dispatcher" FORCE)
+endif()
+
+if(BUILD_SERVICE_RUNTIME_TASK_TRIGGER_TESTS AND NOT BUILD_SERVICE_TRIGGER_EXECUTOR)
+    set(BUILD_SERVICE_TRIGGER_EXECUTOR ON CACHE BOOL "Build the bounded trigger execution owner" FORCE)
+endif()
+
 if(BUILD_SERVICE_COMMAND_LINE_TESTS AND NOT BUILD_SERVICE_COMMAND_LINE)
     set(BUILD_SERVICE_COMMAND_LINE ON CACHE BOOL "Build the bounded service command-line contract" FORCE)
 endif()
@@ -708,7 +722,8 @@ endif()
 if(BUILD_SERVICE_SYNC_HANDLER OR BUILD_SERVICE_REMOTE_HANDLER
    OR BUILD_SERVICE_FILE_RESOURCE_STORE
    OR BUILD_SERVICE_RUNTIME_CONFIGURATION_DEFAULTS
-   OR BUILD_SERVICE_RUNTIME_REPOSITORY_PLAN)
+   OR BUILD_SERVICE_RUNTIME_REPOSITORY_PLAN
+   OR BUILD_SERVICE_RUNTIME_TASK_TRIGGERS)
     baas_request_dependencies(nlohmann_json)
 endif()
 
@@ -836,6 +851,10 @@ endif()
 
 if(BUILD_SERVICE_CONFIGURATION_TRIGGERS)
     include("${CMAKE_CURRENT_LIST_DIR}/cmake/ServiceConfigurationTriggers.cmake")
+endif()
+
+if(BUILD_SERVICE_RUNTIME_TASK_TRIGGERS)
+    include("${CMAKE_CURRENT_LIST_DIR}/cmake/ServiceRuntimeTaskTriggers.cmake")
 endif()
 
 if(BUILD_SERVICE_ROUTER)
