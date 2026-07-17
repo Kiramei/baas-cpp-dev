@@ -28,6 +28,21 @@ runtime::RuntimeTaskSnapshot snapshot(std::string config_id)
     return value;
 }
 
+void check_button_classification(
+    std::string button, const bool expected_json,
+    const app::RuntimeTaskStatusJsonLimits limits, const char* message)
+{
+    auto value = snapshot("button-case");
+    value.button = button;
+    const auto encoded = app::encode_runtime_task_status_json(
+        std::span<const runtime::RuntimeTaskSnapshot>{&value, 1}, limits);
+    const auto raw_marker = std::string{R"("button":)"} + button;
+    check(encoded
+              && (encoded.json.find(raw_marker) != std::string::npos)
+                  == expected_json,
+          message);
+}
+
 void test_empty_and_python_field_shape()
 {
     const auto empty = app::encode_runtime_task_status_json({});
@@ -77,37 +92,142 @@ void test_button_json_and_string_boundary()
 
 void test_button_json_is_bounded_and_duplicate_free()
 {
-    auto duplicate = snapshot("duplicate");
-    duplicate.button = R"({"a":1,"\u0061":2})";
-    const auto duplicate_encoded = app::encode_runtime_task_status_json(
-        std::span<const runtime::RuntimeTaskSnapshot>{&duplicate, 1});
-    check(duplicate_encoded
-              && duplicate_encoded.json.find(
-                     R"("button":"{\"a\":1,\"\\u0061\":2}")")
-                  != std::string::npos,
-          "duplicate decoded object keys must use the legacy string boundary");
-
     app::RuntimeTaskStatusJsonLimits limits;
     limits.max_button_json_depth = 1;
-    auto deep = snapshot("deep");
-    deep.button = "[[]]";
-    const auto depth_encoded = app::encode_runtime_task_status_json(
-        std::span<const runtime::RuntimeTaskSnapshot>{&deep, 1}, limits);
-    check(depth_encoded
-              && depth_encoded.json.find(R"("button":"[[]]")")
-                  != std::string::npos,
-          "button JSON depth overflow must use the legacy string boundary");
+    check_button_classification(
+        "[[]]", true, limits,
+        "max depth one must accept an empty child array at depth one");
+    check_button_classification(
+        R"({"child":{}})", true, limits,
+        "max depth one must accept an empty child object at depth one");
+    check_button_classification(
+        "[[[]]]", false, limits,
+        "max depth one must reject an array at depth two");
+    check_button_classification(
+        R"([{"child":[]}])", false, limits,
+        "mixed array/object JSON must reject a container at depth two");
+
+    limits.max_button_json_depth = 2;
+    check_button_classification(
+        R"([{}])", true, limits,
+        "mixed JSON one level below the maximum depth must remain JSON");
+    check_button_classification(
+        R"([{"child":[]}])", true, limits,
+        "mixed array/object JSON must accept its exact maximum depth");
+    check_button_classification(
+        R"([[{"child":[]}]])", false, limits,
+        "mixed array/object JSON must reject one level above maximum depth");
 
     limits = {};
     limits.max_button_json_nodes = 1;
-    auto nodes = snapshot("nodes");
-    nodes.button = "[1]";
-    const auto node_encoded = app::encode_runtime_task_status_json(
-        std::span<const runtime::RuntimeTaskSnapshot>{&nodes, 1}, limits);
-    check(node_encoded
-              && node_encoded.json.find(R"("button":"[1]")")
-                  != std::string::npos,
-          "button JSON node overflow must use the legacy string boundary");
+    check_button_classification(
+        "[]", true, limits,
+        "an empty root container must consume exactly one node");
+    check_button_classification(
+        "[1]", false, limits,
+        "button JSON node overflow must use the legacy string boundary");
+
+    limits = {};
+    check_button_classification(
+        R"({"a":1,"\u0061":2})", false, limits,
+        "escaped equivalent duplicate keys must use the legacy string boundary");
+}
+
+void test_button_json_corpus()
+{
+    const app::RuntimeTaskStatusJsonLimits limits;
+    check_button_classification("[]", true, limits, "empty array must be JSON");
+    check_button_classification("{}", true, limits, "empty object must be JSON");
+    check_button_classification(
+        R"({"value":"\uD83D\uDE00"})", true, limits,
+        "a valid surrogate pair must remain JSON");
+    check_button_classification(
+        R"("\uD800")", false, limits,
+        "an unpaired high surrogate must use the legacy string boundary");
+    check_button_classification(
+        R"("\uDC00")", false, limits,
+        "an unpaired low surrogate must use the legacy string boundary");
+
+    for (const char* number : {
+             "0", "-0", "9007199254740991", "-9007199254740991",
+             "18446744073709551616", "1.25", "1e+2", "-1E-2"}) {
+        check_button_classification(
+            number, true, limits, "valid JSON number syntax must remain JSON");
+    }
+    for (const char* number : {"01", "1.", "1e", "+1", "--1"}) {
+        check_button_classification(
+            number, false, limits,
+            "invalid JSON number syntax must use the legacy string boundary");
+    }
+
+    check_button_classification(
+        "[1,]", false, limits,
+        "an array trailing comma must use the legacy string boundary");
+    check_button_classification(
+        R"({"a":1,})", false, limits,
+        "an object trailing comma must use the legacy string boundary");
+    check_button_classification(
+        " \t[1]\r\n", true, limits,
+        "JSON surrounded by legal whitespace must remain JSON");
+}
+
+void test_public_hard_limits()
+{
+    app::RuntimeTaskStatusJsonLimits limits;
+    limits.max_configs = app::runtime_task_status_json_hard_max_configs + 1;
+    check(app::encode_runtime_task_status_json({}, limits).error
+              == app::RuntimeTaskStatusJsonError::invalid_limits,
+          "configured configs above the public hard ceiling must fail early");
+
+    limits = {};
+    limits.max_waiting_tasks =
+        app::runtime_task_status_json_hard_max_waiting_tasks + 1;
+    check(app::encode_runtime_task_status_json({}, limits).error
+              == app::RuntimeTaskStatusJsonError::invalid_limits,
+          "configured waiting tasks above the public hard ceiling must fail early");
+
+    limits = {};
+    limits.max_button_json_depth =
+        app::runtime_task_status_json_hard_max_button_depth + 1;
+    check(app::encode_runtime_task_status_json({}, limits).error
+              == app::RuntimeTaskStatusJsonError::invalid_limits,
+          "configured JSON depth above the public hard ceiling must fail early");
+
+    limits = {};
+    limits.max_button_json_bytes =
+        app::runtime_task_status_json_hard_max_button_bytes + 1;
+    check(app::encode_runtime_task_status_json({}, limits).error
+              == app::RuntimeTaskStatusJsonError::invalid_limits,
+          "configured JSON bytes above the public hard ceiling must fail early");
+
+    limits = {};
+    limits.max_button_json_nodes =
+        app::runtime_task_status_json_hard_max_button_nodes + 1;
+    check(app::encode_runtime_task_status_json({}, limits).error
+              == app::RuntimeTaskStatusJsonError::invalid_limits,
+          "configured JSON nodes above the public hard ceiling must fail early");
+
+    limits = {};
+    limits.max_output_bytes =
+        app::runtime_task_status_json_hard_max_output_bytes + 1;
+    check(app::encode_runtime_task_status_json({}, limits).error
+              == app::RuntimeTaskStatusJsonError::invalid_limits,
+          "configured output bytes above the public hard ceiling must fail early");
+
+    limits = {};
+    limits.max_button_json_depth =
+        app::runtime_task_status_json_hard_max_button_depth;
+    const auto accepted_levels =
+        app::runtime_task_status_json_hard_max_button_depth + 1;
+    check_button_classification(
+        std::string(accepted_levels, '[') + std::string(accepted_levels, ']'),
+        true, limits,
+        "root depth zero must accept a container at the hard maximum depth");
+    const auto rejected_levels = accepted_levels + 1;
+    check_button_classification(
+        std::string(rejected_levels, '[') + std::string(rejected_levels, ']'),
+        false, limits,
+        "nesting above the hard maximum must be rejected before deeper recursion");
 }
 
 void test_rejects_ambiguous_or_invalid_snapshots()
@@ -209,6 +329,8 @@ int main()
     test_empty_and_python_field_shape();
     test_button_json_and_string_boundary();
     test_button_json_is_bounded_and_duplicate_free();
+    test_button_json_corpus();
+    test_public_hard_limits();
     test_rejects_ambiguous_or_invalid_snapshots();
     test_independent_bounds();
     test_resource_exhaustion_fails_closed();

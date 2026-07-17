@@ -256,9 +256,10 @@ private:
 
     [[nodiscard]] bool array(const std::size_t depth)
     {
-        if (!consume('[') || depth >= maximum_depth_) return false;
+        if (!consume('[')) return false;
         skip_space();
         if (consume(']')) return true;
+        if (depth == maximum_depth_) return false;
         while (true) {
             if (!value(depth + 1)) return false;
             skip_space();
@@ -270,10 +271,11 @@ private:
 
     [[nodiscard]] bool object(const std::size_t depth)
     {
-        if (!consume('{') || depth >= maximum_depth_) return false;
+        if (!consume('{')) return false;
         std::unordered_set<std::string> keys;
         skip_space();
         if (consume('}')) return true;
+        if (depth == maximum_depth_) return false;
         while (true) {
             auto key = string();
             if (!key || !keys.insert(*key).second) return false;
@@ -290,7 +292,13 @@ private:
 
     [[nodiscard]] bool value(const std::size_t depth)
     {
-        if (!node() || offset_ >= input_.size()) return false;
+        // Match the established bounded-JSON contract: the root value is at
+        // depth zero, so max_depth=1 accepts one child container/value level.
+        // Check before dispatching another recursive parse to keep the public
+        // hard ceiling an actual call-stack bound.
+        if (depth > maximum_depth_ || !node() || offset_ >= input_.size()) {
+            return false;
+        }
         switch (input_[offset_]) {
             case 'n': return literal("null");
             case 't': return literal("true");
@@ -427,7 +435,18 @@ private:
         && limits.max_button_json_bytes != 0
         && limits.max_button_json_depth != 0
         && limits.max_button_json_nodes != 0
-        && limits.max_output_bytes >= 2;
+        && limits.max_output_bytes >= 2
+        && limits.max_configs <= runtime_task_status_json_hard_max_configs
+        && limits.max_waiting_tasks
+            <= runtime_task_status_json_hard_max_waiting_tasks
+        && limits.max_button_json_bytes
+            <= runtime_task_status_json_hard_max_button_bytes
+        && limits.max_button_json_depth
+            <= runtime_task_status_json_hard_max_button_depth
+        && limits.max_button_json_nodes
+            <= runtime_task_status_json_hard_max_button_nodes
+        && limits.max_output_bytes
+            <= runtime_task_status_json_hard_max_output_bytes;
 }
 
 [[nodiscard]] bool no_nul(const std::string_view value) noexcept

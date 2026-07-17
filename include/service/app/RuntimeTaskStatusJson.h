@@ -10,6 +10,15 @@
 
 namespace baas::service::app {
 
+inline constexpr std::size_t runtime_task_status_json_hard_max_configs{4'096};
+inline constexpr std::size_t runtime_task_status_json_hard_max_waiting_tasks{4'096};
+inline constexpr std::size_t runtime_task_status_json_hard_max_button_bytes{
+    1U * 1'024U * 1'024U};
+inline constexpr std::size_t runtime_task_status_json_hard_max_button_depth{128};
+inline constexpr std::size_t runtime_task_status_json_hard_max_button_nodes{65'536};
+inline constexpr std::size_t runtime_task_status_json_hard_max_output_bytes{
+    16U * 1'024U * 1'024U};
+
 struct RuntimeTaskStatusJsonLimits {
     std::size_t max_configs{256};
     std::size_t max_waiting_tasks{256};

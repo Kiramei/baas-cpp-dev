@@ -23,6 +23,12 @@ legacy string. The encoder never substitutes `{}` after an encoding failure;
 the future production composition must fail closed instead of erasing the last
 observable task state.
 
+The public hard ceilings bound configs to 4,096, waiting tasks per config to
+4,096, button input to 1 MiB, button depth to 128 (with the root at depth zero),
+button values to 65,536 nodes, and encoded output to 16 MiB. Caller-selected
+limits above any ceiling are rejected before input traversal or recursive JSON
+descent.
+
 This component prepares provider publication but does not claim that production
 task execution is already connected. A later composition layer will encode a
 stable `RuntimeTaskOwner::snapshots()` copy and pass the resulting JSON to the
