@@ -34,6 +34,7 @@ using baas::service::app::ServiceRuntimeProviderBridgeError;
 using baas::service::channels::ProviderBackendError;
 using baas::service::channels::ResourceKey;
 using baas::service::channels::ResourceStoreError;
+using baas::service::channels::ResourceUpdate;
 using baas::service::channels::SyncResource;
 using Json = nlohmann::json;
 namespace test_defaults = baas::service::test;
@@ -138,12 +139,26 @@ void test_real_initialization_and_external_refresh()
     auto provider = std::make_shared<ProductionProviderBackend>();
     ServiceRuntimeProviderBridge bridge(store, provider, dependencies());
     std::atomic<int> status_publications{};
+    std::atomic<bool> gui_remove_published{};
+    auto update_subscription = store->subscribe_updates(
+        [&gui_remove_published](ResourceUpdate update) {
+            if (update.key.resource != SyncResource::gui) return;
+            try {
+                const auto operations = Json::parse(update.operations_json);
+                if (operations.size() == 1
+                    && operations[0]["op"] == "remove"
+                    && operations[0]["path"] == "") {
+                    gui_remove_published.store(true, std::memory_order_release);
+                }
+            } catch (...) {
+            }
+        });
     auto status_subscription = provider->subscribe_status(
         [&status_publications](std::string) {
             status_publications.fetch_add(1, std::memory_order_relaxed);
         });
-    check(static_cast<bool>(status_subscription),
-          "status publication observer subscribes");
+    check(update_subscription && status_subscription,
+          "resource and status publication observers subscribe");
     check(bridge.publish_log({"global", "info", "before start"})
               == ProviderBackendError::internal_error,
           "runtime log admission is closed before start");
@@ -169,8 +184,11 @@ void test_real_initialization_and_external_refresh()
     std::filesystem::remove(project.root / "config" / "gui.json");
     check(eventually([&] {
         auto gui = store->pull({SyncResource::gui, std::nullopt}, {});
-        return !gui && gui.error == ResourceStoreError::not_found;
-    }) && initialized(provider) == true,
+        return gui_remove_published.load(std::memory_order_acquire)
+            && !gui && gui.error == ResourceStoreError::not_found
+            && initialized(provider) == true;
+    }) && status_publications.load(std::memory_order_relaxed)
+              == publications_after_start,
           "optional gui deletion invalidates cache without failing readiness");
 
     write_bytes(project.root / "config" / "static.json", R"({"version":2})");
@@ -304,6 +322,23 @@ void test_config_pair_replacement_advances_at_capacity()
         std::lock_guard lock(updates_mutex);
         updates.clear();
     }
+    const auto removed_pair_published = [&] {
+        bool removed_config{};
+        bool removed_event{};
+        std::lock_guard lock(updates_mutex);
+        for (const auto& update : updates) {
+            const auto operations = Json::parse(update.operations_json);
+            if (!update.key.resource_id || *update.key.resource_id != "alpha"
+                || operations.empty() || operations[0]["op"] != "remove") {
+                continue;
+            }
+            removed_config = removed_config
+                || update.key.resource == SyncResource::config;
+            removed_event = removed_event
+                || update.key.resource == SyncResource::event;
+        }
+        return removed_config && removed_event;
+    };
 
     // Keep alpha/config.json physically present while breaking its pair, then
     // add beta. Both retired keys must be invalidated before beta admission.
@@ -311,26 +346,13 @@ void test_config_pair_replacement_advances_at_capacity()
     project.add_config("beta");
     check(eventually([&] {
         auto beta = store->pull({SyncResource::config, std::string{"beta"}}, {});
-        return beta && initialized(provider) == true;
+        return beta && initialized(provider) == true
+            && removed_pair_published();
     }), "A-to-B config replacement advances at exact cache capacity");
 
-    bool removed_config{};
-    bool removed_event{};
-    {
-        std::lock_guard lock(updates_mutex);
-        for (const auto& update : updates) {
-            const auto operations = Json::parse(update.operations_json);
-            if (!update.key.resource_id || *update.key.resource_id != "alpha"
-                || operations[0]["op"] != "remove") continue;
-            removed_config = removed_config
-                || update.key.resource == SyncResource::config;
-            removed_event = removed_event
-                || update.key.resource == SyncResource::event;
-        }
-    }
     auto stale_alpha = store->pull(
         {SyncResource::config, std::string{"alpha"}}, {});
-    check(removed_config && removed_event && !stale_alpha
+    check(removed_pair_published() && !stale_alpha
               && stale_alpha.error == ResourceStoreError::capacity,
           "removed id publishes both root removes even when one sibling remains");
     bridge.stop();
