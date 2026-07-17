@@ -494,13 +494,23 @@ void test_close_linearizes_with_output_callback()
 void test_disconnect_cancels_running_command_without_output()
 {
     std::atomic_bool started{};
+    std::atomic_bool stop_seen{};
     std::atomic_bool stopped{};
+    std::mutex stop_mutex;
+    std::condition_variable stop_changed;
+    bool release_stop{};
     auto built = trigger::TriggerDispatcher::create({
         {"status", [&](const trigger::AdmittedTriggerRequest&,
                        trigger::TriggerResponseSink& output,
                        std::stop_token stop) {
             started = true;
             while (!stop.stop_requested()) std::this_thread::yield();
+            {
+                std::unique_lock lock{stop_mutex};
+                stop_seen = true;
+                stop_changed.notify_all();
+                stop_changed.wait(lock, [&] { return release_stop; });
+            }
             stopped = true;
             static_cast<void>(output.cancelled());
         }},
@@ -525,11 +535,132 @@ void test_disconnect_cancels_running_command_without_output()
     while (!started.load() && std::chrono::steady_clock::now() < deadline)
         std::this_thread::yield();
     check(started.load(), "running handler must start before disconnect");
-    created.handler->closed(ws::BusinessCloseReason::truncated);
-    check(stopped.load(), "disconnect must request stop and drain the task owner");
+    std::atomic_bool close_returned{};
+    std::thread close([&] {
+        created.handler->closed(ws::BusinessCloseReason::truncated);
+        close_returned = true;
+    });
+    {
+        std::unique_lock lock{stop_mutex};
+        check(stop_changed.wait_for(lock, 3s, [&] { return stop_seen.load(); }),
+              "disconnect must request task stop");
+        check(!close_returned.load(),
+              "disconnect must wait while the stopped task still owns its slot");
+        release_stop = true;
+    }
+    stop_changed.notify_all();
+    close.join();
+    check(stopped.load() && close_returned.load(),
+          "disconnect must drain the task owner before returning");
     check(sink->batch_count() == 0,
           "cancel completion after disconnect must not emit plaintext");
     executor->shutdown();
+}
+
+void test_executor_worker_can_stop_its_connection_without_self_wait()
+{
+    std::stop_source connection_stop;
+    std::atomic_bool worker_returned{};
+    auto built = trigger::TriggerDispatcher::create({
+        {"status", [&](const trigger::AdmittedTriggerRequest&,
+                       trigger::TriggerResponseSink& output,
+                       std::stop_token) {
+            static_cast<void>(connection_stop.request_stop());
+            worker_returned = true;
+            static_cast<void>(output.cancelled());
+        }},
+    });
+    check(static_cast<bool>(built), "worker-stop dispatcher must build");
+    if (!built) return;
+    auto executor = std::make_shared<trigger::TriggerExecutor>(
+        std::make_shared<const trigger::TriggerDispatcher>(
+            std::move(*built.dispatcher)),
+        trigger::TriggerExecutorLimits{1, 1, 1, 1});
+    channels::TriggerHandlerFactory factory{executor};
+    auto sink = std::make_shared<RecordingSink>();
+    ws::BusinessSessionContext context;
+    context.channel = auth::BusinessChannel::trigger;
+    auto created = factory.create(
+        context, sink, connection_stop.get_token());
+    check(static_cast<bool>(created), "worker-stop fixture must create");
+    if (!created) return;
+    static_cast<void>(created.handler->input(secret(
+        "{\"type\":\"command\",\"command\":\"status\","
+        "\"timestamp\":23,\"payload\":{}}"), false, {}));
+    const auto deadline = std::chrono::steady_clock::now() + 3s;
+    while ((!worker_returned.load()
+            || executor->stats().active_tasks != 0)
+           && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::yield();
+    }
+    check(worker_returned.load() && executor->stats().active_tasks == 0,
+          "executor worker connection stop must return without self-wait");
+    check(created.handler->heartbeat({}).status
+              == ws::BusinessHandlerStatus::complete,
+          "worker-requested connection stop must close the handler");
+    created.handler->closed(ws::BusinessCloseReason::stopped);
+    executor->shutdown();
+}
+
+void test_executor_stop_callback_can_stop_connection_without_self_wait()
+{
+    std::stop_source connection_stop;
+    std::atomic_bool callback_registered{};
+    std::atomic_bool callback_returned{};
+    auto built = trigger::TriggerDispatcher::create({
+        {"status", [&](const trigger::AdmittedTriggerRequest&,
+                       trigger::TriggerResponseSink& output,
+                       std::stop_token task_stop) {
+            std::stop_callback callback(task_stop, [&] {
+                static_cast<void>(connection_stop.request_stop());
+                callback_returned = true;
+            });
+            callback_registered = true;
+            while (!task_stop.stop_requested()) std::this_thread::yield();
+            static_cast<void>(output.cancelled());
+        }},
+    });
+    check(static_cast<bool>(built), "callback-stop dispatcher must build");
+    if (!built) return;
+    auto executor = std::make_shared<trigger::TriggerExecutor>(
+        std::make_shared<const trigger::TriggerDispatcher>(
+            std::move(*built.dispatcher)),
+        trigger::TriggerExecutorLimits{1, 1, 1, 1});
+    channels::TriggerHandlerFactory factory{executor};
+    auto sink = std::make_shared<RecordingSink>();
+    ws::BusinessSessionContext context;
+    context.channel = auth::BusinessChannel::trigger;
+    auto created = factory.create(
+        context, sink, connection_stop.get_token());
+    check(static_cast<bool>(created), "callback-stop fixture must create");
+    if (!created) return;
+    static_cast<void>(created.handler->input(secret(
+        "{\"type\":\"command\",\"command\":\"status\","
+        "\"timestamp\":24,\"payload\":{}}"), false, {}));
+    const auto deadline = std::chrono::steady_clock::now() + 3s;
+    while (!callback_registered.load()
+           && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::yield();
+    }
+    check(callback_registered.load(),
+          "task callback must register before executor shutdown");
+    std::atomic_bool shutdown_returned{};
+    std::thread shutdown([&] {
+        executor->shutdown();
+        shutdown_returned = true;
+    });
+    const auto shutdown_deadline = std::chrono::steady_clock::now() + 3s;
+    while ((!callback_returned.load() || !shutdown_returned.load())
+           && std::chrono::steady_clock::now() < shutdown_deadline) {
+        std::this_thread::yield();
+    }
+    check(callback_returned.load() && shutdown_returned.load(),
+          "executor stop callback connection shutdown must not self-wait");
+    shutdown.join();
+    check(created.handler->heartbeat({}).status
+              == ws::BusinessHandlerStatus::complete,
+          "stop-callback connection stop must close the handler");
+    created.handler->closed(ws::BusinessCloseReason::stopped);
 }
 
 void test_factory_classifies_capacity_and_stopped_executor()
@@ -645,6 +776,8 @@ int main()
     test_synchronous_sink_failure_is_terminal_without_recursion();
     test_close_linearizes_with_output_callback();
     test_disconnect_cancels_running_command_without_output();
+    test_executor_worker_can_stop_its_connection_without_self_wait();
+    test_executor_stop_callback_can_stop_connection_without_self_wait();
     test_factory_classifies_capacity_and_stopped_executor();
     test_shutdown_linearizes_before_final_submit();
     test_completion_allocation_failure_fails_active_lease();
