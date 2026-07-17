@@ -4,6 +4,7 @@
 #include "script/runtime/SynchronousHost.h"
 
 #include <atomic>
+#include <array>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -15,10 +16,28 @@
 
 namespace baas::script::host {
 
+// Exact public call-error surface mirrored by host-capabilities.v1.json.
+// CapabilityDenied is raised by registry resolution before callback entry;
+// every other code is produced by the checked call boundary or this Host.
+inline constexpr std::array<runtime::HostErrorCode, 10> procedure_host_error_codes{
+    runtime::HostErrorCode::CapabilityDenied,
+    runtime::HostErrorCode::InvalidArgument,
+    runtime::HostErrorCode::Cancelled,
+    runtime::HostErrorCode::DeadlineExceeded,
+    runtime::HostErrorCode::BudgetExceeded,
+    runtime::HostErrorCode::Unavailable,
+    runtime::HostErrorCode::DeviceDisconnected,
+    runtime::HostErrorCode::ResourceNotFound,
+    runtime::HostErrorCode::Internal,
+    runtime::HostErrorCode::Backpressure,
+};
+
 enum class ProcedureEffectStage : std::uint8_t { Began, Committed, Unknown };
 
 // Executor callbacks may report from helper threads. This callback is noexcept,
 // bounded, and allocation-free; false means an undeclared/invalid effect was seen.
+// Input adapters must report Began before issuing input, Committed only after a
+// confirmed completion, and Unknown when completion cannot be proven.
 class ProcedureEffectReporter {
 public:
     virtual ~ProcedureEffectReporter() = default;
@@ -40,7 +59,6 @@ enum class ProcedureExecutorErrorCode : std::uint8_t {
 
 struct ProcedureExecutorError {
     ProcedureExecutorErrorCode code{ProcedureExecutorErrorCode::Internal};
-    std::string message;
     bool retryable{};
     runtime::HostEffectState effect_state{runtime::HostEffectState::Unknown};
 };
@@ -92,6 +110,8 @@ public:
     virtual ~ProcedureExecutor() = default;
     // The production wrapper catches every exception before the Host ABI.
     // Implementations must poll request cancellation/deadline during bounded work.
+    // execute() is a synchronous ownership boundary: implementations must join
+    // helper work and must not retain the request or its effect reporter.
     [[nodiscard]] virtual ProcedureExecutorOutcome execute(
         const ProcedureExecutionRequest& request) = 0;
 };
@@ -154,7 +174,6 @@ struct ProcedureHostLimits {
     std::size_t max_option_bytes{1U * 1024U * 1024U};
     std::size_t max_option_work{65'536};
     std::size_t max_calls{1'000'000};
-    std::size_t max_executor_message_bytes{1'024};
 };
 
 struct ProcedureHostStats {
@@ -163,6 +182,8 @@ struct ProcedureHostStats {
     std::size_t failed{};
     std::size_t cancelled_while_waiting{};
 };
+
+struct ProcedureHostRuntime;
 
 class ProcedureHost final {
 public:

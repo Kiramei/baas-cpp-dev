@@ -55,8 +55,7 @@ using runtime::JsonValue;
 {
     return limits.max_device_id_bytes != 0 && limits.max_option_depth != 0 &&
         limits.max_option_nodes != 0 && limits.max_option_bytes != 0 &&
-        limits.max_option_work != 0 && limits.max_calls != 0 &&
-        limits.max_executor_message_bytes != 0;
+        limits.max_option_work != 0 && limits.max_calls != 0;
 }
 
 struct OptionMetrics {
@@ -164,6 +163,18 @@ public:
             : HostEffectState::NotStarted;
     }
 
+    [[nodiscard]] HostEffectState input_effect_state() const noexcept
+    {
+        const auto mask = bit(ProcedureEffect::Input);
+        if ((unknown_.load(std::memory_order_acquire) & mask) != 0 ||
+            ((began_.load(std::memory_order_acquire) & mask) != 0 &&
+             (committed_.load(std::memory_order_acquire) & mask) == 0))
+            return HostEffectState::Unknown;
+        return (committed_.load(std::memory_order_acquire) & mask) != 0
+            ? HostEffectState::Committed
+            : HostEffectState::NotStarted;
+    }
+
 private:
     [[nodiscard]] static std::uint32_t bit(const ProcedureEffect effect) noexcept
     {
@@ -190,7 +201,8 @@ private:
 }
 
 [[nodiscard]] HostResult map_executor_error(
-    const ProcedureExecutorError& supplied, const HostEffectState reported)
+    const ProcedureExecutorError& supplied, const HostEffectState reported,
+    const HostEffectState reported_input)
 {
     const auto effect = merge_effect_state(reported, supplied.effect_state);
     switch (supplied.code) {
@@ -205,12 +217,11 @@ private:
                          detail("budget_scope", "host_operation"));
         case ProcedureExecutorErrorCode::Unavailable:
             return error(HostErrorCode::Unavailable,
-                         "procedure executor unavailable", supplied.retryable, effect,
-                         detail("unavailable_reason", "procedure_executor_unavailable"));
+                         "procedure executor unavailable", supplied.retryable, effect);
         case ProcedureExecutorErrorCode::ForegroundPackageMismatch:
             return error(HostErrorCode::Unavailable,
-                         "device foreground package does not match", supplied.retryable,
-                         effect,
+                         "device foreground package does not match", true,
+                         reported_input,
                          detail("unavailable_reason", "foreground_package_mismatch"));
         case ProcedureExecutorErrorCode::DeviceDisconnected:
             return error(HostErrorCode::DeviceDisconnected,
@@ -551,8 +562,7 @@ struct ProcedureHost::Impl {
                 case PhysicalDeviceAcquireCode::Reentrant:
                     return error(HostErrorCode::Unavailable,
                                  "physical-device strand reentry rejected", false,
-                                 HostEffectState::NotStarted,
-                                 detail("unavailable_reason", "physical_device_strand_reentry"));
+                                 HostEffectState::NotStarted);
                 case PhysicalDeviceAcquireCode::Backpressure:
                     return error(HostErrorCode::Backpressure,
                                  "physical-device strand is saturated", true,
@@ -560,8 +570,7 @@ struct ProcedureHost::Impl {
                 case PhysicalDeviceAcquireCode::Shutdown:
                     return error(HostErrorCode::Unavailable,
                                  "physical-device coordinator is shut down", false,
-                                 HostEffectState::NotStarted,
-                                 detail("unavailable_reason", "physical_device_coordinator_shutdown"));
+                                 HostEffectState::NotStarted);
                 case PhysicalDeviceAcquireCode::InvalidDeviceId:
                     return error(HostErrorCode::Internal,
                                  "frozen physical-device id became invalid", false,
@@ -583,7 +592,7 @@ struct ProcedureHost::Impl {
         }
 
         ProcedureExecutorOutcome outcome = ProcedureExecutorOutcome::failure(
-            {ProcedureExecutorErrorCode::Internal, {}, false, HostEffectState::Unknown});
+            {ProcedureExecutorErrorCode::Internal, false, HostEffectState::Unknown});
         try {
             ProcedureExecutionRequest request(
                 snapshot, procedure, device_id, std::move(options),
@@ -624,7 +633,8 @@ struct ProcedureHost::Impl {
         }
         if (!outcome.ok()) {
             ++failed;
-            return map_executor_error(outcome.error(), trace.effect_state());
+            return map_executor_error(
+                outcome.error(), trace.effect_state(), trace.input_effect_state());
         }
         if (!procedure->accepts_terminal(outcome.terminal_id())) {
             ++failed;
@@ -632,9 +642,19 @@ struct ProcedureHost::Impl {
                          "procedure executor returned an undeclared terminal", false,
                          trace.effect_state());
         }
-        ++completed;
-        return HostResult::success(HostValue(JsonValue(JsonObject{
-            {"end", JsonValue(outcome.terminal_id())}})));
+        try {
+            auto value = HostValue(JsonValue(JsonObject{
+                {"end", JsonValue(outcome.terminal_id())}}));
+            auto result = HostResult::success(std::move(value));
+            ++completed;
+            return result;
+        } catch (const std::bad_alloc&) {
+            ++failed;
+            return error(HostErrorCode::BudgetExceeded,
+                         "procedure result allocation failed", true,
+                         trace.effect_state(),
+                         detail("budget_scope", "external_memory"));
+        }
     }
 
     std::shared_ptr<const ProcedureSnapshot> snapshot;
@@ -690,7 +710,22 @@ ProcedureHostRuntime make_procedure_host_runtime(
         runtime::HostExecutionMode::ThreadSafe,
         runtime::HostCancellationMode::Cooperative};
     run.callback = [host](const HostCallContext& context, const HostArguments& arguments) {
-        return host->impl_->run(context, arguments);
+        try {
+            return host->impl_->run(context, arguments);
+        } catch (const std::bad_alloc&) {
+            return error(HostErrorCode::BudgetExceeded,
+                         "procedure Host allocation failed", true,
+                         HostEffectState::NotStarted,
+                         detail("budget_scope", "external_memory"));
+        } catch (const std::exception&) {
+            return error(HostErrorCode::Internal,
+                         "procedure Host callback failed", false,
+                         HostEffectState::NotStarted);
+        } catch (...) {
+            return error(HostErrorCode::Internal,
+                         "procedure Host callback failed", false,
+                         HostEffectState::NotStarted);
+        }
     };
     auto metadata = std::make_shared<const runtime::HostModuleRegistry>(
         std::vector<runtime::HostModuleDescriptor>{{

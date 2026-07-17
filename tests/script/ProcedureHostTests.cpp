@@ -1,4 +1,5 @@
 #include "script/host/ProcedureHost.h"
+#include "script/runtime/SynchronousEvaluator.h"
 
 #include <algorithm>
 #include <atomic>
@@ -145,6 +146,32 @@ runtime::HostResult invoke(
         *binding, context(std::move(probe)), args, owner.bindings->limits(), nullptr);
 }
 
+runtime::SynchronousHostOptions procedure_log_options(
+    const host::ProcedureHostRuntime& procedure,
+    const std::shared_ptr<runtime::InMemoryLogHost>& log)
+{
+    const auto* run = procedure.bindings->find("host.procedure.run.v1");
+    check(run != nullptr, "combined evaluator fixture requires procedure binding");
+    runtime::SynchronousHostOptions options;
+    options.metadata = std::make_shared<const runtime::HostModuleRegistry>(
+        std::vector<runtime::HostModuleDescriptor>{
+            {"baas/procedure", {1, 0},
+             {{"run", "host.procedure.run.v1", "procedure.execute"}}},
+            {"baas/log", {1, 0},
+             {{"emit", "host.log.emit.v1", "log.emit"}}},
+        });
+    options.bindings = std::make_shared<const runtime::SynchronousNativeBindingSet>(
+        std::vector<runtime::SynchronousNativeBinding>{
+            *run, runtime::make_in_memory_log_binding(log)});
+    options.permissions.declared_modules = {
+        {"baas/procedure", 1, 0}, {"baas/log", 1, 0}};
+    options.permissions.declared_capabilities = {"procedure.execute", "log.emit"};
+    options.permissions.policy_capabilities = {"procedure.execute", "log.emit"};
+    options.permissions.platform_capabilities = {"procedure.execute", "log.emit"};
+    options.permissions.task_capabilities = {"procedure.execute", "log.emit"};
+    return options;
+}
+
 std::optional<std::string> result_end(const runtime::HostResult& result)
 {
     if (!result.ok() || result.value().type() != runtime::HostValueType::Json)
@@ -227,6 +254,7 @@ void test_snapshot_validation_identity_and_ownership()
         (void)host::procedure_descriptor_sha256(duplicate_terminal);
     }, "duplicate terminals must be rejected before digesting");
     auto duplicate_effect = descriptor();
+    duplicate_effect.declared_effects.pop_back();
     duplicate_effect.declared_effects.push_back(host::ProcedureEffect::Input);
     expect_snapshot_error(host::ProcedureSnapshotErrorCode::DuplicateEffect, [&] {
         (void)host::procedure_descriptor_sha256(duplicate_effect);
@@ -266,6 +294,19 @@ void test_snapshot_validation_identity_and_ownership()
 
 void test_metadata_success_options_and_lifetime()
 {
+    check(host::procedure_host_error_codes ==
+              std::array{
+                  runtime::HostErrorCode::CapabilityDenied,
+                  runtime::HostErrorCode::InvalidArgument,
+                  runtime::HostErrorCode::Cancelled,
+                  runtime::HostErrorCode::DeadlineExceeded,
+                  runtime::HostErrorCode::BudgetExceeded,
+                  runtime::HostErrorCode::Unavailable,
+                  runtime::HostErrorCode::DeviceDisconnected,
+                  runtime::HostErrorCode::ResourceNotFound,
+                  runtime::HostErrorCode::Internal,
+                  runtime::HostErrorCode::Backpressure},
+          "runtime error metadata must exactly match the machine catalog order");
     auto resources = resource_snapshot();
     auto snapshot = procedure_snapshot(resources);
     std::weak_ptr<const host::ProcedureSnapshot> weak_snapshot = snapshot;
@@ -304,6 +345,19 @@ void test_metadata_success_options_and_lifetime()
               resolution.modules[0].bindings[0].binding_id == "host.procedure.run.v1" &&
               resolution.modules[0].bindings[0].capability == "procedure.execute",
           "metadata must expose exact baas/procedure v1 capability binding");
+    try {
+        (void)owner.metadata->resolve({
+            {{"baas/procedure", 1, 0}}, {"procedure.execute"},
+            {{"baas/procedure", {"run"}}}, {},
+            {"procedure.execute"}, {"procedure.execute"}});
+        check(false, "policy denial must reject procedure capability resolution");
+    } catch (const runtime::HostRegistryError& error) {
+        check(error.code() == runtime::HostRegistryErrorCode::CapabilityDenied &&
+                  error.capability() == "procedure.execute",
+              "procedure capability denial must remain the registry's HOST001 boundary");
+    } catch (...) {
+        check(false, "procedure capability denial must be a typed registry error");
+    }
     const auto* binding = owner.bindings->find("host.procedure.run.v1");
     check(binding && binding->contract.parameters.size() == 2 &&
               !binding->contract.parameters[1].required &&
@@ -377,24 +431,76 @@ void test_validation_terminal_and_error_mapping()
 
     auto foreground = make_owner([](const host::ProcedureExecutionRequest& request) {
         (void)request.effects().report(
-            host::ProcedureEffect::ForegroundCheck, host::ProcedureEffectStage::Began);
+            host::ProcedureEffect::Capture, host::ProcedureEffectStage::Committed);
+        (void)request.effects().report(
+            host::ProcedureEffect::Vision, host::ProcedureEffectStage::Committed);
+        (void)request.effects().report(
+            host::ProcedureEffect::Wait, host::ProcedureEffectStage::Committed);
+        (void)request.effects().report(
+            host::ProcedureEffect::ForegroundCheck, host::ProcedureEffectStage::Committed);
         return host::ProcedureExecutorOutcome::failure({
-            host::ProcedureExecutorErrorCode::ForegroundPackageMismatch, {}, false,
-            runtime::HostEffectState::NotStarted});
+            host::ProcedureExecutorErrorCode::ForegroundPackageMismatch, false,
+            runtime::HostEffectState::Committed});
     });
     auto foreground_result = invoke(foreground, arguments());
     check(foreground_result.has_error() &&
               foreground_result.error().code == runtime::HostErrorCode::Unavailable &&
-              foreground_result.error().effect_state == runtime::HostEffectState::Unknown &&
+              foreground_result.error().retryable &&
+              foreground_result.error().effect_state == runtime::HostEffectState::NotStarted &&
               detail_string(foreground_result, "unavailable_reason") ==
                   "foreground_package_mismatch",
-          "foreground mismatch must map to HOST006 with stable discriminator/effect state");
+          "non-input effects and supplied state must not forge foreground input effect state");
+    auto foreground_not_started = make_owner([](const host::ProcedureExecutionRequest&) {
+        return host::ProcedureExecutorOutcome::failure({
+            host::ProcedureExecutorErrorCode::ForegroundPackageMismatch, false,
+            runtime::HostEffectState::NotStarted});
+    });
+    auto not_started_result = invoke(foreground_not_started, arguments());
+    check(not_started_result.has_error() && not_started_result.error().retryable &&
+              not_started_result.error().effect_state ==
+                  runtime::HostEffectState::NotStarted &&
+              detail_string(not_started_result, "unavailable_reason") ==
+                  "foreground_package_mismatch",
+          "foreground mismatch before effects must remain retryable/not_started");
+    auto foreground_committed = make_owner([](const host::ProcedureExecutionRequest& request) {
+        (void)request.effects().report(
+            host::ProcedureEffect::Input, host::ProcedureEffectStage::Committed);
+        return host::ProcedureExecutorOutcome::failure({
+            host::ProcedureExecutorErrorCode::ForegroundPackageMismatch, false,
+            runtime::HostEffectState::NotStarted});
+    });
+    auto committed_result = invoke(foreground_committed, arguments());
+    check(committed_result.has_error() && committed_result.error().retryable &&
+              committed_result.error().effect_state ==
+                  runtime::HostEffectState::Committed &&
+              detail_string(committed_result, "unavailable_reason") ==
+                  "foreground_package_mismatch",
+          "foreground mismatch after a confirmed input must remain retryable/committed");
+
+    for (const auto stage : {
+             host::ProcedureEffectStage::Began,
+             host::ProcedureEffectStage::Unknown}) {
+        auto foreground_unknown = make_owner([stage](
+            const host::ProcedureExecutionRequest& request) {
+            (void)request.effects().report(host::ProcedureEffect::Input, stage);
+            return host::ProcedureExecutorOutcome::failure({
+                host::ProcedureExecutorErrorCode::ForegroundPackageMismatch, false,
+                runtime::HostEffectState::NotStarted});
+        });
+        auto unknown_result = invoke(foreground_unknown, arguments());
+        check(unknown_result.has_error() && unknown_result.error().retryable &&
+                  unknown_result.error().effect_state ==
+                      runtime::HostEffectState::Unknown &&
+                  detail_string(unknown_result, "unavailable_reason") ==
+                      "foreground_package_mismatch",
+              "begun or indeterminate input must make foreground mismatch effect unknown");
+    }
 
     auto disconnected = make_owner([](const host::ProcedureExecutionRequest& request) {
         (void)request.effects().report(
             host::ProcedureEffect::Input, host::ProcedureEffectStage::Committed);
         return host::ProcedureExecutorOutcome::failure({
-            host::ProcedureExecutorErrorCode::DeviceDisconnected, {}, true,
+            host::ProcedureExecutorErrorCode::DeviceDisconnected, true,
             runtime::HostEffectState::NotStarted});
     });
     auto disconnected_result = invoke(disconnected, arguments());
@@ -402,6 +508,37 @@ void test_validation_terminal_and_error_mapping()
               disconnected_result.error().code == runtime::HostErrorCode::DeviceDisconnected &&
               disconnected_result.error().effect_state == runtime::HostEffectState::Committed,
           "typed device error must preserve known committed effects");
+
+    struct TypedErrorCase {
+        host::ProcedureExecutorErrorCode supplied;
+        runtime::HostErrorCode expected;
+    };
+    const std::array typed_errors{
+        TypedErrorCase{host::ProcedureExecutorErrorCode::InvalidRequest,
+                       runtime::HostErrorCode::InvalidArgument},
+        TypedErrorCase{host::ProcedureExecutorErrorCode::Cancelled,
+                       runtime::HostErrorCode::Cancelled},
+        TypedErrorCase{host::ProcedureExecutorErrorCode::DeadlineExceeded,
+                       runtime::HostErrorCode::DeadlineExceeded},
+        TypedErrorCase{host::ProcedureExecutorErrorCode::BudgetExceeded,
+                       runtime::HostErrorCode::BudgetExceeded},
+        TypedErrorCase{host::ProcedureExecutorErrorCode::Unavailable,
+                       runtime::HostErrorCode::Unavailable},
+        TypedErrorCase{host::ProcedureExecutorErrorCode::ResourceNotFound,
+                       runtime::HostErrorCode::ResourceNotFound},
+        TypedErrorCase{host::ProcedureExecutorErrorCode::Internal,
+                       runtime::HostErrorCode::Internal},
+    };
+    for (const auto& typed : typed_errors) {
+        auto typed_owner = make_owner([typed](const host::ProcedureExecutionRequest&) {
+            return host::ProcedureExecutorOutcome::failure({
+                typed.supplied, true, runtime::HostEffectState::NotStarted});
+        });
+        const auto mapped = invoke(typed_owner, arguments());
+        check(mapped.has_error() && mapped.error().code == typed.expected &&
+                  mapped.error().effect_state == runtime::HostEffectState::NotStarted,
+              "every typed executor error must map to its exact public Host code");
+    }
 }
 
 void test_same_device_serialization_and_wait_cancellation()
@@ -460,6 +597,44 @@ void test_same_device_serialization_and_wait_cancellation()
           "strand wait must cooperatively cancel without starting effects");
     release_first = true;
     holder.join();
+
+    release_first = false;
+    entered = 0;
+    std::thread deadline_holder([&] { (void)invoke(first, arguments()); });
+    check(wait_until([&] { return entered.load() == 1; }, 2s),
+          "holder must enter executor before deadline wait test");
+    auto deadline_probe = std::make_shared<Probe>();
+    runtime::HostResult deadline_result = runtime::HostResult::success();
+    std::thread deadline_waiter(
+        [&] { deadline_result = invoke(second, arguments(), deadline_probe); });
+    check(wait_until([&] { return coordinator->stats().waiters == 1; }, 2s),
+          "deadline call must first wait on the shared strand");
+    deadline_probe->deadline = true;
+    deadline_waiter.join();
+    check(deadline_result.has_error() &&
+              deadline_result.error().code == runtime::HostErrorCode::DeadlineExceeded &&
+              deadline_result.error().effect_state == runtime::HostEffectState::NotStarted,
+          "strand wait must cooperatively observe deadline without starting effects");
+    release_first = true;
+    deadline_holder.join();
+
+    release_first = false;
+    entered = 0;
+    std::thread shutdown_holder([&] { (void)invoke(first, arguments()); });
+    check(wait_until([&] { return entered.load() == 1; }, 2s),
+          "holder must enter executor before coordinator shutdown test");
+    runtime::HostResult shutdown_result = runtime::HostResult::success();
+    std::thread shutdown_waiter([&] { shutdown_result = invoke(second, arguments()); });
+    check(wait_until([&] { return coordinator->stats().waiters == 1; }, 2s),
+          "shutdown test must have a bounded strand waiter");
+    coordinator->shutdown();
+    shutdown_waiter.join();
+    check(shutdown_result.has_error() &&
+              shutdown_result.error().code == runtime::HostErrorCode::Unavailable &&
+              shutdown_result.error().effect_state == runtime::HostEffectState::NotStarted,
+          "coordinator shutdown must wake and fail a pending strand waiter");
+    release_first = true;
+    shutdown_holder.join();
 }
 
 void test_different_device_concurrency_reentry_and_shutdown()
@@ -505,16 +680,14 @@ void test_different_device_concurrency_reentry_and_shutdown()
     const auto outer_result = invoke(outer, arguments());
     check(outer_result.ok() && inner_result.has_error() &&
               inner_result.error().code == runtime::HostErrorCode::Unavailable &&
-              detail_string(inner_result, "unavailable_reason") ==
-                  "physical_device_strand_reentry",
+              !inner_result.error().details,
           "same-thread same-device reentry must fail immediately instead of deadlocking");
 
     coordinator->shutdown();
     const auto stopped = invoke(first, arguments());
     check(stopped.has_error() && stopped.error().code == runtime::HostErrorCode::Unavailable &&
-              detail_string(stopped, "unavailable_reason") ==
-                  "physical_device_coordinator_shutdown",
-          "coordinator shutdown must reject new work with a stable unavailable reason");
+              !stopped.error().details,
+          "coordinator shutdown must reject new work without inventing a public discriminator");
 }
 
 void test_cancellation_deadline_and_exception_safety()
@@ -536,8 +709,16 @@ void test_cancellation_deadline_and_exception_safety()
                 request.deadline_exceeded()
                     ? host::ProcedureExecutorErrorCode::DeadlineExceeded
                     : host::ProcedureExecutorErrorCode::Cancelled,
-                {}, false, runtime::HostEffectState::NotStarted});
+                false, runtime::HostEffectState::NotStarted});
         }), coordinator);
+    auto cancelled_before = std::make_shared<Probe>();
+    cancelled_before->cancel = true;
+    const auto preflight_cancel = invoke(owner, arguments(), cancelled_before);
+    check(preflight_cancel.has_error() &&
+              preflight_cancel.error().code == runtime::HostErrorCode::Cancelled &&
+              preflight_cancel.error().effect_state == runtime::HostEffectState::NotStarted &&
+              !entered.load(),
+          "cancellation before strand admission must not enter the executor");
     runtime::HostResult result = runtime::HostResult::success();
     std::thread worker([&] { result = invoke(owner, arguments(), probe); });
     check(wait_until([&] { return entered.load(); }, 2s),
@@ -547,6 +728,22 @@ void test_cancellation_deadline_and_exception_safety()
     check(result.has_error() && result.error().code == runtime::HostErrorCode::Cancelled &&
               result.error().effect_state == runtime::HostEffectState::Unknown,
           "cancellation during executor must preserve uncertain begun effect state");
+
+    entered = false;
+    auto executing_deadline = std::make_shared<Probe>();
+    runtime::HostResult execution_deadline_result = runtime::HostResult::success();
+    std::thread deadline_worker(
+        [&] { execution_deadline_result = invoke(owner, arguments(), executing_deadline); });
+    check(wait_until([&] { return entered.load(); }, 2s),
+          "cooperative executor must begin before execution deadline");
+    executing_deadline->deadline = true;
+    deadline_worker.join();
+    check(execution_deadline_result.has_error() &&
+              execution_deadline_result.error().code ==
+                  runtime::HostErrorCode::DeadlineExceeded &&
+              execution_deadline_result.error().effect_state ==
+                  runtime::HostEffectState::Unknown,
+          "deadline during executor must preserve uncertain begun effect state");
 
     auto both = std::make_shared<Probe>();
     both->cancel = true;
@@ -617,6 +814,91 @@ void test_stress_repeated_serialization()
           "64 repeats must preserve serialization and release every lease/waiter");
 }
 
+void test_real_evaluator_mock_procedure_log_golden_runner()
+{
+    auto resources = resource_snapshot();
+    auto group = descriptor(
+        "group",
+        {"group_sign-up-reward", "group_menu", "group_join-club"},
+        {host::ProcedureEffect::Capture, host::ProcedureEffect::Vision,
+         host::ProcedureEffect::Input, host::ProcedureEffect::Wait,
+         host::ProcedureEffect::ForegroundCheck},
+        {"image/group/menu", "json/group/rules"});
+    auto snapshot = host::ProcedureSnapshot::build({group}, resources);
+    std::atomic<int> executions{};
+    auto executor = std::make_shared<LambdaExecutor>(
+        [snapshot, resources, &executions](const host::ProcedureExecutionRequest& request) {
+            ++executions;
+            check(request.snapshot().get() == snapshot.get() &&
+                      request.snapshot()->resource_snapshot().get() == resources.get(),
+                  "golden runner must install the exact mock snapshot/resources");
+            check(request.procedure()->procedure_id() == "group" &&
+                      request.options().size() == 1 &&
+                      request.options()[0].first == "scenario" &&
+                      request.options()[0].second == runtime::JsonValue("reward"),
+                  "real evaluator must pass exact logical procedure/options to mock executor");
+            (void)request.effects().report(
+                host::ProcedureEffect::Capture, host::ProcedureEffectStage::Committed);
+            return host::ProcedureExecutorOutcome::success("group_sign-up-reward");
+        });
+    auto procedure = host::make_procedure_host_runtime(
+        snapshot, "emulator-5556", executor,
+        host::PhysicalDeviceCoordinator::create());
+    auto log = std::make_shared<runtime::InMemoryLogHost>();
+    runtime::SynchronousEvaluator evaluator(
+        {{"main",
+          "import \"baas/procedure\" as procedure;\n"
+          "import \"baas/log\" as log;\n"
+          "let result = procedure.run(\"group\", {\"scenario\": \"reward\"});\n"
+          "log.emit(\"info\", result.end, {\"end\": result.end});\n"
+          "let end = result.end;\n"}},
+        procedure_log_options(procedure, log));
+    static_cast<void>(evaluator.execute("main"));
+    const auto end = evaluator.heap().string_copy(
+        evaluator.module_export("main", "end").as_heap_ref());
+    const auto events = log->events();
+    check(end == "group_sign-up-reward" && executions.load() == 1 &&
+              events.size() == 1 && events[0].level == "info" &&
+              events[0].message == "group_sign-up-reward" && events[0].fields &&
+              *events[0].fields == runtime::JsonObject{{
+                  "end", runtime::JsonValue("group_sign-up-reward")}},
+          "real evaluator + mock Procedure/LogHost must produce deterministic group golden trace");
+
+    auto mismatch_executor = std::make_shared<LambdaExecutor>(
+        [](const host::ProcedureExecutionRequest&) {
+            return host::ProcedureExecutorOutcome::failure({
+                host::ProcedureExecutorErrorCode::ForegroundPackageMismatch,
+                false, runtime::HostEffectState::NotStarted});
+        });
+    auto mismatch_procedure = host::make_procedure_host_runtime(
+        snapshot, "emulator-5556", mismatch_executor,
+        host::PhysicalDeviceCoordinator::create());
+    auto mismatch_log = std::make_shared<runtime::InMemoryLogHost>();
+    runtime::SynchronousEvaluator mismatch(
+        {{"main",
+          "import \"baas/procedure\" as procedure;\n"
+          "let code = \"\"; let host_code = \"\"; let reason = \"\";\n"
+          "let retryable = false; let effect = \"\";\n"
+          "try { procedure.run(\"group\"); } catch (error) {\n"
+          "  code = error.code; host_code = error.details.host_code;\n"
+          "  reason = error.details.host_details.unavailable_reason;\n"
+          "  retryable = error.details.retryable;\n"
+          "  effect = error.details.effect_state;\n"
+          "}\n"}},
+        procedure_log_options(mismatch_procedure, mismatch_log));
+    static_cast<void>(mismatch.execute("main"));
+    const auto mismatch_string = [&](const std::string_view name) {
+        return mismatch.heap().string_copy(
+            mismatch.module_export("main", name).as_heap_ref());
+    };
+    check(mismatch_string("code") == "HostUnavailable" &&
+              mismatch_string("host_code") == "HOST006_UNAVAILABLE" &&
+              mismatch_string("reason") == "foreground_package_mismatch" &&
+              mismatch.module_export("main", "retryable").as_boolean() &&
+              mismatch_string("effect") == "not_started",
+          "actual ProcedureHost foreground mismatch must survive ERR-016 into host_details");
+}
+
 }  // namespace
 
 int main(const int argc, char** argv)
@@ -630,6 +912,7 @@ int main(const int argc, char** argv)
         else if (selected == "different") test_different_device_concurrency_reentry_and_shutdown();
         else if (selected == "cancel") test_cancellation_deadline_and_exception_safety();
         else if (selected == "stress") test_stress_repeated_serialization();
+        else if (selected == "golden") test_real_evaluator_mock_procedure_log_golden_runner();
         else return EXIT_FAILURE;
         return failures == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
     }
@@ -640,6 +923,7 @@ int main(const int argc, char** argv)
     test_different_device_concurrency_reentry_and_shutdown();
     test_cancellation_deadline_and_exception_safety();
     test_stress_repeated_serialization();
+    test_real_evaluator_mock_procedure_log_golden_runner();
     if (failures != 0) return EXIT_FAILURE;
     std::cout << "procedure Host foundation tests passed\n";
     return EXIT_SUCCESS;

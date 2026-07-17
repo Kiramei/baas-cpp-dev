@@ -86,34 +86,48 @@ struct CanonicalDescriptor {
     if (!valid_limits(limits))
         throw ProcedureSnapshotError(
             ProcedureSnapshotErrorCode::InvalidLimits, "procedure limits must be non-zero");
-    CanonicalDescriptor result{source};
-    auto add_string = [&](const std::string_view value) {
+    if (source.terminal_ids.empty() ||
+        source.terminal_ids.size() > limits.max_terminals_per_procedure)
+        throw ProcedureSnapshotError(
+            ProcedureSnapshotErrorCode::TerminalLimitExceeded,
+            "procedure terminal limit exceeded");
+    if (source.declared_effects.size() > limits.max_effects_per_procedure)
+        throw ProcedureSnapshotError(
+            ProcedureSnapshotErrorCode::EffectLimitExceeded,
+            "procedure effect limit exceeded");
+    if (source.resource_ids.size() > limits.max_resources_per_procedure)
+        throw ProcedureSnapshotError(
+            ProcedureSnapshotErrorCode::ResourceLimitExceeded,
+            "procedure resource limit exceeded");
+    std::size_t preflight_bytes{};
+    std::size_t preflight_work{};
+    const auto preflight_string = [&](const std::string_view value) {
         if (value.size() > limits.max_string_bytes ||
             value.size() > limits.max_total_string_bytes -
-                std::min(result.string_bytes, limits.max_total_string_bytes))
+                std::min(preflight_bytes, limits.max_total_string_bytes))
             throw ProcedureSnapshotError(
                 ProcedureSnapshotErrorCode::StringLimitExceeded,
                 "procedure descriptor string budget exceeded");
-        result.string_bytes += value.size();
-        if (++result.work > limits.max_validation_work)
+        preflight_bytes += value.size();
+        if (++preflight_work > limits.max_validation_work)
             throw ProcedureSnapshotError(
                 ProcedureSnapshotErrorCode::WorkLimitExceeded,
                 "procedure descriptor validation work exceeded");
     };
+    preflight_string(source.procedure_id);
+    for (const auto& terminal : source.terminal_ids) preflight_string(terminal);
+    for (const auto& resource : source.resource_ids) preflight_string(resource);
+    if (check_digest) preflight_string(source.sha256);
 
-    add_string(result.value.procedure_id);
+    // Copy only after every attacker-controlled cardinality and string byte
+    // count is known to fit the publication limits.
+    CanonicalDescriptor result{source, preflight_bytes, preflight_work};
     if (!valid_procedure_id(result.value.procedure_id, limits.max_string_bytes))
         throw ProcedureSnapshotError(
             ProcedureSnapshotErrorCode::InvalidProcedureId,
             "procedure id is not a canonical lowercase logical id");
-    if (result.value.terminal_ids.empty() ||
-        result.value.terminal_ids.size() > limits.max_terminals_per_procedure)
-        throw ProcedureSnapshotError(
-            ProcedureSnapshotErrorCode::TerminalLimitExceeded,
-            "procedure terminal limit exceeded");
     std::set<std::string, std::less<>> terminals;
     for (const auto& terminal : result.value.terminal_ids) {
-        add_string(terminal);
         if (!valid_procedure_terminal_id(terminal, limits.max_string_bytes))
             throw ProcedureSnapshotError(
                 ProcedureSnapshotErrorCode::InvalidTerminalId,
@@ -139,18 +153,9 @@ struct CanonicalDescriptor {
         result.value.declared_effects.end())
         throw ProcedureSnapshotError(
             ProcedureSnapshotErrorCode::DuplicateEffect, "duplicate procedure effect");
-    if (result.value.declared_effects.size() > limits.max_effects_per_procedure)
-        throw ProcedureSnapshotError(
-            ProcedureSnapshotErrorCode::EffectLimitExceeded,
-            "procedure effect limit exceeded");
 
-    if (result.value.resource_ids.size() > limits.max_resources_per_procedure)
-        throw ProcedureSnapshotError(
-            ProcedureSnapshotErrorCode::ResourceLimitExceeded,
-            "procedure resource limit exceeded");
     std::sort(result.value.resource_ids.begin(), result.value.resource_ids.end());
     for (const auto& resource : result.value.resource_ids) {
-        add_string(resource);
         if (!resources::valid_resource_id(resource, limits.max_string_bytes))
             throw ProcedureSnapshotError(
                 ProcedureSnapshotErrorCode::InvalidResourceId,
@@ -162,7 +167,6 @@ struct CanonicalDescriptor {
             ProcedureSnapshotErrorCode::DuplicateResource, "duplicate procedure resource id");
 
     if (check_digest) {
-        add_string(result.value.sha256);
         if (!valid_digest(result.value.sha256))
             throw ProcedureSnapshotError(
                 ProcedureSnapshotErrorCode::InvalidDigest,
@@ -334,7 +338,24 @@ std::shared_ptr<const ProcedureSnapshot> ProcedureSnapshot::build(
     // Detect case aliases before canonical lowercase validation so manifests
     // cannot hide the collision behind whichever entry happens to validate first.
     std::map<std::string, std::string, std::less<>> folded_ids;
+    std::size_t folded_bytes{};
+    std::size_t folded_work{};
     for (const auto& descriptor : descriptors) {
+        if (descriptor.procedure_id.empty() ||
+            descriptor.procedure_id.size() > limits.max_string_bytes)
+            throw ProcedureSnapshotError(
+                ProcedureSnapshotErrorCode::InvalidProcedureId,
+                "procedure id exceeds the bounded logical-id shape");
+        if (descriptor.procedure_id.size() > limits.max_total_string_bytes -
+                std::min(folded_bytes, limits.max_total_string_bytes))
+            throw ProcedureSnapshotError(
+                ProcedureSnapshotErrorCode::StringLimitExceeded,
+                "procedure id case-fold budget exceeded");
+        folded_bytes += descriptor.procedure_id.size();
+        if (++folded_work > limits.max_validation_work)
+            throw ProcedureSnapshotError(
+                ProcedureSnapshotErrorCode::WorkLimitExceeded,
+                "procedure id case-fold work exceeded");
         const auto folded = ascii_fold(descriptor.procedure_id);
         const auto [found, inserted] = folded_ids.emplace(folded, descriptor.procedure_id);
         if (!inserted && found->second != descriptor.procedure_id)
@@ -351,7 +372,7 @@ std::shared_ptr<const ProcedureSnapshot> ProcedureSnapshot::build(
     });
 
     std::size_t total_strings{};
-    std::size_t total_work{};
+    std::size_t total_work{folded_work};
     std::string identity;
     add_length_prefixed(identity, "baas.procedure.snapshot/v1");
     add_length_prefixed(identity, impl->resources->snapshot_id());

@@ -634,7 +634,8 @@ struct SynchronousEvaluator::Impl {
             if (declared_status && host_error.details
                 && host_error.details->kind() == JsonKind::Object
                 && (host_error.code == HostErrorCode::DeadlineExceeded
-                    || host_error.code == HostErrorCode::BudgetExceeded)) {
+                    || host_error.code == HostErrorCode::BudgetExceeded
+                    || host_error.code == HostErrorCode::Unavailable)) {
                 const auto& entries = std::get<JsonObject>(host_error.details->value());
                 const auto bridge_limits = effective_host_json_limits(
                     host_options->bindings->limits());
@@ -642,13 +643,17 @@ struct SynchronousEvaluator::Impl {
                 for (const auto& [name, value] : entries) {
                     const auto expected_name = host_error.code == HostErrorCode::DeadlineExceeded
                         ? std::string_view("deadline_scope")
-                        : std::string_view("budget_scope");
+                        : host_error.code == HostErrorCode::BudgetExceeded
+                            ? std::string_view("budget_scope")
+                            : std::string_view("unavailable_reason");
                     if (name != expected_name || value.kind() != JsonKind::String) continue;
                     const auto& discriminator = std::get<std::string>(value.value());
                     const auto allowed = host_error.code == HostErrorCode::DeadlineExceeded
                         ? discriminator == "context" || discriminator == "call"
-                        : discriminator == "external_memory"
-                            || discriminator == "host_operation";
+                        : host_error.code == HostErrorCode::BudgetExceeded
+                            ? discriminator == "external_memory"
+                                || discriminator == "host_operation"
+                            : discriminator == "foreground_package_mismatch";
                     if (allowed) allowlisted.emplace_back(name, value);
                 }
                 if (!allowlisted.empty()) {

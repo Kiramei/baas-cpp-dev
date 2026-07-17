@@ -620,7 +620,8 @@ class HostCapabilityContractTests(unittest.TestCase):
             "logical ID",
             "native source path",
             "capture, vision, input, wait, and foreground-package checks",
-            "no ProcedureHost adapter",
+            "snapshot-owned `ProcedureHost` foundation now implements this ABI",
+            "legacy global procedure adapter",
             "no ClockHost adapter",
             "host.device.lifecycle.v1",
             "DeviceHost::lifecycle",
@@ -885,10 +886,18 @@ class HostCapabilityContractTests(unittest.TestCase):
             ROOT / "include" / "script" / "host" / "HttpHost.h",
             ROOT / "include" / "script" / "host" / "SocketHost.h",
             ROOT / "include" / "script" / "host" / "ServiceHost.h",
-            ROOT / "include" / "script" / "host" / "ProcedureHost.h",
             ROOT / "include" / "script" / "host" / "ClockHost.h",
         ):
             self.assertFalse(path.exists(), f"update implementation boundary when added: {path}")
+        for path in (
+            ROOT / "include" / "script" / "host" / "ProcedureHost.h",
+            ROOT / "include" / "script" / "host" / "ProcedureSnapshot.h",
+            ROOT / "src" / "script" / "host" / "ProcedureHost.cpp",
+            ROOT / "src" / "script" / "host" / "ProcedureSnapshot.cpp",
+            ROOT / "tests" / "script" / "ProcedureHostTests.cpp",
+            ROOT / "cmake" / "ScriptProcedureHost.cmake",
+        ):
+            self.assertTrue(path.exists(), f"ProcedureHost foundation evidence is missing: {path}")
 
 
 if __name__ == "__main__":

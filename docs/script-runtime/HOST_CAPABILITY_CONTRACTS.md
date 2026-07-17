@@ -306,9 +306,11 @@ earlier of the context/call timeout at every capture, analysis, input, wait, and
 foreground-check boundary. Cancellation, timeout, device loss, missing logical
 procedure, budget exhaustion, backpressure, and internal failure use exactly the
 catalog errors; a possibly committed input effect MUST retain the HST-003
-`effect_state` rules. This catalog and taxonomy evidence specify the contract
-only: no ProcedureHost adapter, native procedure registry, or parity completion
-is claimed.
+`effect_state` rules. The snapshot-owned `ProcedureHost` foundation now
+implements this ABI, immutable logical catalog, explicit external-resource
+ownership, and shared physical-device coordinator. The legacy global procedure
+adapter, production task-backend composition, migrated task package, and parity
+completion remain pending; the foundation never invokes legacy mutable globals.
 
 If the foreground package differs from the execution context's expected package,
 ProcedureHost MUST return `HOST006_UNAVAILABLE` with the only public detail
@@ -567,11 +569,11 @@ normative in `host-capabilities.v1.json`.
 
 ## Explicitly pending implementation evidence
 
-The production adapter set and metadata registry do not define or invoke
-`ProcedureHost`, `ClockHost`, `ProcessHost`, `HttpHost`, `SocketHost`,
-`ServiceHost`, or the other real named
-adapters. `QueuedLogHost` and `BAASLoggerLogSink` are implemented foundations,
-but live package/task composition is not. Real adapter integrations for
+The production adapter set and metadata registry still do not define or invoke
+`ClockHost`, `ProcessHost`, `HttpHost`, `SocketHost`, `ServiceHost`, or the other
+pending real named adapters. `ProcedureHost`, `QueuedLogHost`, and
+`BAASLoggerLogSink` are implemented foundations, but live package/task
+composition is not. The legacy global procedure adapter and real integrations for
 the checked `host<T>` foundation, async completion, bounded pools, keyed
 strands, production VM registration, full manifest
 activation, ERR-003 unwinding, and Python-versus-C++ parity remain pending until
