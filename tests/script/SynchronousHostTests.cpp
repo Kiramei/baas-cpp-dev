@@ -156,6 +156,7 @@ void test_result_runtime_error_translation()
              RuntimeErrorCode::StaleReference,
              RuntimeErrorCode::CellKindMismatch,
              RuntimeErrorCode::HeapTornDown,
+             RuntimeErrorCode::HeapBusy,
              RuntimeErrorCode::IndexOutOfRange,
              RuntimeErrorCode::ReleaseQueueLimitExceeded}) {
         check(translate_host_result_runtime_error(code) ==

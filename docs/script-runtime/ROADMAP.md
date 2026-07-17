@@ -103,7 +103,7 @@ Draft contract evidence: `PACKAGE_VERSIONING.md` defines independent language,
 host API, manifest, and package versions plus detached signatures, capability
 resolution, immutable cache snapshots, atomic activation, and rollback gates.
 `VALUE_SEMANTICS.md` defines the normative value, numeric, equality,
-collection, mutability, heap-isolation, JSON, budget, and RT001-RT023 contract;
+collection, mutability, heap-isolation, JSON, budget, and RT001-RT024 contract;
 its required clauses and implementation anchors are checked in Foundation CI.
 `CONTROL_FLOW_AND_MODULES.md` defines source-order lexical bindings, closure
 capture, recursion/control transfer, deterministic module loading/isolation,
@@ -162,7 +162,7 @@ implementation remains pending.
   bytes/typed handles/async/strands, and the remaining real Host adapters remain
   pending.
 - [~] Implement structured exceptions, stack traces, cancellation, and limits.
-  The total allocation-free RT001-RT023 language-code/catchability mapping is
+  The total allocation-free RT001-RT024 language-code/catchability mapping is
   implemented from the stable `LanguageErrorCode` table, semantic analysis
   enforces ERR-015 cleanup-body restrictions with `SEM009`, and `ValueHeap`
   publishes immutable, budgeted Error records with source/frame/cause/

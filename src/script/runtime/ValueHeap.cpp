@@ -1596,6 +1596,12 @@ bool Heap::close_host_handle(const HeapRef reference)
 
 std::optional<HostReleaseLease> Heap::lease_host_release()
 {
+    if (impl_->evaluator_boundary_depth != 0) return std::nullopt;
+    return lease_host_release_for_dispatcher();
+}
+
+std::optional<HostReleaseLease> Heap::lease_host_release_for_dispatcher()
+{
     if (impl_->release_lease_active ||
         impl_->release_head >= impl_->release_queue.size())
         return std::nullopt;
@@ -1614,6 +1620,13 @@ std::optional<HostReleaseLease> Heap::lease_host_release()
 }
 
 bool Heap::acknowledge_host_release(const std::uint64_t lease_id) noexcept
+{
+    if (impl_->evaluator_boundary_depth != 0) return false;
+    return acknowledge_host_release_for_dispatcher(lease_id);
+}
+
+bool Heap::acknowledge_host_release_for_dispatcher(
+    const std::uint64_t lease_id) noexcept
 {
     if (!impl_->release_lease_active || lease_id == 0 ||
         lease_id != impl_->active_release_lease_id ||
@@ -1643,6 +1656,13 @@ bool Heap::acknowledge_host_release(const std::uint64_t lease_id) noexcept
 
 bool Heap::retry_host_release(const std::uint64_t lease_id) noexcept
 {
+    if (impl_->evaluator_boundary_depth != 0) return false;
+    return retry_host_release_for_dispatcher(lease_id);
+}
+
+bool Heap::retry_host_release_for_dispatcher(
+    const std::uint64_t lease_id) noexcept
+{
     if (!impl_->release_lease_active || lease_id == 0 ||
         lease_id != impl_->active_release_lease_id)
         return false;
@@ -1653,6 +1673,13 @@ bool Heap::retry_host_release(const std::uint64_t lease_id) noexcept
 }
 
 bool Heap::defer_host_release(const std::uint64_t lease_id) noexcept
+{
+    if (impl_->evaluator_boundary_depth != 0) return false;
+    return defer_host_release_for_dispatcher(lease_id);
+}
+
+bool Heap::defer_host_release_for_dispatcher(
+    const std::uint64_t lease_id) noexcept
 {
     if (!impl_->release_lease_active || lease_id == 0 ||
         lease_id != impl_->active_release_lease_id ||
@@ -1706,6 +1733,10 @@ bool Heap::evaluator_boundary_active() const noexcept
 
 std::vector<HostReleaseRecord> Heap::drain_release_queue()
 {
+    if (impl_->evaluator_boundary_depth != 0)
+        throw RuntimeError(
+            RuntimeErrorCode::HeapBusy,
+            "Host release ownership transfer is forbidden during an active evaluator boundary");
     impl_->release_lease_active = false;
     impl_->active_release_lease_id = 0;
     impl_->compact_release_queue();

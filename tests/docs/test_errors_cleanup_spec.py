@@ -61,7 +61,7 @@ CLAUSE_TERMS = {
     "ERR-014": ("remaining cleanup thunks", "remains primary", "suppressed", "execution order"),
     "ERR-015": ("`return`", "`break`", "`continue`", "`await`", "`SEM009`", "max_defers_per_frame"),
     "ERR-016": ("outermost native ABI boundary", "MUST NOT", "`HostInternal`", "`std::bad_alloc`"),
-    "ERR-017": ("RT001_TYPE_MISMATCH", "RT023_JSON_DUPLICATE_KEY", "`runtime_code`", "`TaskCancelled`"),
+    "ERR-017": ("RT001_TYPE_MISMATCH", "RT024_HEAP_BUSY", "`runtime_code`", "`TaskCancelled`"),
     "ERR-018": ("deterministic", "non-throwing", "same twelve ERR-003 fields", "correlation id", "redact"),
     "ERR-019": ("conformance:error-cleanup-valid", "conformance:error-cleanup-invalid", "conformance:error-cleanup-semantic-invalid", "`SEM009`"),
     "ERR-020": (
@@ -146,6 +146,7 @@ EXPECTED_RT_MAPPINGS = (
     ("RT021_JSON_BYTE_LIMIT_EXCEEDED", "JsonLimitExceeded"),
     ("RT022_JSON_WORK_LIMIT_EXCEEDED", "JsonLimitExceeded"),
     ("RT023_JSON_DUPLICATE_KEY", "JsonDuplicateKey"),
+    ("RT024_HEAP_BUSY", "InternalInvariant"),
 )
 
 EXPECTED_LEX_CODES = tuple(f"LEX{number:03d}" for number in range(1, 7))

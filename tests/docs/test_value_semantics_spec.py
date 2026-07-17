@@ -33,14 +33,14 @@ CLAUSE_TERMS = {
     "VAL-007": ("zero-based", "RT016_INDEX_OUT_OF_RANGE", "aliases", "negative-index"),
     "VAL-008": ("last-value-wins", "first insertion position", "string keys", "JSON duplicate keys"),
     "VAL-009": ("Function", "module", "error", "task", "host handle", "release record"),
-    "VAL-010": ("non-moving tracing heap", "RT003_STALE_REFERENCE", "RT015_HEAP_TORN_DOWN", "partial"),
+    "VAL-010": ("non-moving tracing heap", "RT003_STALE_REFERENCE", "RT015_HEAP_TORN_DOWN", "RT024_HEAP_BUSY", "partial"),
     "VAL-011": ("RT002_CROSS_HEAP_REFERENCE", "RT003_STALE_REFERENCE", "Independent heaps", "queue"),
     "VAL-012": ("dependency-free", "signed 64-bit integer", "finite binary64", "unique string-key"),
     "VAL-013": ("RT012_JSON_CYCLE", "RT013_JSON_NON_FINITE", "RT014_JSON_UNSUPPORTED", "RT023_JSON_DUPLICATE_KEY"),
     "VAL-014": ("deep_copy_json_value", "DAG", "independent destination objects", "temporarily rooted"),
     "VAL-015": ("max_live_bytes", "max_cells", "max_collection_work", "max_pending_release_records"),
     "VAL-016": ("max_depth", "max_nodes", "max_string_bytes", "max_total_bytes", "max_work", "1,024"),
-    "VAL-017": ("RT001_TYPE_MISMATCH", "RT011_INVALID_UTF8", "RT018_JSON_DEPTH_LIMIT_EXCEEDED", "RT023_JSON_DUPLICATE_KEY"),
+    "VAL-017": ("RT001_TYPE_MISMATCH", "RT011_INVALID_UTF8", "RT018_JSON_DEPTH_LIMIT_EXCEEDED", "RT024_HEAP_BUSY"),
     "VAL-018": ("LANGUAGE_GRAMMAR.md", "SynchronousEvaluator", "JSON text I/O", "Python or JavaScript"),
 }
 

@@ -391,22 +391,47 @@ void test_evaluator_release_drain_reentry_boundary()
     runtime::HostReleaseDispatcher* dispatcher_ptr{};
     bool nested_invocation_rejected{};
     bool nested_close{};
+    bool ownership_attempted{};
+    bool nested_lease_rejected{};
+    bool nested_ack_rejected{};
+    bool nested_retry_rejected{};
+    bool nested_defer_rejected{};
     bool nested_heap_teardown_rejected{};
+    bool nested_release_drain_rejected{};
     bool nested_dispatcher_teardown{};
+    std::size_t release_callbacks{};
     auto dispatcher = std::make_shared<runtime::HostReleaseDispatcher>(
         117, std::vector<runtime::HostReleaseAdapter>{
             {31, [&](const runtime::HostHandleValue&) {
+                 ++release_callbacks;
                  try {
                      static_cast<void>(active->invoke_export("main", "run"));
-                } catch (const runtime::EvaluationError& error) {
-                    nested_invocation_rejected = error.code()
-                        == runtime::LanguageErrorCode::HostUnavailable;
+                 } catch (const runtime::EvaluationError& error) {
+                     nested_invocation_rejected = error.code()
+                         == runtime::LanguageErrorCode::HostUnavailable;
                  }
                  nested_close = active->close();
+                 if (!ownership_attempted) {
+                     ownership_attempted = true;
+                     nested_lease_rejected =
+                         !active->heap().lease_host_release();
+                     nested_ack_rejected =
+                         !active->heap().acknowledge_host_release(1);
+                     nested_retry_rejected =
+                         !active->heap().retry_host_release(1);
+                     nested_defer_rejected =
+                         !active->heap().defer_host_release(1);
+                 }
                  try {
                      static_cast<void>(active->heap().teardown());
                  } catch (const runtime::RuntimeError& error) {
                      nested_heap_teardown_rejected = error.code()
+                         == runtime::RuntimeErrorCode::HeapBusy;
+                 }
+                 try {
+                     static_cast<void>(active->heap().drain_release_queue());
+                 } catch (const runtime::RuntimeError& error) {
+                     nested_release_drain_rejected = error.code()
                          == runtime::RuntimeErrorCode::HeapBusy;
                  }
                  nested_dispatcher_teardown =
@@ -446,11 +471,15 @@ void test_evaluator_release_drain_reentry_boundary()
     } catch (...) {
         outer_result_valid = false;
     }
-    check(nested_invocation_rejected && !nested_close
+    check(nested_invocation_rejected && !nested_close && ownership_attempted
+              && nested_lease_rejected && nested_ack_rejected
+              && nested_retry_rejected && nested_defer_rejected
               && nested_heap_teardown_rejected
+              && nested_release_drain_rejected
               && !nested_dispatcher_teardown && outer_result_valid
+              && release_callbacks == 1
               && dispatcher->stats().pending_releases == 0,
-          "release adapter cannot reenter invocation/close/teardown or invalidate the outer result");
+          "release adapter cannot reenter invocation/close/destructive Heap ownership or invalidate the outer result");
 
     auto next_grant = dispatcher->adopt(dispatcher->reserve(
         runtime::HostHandleTypeId::Resource, 31, 8));
@@ -461,6 +490,8 @@ void test_evaluator_release_drain_reentry_boundary()
     const auto next = evaluator.invoke_export("main", "run");
     check(evaluator.heap().map_entries(next.value.as_heap_ref())[0].second.as_integer() == 2,
           "release-drain reentry rejection leaves the evaluator open and usable");
+    check(release_callbacks == 2 && dispatcher->stats().pending_releases == 0,
+          "each protected dispatcher lease is released and acknowledged exactly once");
     check(evaluator.close(),
           "release-drain reentry fixture closes after its public boundary returns");
 }

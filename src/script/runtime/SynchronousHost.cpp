@@ -918,7 +918,7 @@ bool HostReleaseDispatcher::dispatch_one(Heap& heap) noexcept
             }
         };
 
-        const auto lease = heap.lease_host_release();
+        const auto lease = heap.lease_host_release_for_dispatcher();
         if (!lease) return dispatch_unpublished();
         const auto metadata = Impl::metadata_for(lease->record);
         HostHandleValue handle(metadata, HostHandleTransferKind::BorrowedReference);
@@ -944,12 +944,12 @@ bool HostReleaseDispatcher::dispatch_one(Heap& heap) noexcept
         }
         if (rejected) {
             ++impl_->stats.rejected_records;
-            (void)heap.defer_host_release(lease->lease_id);
+            (void)heap.defer_host_release_for_dispatcher(lease->lease_id);
             return dispatch_unpublished();
         }
         if (pinned) {
             ++impl_->stats.retried;
-            (void)heap.defer_host_release(lease->lease_id);
+            (void)heap.defer_host_release_for_dispatcher(lease->lease_id);
             return dispatch_unpublished();
         }
 
@@ -970,7 +970,7 @@ bool HostReleaseDispatcher::dispatch_one(Heap& heap) noexcept
                         live->release_state =
                             Impl::LiveHandle::ReleaseState::ReleaseQueued;
                 }
-                (void)heap.defer_host_release(lease->lease_id);
+                (void)heap.defer_host_release_for_dispatcher(lease->lease_id);
                 return dispatch_unpublished();
             }
             bool state_valid{};
@@ -984,14 +984,14 @@ bool HostReleaseDispatcher::dispatch_one(Heap& heap) noexcept
             }
             if (!state_valid) {
                 ++impl_->stats.rejected_records;
-                (void)heap.defer_host_release(lease->lease_id);
+                (void)heap.defer_host_release_for_dispatcher(lease->lease_id);
                 return dispatch_unpublished();
             }
         }
 
-        if (!heap.acknowledge_host_release(lease->lease_id)) {
+        if (!heap.acknowledge_host_release_for_dispatcher(lease->lease_id)) {
             ++impl_->stats.retried;
-            (void)heap.defer_host_release(lease->lease_id);
+            (void)heap.defer_host_release_for_dispatcher(lease->lease_id);
             return dispatch_unpublished();
         }
         {

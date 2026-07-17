@@ -402,6 +402,7 @@ boundary exists. The `runtime_code` detail preserves the exact RT name from
 | `RT021_JSON_BYTE_LIMIT_EXCEEDED` | `JsonLimitExceeded` |
 | `RT022_JSON_WORK_LIMIT_EXCEEDED` | `JsonLimitExceeded` |
 | `RT023_JSON_DUPLICATE_KEY` | `JsonDuplicateKey` |
+| `RT024_HEAP_BUSY` | `InternalInvariant` |
 | `TaskCancelled` | `Cancelled` |
 | `SubmitTimeout` | `Timeout` |
 | `ExecutorShutdown` | `HostUnavailable` |
@@ -409,7 +410,7 @@ boundary exists. The `runtime_code` detail preserves the exact RT name from
 | other C++ exception/status | `HostInternal` |
 
 `translate_runtime_error_code()` implements the complete allocation-free
-RT001-RT023 code/catchability subset of this table. It does not build an Error
+RT001-RT024 code/catchability subset of this table. It does not build an Error
 envelope, capture frames, translate executor/host exceptions, or unwind script
 control flow; those boundaries remain pending.
 
@@ -542,7 +543,7 @@ whole.
 `tests/docs/test_errors_cleanup_spec.py` uses only the Python standard library
 and MUST verify ERR-001 through ERR-020, exact Error fields and stable language
 codes, source/diagnostic anchors, stack/cause/truncation rules, the complete
-RT001–RT023 translation table, parser/AST/semantic foundations, tagged static
+RT001–RT024 translation table, parser/AST/semantic foundations, tagged static
 fixtures and CTest wiring, structured Error heap/API/test anchors, the
 implemented synchronous unwinder and serialization boundary, explicit pending
 production VM/async/service integration, the single ROADMAP checkbox, and
