@@ -1,8 +1,13 @@
 include_guard(GLOBAL)
 
-if(NOT TARGET BAAS_runtime_repository)
-    message(FATAL_ERROR "Service runtime repository owner requires BAAS_runtime_repository")
-endif()
+foreach(required_target BAAS_runtime_repository BAAS::nlohmann_json)
+    if(NOT TARGET ${required_target})
+        message(FATAL_ERROR
+            "Service runtime repository owner requires ${required_target}")
+    endif()
+endforeach()
+
+include("${CMAKE_CURRENT_LIST_DIR}/ServiceRuntimeRepositoryTrustedPlanState.cmake")
 
 add_library(
         BAAS_service_runtime_repository_owner
@@ -17,6 +22,7 @@ target_include_directories(
 target_link_libraries(
         BAAS_service_runtime_repository_owner
         PUBLIC BAAS_runtime_repository
+        PRIVATE BAAS_service_runtime_repository_trusted_plan_state
 )
 
 if(MSVC)

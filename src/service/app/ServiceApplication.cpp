@@ -200,9 +200,13 @@ ServiceApplicationOpenResult ServiceApplication::open(
                 error = ServiceApplicationError::invalid_options;
                 break;
             case ServiceRuntimeRepositoryOpenError::generation_mismatch:
+            case ServiceRuntimeRepositoryOpenError::
+                trusted_state_generation_mismatch:
                 error = ServiceApplicationError::runtime_repository_generation_mismatch;
                 break;
             case ServiceRuntimeRepositoryOpenError::invalid_activation:
+            case ServiceRuntimeRepositoryOpenError::trusted_state_invalid:
+            case ServiceRuntimeRepositoryOpenError::trusted_state_pending_recovery:
                 error = ServiceApplicationError::runtime_repository_invalid;
                 break;
             case ServiceRuntimeRepositoryOpenError::none:

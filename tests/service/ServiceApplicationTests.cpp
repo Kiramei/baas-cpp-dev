@@ -222,6 +222,18 @@ constexpr std::string_view runtime_repository_invalid_user_manifest_sha256 =
     write_runtime_repository_file(
         state_root / "snapshots" / (generation + ".json"), snapshot.dump());
     write_runtime_repository_file(state_root / "current.json", current.dump());
+    write_runtime_repository_file(state_root / ".trusted-plan-writer.lock", "");
+    write_runtime_repository_file(
+        state_root / ".trusted-plan-owner",
+        "baas.runtime-repositories.trusted-plan-owner/v1\ninitialized\n");
+    const nlohmann::json trusted_state{
+        {"schema", "baas.runtime-repositories.trusted-plan-state/v1"},
+        {"generation", generation},
+        {"sequence", "1"},
+        {"payload_sha256", std::string(64, 'c')},
+    };
+    write_runtime_repository_file(
+        state_root / ".trusted-plan-state.json", trusted_state.dump());
     for (const auto& value : values) {
         const auto repository_root = state_root / value.root;
         write_runtime_repository_file(
@@ -262,6 +274,16 @@ void publish_runtime_repository_generation(
         project_root / ".baas-updater" / "runtime-repositories"
             / "current.json",
         current.dump());
+    const nlohmann::json trusted_state{
+        {"schema", "baas.runtime-repositories.trusted-plan-state/v1"},
+        {"generation", generation},
+        {"sequence", "3"},
+        {"payload_sha256", std::string(64, 'e')},
+    };
+    write_runtime_repository_file(
+        project_root / ".baas-updater" / "runtime-repositories"
+            / ".trusted-plan-state.json",
+        trusted_state.dump());
 }
 
 [[nodiscard]] std::uint16_t unused_loopback_port()
@@ -814,6 +836,23 @@ void test_repository_generation_mismatch_fails_before_composition()
           "direct application callers must supply a canonical expected generation");
 }
 
+void test_untrusted_repository_generation_fails_before_composition()
+{
+    TemporaryRoot root{"repository-untrusted"};
+    add_remote_server_resource(root.path);
+    const auto generation = add_runtime_repository_activation(root.path);
+    std::filesystem::remove(
+        root.path / ".baas-updater" / "runtime-repositories"
+            / ".trusted-plan-state.json");
+    const auto opened = app::ServiceApplication::open(
+        options(root.path, unused_loopback_port(), generation));
+    check(opened.error == app::ServiceApplicationError::runtime_repository_invalid
+              && !opened.application,
+          "a readable generation without signed-plan state must fail service composition");
+    check(!std::filesystem::exists(root.path / "config"),
+          "missing script trust must fail before auth and resource-store side effects");
+}
+
 void test_invalid_runtime_repository_fails_before_composition()
 {
     TemporaryRoot root{"invalid-runtime-repository"};
@@ -902,6 +941,7 @@ int main()
         test_readiness_requires_real_runtime_resources();
         test_missing_repository_fails_before_composition();
         test_repository_generation_mismatch_fails_before_composition();
+        test_untrusted_repository_generation_fails_before_composition();
         test_invalid_runtime_repository_fails_before_composition();
         test_invalid_runtime_configuration_default_fails_before_composition();
         test_invalid_repository_payload_fails_before_remote_and_composition();
