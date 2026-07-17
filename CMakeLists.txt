@@ -110,6 +110,8 @@ option(BUILD_RUNTIME_SCRIPT_EXECUTION_PLAN "Build immutable runtime BAAS Script 
 option(BUILD_RUNTIME_SCRIPT_EXECUTION_PLAN_TESTS "Build runtime BAAS Script execution plan tests" OFF)
 option(BUILD_SCRIPT_RESOURCE_HOST "Build baas/resource script Host adapter" OFF)
 option(BUILD_SCRIPT_RESOURCE_HOST_TESTS "Build baas/resource script Host tests" OFF)
+option(BUILD_SCRIPT_PROCEDURE_HOST "Build snapshot-owned baas/procedure script Host" OFF)
+option(BUILD_SCRIPT_PROCEDURE_HOST_TESTS "Build snapshot-owned baas/procedure Host tests" OFF)
 option(BUILD_SERVICE_PROTOCOL   "Build the standalone BAAS service protocol library" OFF)
 option(BUILD_SERVICE_PROTOCOL_TESTS "Build native tests for the BAAS service protocol" OFF)
 option(BUILD_SERVICE_TRIGGER_CATALOG "Build the transport-independent trigger command catalog" OFF)
@@ -387,6 +389,16 @@ if(BUILD_SCRIPT_RESOURCE_HOST_TESTS AND NOT BUILD_SCRIPT_RESOURCE_HOST)
 endif()
 
 if(BUILD_SCRIPT_RESOURCE_HOST)
+    set(BUILD_RESOURCE_CORE ON CACHE BOOL "Build immutable resource snapshot core" FORCE)
+    set(BUILD_SCRIPT_RUNTIME ON CACHE BOOL "Build the standalone BAAS script runtime" FORCE)
+endif()
+
+if(BUILD_SCRIPT_PROCEDURE_HOST_TESTS AND NOT BUILD_SCRIPT_PROCEDURE_HOST)
+    set(BUILD_SCRIPT_PROCEDURE_HOST ON CACHE BOOL
+        "Build snapshot-owned baas/procedure script Host" FORCE)
+endif()
+
+if(BUILD_SCRIPT_PROCEDURE_HOST)
     set(BUILD_RESOURCE_CORE ON CACHE BOOL "Build immutable resource snapshot core" FORCE)
     set(BUILD_SCRIPT_RUNTIME ON CACHE BOOL "Build the standalone BAAS script runtime" FORCE)
 endif()
@@ -914,6 +926,10 @@ endif()
 
 if(BUILD_SCRIPT_RESOURCE_HOST)
     include("${CMAKE_CURRENT_LIST_DIR}/cmake/ScriptResourceHost.cmake")
+endif()
+
+if(BUILD_SCRIPT_PROCEDURE_HOST)
+    include("${CMAKE_CURRENT_LIST_DIR}/cmake/ScriptProcedureHost.cmake")
 endif()
 
 if(BUILD_SCHEDULER_POLICY)

@@ -243,7 +243,12 @@ pending.
 - [ ] Bind screenshot acquisition and image processing.
 - [ ] Bind OCR lifecycle and inference operations.
 - [ ] Bind device discovery, ADB/scrcpy/Nemu capture, input, and lifecycle.
-- [ ] Bind feature matching and procedures.
+- [~] Bind feature matching and procedures. The snapshot-owned
+  `baas/procedure.run` Host foundation now has immutable logical descriptors,
+  exact external-resource identity, typed effect/error reporting, and a shared
+  physical-device strand with Windows/Android evidence. The legacy automation
+  adapter, task-backend composition, converted packages, and parity remain
+  pending; see `PROCEDURE_HOST.md`.
 - [ ] Bind scheduling, workflow state, retries, deadlines, and cancellation.
 - [~] Add host capability permissions and thread-safety declarations. Catalog
   declarations and the immutable pre-activation capability gate exist; adapter

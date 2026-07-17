@@ -305,6 +305,17 @@ struct HostCallContract {
     HostCancellationMode cancellation{HostCancellationMode::Preflight};
 };
 
+// Opaque logical-call lineage propagated by trusted Host adapters. Concrete
+// tokens are private to their producer, so callers cannot manufacture a token
+// that another Host will recognize as an active admission.
+class HostAdmissionToken {
+public:
+    virtual ~HostAdmissionToken() = default;
+
+protected:
+    HostAdmissionToken() = default;
+};
+
 struct HostCallContext {
     std::string_view module_id;
     std::string_view export_name;
@@ -315,6 +326,9 @@ struct HostCallContext {
     // poll this probe while doing bounded work; every mode is also checked at
     // callback entry by invoke_host_callback.
     std::shared_ptr<const HostCancellationProbe> cancellation;
+    // Appended for aggregate source compatibility. Helper work that makes a
+    // nested Host call must propagate this logical admission lineage.
+    std::shared_ptr<const HostAdmissionToken> admission;
 
     [[nodiscard]] bool cancelled() const noexcept
     {
