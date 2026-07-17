@@ -534,6 +534,42 @@ void test_explicit_package_roots_prevent_cross_package_reads()
           "cross-package import must fail at the exact allowlist");
 }
 
+void test_shared_capability_is_a_manifest_set_union()
+{
+    const std::string source =
+        "import \"tasks/dep\" as dep;\n"
+        "import \"baas/log\" as log;\n"
+        "import \"baas/resource\" as resource;\n"
+        "let ready = true;\n";
+    auto manifest = valid_manifest(source, dep_source);
+    replace_once(
+        manifest,
+        R"("host_modules":{"baas/log":{"major":1,"min_minor":0}})",
+        R"("host_modules":{"baas/log":{"major":1,"min_minor":0},)"
+        R"("baas/resource":{"major":1,"min_minor":0}})");
+    replace_once(
+        manifest,
+        R"("capabilities":["log.emit"])",
+        R"("capabilities":["test.shared"])");
+
+    auto catalog = catalog_json(
+        "tasks/main", R"({"major":1,"minor":2})", "0",
+        R"(["test.shared"])");
+    replace_once(
+        catalog,
+        R"(}],"legacy_aliases")",
+        R"(},{"module":"baas/resource","major":1,"min_minor":0,)"
+        R"("capabilities":["test.shared"]}],"legacy_aliases")");
+
+    RepositoryFixture fixture{
+        std::move(manifest), std::move(catalog), source, std::string{dep_source}};
+    auto resolution = fixture.resolution();
+    const auto result = build_trusted(fixture, resolution);
+    check(result && result.plan->capabilities().size() == 1
+          && result.plan->capabilities()[0] == "test.shared",
+          "capabilities shared by Host requirements must form one manifest set member");
+}
+
 void test_stable_error_names()
 {
     using Error = runtime_script::RuntimeScriptExecutionPlanError;
@@ -582,6 +618,7 @@ int main()
         test_module_boundary_and_pin();
         test_json_limits_and_cancellation();
         test_explicit_package_roots_prevent_cross_package_reads();
+        test_shared_capability_is_a_manifest_set_union();
         test_stable_error_names();
     } catch (const std::exception& error) {
         ++failures;

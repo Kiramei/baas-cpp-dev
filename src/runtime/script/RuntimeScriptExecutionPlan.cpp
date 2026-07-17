@@ -664,8 +664,10 @@ RuntimeScriptExecutionPlanResult build_runtime_script_execution_plan(
             catalog_capabilities.insert(catalog_capabilities.end(),
                 host.capabilities.begin(), host.capabilities.end());
         std::ranges::sort(catalog_capabilities);
-        if (std::ranges::adjacent_find(catalog_capabilities) != catalog_capabilities.end()
-            || catalog_capabilities != impl->capabilities)
+        catalog_capabilities.erase(
+            std::ranges::unique(catalog_capabilities).begin(),
+            catalog_capabilities.end());
+        if (catalog_capabilities != impl->capabilities)
             fail(RuntimeScriptExecutionPlanError::capability_mismatch);
 
         if (!array(root.at("profiles")).empty())
