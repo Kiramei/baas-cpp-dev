@@ -241,8 +241,9 @@ private:
 [[nodiscard]] UniqueFd open_unix_directory_at(const int parent, const std::string_view component) {
     const std::string owned(component);
     const auto fd = openat(parent, owned.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
-    if (fd < 0) fail(errno == ELOOP ? RuntimeRepositoryReadErrorCode::path_violation
-                                    : RuntimeRepositoryReadErrorCode::io,
+    if (fd < 0) fail((errno == ELOOP || errno == ENOTDIR)
+                         ? RuntimeRepositoryReadErrorCode::path_violation
+                         : RuntimeRepositoryReadErrorCode::io,
                      "repository directory open failed");
     struct stat info{};
     if (fstat(fd, &info) != 0 || !S_ISDIR(info.st_mode)) { close(fd); fail(
