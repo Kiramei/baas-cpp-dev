@@ -233,7 +233,7 @@ class AsyncTasksSpecificationTests(unittest.TestCase):
         ):
             self.assertIn(f"`{terminal}`", self.error_spec)
         for anchor in (
-            "check_execution_safe_point(span, true)",
+            "check_execution_safe_point(span, claims, true)",
             "host_cancellation_for_current_phase()",
             "interruption == LanguageErrorCode::Cancelled",
         ):
@@ -246,6 +246,11 @@ class AsyncTasksSpecificationTests(unittest.TestCase):
             self.assertIn(anchor, self.evaluator_tests)
         self.assertIn(
             "test_defer_host_callbacks_mask_external_interrupts",
+            self.host_evaluator_tests,
+        )
+        self.assertIn("ExecutionSafetyClaims", self.evaluator_source)
+        self.assertIn(
+            "test_host_task_claims_outrank_same_boundary_cancellation",
             self.host_evaluator_tests,
         )
 

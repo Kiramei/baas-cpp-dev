@@ -276,15 +276,21 @@ it. Error message text, OS scheduling, and callback thread order MUST NOT decide
 priority.
 
 The synchronous conformance evaluator applies this selection through one safe-
-point operation. It collects deadline and cancellation observations before
-selecting, but an already-exhausted instruction budget wins whenever another
-ordinary instruction is requested at that same safe point. Deadline then wins
-over cancellation, and either external claim wins over normal success. During
-package initialization, `Cancelled` and `DeadlineExceeded` roll every active
-nested module transaction back to `Uninitialized`; they MUST NOT poison the
-deterministic module-failure cache. A later non-interrupted `execute` retries
-those modules, while an already `Ready` module retains its exact namespace and
-initialization count across interrupted and repeated execution attempts.
+point operation. Each caller supplies only the safety claims already knowable
+at that exact boundary: value-stack admission is combined with the requested
+instruction, call-stack admission is combined with Host task/binding budgets,
+and a collection charge supplies its preflight memory claim. The operation
+collects deadline and cancellation observations before selecting
+`MemoryLimitExceeded`, `StackLimitExceeded`, `InstructionLimitExceeded`,
+`CleanupLimitExceeded`, and `TaskLimitExceeded` in the priority-2 order above;
+it does not pretend that a later allocation failure was known at an earlier
+statement safe point. Deadline then wins over cancellation, and either external
+claim wins over normal success. During package initialization, `Cancelled` and
+`DeadlineExceeded` roll every active nested module transaction back to
+`Uninitialized`; they MUST NOT poison the deterministic module-failure cache. A
+later non-interrupted `execute` retries those modules, while an already `Ready`
+module retains its exact namespace and initialization count across interrupted
+and repeated execution attempts.
 
 ### ASY-014 — Context strand and thread-safety boundary
 

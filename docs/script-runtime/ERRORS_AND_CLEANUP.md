@@ -267,16 +267,18 @@ suppressed if safe. This publication rule, not thread timing or message text,
 determines deterministic precedence.
 
 The synchronous evaluator observes its injected `HostCancellationProbe` at
-execution entry, every package-module initialization boundary, and every
-ordinary statement step. An expired deadline is checked before cancellation at
-the same safe point. Once either terminal starts unwinding, further probe checks
-are masked while registered defers consume the independent cleanup budget; this
-prevents a repeated stop request from skipping cleanup or replacing a cleanup
-terminal. Masking extends across a deferred Host callback: callback preflight
-and its cooperative `HostCallContext` receive no external deadline/cancellation
-capability during cleanup. This does not relax the independent cleanup step and
-call-depth limits, Host argument/result conversion limits, per-binding Host
-budget, handle-release accounting, or callback boundary containment.
+execution entry, every package-module boundary, ordinary statement/expression
+admission, collection charge, and script/Host call admission. An expired
+deadline is checked before cancellation at the same safe point, after any
+already-knowable priority-2 claim has been collected. Once either terminal
+starts unwinding, further probe checks are masked while registered defers
+consume the independent cleanup budget; this prevents a repeated stop request
+from skipping cleanup or replacing a cleanup terminal. Masking extends across a
+deferred Host callback: callback preflight and its cooperative
+`HostCallContext` receive no external deadline/cancellation capability during
+cleanup. This does not relax the independent cleanup step and call-depth limits,
+Host argument/result conversion limits, per-binding Host budget, handle-release
+accounting, or callback boundary containment.
 
 ### ERR-012 — Defer registration and lexical capture
 

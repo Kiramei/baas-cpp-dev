@@ -619,7 +619,7 @@ void test_cooperative_cancellation_safe_points_and_cleanup_masking()
     check(!deadline_error.catchable(),
           "deadline expiry must remain a terminal language error");
 
-    auto running = std::make_shared<ControlledProbe>(12);
+    auto running = std::make_shared<ControlledProbe>(20);
     runtime::EvaluatorLimits limits;
     limits.max_steps = 10'000;
     runtime::SynchronousEvaluator evaluator({{
@@ -636,7 +636,7 @@ void test_cooperative_cancellation_safe_points_and_cleanup_masking()
         runtime::LanguageErrorCode::Cancelled,
         [&] { static_cast<void>(evaluator.execute("main")); },
         "a running pure-language loop must observe cooperative cancellation");
-    check(!cancelled.catchable() && running->polls() >= 12
+    check(!cancelled.catchable() && running->polls() >= 20
               && evaluator.stats().steps < limits.max_steps,
           "cancellation must preempt the instruction bound and bypass catch");
     check(evaluator.stats().registered_defers == 2
@@ -669,6 +669,69 @@ void test_safe_point_uses_asy_013_terminal_priority()
         "instruction safety must outrank a deadline pending at one safe point");
     check(deadline_limit.steps() == 1 && deadline->polls() >= 4,
           "deadline priority evidence must observe the simultaneous safe point");
+
+    limits = {};
+    limits.max_value_stack = 1;
+    limits.max_steps = 2;
+    runtime::SynchronousEvaluator stack_before_instruction(
+        {{"main", "let value = not false;\n"}}, limits);
+    const auto stack_limit = expect_error(
+        runtime::LanguageErrorCode::StackLimitExceeded,
+        [&] { static_cast<void>(stack_before_instruction.execute("main")); },
+        "value-stack safety must outrank instruction safety at expression admission");
+    check(stack_limit.steps() == 2,
+          "value-stack and instruction claims must be pending at one expression boundary");
+
+    limits.max_steps = 100;
+    auto stack_cancel = std::make_shared<ControlledProbe>(5);
+    runtime::SynchronousEvaluator cancelled_stack(
+        {{"main", "let value = not false;\n"}},
+        limits, {}, {}, nullptr, stack_cancel);
+    expect_error(
+        runtime::LanguageErrorCode::StackLimitExceeded,
+        [&] { static_cast<void>(cancelled_stack.execute("main")); },
+        "value-stack safety must outrank simultaneous cancellation");
+    check(stack_cancel->polls() >= 5,
+          "value-stack cancellation evidence must reach nested expression admission");
+
+    auto stack_deadline = std::make_shared<ControlledProbe>(0, false, false, 5);
+    runtime::SynchronousEvaluator expired_stack(
+        {{"main", "let value = not false;\n"}},
+        limits, {}, {}, nullptr, stack_deadline);
+    expect_error(
+        runtime::LanguageErrorCode::StackLimitExceeded,
+        [&] { static_cast<void>(expired_stack.execute("main")); },
+        "value-stack safety must outrank a simultaneous deadline");
+    check(stack_deadline->polls() >= 5,
+          "value-stack deadline evidence must reach nested expression admission");
+
+    limits = {};
+    limits.max_call_depth = 1;
+    auto call_cancel = std::make_shared<ControlledProbe>(13);
+    runtime::SynchronousEvaluator cancelled_call(
+        {{"main",
+          "fn recurse() { return recurse(); }\n"
+          "recurse();\n"}},
+        limits, {}, {}, nullptr, call_cancel);
+    expect_error(
+        runtime::LanguageErrorCode::StackLimitExceeded,
+        [&] { static_cast<void>(cancelled_call.execute("main")); },
+        "call-stack safety must outrank cancellation at function admission");
+    check(call_cancel->polls() >= 13,
+          "call-stack evidence must reach the recursive function-entry boundary");
+
+    limits = {};
+    limits.max_container_elements = 1;
+    auto collection_cancel = std::make_shared<ControlledProbe>(5);
+    runtime::SynchronousEvaluator cancelled_collection(
+        {{"main", "let values = [1, 2];\n"}},
+        limits, {}, {}, nullptr, collection_cancel);
+    expect_error(
+        runtime::LanguageErrorCode::MemoryLimitExceeded,
+        [&] { static_cast<void>(cancelled_collection.execute("main")); },
+        "preflight collection memory must outrank cancellation at its charge boundary");
+    check(collection_cancel->polls() >= 5,
+          "collection evidence must reach the pre-allocation memory boundary");
 }
 
 void test_nested_module_cancellation_is_retryable_and_cache_safe()
@@ -722,7 +785,7 @@ void test_nested_module_cancellation_is_retryable_and_cache_safe()
 
 void test_success_boundary_cancellation_preserves_ready_cache()
 {
-    auto probe = std::make_shared<ControlledProbe>(5);
+    auto probe = std::make_shared<ControlledProbe>(6);
     runtime::SynchronousEvaluator evaluator(
         {{"main", "let value = 7;\n"}}, {}, {}, {}, nullptr, probe);
     expect_error(
