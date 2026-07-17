@@ -65,8 +65,8 @@ struct RuntimeTaskTerminal {
 // backends. Every std::stop_callback registered by a backend must be noexcept:
 // std::stop_source::request_stop() is noexcept and the standard terminates the
 // process if a callback lets an exception escape, before this owner can catch it.
-// A reporter returns false without blocking while its job is covered by a
-// prepared keyed/global stop, reserving the prebuilt reply's ordered snapshot.
+// While a prepared keyed/global stop owns the next ordered snapshot, a valid
+// report is accepted into move-only latest-value staging without blocking.
 using RuntimeTaskBackend = std::function<RuntimeTaskTerminal(
     const RuntimeTaskRequest& request, std::stop_token stop_token,
     const RuntimeTaskProgressReporter& report_progress)>;

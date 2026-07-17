@@ -9,6 +9,7 @@
 #include <stdexcept>
 #include <system_error>
 #include <thread>
+#include <type_traits>
 #include <unordered_map>
 #include <utility>
 
@@ -297,8 +298,12 @@ std::string_view runtime_task_stop_all_decision_name(
 class RuntimeTaskOwner::Impl final
     : public std::enable_shared_from_this<RuntimeTaskOwner::Impl> {
 private:
+    static_assert(std::is_nothrow_move_constructible_v<RuntimeTaskProgress>);
+    static_assert(std::is_nothrow_move_assignable_v<RuntimeTaskProgress>);
+
     struct Job {
         RuntimeTaskSnapshot snapshot;
+        std::optional<RuntimeTaskProgress> pending_progress;
         std::uint64_t generation{};
         JobPhase phase{JobPhase::completed};
         std::stop_source stop_source;
@@ -325,6 +330,7 @@ private:
         std::shared_ptr<Job> job;
         std::uint64_t generation{};
         std::uint64_t commit_timestamp{};
+        bool transition_running{};
         std::stop_source source{std::nostopstate};
     };
 
@@ -332,6 +338,7 @@ private:
         std::shared_ptr<Job> job;
         std::uint64_t generation{};
         std::uint64_t commit_timestamp{};
+        bool transition_running{};
         std::stop_source source{std::nostopstate};
         bool deliver{};
     };
@@ -546,6 +553,7 @@ public:
             result.snapshot = state->job->snapshot;
             if (state->job->phase == JobPhase::running) {
                 result.decision = RuntimeTaskStopDecision::stop_requested;
+                state->transition_running = true;
                 result.snapshot->stopping = true;
                 result.snapshot->is_flag_run = false;
                 result.snapshot->timestamp =
@@ -665,6 +673,7 @@ public:
             auto response = item.job->snapshot;
             if (item.job->phase == JobPhase::running) {
                 has_running = true;
+                item.transition_running = true;
                 response.stopping = true;
                 response.is_flag_run = false;
                 response.timestamp = next_timestamp(response.timestamp);
@@ -1015,6 +1024,25 @@ private:
         condition_.notify_all();
     }
 
+    static void discard_pending_progress(Job& job) noexcept
+    {
+        job.pending_progress.reset();
+    }
+
+    static void publish_pending_progress(Job& job) noexcept
+    {
+        if (!job.pending_progress) return;
+        auto& progress = *job.pending_progress;
+        job.snapshot.is_flag_run = job.phase == JobPhase::stopping
+            ? false
+            : progress.is_flag_run;
+        job.snapshot.button = std::move(progress.button);
+        job.snapshot.current_task = std::move(progress.current_task);
+        job.snapshot.waiting_tasks = std::move(progress.waiting_tasks);
+        job.snapshot.timestamp = next_timestamp(job.snapshot.timestamp);
+        job.pending_progress.reset();
+    }
+
     void commit_stop_reservation(StopReservationState& state) noexcept
     {
         bool deliver = false;
@@ -1028,8 +1056,10 @@ private:
             if (found == jobs_.end() || !found->second.stop_reserved) {
                 std::terminate();
             }
-            if (state.job && found->second.current.get() == state.job.get()
-                && state.job->generation == state.generation
+            const bool same_generation = state.job
+                && found->second.current.get() == state.job.get()
+                && state.job->generation == state.generation;
+            if (same_generation && state.transition_running
                 && state.job->phase == JobPhase::running) {
                 state.job->phase = JobPhase::stopping;
                 state.job->snapshot.stopping = true;
@@ -1040,6 +1070,12 @@ private:
                 after_stop_hook = after_stop_linearized_hook_;
                 after_stop_context = after_stop_linearized_context_;
 #endif
+            }
+            if (same_generation && !state.transition_running
+                && state.job->phase == JobPhase::stopping) {
+                publish_pending_progress(*state.job);
+            } else if (state.job) {
+                discard_pending_progress(*state.job);
             }
             resolve_stop_gate_locked(state.config_id);
         }
@@ -1057,6 +1093,15 @@ private:
     void abort_stop_reservation(StopReservationState& state) noexcept
     {
         std::lock_guard lock{mutex_};
+        const auto found = jobs_.find(state.config_id);
+        if (state.job && found != jobs_.end()
+            && found->second.current.get() == state.job.get()
+            && state.job->generation == state.generation
+            && state.job->phase != JobPhase::completed) {
+            publish_pending_progress(*state.job);
+        } else if (state.job) {
+            discard_pending_progress(*state.job);
+        }
         resolve_stop_gate_locked(state.config_id);
     }
 
@@ -1075,12 +1120,26 @@ private:
             }
             for (auto& item : state.items) {
                 const auto found = jobs_.find(item.job->snapshot.config_id);
-                if (found == jobs_.end()
-                    || found->second.current.get() != item.job.get()
-                    || item.job->generation != item.generation
-                    || item.job->phase != JobPhase::running) {
+                const bool same_generation = found != jobs_.end()
+                    && found->second.current.get() == item.job.get()
+                    && item.job->generation == item.generation;
+                if (!same_generation) {
+                    discard_pending_progress(*item.job);
                     continue;
                 }
+                if (!item.transition_running) {
+                    if (item.job->phase == JobPhase::stopping) {
+                        publish_pending_progress(*item.job);
+                    } else {
+                        discard_pending_progress(*item.job);
+                    }
+                    continue;
+                }
+                if (item.job->phase != JobPhase::running) {
+                    discard_pending_progress(*item.job);
+                    continue;
+                }
+                discard_pending_progress(*item.job);
                 item.job->phase = JobPhase::stopping;
                 item.job->snapshot.stopping = true;
                 item.job->snapshot.is_flag_run = false;
@@ -1112,11 +1171,22 @@ private:
     }
 
     void abort_stop_all_reservation(
-        StopAllReservationState&) noexcept
+        StopAllReservationState& state) noexcept
     {
         std::lock_guard lock{mutex_};
         if (!stop_all_reserved_ || active_reservations_ == 0) {
             std::terminate();
+        }
+        for (auto& item : state.items) {
+            const auto found = jobs_.find(item.job->snapshot.config_id);
+            if (found != jobs_.end()
+                && found->second.current.get() == item.job.get()
+                && item.job->generation == item.generation
+                && item.job->phase != JobPhase::completed) {
+                publish_pending_progress(*item.job);
+            } else {
+                discard_pending_progress(*item.job);
+            }
         }
         stop_all_reserved_ = false;
         --active_reservations_;
@@ -1211,11 +1281,11 @@ private:
         if (found != owner->jobs_.end()
             && found->second.current.get() == job.get()
             && (found->second.stop_reserved || owner->stop_all_reserved_)) {
-            // A prepared stop reply already owns the next ordered snapshot.
-            // Reject, rather than block, backend publication until that
-            // transaction commits or aborts so its prebuilt timestamp cannot
-            // be overtaken while the backend continues to make progress.
-            return false;
+            // Move-only latest-value staging performs no owner-side allocation,
+            // never blocks the backend, and preserves the prepared reply as
+            // the next public ordered snapshot.
+            job->pending_progress = std::move(progress);
+            return true;
         }
         job->snapshot.is_flag_run = job->phase == JobPhase::stopping
             ? false
@@ -1274,6 +1344,7 @@ private:
         }
 
         std::lock_guard lock{mutex_};
+        discard_pending_progress(*job);
         job->phase = JobPhase::completed;
         job->snapshot.running = false;
         job->snapshot.stopping = false;
@@ -1318,6 +1389,7 @@ private:
                     auto& job = slot.current;
                     if (!job) continue;
                     if (job->phase == JobPhase::running) {
+                        discard_pending_progress(*job);
                         job->phase = JobPhase::stopping;
                         job->snapshot.stopping = true;
                         job->snapshot.is_flag_run = false;
@@ -1329,6 +1401,7 @@ private:
                     }
                     if (job->phase == JobPhase::stopping
                         && !job->stop_source.stop_requested()) {
+                        discard_pending_progress(*job);
                         source = job->stop_source;
                         found_source = true;
                         break;

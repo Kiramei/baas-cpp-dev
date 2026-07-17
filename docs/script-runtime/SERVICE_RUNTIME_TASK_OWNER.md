@@ -58,13 +58,19 @@ Each retained config occupies one bounded status slot:
   changes only the captured generation from `running` to `stopping`; natural
   completion between prepare and commit remains terminal and receives no stale
   stop request.
-- While a keyed or global stop reply is prepared, progress reporters for its
-  captured live jobs return `false` immediately and leave the public snapshot
-  unchanged. They never block the backend. This reserves the next ordered
-  timestamp for the prebuilt reply, so a commit that wins against completion
-  publishes exactly that reply instead of a later timestamp. Abort merely
-  releases the publication gate; shutdown and natural completion remain
-  authoritative terminal transitions and may independently supersede it.
+- While a keyed or global stop reply is prepared, valid progress remains
+  accepted without blocking, but the owner moves only the latest report into a
+  pre-existing per-job staging slot instead of advancing the public snapshot.
+  Repeated reports replace that slot without owner-side allocation. This
+  reserves the next ordered timestamp for the prebuilt reply. A commit that
+  performs the captured `running -> stopping` transition discards staging and
+  publishes exactly the prepared stopping snapshot. Abort publishes the latest
+  staged progress with one new timestamp while the same generation is still
+  running or stopping. An already-stopping no-op commit likewise publishes its
+  accepted staged progress with `is_flag_run=false` instead of losing it.
+  Shutdown and natural completion clear staging before their authoritative
+  transition, so terminal state can never regress. Stop-all applies these
+  rules independently to every captured generation.
 - Unknown and already-completed stops deliberately acquire the same keyed
   no-op reservation. An unknown key occupies a temporary invisible status slot
   and counts toward `max_configs` until commit or abort. This makes the reply
@@ -156,9 +162,10 @@ thread-safe. Long-running implementations must poll or register against the
 stop token and return after cancellation. The reporter updates `is_flag_run`,
 the bounded raw `button` JSON/string payload, `current_task`, and
 `waiting_tasks`; invalid or oversized progress is rejected without mutating the
-last valid snapshot. Publication during a prepared keyed/global stop is also
-rejected immediately: this is a nonblocking ordered-reply barrier, not backend
-cancellation, and the reporter becomes usable again if the reservation aborts.
+last valid snapshot. During a prepared keyed/global stop, valid progress returns
+`true` and is retained as a move-only latest value behind the ordered-reply
+barrier. A failed protocol claim can therefore abort without making a backend
+that treats `false` as fail-closed exit or lose its latest accepted progress.
 
 Every backend-owned `std::stop_callback` must be `noexcept`. The standard
 invokes it inside `std::stop_source::request_stop() noexcept`; an escaping

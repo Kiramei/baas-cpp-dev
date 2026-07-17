@@ -554,10 +554,14 @@ void test_stop_reservation_prepare_abort_commit_and_capacity()
     std::atomic<int> progress_round{};
     std::atomic<int> progress_attempts{};
     std::atomic<int> accepted_progress{};
+    std::atomic<bool> reporter_failed{};
+    std::atomic<int> stopping_progress_round{};
+    std::atomic<int> stopping_progress_attempts{};
     std::atomic<bool> allow_exit{};
     runtime::RuntimeTaskOwner owner{
         [&entered, &stop_callbacks, &progress_round, &progress_attempts,
-         &accepted_progress, &allow_exit](
+         &accepted_progress, &reporter_failed, &stopping_progress_round,
+         &stopping_progress_attempts, &allow_exit](
             const runtime::RuntimeTaskRequest&, const std::stop_token stop,
             const runtime::RuntimeTaskProgressReporter& report) {
             entered.fetch_add(1);
@@ -569,14 +573,38 @@ void test_stop_reservation_prepare_abort_commit_and_capacity()
                 while (progress_round.load() < round) {
                     std::this_thread::yield();
                 }
+                if (round == 1) {
+                    if (!report({
+                            true, "prepared-progress",
+                            std::string{"staged-old"}, {}})) {
+                        reporter_failed = true;
+                        return runtime::RuntimeTaskTerminal{false, 90};
+                    }
+                    accepted_progress.fetch_add(1);
+                }
                 if (report({
                         true, "prepared-progress",
                         std::string{"live-" + std::to_string(round)}, {}})) {
                     accepted_progress.fetch_add(1);
+                } else {
+                    reporter_failed = true;
+                    return runtime::RuntimeTaskTerminal{false, 91};
                 }
                 progress_attempts.fetch_add(1);
             }
             while (!stop.stop_requested()) std::this_thread::yield();
+            for (int round = 1; round <= 2; ++round) {
+                while (stopping_progress_round.load() < round) {
+                    std::this_thread::yield();
+                }
+                if (!report({
+                        true, "stopping-progress",
+                        std::string{"stopping-" + std::to_string(round)}, {}})) {
+                    reporter_failed = true;
+                    return runtime::RuntimeTaskTerminal{false, 95};
+                }
+                stopping_progress_attempts.fetch_add(1);
+            }
             while (!allow_exit.load()) std::this_thread::yield();
             return runtime::RuntimeTaskTerminal{false, std::nullopt};
         }};
@@ -601,9 +629,9 @@ void test_stop_reservation_prepare_abort_commit_and_capacity()
               && before_prepare
               && still_running->timestamp == before_prepare->timestamp
               && still_running->current_task == before_prepare->current_task
-              && accepted_progress.load() == 0
+              && accepted_progress.load() == 2
               && stop_callbacks.load() == 0,
-          "prepared stop rejects publication so its ordered reply stays current");
+          "prepared stop stages accepted progress behind its ordered reply");
     check(owner.prepare_start(request("reserved-stop")).decision
               == runtime::RuntimeTaskStartDecision::reservation_conflict,
           "pending stop blocks same-config start");
@@ -611,10 +639,15 @@ void test_stop_reservation_prepare_abort_commit_and_capacity()
               == runtime::RuntimeTaskStopDecision::reservation_conflict,
           "pending stop blocks same-config stop");
     aborted.reservation = runtime::RuntimeTaskStopReservation{};
+    const auto after_abort = owner.snapshot("reserved-stop");
+    check(after_abort && after_abort->current_task == "live-1"
+              && before_prepare
+              && after_abort->timestamp > before_prepare->timestamp,
+          "stop abort publishes the latest staged progress once");
     progress_round = 2;
     check(wait_until([&progress_attempts] {
               return progress_attempts.load() >= 2;
-          }) && accepted_progress.load() == 1
+          }) && accepted_progress.load() == 3
               && owner.snapshot("reserved-stop")->current_task == "live-2"
               && stop_callbacks.load() == 0,
           "stop abort releases publication without stop side effects");
@@ -624,7 +657,7 @@ void test_stop_reservation_prepare_abort_commit_and_capacity()
     progress_round = 3;
     check(wait_until([&progress_attempts] {
               return progress_attempts.load() == 3;
-          }) && accepted_progress.load() == 1,
+          }) && accepted_progress.load() == 4,
           "concurrent progress cannot overtake the committing stop reply");
     check(owner.prepare_stop_all().decision
               == runtime::RuntimeTaskStopAllDecision::reservation_conflict,
@@ -637,18 +670,40 @@ void test_stop_reservation_prepare_abort_commit_and_capacity()
               && committed_public->stopping == committed_reply->stopping
               && committed_public->current_task == committed_reply->current_task,
           "stop commit publishes its exact prebuilt ordered reply exactly once");
-    auto stopping = owner.prepare_stop("reserved-stop");
-    check(stopping.decision
+    auto stopping_abort = owner.prepare_stop("reserved-stop");
+    check(stopping_abort.decision
               == runtime::RuntimeTaskStopDecision::already_stopping
-              && stopping.reservation,
+              && stopping_abort.reservation,
           "already-stopping stop still acquires a keyed no-op reservation");
     check(owner.prepare_start(request("reserved-stop")).decision
               == runtime::RuntimeTaskStartDecision::reservation_conflict,
           "already-stopping reservation blocks same-config restart");
-    stopping.reservation = runtime::RuntimeTaskStopReservation{};
+    stopping_progress_round = 1;
+    check(wait_until([&stopping_progress_attempts] {
+              return stopping_progress_attempts.load() == 1;
+          }),
+          "already-stopping abort fixture stages one accepted report");
+    stopping_abort.reservation = runtime::RuntimeTaskStopReservation{};
+    check(owner.snapshot("reserved-stop")->current_task == "stopping-1"
+              && !owner.snapshot("reserved-stop")->is_flag_run,
+          "already-stopping abort publishes staged progress as stopping");
+
+    auto stopping_commit = owner.prepare_stop("reserved-stop");
+    stopping_progress_round = 2;
+    check(wait_until([&stopping_progress_attempts] {
+              return stopping_progress_attempts.load() == 2;
+          }),
+          "already-stopping commit fixture stages latest progress");
+    stopping_commit.reservation.commit();
+    check(owner.snapshot("reserved-stop")->current_task == "stopping-2"
+              && !owner.snapshot("reserved-stop")->is_flag_run,
+          "already-stopping no-op commit publishes accepted staged progress");
     allow_exit = true;
     check(owner.wait_for_idle("reserved-stop", 3s),
           "committed stop reaches terminal state");
+    check(!reporter_failed.load()
+              && !owner.snapshot("reserved-stop")->exit_code,
+          "reporter fail-closed backend survives abort and commit staging");
 
     auto completed = owner.prepare_stop("reserved-stop");
     check(completed.decision == runtime::RuntimeTaskStopDecision::already_stopped
@@ -698,16 +753,22 @@ void test_stop_reservation_natural_completion_and_shutdown_race()
     std::atomic<bool> entered{};
     std::atomic<bool> release{};
     std::atomic<int> stop_callbacks{};
+    std::atomic<bool> reporter_accepted{};
     runtime::RuntimeTaskOwner owner{
-        [&entered, &release, &stop_callbacks](
+        [&entered, &release, &stop_callbacks, &reporter_accepted](
             const runtime::RuntimeTaskRequest&, const std::stop_token stop,
-            const runtime::RuntimeTaskProgressReporter&) {
+            const runtime::RuntimeTaskProgressReporter& report) {
             auto callback = [&stop_callbacks]() noexcept {
                 stop_callbacks.fetch_add(1);
             };
             std::stop_callback on_stop{stop, callback};
             entered = true;
             while (!release.load()) std::this_thread::yield();
+            reporter_accepted = report(
+                {true, "natural", std::string{"natural-progress"}, {}});
+            if (!reporter_accepted.load()) {
+                return runtime::RuntimeTaskTerminal{false, 93};
+            }
             return runtime::RuntimeTaskTerminal{true, 0};
         }};
     check(static_cast<bool>(owner.start(request("natural")))
@@ -719,21 +780,36 @@ void test_stop_reservation_natural_completion_and_shutdown_race()
           "backend may complete naturally after prepare");
     prepared.reservation.commit();
     const auto terminal = owner.snapshot("natural");
-    check(stop_callbacks.load() == 0 && terminal && terminal->is_flag_run
+    check(reporter_accepted.load() && stop_callbacks.load() == 0
+              && terminal && terminal->is_flag_run
               && terminal->exit_code == 0,
-          "late commit preserves terminal state and does not deliver stale stop");
+          "natural completion clears staging without fail-closed or rollback");
 
     struct ShutdownGate {
         std::atomic<bool> closed{};
         std::atomic<bool> release{};
     } gate;
     std::atomic<bool> shutdown_entered{};
+    std::atomic<bool> allow_shutdown_progress{};
+    std::atomic<bool> shutdown_progress_attempted{};
+    std::atomic<bool> shutdown_progress_accepted{};
+    std::atomic<bool> allow_shutdown_exit{};
     runtime::RuntimeTaskOwner shutdown_owner{
-        [&shutdown_entered](
+        [&shutdown_entered, &allow_shutdown_progress,
+         &shutdown_progress_attempted, &shutdown_progress_accepted,
+         &allow_shutdown_exit](
             const runtime::RuntimeTaskRequest&, const std::stop_token stop,
-            const runtime::RuntimeTaskProgressReporter&) {
+            const runtime::RuntimeTaskProgressReporter& report) {
             shutdown_entered = true;
+            while (!allow_shutdown_progress.load()) std::this_thread::yield();
+            shutdown_progress_accepted = report(
+                {true, "shutdown", std::string{"shutdown-progress"}, {}});
+            shutdown_progress_attempted = true;
+            if (!shutdown_progress_accepted.load()) {
+                return runtime::RuntimeTaskTerminal{false, 94};
+            }
             while (!stop.stop_requested()) std::this_thread::yield();
+            while (!allow_shutdown_exit.load()) std::this_thread::yield();
             return runtime::RuntimeTaskTerminal{false, std::nullopt};
         }};
     runtime::RuntimeTaskOwnerTestAccess::set_after_shutdown_closed_hook(
@@ -749,14 +825,29 @@ void test_stop_reservation_natural_completion_and_shutdown_race()
                      return shutdown_entered.load();
                  }),
           "shutdown-stop fixture starts");
+    const auto shutdown_before = shutdown_owner.snapshot("shutdown-stop");
     auto shutdown_stop = shutdown_owner.prepare_stop("shutdown-stop");
+    const auto shutdown_reply = shutdown_stop.snapshot;
     std::thread shutdown{[&shutdown_owner] { shutdown_owner.shutdown(); }};
     check(wait_until([&gate] { return gate.closed.load(); }),
           "shutdown closes admission with claimed stop outstanding");
+    allow_shutdown_progress = true;
+    check(wait_until([&shutdown_progress_attempted] {
+              return shutdown_progress_attempted.load();
+          }) && shutdown_progress_accepted.load()
+              && shutdown_before
+              && shutdown_owner.snapshot("shutdown-stop")->timestamp
+                  == shutdown_before->timestamp,
+          "post-close progress stages without overtaking prepared reply");
     check(shutdown_owner.request_stop("shutdown-stop").decision
               == runtime::RuntimeTaskStopDecision::reservation_conflict,
           "shutdown does not bypass an outstanding keyed stop gate");
     shutdown_stop.reservation.commit();
+    check(shutdown_reply
+              && shutdown_owner.snapshot("shutdown-stop")->timestamp
+                  == shutdown_reply->timestamp,
+          "post-close commit cannot roll the public timestamp backward");
+    allow_shutdown_exit = true;
     gate.release = true;
     shutdown.join();
     check(shutdown_owner.prepare_stop("shutdown-stop").decision
@@ -823,11 +914,12 @@ void test_stop_all_reservation_gates_and_reentrant_delivery()
     std::atomic<int> progress_round{};
     std::atomic<int> progress_attempts{};
     std::atomic<int> accepted_progress{};
+    std::atomic<bool> reporter_failed{};
     std::atomic<bool> allow_exit{};
     runtime::RuntimeTaskOwner owner{
         [&owner_pointer, &entered, &callbacks, &reentrant_returned,
          &reentrant_shutdown_returned, &progress_round, &progress_attempts,
-         &accepted_progress, &allow_exit](
+         &accepted_progress, &reporter_failed, &allow_exit](
             const runtime::RuntimeTaskRequest& value,
             const std::stop_token stop,
             const runtime::RuntimeTaskProgressReporter& report) {
@@ -847,7 +939,7 @@ void test_stop_all_reservation_gates_and_reentrant_delivery()
             };
             std::stop_callback on_stop{stop, callback};
             entered.fetch_add(1);
-            for (int round = 1; round <= 2; ++round) {
+            for (int round = 1; round <= 3; ++round) {
                 while (progress_round.load() < round) {
                     std::this_thread::yield();
                 }
@@ -857,6 +949,9 @@ void test_stop_all_reservation_gates_and_reentrant_delivery()
                             value.config_id + std::to_string(round)},
                         {}})) {
                     accepted_progress.fetch_add(1);
+                } else {
+                    reporter_failed = true;
+                    return runtime::RuntimeTaskTerminal{false, 92};
                 }
                 progress_attempts.fetch_add(1);
             }
@@ -867,56 +962,85 @@ void test_stop_all_reservation_gates_and_reentrant_delivery()
     owner_pointer = &owner;
     check(static_cast<bool>(owner.start(request("beta")))
               && static_cast<bool>(owner.start(request("alpha")))
-              && wait_until([&entered] { return entered.load() == 2; }),
+              && static_cast<bool>(owner.start(request("gamma")))
+              && wait_until([&entered] { return entered.load() == 3; }),
           "stop-all fixtures are live");
+    check(owner.request_stop("gamma").decision
+              == runtime::RuntimeTaskStopDecision::stop_requested,
+          "stop-all fixture has one preexisting stopping generation");
     const auto alpha_before = owner.snapshot("alpha");
     const auto beta_before = owner.snapshot("beta");
+    const auto gamma_before = owner.snapshot("gamma");
     auto aborted = owner.prepare_stop_all();
     check(aborted.decision == runtime::RuntimeTaskStopAllDecision::stop_requested
-              && aborted.snapshots.size() == 2
+              && aborted.snapshots.size() == 3
               && aborted.snapshots[0].config_id == "alpha"
-              && aborted.snapshots[1].config_id == "beta",
+              && aborted.snapshots[1].config_id == "beta"
+              && aborted.snapshots[2].config_id == "gamma",
           "prepared stop-all response is complete and sorted");
     progress_round = 1;
     check(wait_until([&progress_attempts] {
-              return progress_attempts.load() == 2;
+              return progress_attempts.load() == 3;
           }),
           "backends remain nonblocking while stop-all reply is prepared");
     check(owner.snapshot("alpha")->running
               && !owner.snapshot("alpha")->stopping
-              && alpha_before && beta_before
+              && alpha_before && beta_before && gamma_before
               && owner.snapshot("alpha")->timestamp == alpha_before->timestamp
               && owner.snapshot("beta")->timestamp == beta_before->timestamp
-              && accepted_progress.load() == 0
+              && owner.snapshot("gamma")->timestamp == gamma_before->timestamp
+              && accepted_progress.load() == 3
               && owner.prepare_start(request("other")).decision
                   == runtime::RuntimeTaskStartDecision::reservation_conflict
               && owner.prepare_stop("alpha").decision
                   == runtime::RuntimeTaskStopDecision::reservation_conflict,
           "prepared stop-all is invisible and globally exclusive");
     aborted.reservation = runtime::RuntimeTaskStopAllReservation{};
-    check(callbacks.load() == 0,
-          "aborting stop-all requests no stop tokens");
+    check(owner.snapshot("alpha")->current_task == "alpha1"
+              && owner.snapshot("beta")->current_task == "beta1"
+              && owner.snapshot("gamma")->current_task == "gamma1"
+              && !owner.snapshot("gamma")->is_flag_run
+              && callbacks.load() == 1,
+          "aborting stop-all publishes each latest staged progress");
+
+    progress_round = 2;
+    check(wait_until([&progress_attempts] {
+              return progress_attempts.load() == 6;
+          }) && accepted_progress.load() == 6
+              && owner.snapshot("alpha")->current_task == "alpha2"
+              && owner.snapshot("beta")->current_task == "beta2"
+              && owner.snapshot("gamma")->current_task == "gamma2",
+          "stop-all abort lets fail-closed reporters continue successfully");
 
     auto committed = owner.prepare_stop_all();
     const auto committed_replies = committed.snapshots;
-    progress_round = 2;
+    progress_round = 3;
     check(wait_until([&progress_attempts] {
-              return progress_attempts.load() == 4;
-          }) && accepted_progress.load() == 0,
+              return progress_attempts.load() == 9;
+          }) && accepted_progress.load() == 9,
           "concurrent reports cannot overtake committing stop-all replies");
     committed.reservation.commit();
     const auto committed_alpha = owner.snapshot("alpha");
     const auto committed_beta = owner.snapshot("beta");
-    check(committed_replies.size() == 2 && committed_alpha && committed_beta
+    const auto committed_gamma = owner.snapshot("gamma");
+    check(committed_replies.size() == 3 && committed_alpha && committed_beta
+              && committed_gamma
               && committed_alpha->timestamp == committed_replies[0].timestamp
               && committed_beta->timestamp == committed_replies[1].timestamp
-              && callbacks.load() == 2 && reentrant_returned.load()
+              && committed_gamma->current_task == "gamma3"
+              && !committed_gamma->is_flag_run
+              && callbacks.load() == 3 && reentrant_returned.load()
               && reentrant_shutdown_returned.load(),
           "stop-all publishes exact replies before reentrant delivery");
     allow_exit = true;
     check(owner.wait_for_idle("alpha", 3s)
-              && owner.wait_for_idle("beta", 3s),
+              && owner.wait_for_idle("beta", 3s)
+              && owner.wait_for_idle("gamma", 3s),
           "stop-all workers reach terminal state");
+    check(!reporter_failed.load() && !owner.snapshot("alpha")->exit_code
+              && !owner.snapshot("beta")->exit_code
+              && !owner.snapshot("gamma")->exit_code,
+          "stop-all staging never trips fail-closed backend behavior");
 }
 
 void test_stop_transactions_generation_exhaustion_and_stress()
