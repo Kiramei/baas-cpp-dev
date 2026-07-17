@@ -104,6 +104,7 @@ struct ScheduledPlan {
 // the same pre/post-task filtering behavior.
 struct FunctionInventory {
     std::vector<std::string> function_names;
+    bool initialized{};
 };
 
 enum class CompletionOutcome : std::uint8_t { success, failure };
@@ -133,6 +134,12 @@ struct CompletionTransform {
 
 [[nodiscard]] std::optional<FunctionInventory> snapshot_function_inventory(
     const SchedulerDocument& document);
+
+// Mirrors Python's `if self.event_map == {}` reload behavior. An inventory
+// produced from an empty initialization document remains open until the first
+// non-empty document; after that it is immutable across reloads.
+[[nodiscard]] std::optional<FunctionInventory> refresh_function_inventory(
+    const FunctionInventory& inventory, const SchedulerDocument& document);
 
 // Returns nullopt for an invalid injected timestamp. The output is stable by
 // priority: equal-priority events retain source JSON order.

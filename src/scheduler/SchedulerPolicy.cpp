@@ -306,7 +306,9 @@ private:
 {
     return now.unix_seconds >= 0 && now.unix_seconds <= maximum_unix_seconds
         && now.local_seconds_since_midnight < seconds_per_day
-        && now.utc_seconds_since_midnight < seconds_per_day;
+        && now.utc_seconds_since_midnight < seconds_per_day
+        && static_cast<std::uint32_t>(now.unix_seconds % seconds_per_day)
+            == now.utc_seconds_since_midnight;
 }
 
 [[nodiscard]] bool valid_document(const SchedulerDocument& document)
@@ -364,6 +366,8 @@ private:
 [[nodiscard]] bool valid_inventory(const FunctionInventory& inventory)
 {
     if (inventory.function_names.size() > hard_maximum_events) return false;
+    if (!inventory.initialized && !inventory.function_names.empty()) return false;
+    if (inventory.initialized && inventory.function_names.empty()) return false;
     std::size_t total_string_bytes{};
     for (const auto& name : inventory.function_names) {
         if (name.empty() || name.size() > hard_maximum_string_bytes
@@ -500,7 +504,18 @@ std::optional<FunctionInventory> snapshot_function_inventory(
     for (const auto& event : document.events) {
         inventory.function_names.push_back(event.function_name);
     }
+    inventory.initialized = !document.events.empty();
     return inventory;
+}
+
+std::optional<FunctionInventory> refresh_function_inventory(
+    const FunctionInventory& inventory, const SchedulerDocument& document)
+{
+    if (!valid_inventory(inventory) || !valid_document(document)) {
+        return std::nullopt;
+    }
+    if (inventory.initialized || document.events.empty()) return inventory;
+    return snapshot_function_inventory(document);
 }
 
 std::optional<std::vector<ScheduledPlan>> plan_due_events(
@@ -508,7 +523,8 @@ std::optional<std::vector<ScheduledPlan>> plan_due_events(
     const EvaluationTime& now)
 {
     if (!valid_evaluation_time(now) || !valid_document(document)
-        || !valid_inventory(inventory)) {
+        || !valid_inventory(inventory)
+        || (!inventory.initialized && !document.events.empty())) {
         return std::nullopt;
     }
 
@@ -597,10 +613,6 @@ CompletionTransform apply_completion(
             ? event.interval_seconds
             : seconds_per_day;
         const auto interval_tick = checked_add(now.unix_seconds, interval);
-        if (!interval_tick) {
-            result.error = TransformError::timestamp_overflow;
-            return result;
-        }
 
         std::optional<UnixSeconds> nearest_reset;
         const auto utc_day_start = now.unix_seconds
@@ -609,25 +621,21 @@ CompletionTransform apply_completion(
             auto reset_tick = checked_add(
                 utc_day_start,
                 static_cast<std::int64_t>(reset.seconds_since_midnight()));
-            if (!reset_tick) {
-                result.error = TransformError::timestamp_overflow;
-                return result;
-            }
+            if (!reset_tick) continue;
             if (now.utc_seconds_since_midnight
                 > reset.seconds_since_midnight()) {
                 reset_tick = checked_add(*reset_tick, seconds_per_day);
-                if (!reset_tick) {
-                    result.error = TransformError::timestamp_overflow;
-                    return result;
-                }
+                if (!reset_tick) continue;
             }
             if (!nearest_reset || *reset_tick < *nearest_reset) {
                 nearest_reset = reset_tick;
             }
         }
-        next_tick = nearest_reset && *interval_tick >= *nearest_reset
-            ? nearest_reset
-            : interval_tick;
+        if (nearest_reset && (!interval_tick || *interval_tick >= *nearest_reset)) {
+            next_tick = nearest_reset;
+        } else {
+            next_tick = interval_tick;
+        }
     }
 
     if (!next_tick) {

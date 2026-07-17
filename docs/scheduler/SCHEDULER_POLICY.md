@@ -22,6 +22,14 @@ The library and its deterministic tests are opt-in:
 The target is `BAAS_scheduler_policy`, with alias
 `BAAS::scheduler_policy`. Enabling the tests also enables the library.
 
+Because the parser uses the pinned `BAAS::nlohmann_json` package, CI ownership
+belongs to `.github/workflows/service-application.yml`, whose dependency closure
+already provides that package. Its existing Windows, Linux, and macOS
+Debug/Release matrix builds and runs `BAAS_scheduler_policy_tests`. A separate
+Android arm64-v8a/x86_64 job generates the real Conan cross dependency and
+compile-checks the library. The dependency-free foundation job remains
+dependency-free.
+
 ## Input boundary
 
 The parser accepts a UTF-8 JSON array. Every event has the ten fields used by
@@ -56,7 +64,8 @@ The caller supplies one `EvaluationTime`:
 
 No platform clock or timezone API is called. The separation freezes Python's
 current mixed-timezone behavior: disabled periods use local wall time, whereas
-`daily_reset` uses UTC. Disabled endpoints are inclusive. A reverse range
+`daily_reset` uses UTC. `unix_seconds % 86400` must equal the supplied UTC
+seconds; inconsistent snapshots fail closed. Disabled endpoints are inclusive. A reverse range
 (`start > end`) never matches, just as in Python; it does not wrap midnight.
 
 An event is due only when it is enabled, due by timestamp, and outside every
@@ -67,8 +76,11 @@ Python fills `Scheduler.funcs` only during construction and retains it across
 later configuration reloads. C++ makes that state explicit:
 
 1. Call `snapshot_function_inventory` on the initialization document.
-2. Retain the returned inventory across later parsed snapshots.
-3. Pass it to `plan_due_events`.
+2. Pass it and every reloaded document through `refresh_function_inventory`.
+   An empty initialization remains uninitialized until the first non-empty
+   reload, matching Python's `if self.event_map == {}` condition.
+3. Retain the initialized inventory across later parsed snapshots and pass it
+   to `plan_due_events`.
 
 Unknown pre/post references are skipped against that frozen inventory. Each
 plan exposes one ordered sequence: all admitted `pre_task` calls, then the
@@ -89,7 +101,9 @@ The next time mirrors `Scheduler.systole`:
 2. Otherwise a positive event interval is used; a non-positive interval means
    86,400 seconds.
 3. If the nearest UTC daily reset is no later than that interval deadline, the
-   reset wins. An empty reset list leaves the interval deadline unchanged.
+   reset wins. A valid earlier reset also wins if the interval deadline would
+   overflow the supported timestamp domain. An empty reset list leaves the
+   interval deadline unchanged.
 
 Invalid time inputs, indices, delays, or timestamp overflow return the unchanged
 bounded document and never request persistence.
@@ -106,8 +120,9 @@ this pure policy layer.
 - Input validation is bounded and fail-closed instead of raising arbitrary
   `KeyError`, `TypeError`, JSON, or filesystem exceptions later.
 - Unknown event fields and duplicate keys are rejected rather than accepted.
-- Time is injected explicitly, so repeated calls cannot observe slightly
-  different `time.time()` values inside one calculation.
+- Time is injected explicitly and checked for UTC consistency, so repeated
+  calls cannot observe slightly different `time.time()` values inside one
+  calculation.
 - The transform returns persistence data; it never opens `event.json` itself.
 - Integer seconds are the policy boundary. Python can briefly use fractional
   seconds before truncating the persisted `next_tick` with `int()`.

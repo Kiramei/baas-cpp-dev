@@ -41,6 +41,8 @@ void check(const bool condition, const std::string_view message)
 {
     const auto result = snapshot_function_inventory(document);
     check(result.has_value(), "valid test document must produce an inventory");
+    check(document.events.empty() || (result && result->initialized),
+          "non-empty initialization must freeze its function inventory");
     return result.value_or(FunctionInventory{});
 }
 
@@ -158,13 +160,13 @@ void test_due_filter_and_stable_priority()
 {
     SchedulerDocument document;
     document.events = {
-        event("equal first", "equal_first", 5, 100),
-        event("disabled flag", "disabled_flag", -10, 100),
-        event("future", "future", -9, 101),
-        event("disabled start", "disabled_start", -8, 100),
-        event("disabled end", "disabled_end", -7, 100),
-        event("reverse range", "reverse", 1, 100),
-        event("equal second", "equal_second", 5, 100),
+        event("equal first", "equal_first", 5, 86'500),
+        event("disabled flag", "disabled_flag", -10, 86'500),
+        event("future", "future", -9, 86'501),
+        event("disabled start", "disabled_start", -8, 86'500),
+        event("disabled end", "disabled_end", -7, 86'500),
+        event("reverse range", "reverse", 1, 86'500),
+        event("equal second", "equal_second", 5, 86'500),
     };
     document.events[1].enabled = false;
     document.events[3].disabled_time_ranges = {{{1, 0, 0}, {2, 0, 0}}};
@@ -172,7 +174,7 @@ void test_due_filter_and_stable_priority()
     document.events[5].disabled_time_ranges = {{{2, 0, 0}, {1, 0, 0}}};
 
     const auto plans = plan_due_events(document, inventory(document),
-                                       EvaluationTime{100, 3'600, 50});
+                                       EvaluationTime{86'500, 3'600, 100});
     check(plans.has_value(), "valid explicit time must produce a plan");
     if (!plans) return;
     check(plans->size() == 3,
@@ -199,10 +201,10 @@ void test_serial_plan_and_frozen_inventory()
     SchedulerDocument reloaded = initial;
     reloaded.events[1].pre_tasks = {"missing", "helper", "new_task"};
     reloaded.events[1].post_tasks = {"post", "missing"};
-    reloaded.events.push_back(event("new", "new_task", 9, 200));
+    reloaded.events.push_back(event("new", "new_task", 9, 86'501));
 
     const auto plans = plan_due_events(reloaded, initial_inventory,
-                                       EvaluationTime{100, 0, 0});
+                                       EvaluationTime{86'500, 0, 100});
     check(plans && plans->size() == 3,
           "due events must plan against the retained initialization inventory");
     if (!plans || plans->size() < 2) return;
@@ -220,13 +222,56 @@ void test_serial_plan_and_frozen_inventory()
           "invocation role vocabulary must remain stable");
 }
 
+void test_empty_initialization_defers_inventory_freeze()
+{
+    const SchedulerDocument empty;
+    const auto initial = snapshot_function_inventory(empty);
+    check(initial && !initial->initialized && initial->function_names.empty(),
+          "empty construction must leave Python's function inventory open");
+
+    const auto still_empty = initial
+        ? refresh_function_inventory(*initial, empty)
+        : std::optional<FunctionInventory>{};
+    check(still_empty && !still_empty->initialized,
+          "empty reload must keep the inventory open");
+
+    SchedulerDocument first_nonempty;
+    first_nonempty.events = {
+        event("helper", "helper", 0, 10),
+        event("current", "current", 1, 10),
+    };
+    first_nonempty.events[1].pre_tasks = {"helper"};
+    const auto initialized = still_empty
+        ? refresh_function_inventory(*still_empty, first_nonempty)
+        : std::optional<FunctionInventory>{};
+    check(initialized && initialized->initialized
+              && initialized->function_names
+                  == std::vector<std::string>({"helper", "current"}),
+          "first non-empty reload must initialize funcs like Python");
+    const auto plans = initialized
+        ? plan_due_events(first_nonempty, *initialized,
+                          EvaluationTime{86'500, 0, 100})
+        : std::optional<std::vector<ScheduledPlan>>{};
+    check(plans && plans->size() == 2
+              && (*plans)[1].serial_invocations.size() == 2,
+          "newly initialized inventory must admit first-reload pre tasks");
+
+    SchedulerDocument later = first_nonempty;
+    later.events.push_back(event("new", "new", 2, 10));
+    const auto frozen = initialized
+        ? refresh_function_inventory(*initialized, later)
+        : std::optional<FunctionInventory>{};
+    check(frozen && frozen->function_names == initialized->function_names,
+          "inventory must freeze after the first non-empty reload");
+}
+
 void test_success_only_next_tick_transform()
 {
     SchedulerDocument document;
     document.events = {event("current", "current", 0, 100)};
     document.events[0].interval_seconds = 10'800;
     document.events[0].daily_resets = {{7, 0, 0}, {19, 0, 0}};
-    constexpr UnixSeconds day_start = 1'700'000'000;
+    constexpr UnixSeconds day_start = 1'728'000'000;
     constexpr UnixSeconds now_tick = day_start + 17 * 3'600;
     const EvaluationTime now{now_tick, 3 * 3'600, 17 * 3'600};
 
@@ -267,7 +312,7 @@ void test_utc_reset_and_local_disable_are_independent()
     document.events = {event("current", "current", 0, 10)};
     document.events[0].disabled_time_ranges = {{{1, 0, 0}, {2, 0, 0}}};
     document.events[0].daily_resets = {{19, 0, 0}};
-    constexpr UnixSeconds day_start = 2'000'000;
+    constexpr UnixSeconds day_start = 1'987'200;
     const EvaluationTime now{day_start + 18 * 3'600, 90 * 60, 18 * 3'600};
 
     const auto plans = plan_due_events(document, inventory(document), now);
@@ -285,20 +330,20 @@ void test_invalid_policy_inputs_fail_closed()
     document.events = {event("current", "current", 0, 10)};
     const auto known = inventory(document);
     check(!plan_due_events(document, known,
-                           EvaluationTime{100, 86'400, 0}),
+                           EvaluationTime{100, 86'400, 100}),
           "invalid local clock input must not produce a plan");
     check(!plan_due_events(document, known,
                            EvaluationTime{100, 0, 86'400}),
           "invalid UTC clock input must not produce a plan");
     const auto bad_index = apply_completion(
-        document, 1, CompletionOutcome::success, EvaluationTime{100, 0, 0});
+        document, 1, CompletionOutcome::success, EvaluationTime{100, 0, 100});
     check(!bad_index && bad_index.error == TransformError::invalid_event_index,
           "unknown event index must fail closed");
     check(bad_index.document.events[0].next_tick == document.events[0].next_tick
               && !bad_index.persist_required,
           "invalid index must return the unchanged bounded document");
     const auto bad_delay = apply_completion(
-        document, 0, CompletionOutcome::success, EvaluationTime{100, 0, 0},
+        document, 0, CompletionOutcome::success, EvaluationTime{100, 0, 100},
         maximum_interval_seconds + 1);
     check(!bad_delay && bad_delay.error == TransformError::invalid_delay,
           "task-requested delay must remain bounded");
@@ -307,7 +352,7 @@ void test_invalid_policy_inputs_fail_closed()
           "invalid delay must return the unchanged bounded document");
     const auto invalid_time = apply_completion(
         document, 0, CompletionOutcome::success,
-        EvaluationTime{100, 86'400, 0});
+        EvaluationTime{100, 86'400, 100});
     check(!invalid_time && invalid_time.error == TransformError::invalid_time
               && invalid_time.document.events[0].next_tick
                   == document.events[0].next_tick
@@ -315,12 +360,34 @@ void test_invalid_policy_inputs_fail_closed()
           "invalid time must return the unchanged bounded document");
     const auto overflow = apply_completion(
         document, 0, CompletionOutcome::success,
-        EvaluationTime{maximum_unix_seconds, 0, 0}, 1);
+        EvaluationTime{maximum_unix_seconds, 0,
+                       static_cast<std::uint32_t>(maximum_unix_seconds % 86'400)},
+        1);
     check(!overflow && overflow.error == TransformError::timestamp_overflow,
           "next_tick overflow must fail closed");
     check(overflow.document.events[0].next_tick == document.events[0].next_tick
               && !overflow.persist_required,
           "unsuccessful transform must return the unchanged bounded document");
+
+    const auto inconsistent = apply_completion(
+        document, 0, CompletionOutcome::success, EvaluationTime{100, 0, 99});
+    check(!inconsistent && inconsistent.error == TransformError::invalid_time
+              && inconsistent.document.events[0].next_tick
+                  == document.events[0].next_tick
+              && !inconsistent.persist_required
+              && !plan_due_events(document, known, EvaluationTime{100, 0, 99}),
+          "unix timestamp and UTC wall-clock mismatch must fail closed unchanged");
+
+    SchedulerDocument reset_before_overflow;
+    reset_before_overflow.events = {event("edge", "edge", 0, 10)};
+    reset_before_overflow.events[0].interval_seconds = 1;
+    reset_before_overflow.events[0].daily_resets = {{23, 59, 59}};
+    const auto reset_wins = apply_completion(
+        reset_before_overflow, 0, CompletionOutcome::success,
+        EvaluationTime{maximum_unix_seconds, 0, 86'399});
+    check(reset_wins && reset_wins.persist_required
+              && reset_wins.next_tick == maximum_unix_seconds,
+          "legal earlier daily reset must win when interval deadline overflows");
 
     SchedulerDocument oversized;
     oversized.events.assign(1'025, event("x", "x", 0, 0));
@@ -352,6 +419,7 @@ int main()
     test_parser_fails_closed_and_is_bounded();
     test_due_filter_and_stable_priority();
     test_serial_plan_and_frozen_inventory();
+    test_empty_initialization_defers_inventory_freeze();
     test_success_only_next_tick_transform();
     test_utc_reset_and_local_disable_are_independent();
     test_invalid_policy_inputs_fail_closed();
