@@ -326,6 +326,34 @@ class ExternalResourceBoundaryTests(unittest.TestCase):
         self.assertIn("commit_claim->claim(journal.new_current.generation)", updater_source)
         self.assertIn("A same-generation no-op does not invoke the claim", documentation)
         self.assertIn("Crash recovery is a separate startup phase", documentation)
+        self.assertIn("but a\nbrowser request is never a repository policy source", documentation)
+        self.assertIn("baas.runtime-repositories.signed-plan-envelope/v1", documentation)
+        self.assertIn("Signature verification happens before payload parsing", documentation)
+        self.assertIn("one long-lived verifier that owns the trust key", documentation)
+        self.assertIn("no-DOM SAX preparse", documentation)
+        self.assertIn("highest accepted\nsequence", documentation)
+        self.assertIn("RuntimeRepositoryTrustedPlanUpdateOwner", documentation)
+        self.assertIn("No update request is\naccepted until this startup recovery succeeds", documentation)
+        self.assertIn("The owner holds `.trusted-plan-writer.lock`", documentation)
+        self.assertIn("Starting standalone owner recovery is the explicit, irreversible", documentation)
+        self.assertIn("can then be adopted only by a\nsigned plan", documentation)
+        self.assertIn("terminal `RuntimeRepositoryCommitClaim`", documentation)
+        self.assertIn("The existing Tauri\nexact-generation launch path remains a reader-only path", documentation)
+        trusted_plan_header = (
+            ROOT / "include/service/app/RuntimeRepositoryTrustedPlan.h"
+        ).read_text(encoding="utf-8")
+        self.assertIn("class VerifiedRuntimeRepositoryPlan", trusted_plan_header)
+        self.assertIn("class RuntimeRepositoryTrustedStateProvider", trusted_plan_header)
+        self.assertIn("class RuntimeRepositoryTrustedPlanVerifier", trusted_plan_header)
+        trusted_state_header = (
+            ROOT / "include/service/app/RuntimeRepositoryTrustedPlanState.h"
+        ).read_text(encoding="utf-8")
+        owner_header = (
+            ROOT / "include/service/app/RuntimeRepositoryTrustedPlanUpdateOwner.h"
+        ).read_text(encoding="utf-8")
+        self.assertIn("class RuntimeRepositoryTrustedPlanStateStore", trusted_state_header)
+        self.assertIn("class RuntimeRepositoryTrustedPlanUpdateOwner", owner_header)
+        self.assertIn("previous_generations", documentation)
 
 
 class ExternalResourceConfigureSmokeTests(unittest.TestCase):
