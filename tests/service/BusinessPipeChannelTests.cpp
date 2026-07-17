@@ -25,7 +25,7 @@
 namespace app = baas::service::app;
 namespace auth = baas::service::auth;
 namespace channels = baas::service::channels;
-namespace pipe = baas::service::pipe;
+namespace service_pipe = baas::service::pipe;
 namespace bpip = baas::service::protocol::bpip;
 namespace websocket = baas::service::websocket;
 using namespace std::chrono_literals;
@@ -102,13 +102,13 @@ struct StreamState {
     bool closed{};
 };
 
-class FakeStream final : public pipe::PipeStream {
+class FakeStream final : public service_pipe::PipeStream {
 public:
     explicit FakeStream(std::shared_ptr<StreamState> state)
         : state_(std::move(state))
     {}
 
-    pipe::PipeIoResult read(
+    service_pipe::PipeIoResult read(
         const std::span<std::byte> output,
         std::chrono::milliseconds) override
     {
@@ -130,7 +130,7 @@ public:
         return {count, false, false, false};
     }
 
-    pipe::PipeIoResult write_all(
+    service_pipe::PipeIoResult write_all(
         const std::span<const std::byte> input,
         std::chrono::milliseconds) override
     {
@@ -159,13 +159,13 @@ private:
     std::shared_ptr<StreamState> state_;
 };
 
-class FakeListener final : public pipe::PipeListener {
+class FakeListener final : public service_pipe::PipeListener {
 public:
-    explicit FakeListener(std::unique_ptr<pipe::PipeStream> stream)
+    explicit FakeListener(std::unique_ptr<service_pipe::PipeStream> stream)
         : stream_(std::move(stream))
     {}
 
-    std::unique_ptr<pipe::PipeStream> accept() override
+    std::unique_ptr<service_pipe::PipeStream> accept() override
     {
         std::unique_lock lock{mutex_};
         if (stream_) return std::move(stream_);
@@ -183,7 +183,7 @@ public:
 private:
     std::mutex mutex_;
     std::condition_variable changed_;
-    std::unique_ptr<pipe::PipeStream> stream_;
+    std::unique_ptr<service_pipe::PipeStream> stream_;
     bool closed_{};
 };
 
@@ -195,12 +195,12 @@ private:
 }
 
 [[nodiscard]] std::shared_ptr<StreamState> run_one(
-    std::shared_ptr<pipe::PipeChannelFactory> factory,
+    std::shared_ptr<service_pipe::PipeChannelFactory> factory,
     bpip::Bytes input)
 {
     auto state = std::make_shared<StreamState>();
     state->reads.push_back(std::move(input));
-    pipe::PipeHost host{
+    service_pipe::PipeHost host{
         std::make_unique<FakeListener>(std::make_unique<FakeStream>(state)),
         std::move(factory)};
     check(host.start(), "business Pipe host must start");
@@ -224,10 +224,10 @@ void test_provider_initial_output_after_open_ok_and_json_requests()
     check(backend->set_initialized(true) == channels::ProviderBackendError::none,
           "provider fixture initialization must publish");
 
-    pipe::BusinessPipeChannelFactories dependencies;
+    service_pipe::BusinessPipeChannelFactories dependencies;
     dependencies.provider =
         std::make_shared<channels::ProviderHandlerFactory>(backend);
-    auto factory = std::make_shared<pipe::BusinessPipeChannelFactory>(
+    auto factory = std::make_shared<service_pipe::BusinessPipeChannelFactory>(
         std::move(dependencies));
     const auto state = run_one(factory, open_and("provider", "provider", {
         frame(bpip::FrameKind::json, R"({"type":"status_request"})"),
@@ -268,9 +268,9 @@ void test_sync_list_pull_and_push_are_json()
         },
         channels::ResourceSnapshot{"11", R"(["alpha"])"},
         [] { return 12.0; });
-    pipe::BusinessPipeChannelFactories dependencies;
+    service_pipe::BusinessPipeChannelFactories dependencies;
     dependencies.sync = std::make_shared<channels::SyncHandlerFactory>(store);
-    auto factory = std::make_shared<pipe::BusinessPipeChannelFactory>(
+    auto factory = std::make_shared<service_pipe::BusinessPipeChannelFactory>(
         std::move(dependencies));
     const auto state = run_one(factory, open_and("sync", "sync", {
         frame(bpip::FrameKind::json, R"({"type":"list"})"),
@@ -300,7 +300,7 @@ void test_sync_list_pull_and_push_are_json()
 
     auto push_stream = std::make_shared<StreamState>();
     push_stream->reads.push_back(open_and("sync", "sync-push"));
-    pipe::PipeHost push_host{
+    service_pipe::PipeHost push_host{
         std::make_unique<FakeListener>(
             std::make_unique<FakeStream>(push_stream)),
         factory};
@@ -404,10 +404,10 @@ private:
 void test_remote_raw_bytes_and_observed_write_completion()
 {
     auto remote = std::make_shared<RemoteState>();
-    pipe::BusinessPipeChannelFactories dependencies;
+    service_pipe::BusinessPipeChannelFactories dependencies;
     dependencies.remote = std::make_shared<channels::RemoteHandlerFactory>(
         std::make_shared<FakeRemoteBackend>(remote));
-    auto factory = std::make_shared<pipe::BusinessPipeChannelFactory>(
+    auto factory = std::make_shared<service_pipe::BusinessPipeChannelFactory>(
         std::move(dependencies));
     const std::string client{"\x7f\x00", 2};
     const auto state = run_one(factory, open_and("remote", "remote-1", {
@@ -443,10 +443,10 @@ void test_remote_raw_bytes_and_observed_write_completion()
 void test_remote_write_failure_is_observed_and_closes_session()
 {
     auto remote = std::make_shared<RemoteState>();
-    pipe::BusinessPipeChannelFactories dependencies;
+    service_pipe::BusinessPipeChannelFactories dependencies;
     dependencies.remote = std::make_shared<channels::RemoteHandlerFactory>(
         std::make_shared<FakeRemoteBackend>(remote));
-    auto factory = std::make_shared<pipe::BusinessPipeChannelFactory>(
+    auto factory = std::make_shared<service_pipe::BusinessPipeChannelFactory>(
         std::move(dependencies));
     auto stream = std::make_shared<StreamState>();
     stream->fail_write_call = 2;
@@ -454,7 +454,7 @@ void test_remote_write_failure_is_observed_and_closes_session()
         frame(bpip::FrameKind::json,
               R"({"config_id":"alpha","decrypt":true})"),
     }));
-    pipe::PipeHost host{
+    service_pipe::PipeHost host{
         std::make_unique<FakeListener>(std::make_unique<FakeStream>(stream)),
         factory};
     check(host.start(), "remote failure host must start");
@@ -468,15 +468,15 @@ void test_remote_write_failure_is_observed_and_closes_session()
           "failed device write receipt must close the partial remote session");
 }
 
-class DelegatedHandler final : public pipe::PipeChannelHandler {
+class DelegatedHandler final : public service_pipe::PipeChannelHandler {
 public:
     explicit DelegatedHandler(std::shared_ptr<std::atomic_size_t> frames)
         : frames_(std::move(frames))
     {}
 
-    pipe::PipeHandlerResult on_frame(
+    service_pipe::PipeHandlerResult on_frame(
         const bpip::Frame&,
-        pipe::PipeConnectionWriter&,
+        service_pipe::PipeConnectionWriter&,
         std::stop_token) override
     {
         ++*frames_;
@@ -489,17 +489,17 @@ private:
     std::shared_ptr<std::atomic_size_t> frames_;
 };
 
-class DelegatedFactory final : public pipe::PipeChannelFactory {
+class DelegatedFactory final : public service_pipe::PipeChannelFactory {
 public:
     explicit DelegatedFactory(std::shared_ptr<std::atomic_size_t> frames)
         : frames_(std::move(frames))
     {}
 
-    std::unique_ptr<pipe::PipeChannelHandler> create(
-        const pipe::PipeOpenRequest& request,
+    std::unique_ptr<service_pipe::PipeChannelHandler> create(
+        const service_pipe::PipeOpenRequest& request,
         std::stop_token) override
     {
-        if (request.channel != pipe::PipeChannel::trigger) return nullptr;
+        if (request.channel != service_pipe::PipeChannel::trigger) return nullptr;
         return std::make_unique<DelegatedHandler>(frames_);
     }
 
@@ -510,9 +510,9 @@ private:
 void test_trigger_delegation_and_strict_frame_kinds()
 {
     auto trigger_frames = std::make_shared<std::atomic_size_t>();
-    pipe::BusinessPipeChannelFactories delegated;
+    service_pipe::BusinessPipeChannelFactories delegated;
     delegated.trigger = std::make_shared<DelegatedFactory>(trigger_frames);
-    auto trigger = std::make_shared<pipe::BusinessPipeChannelFactory>(
+    auto trigger = std::make_shared<service_pipe::BusinessPipeChannelFactory>(
         std::move(delegated));
     static_cast<void>(run_one(trigger, open_and("trigger", "trigger", {
         frame(bpip::FrameKind::json, R"({"type":"command"})"),
@@ -522,10 +522,10 @@ void test_trigger_delegation_and_strict_frame_kinds()
           "trigger channel must be delegated without business-handler adaptation");
 
     auto provider_backend = std::make_shared<app::ProductionProviderBackend>();
-    pipe::BusinessPipeChannelFactories provider_dependencies;
+    service_pipe::BusinessPipeChannelFactories provider_dependencies;
     provider_dependencies.provider =
         std::make_shared<channels::ProviderHandlerFactory>(provider_backend);
-    auto provider = std::make_shared<pipe::BusinessPipeChannelFactory>(
+    auto provider = std::make_shared<service_pipe::BusinessPipeChannelFactory>(
         std::move(provider_dependencies));
     const auto invalid = run_one(provider, open_and("provider", "provider", {
         frame(bpip::FrameKind::bytes, "not-json"),
@@ -539,11 +539,11 @@ void test_trigger_delegation_and_strict_frame_kinds()
           "provider BYTES must fail closed with terminal ERROR+CLOSE");
 
     auto remote_state = std::make_shared<RemoteState>();
-    pipe::BusinessPipeChannelFactories remote_dependencies;
+    service_pipe::BusinessPipeChannelFactories remote_dependencies;
     remote_dependencies.remote =
         std::make_shared<channels::RemoteHandlerFactory>(
             std::make_shared<FakeRemoteBackend>(remote_state));
-    auto remote = std::make_shared<pipe::BusinessPipeChannelFactory>(
+    auto remote = std::make_shared<service_pipe::BusinessPipeChannelFactory>(
         std::move(remote_dependencies));
     const auto invalid_remote = run_one(remote, open_and("remote", "remote-kind", {
         frame(bpip::FrameKind::json,
@@ -653,13 +653,13 @@ private:
 void test_close_barrier_waits_for_write_receipt_callback()
 {
     auto receipt = std::make_shared<ReceiptBarrierState>();
-    pipe::BusinessPipeChannelFactories dependencies;
+    service_pipe::BusinessPipeChannelFactories dependencies;
     dependencies.provider = std::make_shared<ReceiptBarrierFactory>(receipt);
-    auto factory = std::make_shared<pipe::BusinessPipeChannelFactory>(
+    auto factory = std::make_shared<service_pipe::BusinessPipeChannelFactory>(
         std::move(dependencies));
     auto stream = std::make_shared<StreamState>();
     stream->reads.push_back(open_and("provider", "receipt-barrier"));
-    pipe::PipeHost host{
+    service_pipe::PipeHost host{
         std::make_unique<FakeListener>(std::make_unique<FakeStream>(stream)),
         factory};
     check(host.start(), "receipt-barrier host must start");
@@ -695,15 +695,15 @@ void test_close_barrier_waits_for_write_receipt_callback()
 void test_stop_interrupts_blocked_push_and_waits_for_close_barrier()
 {
     auto backend = std::make_shared<app::ProductionProviderBackend>();
-    pipe::BusinessPipeChannelFactories dependencies;
+    service_pipe::BusinessPipeChannelFactories dependencies;
     dependencies.provider =
         std::make_shared<channels::ProviderHandlerFactory>(backend);
-    auto factory = std::make_shared<pipe::BusinessPipeChannelFactory>(
+    auto factory = std::make_shared<service_pipe::BusinessPipeChannelFactory>(
         std::move(dependencies));
     auto stream = std::make_shared<StreamState>();
     stream->block_write_call = 3;
     stream->reads.push_back(open_and("provider", "provider"));
-    pipe::PipeHost host{
+    service_pipe::PipeHost host{
         std::make_unique<FakeListener>(std::make_unique<FakeStream>(stream)),
         factory};
     check(host.start(), "blocked-push host must start");

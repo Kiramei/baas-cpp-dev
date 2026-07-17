@@ -15,7 +15,7 @@
 #include <thread>
 #include <vector>
 
-namespace pipe = baas::service::pipe;
+namespace service_pipe = baas::service::pipe;
 namespace bpip = baas::service::protocol::bpip;
 namespace trigger = baas::service::trigger;
 using namespace std::chrono_literals;
@@ -105,13 +105,13 @@ struct IdleGate {
     bool released{};
 };
 
-class FakeStream final : public pipe::PipeStream {
+class FakeStream final : public service_pipe::PipeStream {
 public:
     explicit FakeStream(std::shared_ptr<StreamState> state)
         : state_(std::move(state))
     {}
 
-    pipe::PipeIoResult read(
+    service_pipe::PipeIoResult read(
         const std::span<std::byte> output,
         const std::chrono::milliseconds timeout) override
     {
@@ -132,7 +132,7 @@ public:
         return {count, false, false, false};
     }
 
-    pipe::PipeIoResult write_all(
+    service_pipe::PipeIoResult write_all(
         const std::span<const std::byte> input,
         std::chrono::milliseconds) override
     {
@@ -148,8 +148,8 @@ public:
         const bool fail = state_->fail_write_call != 0
             && state_->writes.size() == state_->fail_write_call;
         state_->changed.notify_all();
-        return fail ? pipe::PipeIoResult{0, false, true, false}
-                    : pipe::PipeIoResult{input.size(), false, false, false};
+        return fail ? service_pipe::PipeIoResult{0, false, true, false}
+                    : service_pipe::PipeIoResult{input.size(), false, false, false};
     }
 
     void close() noexcept override
@@ -163,13 +163,13 @@ private:
     std::shared_ptr<StreamState> state_;
 };
 
-class FakeListener final : public pipe::PipeListener {
+class FakeListener final : public service_pipe::PipeListener {
 public:
-    explicit FakeListener(std::unique_ptr<pipe::PipeStream> stream)
+    explicit FakeListener(std::unique_ptr<service_pipe::PipeStream> stream)
         : stream_(std::move(stream))
     {}
 
-    std::unique_ptr<pipe::PipeStream> accept() override
+    std::unique_ptr<service_pipe::PipeStream> accept() override
     {
         std::unique_lock lock{mutex_};
         changed_.wait(lock, [this] { return closed_ || stream_; });
@@ -187,7 +187,7 @@ public:
 private:
     std::mutex mutex_;
     std::condition_variable changed_;
-    std::unique_ptr<pipe::PipeStream> stream_;
+    std::unique_ptr<service_pipe::PipeStream> stream_;
     bool closed_{};
 };
 
@@ -253,13 +253,13 @@ bool wait_until(Predicate predicate)
 void test_factory_is_trigger_only()
 {
     auto executor = std::make_shared<trigger::TriggerExecutor>(dispatcher());
-    pipe::TriggerPipeChannelFactory factory{executor};
-    for (const auto channel : {pipe::PipeChannel::provider, pipe::PipeChannel::sync,
-                              pipe::PipeChannel::remote}) {
+    service_pipe::TriggerPipeChannelFactory factory{executor};
+    for (const auto channel : {service_pipe::PipeChannel::provider, service_pipe::PipeChannel::sync,
+                              service_pipe::PipeChannel::remote}) {
         check(!factory.create({channel, "x"}, {}),
             "unfinished Pipe channels must fail closed");
     }
-    check(static_cast<bool>(factory.create({pipe::PipeChannel::trigger, "x"}, {})),
+    check(static_cast<bool>(factory.create({service_pipe::PipeChannel::trigger, "x"}, {})),
         "trigger must be the only production Pipe business channel");
     executor->shutdown();
 }
@@ -275,9 +275,9 @@ void test_binary_pair_and_atomic_output()
     append(wire, frame(bpip::FrameKind::bytes, binary));
     state->reads.push_back(std::move(wire));
     auto executor = std::make_shared<trigger::TriggerExecutor>(dispatcher());
-    pipe::PipeHost host{std::make_unique<FakeListener>(
+    service_pipe::PipeHost host{std::make_unique<FakeListener>(
         std::make_unique<FakeStream>(state)),
-        std::make_shared<pipe::TriggerPipeChannelFactory>(executor)};
+        std::make_shared<service_pipe::TriggerPipeChannelFactory>(executor)};
     check(host.start(), "binary Pipe host must start");
     check(wait_until([&] {
         std::lock_guard lock{state->mutex};
@@ -308,9 +308,9 @@ void test_json_binary_response_is_one_write()
         R"({"type":"command","command":"status","timestamp":11,"payload":{}})"));
     state->reads.push_back(std::move(wire));
     auto executor = std::make_shared<trigger::TriggerExecutor>(dispatcher());
-    pipe::PipeHost host{std::make_unique<FakeListener>(
+    service_pipe::PipeHost host{std::make_unique<FakeListener>(
         std::make_unique<FakeStream>(state)),
-        std::make_shared<pipe::TriggerPipeChannelFactory>(executor)};
+        std::make_shared<service_pipe::TriggerPipeChannelFactory>(executor)};
     check(host.start(), "response Pipe host must start");
     check(wait_until([&] {
         std::lock_guard lock{state->mutex};
@@ -336,12 +336,12 @@ void test_stream_backpressure_completes_all_leases()
     append(wire, frame(bpip::FrameKind::json,
         R"({"type":"command","command":"test_all_sha_stream","timestamp":12,"payload":{}})"));
     state->reads.push_back(std::move(wire));
-    pipe::TriggerPipeChannelLimits channel_limits;
+    service_pipe::TriggerPipeChannelLimits channel_limits;
     channel_limits.session.max_queued_batches = 1;
     auto executor = std::make_shared<trigger::TriggerExecutor>(dispatcher());
-    pipe::PipeHost host{std::make_unique<FakeListener>(
+    service_pipe::PipeHost host{std::make_unique<FakeListener>(
         std::make_unique<FakeStream>(state)),
-        std::make_shared<pipe::TriggerPipeChannelFactory>(executor, channel_limits)};
+        std::make_shared<service_pipe::TriggerPipeChannelFactory>(executor, channel_limits)};
     check(host.start(), "stream Pipe host must start");
     check(wait_until([&] {
         std::lock_guard lock{state->mutex};
@@ -364,9 +364,9 @@ void test_peer_close_cancels_and_drains_running_task()
     state->reads.push_back(std::move(wire));
     auto executor = std::make_shared<trigger::TriggerExecutor>(
         dispatcher(&started, &stopped));
-    pipe::PipeHost host{std::make_unique<FakeListener>(
+    service_pipe::PipeHost host{std::make_unique<FakeListener>(
         std::make_unique<FakeStream>(state)),
-        std::make_shared<pipe::TriggerPipeChannelFactory>(executor)};
+        std::make_shared<service_pipe::TriggerPipeChannelFactory>(executor)};
     check(host.start(), "cancel Pipe host must start");
     check(wait_until([&] { return started.load(); }),
         "cancel fixture must start the handler before sending peer CLOSE");
@@ -388,9 +388,9 @@ void test_write_failure_fails_lease_and_closes_connection()
         R"({"type":"command","command":"status","timestamp":14,"payload":{}})"));
     state->reads.push_back(std::move(wire));
     auto executor = std::make_shared<trigger::TriggerExecutor>(dispatcher());
-    pipe::PipeHost host{std::make_unique<FakeListener>(
+    service_pipe::PipeHost host{std::make_unique<FakeListener>(
         std::make_unique<FakeStream>(state)),
-        std::make_shared<pipe::TriggerPipeChannelFactory>(executor)};
+        std::make_shared<service_pipe::TriggerPipeChannelFactory>(executor)};
     check(host.start(), "failure Pipe host must start");
     check(wait_until([&] { return host.stats().completed == 1; }),
         "writer failure must fail_send and close without a retry loop");
@@ -411,13 +411,13 @@ void test_connection_task_limit_rejects_without_overcommit()
     append(wire, frame(bpip::FrameKind::json,
         R"({"type":"command","command":"status","timestamp":20,"payload":{}})"));
     state->reads.push_back(std::move(wire));
-    pipe::TriggerPipeChannelLimits channel_limits;
+    service_pipe::TriggerPipeChannelLimits channel_limits;
     channel_limits.max_tasks_per_connection = 1;
     auto executor = std::make_shared<trigger::TriggerExecutor>(
         dispatcher(&started, &stopped));
-    pipe::PipeHost host{std::make_unique<FakeListener>(
+    service_pipe::PipeHost host{std::make_unique<FakeListener>(
         std::make_unique<FakeStream>(state)),
-        std::make_shared<pipe::TriggerPipeChannelFactory>(executor, channel_limits)};
+        std::make_shared<service_pipe::TriggerPipeChannelFactory>(executor, channel_limits)};
     check(host.start(), "task-limited Pipe host must start");
     check(wait_until([&] { return started.load(); }),
         "task-limit fixture must start its first admitted handler");
@@ -448,13 +448,13 @@ void test_ingress_budget_is_strict()
     append(wire, frame(bpip::FrameKind::json,
         R"({"type":"command","command":"status","timestamp":30,"payload":{}})"));
     state->reads.push_back(std::move(wire));
-    pipe::TriggerPipeChannelLimits channel_limits;
+    service_pipe::TriggerPipeChannelLimits channel_limits;
     channel_limits.ingress.max_json_frame_bytes = 32;
     channel_limits.ingress.max_aggregate_bytes = 32;
     auto executor = std::make_shared<trigger::TriggerExecutor>(dispatcher());
-    pipe::PipeHost host{std::make_unique<FakeListener>(
+    service_pipe::PipeHost host{std::make_unique<FakeListener>(
         std::make_unique<FakeStream>(state)),
-        std::make_shared<pipe::TriggerPipeChannelFactory>(executor, channel_limits)};
+        std::make_shared<service_pipe::TriggerPipeChannelFactory>(executor, channel_limits)};
     check(host.start(), "budget Pipe host must start");
     check(wait_until([&] { return host.stats().completed == 1; }),
         "oversized trigger ingress must close immediately");
@@ -473,9 +473,9 @@ void test_stop_interrupts_write_and_waits_for_pump_barrier()
         R"({"type":"command","command":"status","timestamp":40,"payload":{}})"));
     state->reads.push_back(std::move(wire));
     auto executor = std::make_shared<trigger::TriggerExecutor>(dispatcher());
-    pipe::PipeHost host{std::make_unique<FakeListener>(
+    service_pipe::PipeHost host{std::make_unique<FakeListener>(
         std::make_unique<FakeStream>(state)),
-        std::make_shared<pipe::TriggerPipeChannelFactory>(executor)};
+        std::make_shared<service_pipe::TriggerPipeChannelFactory>(executor)};
     check(host.start(), "blocking-write Pipe host must start");
     check(wait_until([&] {
         std::lock_guard lock{state->mutex};
@@ -538,11 +538,11 @@ void test_pump_idle_transition_has_no_lost_wakeup_under_stress()
     auto executor = std::make_shared<trigger::TriggerExecutor>(
         std::make_shared<const trigger::TriggerDispatcher>(
             std::move(*built.dispatcher)), executor_limits);
-    auto factory = std::make_shared<pipe::TriggerPipeChannelFactory>(executor);
-    pipe::PipeHost host{std::make_unique<FakeListener>(
+    auto factory = std::make_shared<service_pipe::TriggerPipeChannelFactory>(executor);
+    service_pipe::PipeHost host{std::make_unique<FakeListener>(
         std::make_unique<FakeStream>(state)), factory};
 
-    pipe::detail::set_trigger_pipe_before_idle_hook_for_test(
+    service_pipe::detail::set_trigger_pipe_before_idle_hook_for_test(
         &IdleGate::pause, &gate);
     check(host.start(), "idle-race Pipe host must start");
     const bool entered = gate.wait_entered();
@@ -552,7 +552,7 @@ void test_pump_idle_transition_has_no_lost_wakeup_under_stress()
     check(wait_until([&] { return second_output_attempted.load(); }),
         "second admitted handler must publish while the prior pump holds idle lock");
     gate.release();
-    pipe::detail::set_trigger_pipe_before_idle_hook_for_test(nullptr, nullptr);
+    service_pipe::detail::set_trigger_pipe_before_idle_hook_for_test(nullptr, nullptr);
 
     bpip::Bytes burst;
     for (std::size_t index = 0; index < burst_count; ++index) {
