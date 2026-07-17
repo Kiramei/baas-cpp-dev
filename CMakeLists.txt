@@ -96,6 +96,8 @@ option(BUILD_SCHEDULER_POLICY   "Build the pure scheduler policy/parser" OFF)
 option(BUILD_SCHEDULER_POLICY_TESTS "Build deterministic scheduler policy tests" OFF)
 option(BUILD_RESOURCE_CORE      "Build immutable resource snapshot core" OFF)
 option(BUILD_RESOURCE_CORE_TESTS "Build immutable resource snapshot tests" OFF)
+option(BUILD_RUNTIME_RESOURCE_SNAPSHOT_LOADER "Build pinned runtime resource snapshot loader" OFF)
+option(BUILD_RUNTIME_RESOURCE_SNAPSHOT_LOADER_TESTS "Build pinned runtime resource snapshot loader tests" OFF)
 option(BUILD_RUNTIME_REPOSITORY "Build read-only runtime repository activation" OFF)
 option(BUILD_RUNTIME_REPOSITORY_TESTS "Build runtime repository activation tests" OFF)
 option(BUILD_RUNTIME_REPOSITORY_UPDATER "Build the transport-independent runtime repository updater" OFF)
@@ -313,6 +315,20 @@ endif()
 
 if(BUILD_RESOURCE_CORE_TESTS AND NOT BUILD_RESOURCE_CORE)
     set(BUILD_RESOURCE_CORE ON CACHE BOOL "Build immutable resource snapshot core" FORCE)
+endif()
+
+if(BUILD_RUNTIME_RESOURCE_SNAPSHOT_LOADER_TESTS)
+    set(BUILD_RUNTIME_RESOURCE_SNAPSHOT_LOADER ON CACHE BOOL
+        "Build pinned runtime resource snapshot loader" FORCE)
+    set(BUILD_RUNTIME_REPOSITORY_TESTS ON CACHE BOOL
+        "Build runtime repository activation tests" FORCE)
+endif()
+
+if(BUILD_RUNTIME_RESOURCE_SNAPSHOT_LOADER)
+    set(BUILD_RUNTIME_REPOSITORY ON CACHE BOOL
+        "Build read-only runtime repository activation" FORCE)
+    set(BUILD_RESOURCE_CORE ON CACHE BOOL
+        "Build immutable resource snapshot core" FORCE)
 endif()
 
 if(BUILD_RUNTIME_REPOSITORY_TESTS AND NOT BUILD_RUNTIME_REPOSITORY)
@@ -821,6 +837,7 @@ if(BUILD_SERVICE_SYNC_HANDLER OR BUILD_SERVICE_REMOTE_HANDLER
    OR BUILD_SERVICE_RUNTIME_REPOSITORY_OWNER
    OR BUILD_SERVICE_RUNTIME_REPOSITORY_PLAN
    OR BUILD_SERVICE_RUNTIME_TASK_TRIGGERS
+   OR BUILD_RUNTIME_RESOURCE_SNAPSHOT_LOADER
    OR BUILD_SCHEDULER_POLICY)
     baas_request_dependencies(nlohmann_json)
 endif()
@@ -899,6 +916,10 @@ endif()
 
 if(BUILD_RUNTIME_REPOSITORY)
     include("${CMAKE_CURRENT_LIST_DIR}/cmake/RuntimeRepository.cmake")
+endif()
+
+if(BUILD_RUNTIME_RESOURCE_SNAPSHOT_LOADER)
+    include("${CMAKE_CURRENT_LIST_DIR}/cmake/RuntimeResourceSnapshotLoader.cmake")
 endif()
 
 if(BUILD_RUNTIME_REPOSITORY_UPDATER)
