@@ -42,6 +42,17 @@ same-thread reentry for the same device is rejected immediately as
 `HOST006_UNAVAILABLE` instead of deadlocking. These coordinator conditions do
 not invent public detail discriminators.
 
+Each acquired lease also creates a private logical admission lineage. The
+executor receives its opaque `HostAdmissionToken` through
+`ProcedureExecutionRequest` and must propagate it in
+`HostCallContext::admission` when helper threads make nested Host calls. A
+token's recognized concrete identity is private to the coordinator, is bounded
+by `max_admission_depth`, and becomes inert when its lease is released.
+Consequently, cross-thread same-device logical reentry is rejected before it
+can enter the FIFO queue; a caller cannot fabricate a token that the
+coordinator recognizes. Multi-waiter non-reentrant calls retain exact ticket
+FIFO order.
+
 The executor must cooperatively poll during its own bounded work. Host
 postflight checks prevent a late success from outranking a deadline or
 cancellation. Effect reporting records `not_started`, `committed`, or `unknown`
@@ -72,9 +83,10 @@ test on Windows, Linux, and macOS and cross-compiles the production library for
 Android `arm64-v8a` and `x86_64`. Native tests cover immutable ownership and
 identity, strict malformed input, success/error mapping, lifetime, same-device
 serialization, different-device concurrency, cancellation/deadline points,
-reentry, shutdown, exception/allocation failure, and 64 repeated concurrency
-runs. Script evaluator tests cover the foreground discriminator through the
-language Error envelope.
+same-thread and propagated cross-thread reentry, multi-waiter FIFO order,
+shutdown, exception/allocation failure, and 64 repeated concurrency runs.
+Script evaluator tests cover the foreground discriminator through the language
+Error envelope.
 
 The exact CMake library target is `BAAS_script_procedure_host`; the executable
 golden/unit target is `BAAS_script_procedure_host_tests`. A mock runner builds

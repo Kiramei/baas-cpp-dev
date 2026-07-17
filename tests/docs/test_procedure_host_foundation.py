@@ -119,6 +119,9 @@ class ProcedureHostFoundationTests(unittest.TestCase):
             "same physical device must serialize across distinct Host instances",
             "different physical devices must execute concurrently",
             "same-thread same-device reentry",
+            "propagated logical admission must reject cross-thread same-device reentry without queuing",
+            "same-device multi-waiter admission must preserve exact FIFO order",
+            "a retained admission token must become inert",
             "strand wait must cooperatively cancel",
             "cancellation during executor",
             "deadline must win",
@@ -131,6 +134,13 @@ class ProcedureHostFoundationTests(unittest.TestCase):
             "begun or indeterminate input must make foreground mismatch effect unknown",
         ):
             self.assertIn(anchor, self.tests)
+        for anchor in (
+            "HostAdmissionToken",
+            "HostCallContext::admission",
+            "max_admission_depth",
+            "cannot fabricate a token",
+        ):
+            self.assertIn(anchor, self.spec)
 
     def test_build_and_android_closure_are_explicit(self) -> None:
         self.assertIn("option(BUILD_SCRIPT_PROCEDURE_HOST ", self.cmake)

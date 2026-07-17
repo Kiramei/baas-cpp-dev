@@ -25,6 +25,25 @@ using runtime::JsonKind;
 using runtime::JsonObject;
 using runtime::JsonValue;
 
+struct AdmissionCoordinatorIdentity final {};
+
+struct ProcedureAdmissionNode final {
+    std::shared_ptr<const AdmissionCoordinatorIdentity> coordinator;
+    std::string device_id;
+    std::atomic<bool> active{};
+};
+
+class ProcedureAdmissionChain final : public runtime::HostAdmissionToken {
+public:
+    explicit ProcedureAdmissionChain(
+        std::vector<std::shared_ptr<ProcedureAdmissionNode>> lineage_value)
+        : lineage(std::move(lineage_value))
+    {
+    }
+
+    std::vector<std::shared_ptr<ProcedureAdmissionNode>> lineage;
+};
+
 [[nodiscard]] JsonValue detail(const char* key, const char* value)
 {
     return JsonValue(JsonObject{{key, JsonValue(value)}});
@@ -275,9 +294,23 @@ ProcedureExecutionRequest::ProcedureExecutionRequest(
     std::string device_id, JsonObject options,
     std::shared_ptr<const runtime::HostCancellationProbe> cancellation,
     ProcedureEffectReporter& effects)
+    : ProcedureExecutionRequest(
+          std::move(snapshot), std::move(procedure), std::move(device_id),
+          std::move(options), std::move(cancellation), {}, effects)
+{
+}
+
+ProcedureExecutionRequest::ProcedureExecutionRequest(
+    std::shared_ptr<const ProcedureSnapshot> snapshot,
+    std::shared_ptr<const ProcedureDescriptor> procedure,
+    std::string device_id, JsonObject options,
+    std::shared_ptr<const runtime::HostCancellationProbe> cancellation,
+    std::shared_ptr<const runtime::HostAdmissionToken> admission,
+    ProcedureEffectReporter& effects)
     : snapshot_(std::move(snapshot)), procedure_(std::move(procedure)),
       device_id_(std::move(device_id)), options_(std::move(options)),
-      cancellation_(std::move(cancellation)), effects_(&effects)
+      cancellation_(std::move(cancellation)), admission_(std::move(admission)),
+      effects_(&effects)
 {
 }
 
@@ -295,16 +328,22 @@ bool ProcedureExecutionRequest::deadline_exceeded() const noexcept
 {
     return cancellation_ && cancellation_->deadline_exceeded();
 }
+const std::shared_ptr<const runtime::HostAdmissionToken>&
+ProcedureExecutionRequest::admission_token() const noexcept { return admission_; }
 ProcedureEffectReporter& ProcedureExecutionRequest::effects() const noexcept { return *effects_; }
 
 struct PhysicalDeviceCoordinator::Impl {
     struct LeaseToken {
         std::shared_ptr<PhysicalDeviceCoordinator> owner;
         std::string device_id;
+        std::shared_ptr<ProcedureAdmissionNode> admission;
         bool armed{};
         ~LeaseToken()
         {
-            if (armed) owner->release(device_id);
+            if (armed) {
+                admission->active.store(false, std::memory_order_release);
+                owner->release(device_id);
+            }
         }
     };
 
@@ -314,9 +353,13 @@ struct PhysicalDeviceCoordinator::Impl {
         std::deque<std::uint64_t> waiters;
     };
 
-    explicit Impl(const PhysicalDeviceCoordinatorLimits configured) : limits(configured) {}
+    explicit Impl(const PhysicalDeviceCoordinatorLimits configured)
+        : limits(configured), identity(std::make_shared<AdmissionCoordinatorIdentity>())
+    {
+    }
 
     PhysicalDeviceCoordinatorLimits limits;
+    std::shared_ptr<const AdmissionCoordinatorIdentity> identity;
     mutable std::timed_mutex mutex;
     std::condition_variable_any changed;
     std::map<std::string, DeviceState, std::less<>> devices;
@@ -337,6 +380,7 @@ std::shared_ptr<PhysicalDeviceCoordinator> PhysicalDeviceCoordinator::create(
 {
     if (limits.max_devices == 0 || limits.max_waiters == 0 ||
         limits.max_device_id_bytes == 0 || limits.poll_interval.count() <= 0 ||
+        limits.max_admission_depth == 0 ||
         limits.poll_interval > std::chrono::seconds(1))
         throw std::invalid_argument("physical-device coordinator limits are invalid");
     return std::shared_ptr<PhysicalDeviceCoordinator>(
@@ -345,43 +389,74 @@ std::shared_ptr<PhysicalDeviceCoordinator> PhysicalDeviceCoordinator::create(
 
 PhysicalDeviceAcquireResult PhysicalDeviceCoordinator::acquire(
     const std::string_view device_id,
-    const std::shared_ptr<const runtime::HostCancellationProbe>& cancellation)
+    const std::shared_ptr<const runtime::HostCancellationProbe>& cancellation,
+    const std::shared_ptr<const runtime::HostAdmissionToken>& parent_admission)
 {
     if (!valid_physical_device_id(device_id, impl_->limits.max_device_id_bytes))
-        return {PhysicalDeviceAcquireCode::InvalidDeviceId, {}};
+        return {PhysicalDeviceAcquireCode::InvalidDeviceId, {}, {}};
     std::unique_lock<std::timed_mutex> lock(impl_->mutex, std::defer_lock);
     for (;;) {
         if (cancellation && cancellation->deadline_exceeded())
-            return {PhysicalDeviceAcquireCode::DeadlineExceeded, {}};
+            return {PhysicalDeviceAcquireCode::DeadlineExceeded, {}, {}};
         if (cancellation && cancellation->cancelled())
-            return {PhysicalDeviceAcquireCode::Cancelled, {}};
+            return {PhysicalDeviceAcquireCode::Cancelled, {}, {}};
         if (lock.try_lock_for(impl_->limits.poll_interval)) break;
     }
-    if (impl_->stopping) return {PhysicalDeviceAcquireCode::Shutdown, {}};
+    if (impl_->stopping) return {PhysicalDeviceAcquireCode::Shutdown, {}, {}};
     auto found = impl_->devices.find(device_id);
     if (found == impl_->devices.end()) {
         if (impl_->devices.size() >= impl_->limits.max_devices)
-            return {PhysicalDeviceAcquireCode::Backpressure, {}};
+            return {PhysicalDeviceAcquireCode::Backpressure, {}, {}};
         found = impl_->devices.emplace(std::string(device_id), Impl::DeviceState{}).first;
     }
     auto& state = found->second;
+    const auto parent =
+        std::dynamic_pointer_cast<const ProcedureAdmissionChain>(parent_admission);
+    std::size_t active_depth{};
+    if (parent) {
+        for (const auto& node : parent->lineage) {
+            if (!node->active.load(std::memory_order_acquire)) continue;
+            ++active_depth;
+            if (node->coordinator.get() == impl_->identity.get() &&
+                node->device_id == device_id)
+                return {PhysicalDeviceAcquireCode::Reentrant, {}, {}};
+        }
+    }
     if (state.busy && state.owner == std::this_thread::get_id())
-        return {PhysicalDeviceAcquireCode::Reentrant, {}};
+        return {PhysicalDeviceAcquireCode::Reentrant, {}, {}};
+    if (active_depth >= impl_->limits.max_admission_depth)
+        return {PhysicalDeviceAcquireCode::Backpressure, {}, {}};
 
     const auto owner = shared_from_this();
-    auto make_lease = [&]() -> std::shared_ptr<void> {
-        auto token = std::make_shared<Impl::LeaseToken>();
-        token->owner = owner;
-        token->device_id = device_id;
+    auto make_acquisition = [&]() -> PhysicalDeviceAcquireResult {
+        std::vector<std::shared_ptr<ProcedureAdmissionNode>> lineage;
+        lineage.reserve(active_depth + 1);
+        if (parent) {
+            for (const auto& node : parent->lineage)
+                if (node->active.load(std::memory_order_acquire))
+                    lineage.push_back(node);
+        }
+        auto node = std::make_shared<ProcedureAdmissionNode>();
+        node->coordinator = impl_->identity;
+        node->device_id = device_id;
+        lineage.push_back(node);
+        auto admission = std::make_shared<const ProcedureAdmissionChain>(
+            std::move(lineage));
+        auto lease = std::make_shared<Impl::LeaseToken>();
+        lease->owner = owner;
+        lease->device_id = device_id;
+        lease->admission = node;
         state.busy = true;
         state.owner = std::this_thread::get_id();
-        token->armed = true;
-        return token;
+        node->active.store(true, std::memory_order_release);
+        lease->armed = true;
+        return {PhysicalDeviceAcquireCode::Acquired, std::move(lease),
+                std::move(admission)};
     };
     if (!state.busy && state.waiters.empty())
-        return {PhysicalDeviceAcquireCode::Acquired, make_lease()};
+        return make_acquisition();
     if (impl_->waiter_count >= impl_->limits.max_waiters)
-        return {PhysicalDeviceAcquireCode::Backpressure, {}};
+        return {PhysicalDeviceAcquireCode::Backpressure, {}, {}};
     auto ticket = impl_->next_ticket++;
     if (ticket == 0) ticket = impl_->next_ticket++;
     state.waiters.push_back(ticket);
@@ -403,22 +478,23 @@ PhysicalDeviceAcquireResult PhysicalDeviceCoordinator::acquire(
         // Deadline wins when both become observable at the same checkpoint.
         if (cancellation && cancellation->deadline_exceeded()) {
             cancel_wait();
-            return {PhysicalDeviceAcquireCode::DeadlineExceeded, {}};
+            return {PhysicalDeviceAcquireCode::DeadlineExceeded, {}, {}};
         }
         if (cancellation && cancellation->cancelled()) {
             cancel_wait();
-            return {PhysicalDeviceAcquireCode::Cancelled, {}};
+            return {PhysicalDeviceAcquireCode::Cancelled, {}, {}};
         }
         if (impl_->stopping) {
             cancel_wait();
-            return {PhysicalDeviceAcquireCode::Shutdown, {}};
+            return {PhysicalDeviceAcquireCode::Shutdown, {}, {}};
         }
         const auto current = impl_->devices.find(device_id);
         if (current != impl_->devices.end() && !current->second.busy &&
             !current->second.waiters.empty() && current->second.waiters.front() == ticket) {
+            auto acquisition = make_acquisition();
             current->second.waiters.pop_front();
             --impl_->waiter_count;
-            return {PhysicalDeviceAcquireCode::Acquired, make_lease()};
+            return acquisition;
         }
         impl_->changed.wait_for(lock, impl_->limits.poll_interval);
     }
@@ -549,7 +625,8 @@ struct ProcedureHost::Impl {
             return cancelled(HostEffectState::NotStarted);
         }
 
-        auto acquired = coordinator->acquire(device_id, context.cancellation);
+        auto acquired = coordinator->acquire(
+            device_id, context.cancellation, context.admission);
         if (acquired.code != PhysicalDeviceAcquireCode::Acquired) {
             ++failed;
             switch (acquired.code) {
@@ -596,7 +673,7 @@ struct ProcedureHost::Impl {
         try {
             ProcedureExecutionRequest request(
                 snapshot, procedure, device_id, std::move(options),
-                context.cancellation, trace);
+                context.cancellation, acquired.admission, trace);
             outcome = executor->execute(request);
         } catch (const std::bad_alloc&) {
             ++failed;

@@ -87,6 +87,14 @@ public:
         runtime::JsonObject options,
         std::shared_ptr<const runtime::HostCancellationProbe> cancellation,
         ProcedureEffectReporter& effects);
+    ProcedureExecutionRequest(
+        std::shared_ptr<const ProcedureSnapshot> snapshot,
+        std::shared_ptr<const ProcedureDescriptor> procedure,
+        std::string device_id,
+        runtime::JsonObject options,
+        std::shared_ptr<const runtime::HostCancellationProbe> cancellation,
+        std::shared_ptr<const runtime::HostAdmissionToken> admission,
+        ProcedureEffectReporter& effects);
 
     [[nodiscard]] const std::shared_ptr<const ProcedureSnapshot>& snapshot() const noexcept;
     [[nodiscard]] const std::shared_ptr<const ProcedureDescriptor>& procedure() const noexcept;
@@ -94,6 +102,10 @@ public:
     [[nodiscard]] const runtime::JsonObject& options() const noexcept;
     [[nodiscard]] bool cancelled() const noexcept;
     [[nodiscard]] bool deadline_exceeded() const noexcept;
+    // Propagate this token in HostCallContext::admission when helper work makes
+    // a nested Host call. Its concrete identity cannot be constructed here.
+    [[nodiscard]] const std::shared_ptr<const runtime::HostAdmissionToken>&
+        admission_token() const noexcept;
     [[nodiscard]] ProcedureEffectReporter& effects() const noexcept;
 
 private:
@@ -102,6 +114,7 @@ private:
     std::string device_id_;
     runtime::JsonObject options_;
     std::shared_ptr<const runtime::HostCancellationProbe> cancellation_;
+    std::shared_ptr<const runtime::HostAdmissionToken> admission_;
     ProcedureEffectReporter* effects_{};
 };
 
@@ -121,6 +134,7 @@ struct PhysicalDeviceCoordinatorLimits {
     std::size_t max_waiters{4'096};
     std::size_t max_device_id_bytes{256};
     std::chrono::milliseconds poll_interval{5};
+    std::size_t max_admission_depth{64};
 };
 
 enum class PhysicalDeviceAcquireCode : std::uint8_t {
@@ -137,6 +151,8 @@ struct PhysicalDeviceAcquireResult {
     PhysicalDeviceAcquireCode code{PhysicalDeviceAcquireCode::Shutdown};
     // Opaque RAII lease. Destruction releases the physical-device strand.
     std::shared_ptr<void> lease;
+    // Unforgeable logical lineage for nested calls made while lease is alive.
+    std::shared_ptr<const runtime::HostAdmissionToken> admission;
 };
 
 struct PhysicalDeviceCoordinatorStats {
@@ -156,7 +172,8 @@ public:
         PhysicalDeviceCoordinatorLimits limits = {});
     [[nodiscard]] PhysicalDeviceAcquireResult acquire(
         std::string_view device_id,
-        const std::shared_ptr<const runtime::HostCancellationProbe>& cancellation);
+        const std::shared_ptr<const runtime::HostCancellationProbe>& cancellation,
+        const std::shared_ptr<const runtime::HostAdmissionToken>& parent_admission = {});
     void shutdown() noexcept;
     [[nodiscard]] PhysicalDeviceCoordinatorStats stats() const noexcept;
 

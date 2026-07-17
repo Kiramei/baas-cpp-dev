@@ -2792,9 +2792,9 @@ Value SynchronousEvaluator::Impl::invoke_native(
     } reentry_guard(host_call_active);
     auto result = invoke_host_callback(
         *function.binding,
-        {function.module, function.export_name, function.binding->binding_id,
-         function.selected_version, stats.host_calls,
-         host_cancellation_for_current_phase()},
+         {function.module, function.export_name, function.binding->binding_id,
+          function.selected_version, stats.host_calls,
+          host_cancellation_for_current_phase(), {}},
         converted,
         host_options->bindings->limits(),
         host_options->handles.get());

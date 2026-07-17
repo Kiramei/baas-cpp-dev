@@ -2,6 +2,7 @@
 #include "script/runtime/SynchronousEvaluator.h"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cstdlib>
@@ -118,10 +119,12 @@ private:
     Function function_;
 };
 
-runtime::HostCallContext context(std::shared_ptr<const Probe> probe = {})
+runtime::HostCallContext context(
+    std::shared_ptr<const Probe> probe = {},
+    std::shared_ptr<const runtime::HostAdmissionToken> admission = {})
 {
     return {"baas/procedure", "run", "host.procedure.run.v1", {1, 0}, 0,
-            std::move(probe)};
+            std::move(probe), std::move(admission)};
 }
 
 runtime::HostArguments arguments(
@@ -138,12 +141,14 @@ runtime::HostArguments arguments(
 
 runtime::HostResult invoke(
     const host::ProcedureHostRuntime& owner, const runtime::HostArguments& args,
-    std::shared_ptr<const Probe> probe = {})
+    std::shared_ptr<const Probe> probe = {},
+    std::shared_ptr<const runtime::HostAdmissionToken> admission = {})
 {
     const auto* binding = owner.bindings->find("host.procedure.run.v1");
     check(binding != nullptr, "procedure binding must exist");
     return runtime::invoke_host_callback(
-        *binding, context(std::move(probe)), args, owner.bindings->limits(), nullptr);
+        *binding, context(std::move(probe), std::move(admission)), args,
+        owner.bindings->limits(), nullptr);
 }
 
 runtime::SynchronousHostOptions procedure_log_options(
@@ -690,6 +695,122 @@ void test_different_device_concurrency_reentry_and_shutdown()
           "coordinator shutdown must reject new work without inventing a public discriminator");
 }
 
+void test_cross_thread_logical_reentry_is_bounded()
+{
+    auto coordinator = host::PhysicalDeviceCoordinator::create(
+        {.max_devices = 8, .max_waiters = 32, .max_device_id_bytes = 64,
+         .poll_interval = 1ms});
+    auto inner = host::make_procedure_host_runtime(
+        procedure_snapshot(), "emulator-5556",
+        std::make_shared<LambdaExecutor>([](const host::ProcedureExecutionRequest&) {
+            return host::ProcedureExecutorOutcome::success("joined");
+        }), coordinator);
+    auto nested_probe = std::make_shared<Probe>();
+    runtime::HostResult nested_result = runtime::HostResult::success();
+    std::atomic<bool> nested_returned{};
+    bool returned_before_cancel{};
+    std::shared_ptr<const runtime::HostAdmissionToken> retained_admission;
+    auto outer = host::make_procedure_host_runtime(
+        procedure_snapshot(), "emulator-5556",
+        std::make_shared<LambdaExecutor>([&](const host::ProcedureExecutionRequest& request) {
+            retained_admission = request.admission_token();
+            std::thread helper([&, admission = request.admission_token()] {
+                nested_result = invoke(
+                    inner, arguments(), nested_probe, std::move(admission));
+                nested_returned.store(true, std::memory_order_release);
+            });
+            returned_before_cancel = wait_until(
+                [&] { return nested_returned.load(std::memory_order_acquire); }, 500ms);
+            if (!returned_before_cancel)
+                nested_probe->cancel.store(true, std::memory_order_release);
+            helper.join();
+            return host::ProcedureExecutorOutcome::success("joined");
+        }), coordinator);
+
+    const auto outer_result = invoke(outer, arguments());
+    check(outer_result.ok() && returned_before_cancel && nested_result.has_error() &&
+              nested_result.error().code == runtime::HostErrorCode::Unavailable &&
+              nested_result.error().effect_state ==
+                  runtime::HostEffectState::NotStarted &&
+              coordinator->stats().waiters == 0,
+          "propagated logical admission must reject cross-thread same-device reentry without queuing");
+
+    const auto after_release = invoke(
+        inner, arguments(), {}, std::move(retained_admission));
+    check(after_release.ok(),
+          "a retained admission token must become inert when its owning lease is released");
+
+    auto bounded = host::PhysicalDeviceCoordinator::create(
+        {.max_devices = 8, .max_waiters = 8, .max_device_id_bytes = 64,
+         .poll_interval = 1ms, .max_admission_depth = 1});
+    auto root = bounded->acquire("emulator-5556", {});
+    const auto too_deep = bounded->acquire(
+        "emulator-5558", {}, root.admission);
+    check(root.code == host::PhysicalDeviceAcquireCode::Acquired &&
+              too_deep.code == host::PhysicalDeviceAcquireCode::Backpressure &&
+              !too_deep.lease && !too_deep.admission,
+          "logical admission lineage must fail closed at its configured depth bound");
+}
+
+void test_same_device_multi_waiter_fifo_order()
+{
+    auto coordinator = host::PhysicalDeviceCoordinator::create(
+        {.max_devices = 8, .max_waiters = 32, .max_device_id_bytes = 64,
+         .poll_interval = 1ms});
+    std::atomic<bool> holder_entered{};
+    std::atomic<bool> release_holder{};
+    std::mutex order_mutex;
+    std::vector<int> order;
+    const auto record = [&](const int value) {
+        const std::scoped_lock lock(order_mutex);
+        order.push_back(value);
+    };
+    auto holder = host::make_procedure_host_runtime(
+        procedure_snapshot(), "emulator-5556",
+        std::make_shared<LambdaExecutor>([&](const host::ProcedureExecutionRequest&) {
+            record(0);
+            holder_entered.store(true, std::memory_order_release);
+            while (!release_holder.load(std::memory_order_acquire))
+                std::this_thread::yield();
+            return host::ProcedureExecutorOutcome::success("joined");
+        }), coordinator);
+
+    std::vector<host::ProcedureHostRuntime> waiters;
+    waiters.reserve(4);
+    for (int id = 1; id <= 4; ++id) {
+        waiters.push_back(host::make_procedure_host_runtime(
+            procedure_snapshot(), "emulator-5556",
+            std::make_shared<LambdaExecutor>([&, id](const host::ProcedureExecutionRequest&) {
+                record(id);
+                return host::ProcedureExecutorOutcome::success("joined");
+            }), coordinator));
+    }
+
+    std::thread holder_thread([&] { (void)invoke(holder, arguments()); });
+    check(wait_until(
+              [&] { return holder_entered.load(std::memory_order_acquire); }, 2s),
+          "FIFO holder must own the device before waiters start");
+    std::array<int, 4> waiter_ok{};
+    std::vector<std::thread> threads;
+    threads.reserve(waiters.size());
+    for (std::size_t index = 0; index < waiters.size(); ++index) {
+        threads.emplace_back([&, index] {
+            waiter_ok[index] = invoke(waiters[index], arguments()).ok() ? 1 : -1;
+        });
+        check(wait_until(
+                  [&] { return coordinator->stats().waiters == index + 1; }, 2s),
+              "each FIFO waiter must be admitted to the queue in launch order");
+    }
+    release_holder.store(true, std::memory_order_release);
+    holder_thread.join();
+    for (auto& thread : threads) thread.join();
+    check(order == std::vector<int>({0, 1, 2, 3, 4}) &&
+              std::all_of(waiter_ok.begin(), waiter_ok.end(),
+                          [](const int value) { return value == 1; }) &&
+              coordinator->stats().waiters == 0,
+          "same-device multi-waiter admission must preserve exact FIFO order");
+}
+
 void test_cancellation_deadline_and_exception_safety()
 {
     auto coordinator = host::PhysicalDeviceCoordinator::create(
@@ -910,6 +1031,8 @@ int main(const int argc, char** argv)
         else if (selected == "mapping") test_validation_terminal_and_error_mapping();
         else if (selected == "same") test_same_device_serialization_and_wait_cancellation();
         else if (selected == "different") test_different_device_concurrency_reentry_and_shutdown();
+        else if (selected == "cross-thread") test_cross_thread_logical_reentry_is_bounded();
+        else if (selected == "fifo") test_same_device_multi_waiter_fifo_order();
         else if (selected == "cancel") test_cancellation_deadline_and_exception_safety();
         else if (selected == "stress") test_stress_repeated_serialization();
         else if (selected == "golden") test_real_evaluator_mock_procedure_log_golden_runner();
@@ -921,6 +1044,8 @@ int main(const int argc, char** argv)
     test_validation_terminal_and_error_mapping();
     test_same_device_serialization_and_wait_cancellation();
     test_different_device_concurrency_reentry_and_shutdown();
+    test_cross_thread_logical_reentry_is_bounded();
+    test_same_device_multi_waiter_fifo_order();
     test_cancellation_deadline_and_exception_safety();
     test_stress_repeated_serialization();
     test_real_evaluator_mock_procedure_log_golden_runner();
