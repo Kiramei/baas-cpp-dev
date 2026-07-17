@@ -93,6 +93,14 @@ EXPECTED_GAP_IDS = {
     "op-ee53939b067f3ccd",
 }
 EXPECTED_ERRORS = tuple(f"HOST{number:03d}" for number in range(1, 17))
+ERROR_VARIANT_FIELDS = {
+    "code",
+    "details",
+    "effect_state",
+    "language_mapping",
+    "python_parity",
+    "retryable",
+}
 
 
 def read(path: Path) -> str:
@@ -101,6 +109,24 @@ def read(path: Path) -> str:
 
 def load(path: Path) -> dict:
     return json.loads(read(path))
+
+
+def valid_error_variant_shape(variant: object) -> bool:
+    return (
+        isinstance(variant, dict)
+        and set(variant) == ERROR_VARIANT_FIELDS
+        and isinstance(variant.get("retryable"), bool)
+    )
+
+
+def valid_foreground_mismatch_variant(variant: object) -> bool:
+    return (
+        valid_error_variant_shape(variant)
+        and variant["code"] == "HOST006_UNAVAILABLE"
+        and variant["details"]
+        == {"unavailable_reason": "foreground_package_mismatch"}
+        and variant["retryable"] is True
+    )
 
 
 def clause_bodies(document: str) -> dict[str, str]:
@@ -244,13 +270,7 @@ class HostCapabilityContractTests(unittest.TestCase):
                     self.assertEqual(binding["id"], "host.procedure.run.v1")
                     self.assertTrue(binding["error_variants"])
                     for variant in binding["error_variants"]:
-                        self.assertEqual(
-                            set(variant),
-                            {
-                                "code", "details", "effect_state", "language_mapping",
-                                "python_parity",
-                            },
-                        )
+                        self.assertTrue(valid_error_variant_shape(variant))
                         self.assertIn(variant["code"], binding["errors"])
                         self.assertEqual(
                             set(variant["effect_state"]),
@@ -461,9 +481,18 @@ class HostCapabilityContractTests(unittest.TestCase):
                             "foreground package differs from the execution context's expected package"
                         ),
                     },
+                    "retryable": True,
                 }
             ],
         )
+        foreground_variant = binding["error_variants"][0]
+        self.assertTrue(valid_foreground_mismatch_variant(foreground_variant))
+        missing_retryable = dict(foreground_variant)
+        missing_retryable.pop("retryable")
+        false_retryable = dict(foreground_variant)
+        false_retryable["retryable"] = False
+        self.assertFalse(valid_foreground_mismatch_variant(missing_retryable))
+        self.assertFalse(valid_foreground_mismatch_variant(false_retryable))
         unavailable = next(
             item for item in self.catalog["error_codes"]
             if item["code"] == "HOST006_UNAVAILABLE"
@@ -601,6 +630,8 @@ class HostCapabilityContractTests(unittest.TestCase):
             "no committed input becomes `not_started`",
             "confirmed input becomes `committed`",
             "indeterminate completion becomes `unknown`",
+            "`retryable` MUST be `true`",
+            "bridge MUST preserve the allowlisted `details.unavailable_reason`",
         ):
             self.assertIn(anchor, normalized_spec)
 

@@ -66,7 +66,9 @@ list of effect kinds; it does not grant the corresponding lower-level
 capabilities.
 `control_contract` is an ordered list of mandatory control-flow properties.
 `error_variants` is an ordered list of exact code, safe-details discriminator,
-effect-state, language-mapping, and legacy-parity normalization contracts.
+effect-state, `retryable` boolean, language-mapping, and legacy-parity
+normalization contracts. Every variant MUST declare `retryable` explicitly;
+missing or non-boolean values are invalid.
 `result_schema` fixes field order, requiredness, field type/unit/semantics, and
 unknown-field policy for named ordered-map results.
 Parameter objects accept only `name`, `required`, `type`, and optional
@@ -312,8 +314,10 @@ If the foreground package differs from the execution context's expected package,
 ProcedureHost MUST return `HOST006_UNAVAILABLE` with the only public detail
 `unavailable_reason = foreground_package_mismatch`; the actual/expected package
 names are not exposed. Its language mapping is the existing catchable
-`HostUnavailable`. `effect_state` is `not_started` only when no input effect was
-committed before the mismatch, `committed` when at least one input effect is
+`HostUnavailable`, and `retryable` MUST be `true` because the legacy
+`PackageIncorrect` path is retried after foreground recovery. `effect_state` is
+`not_started` only when no input effect was committed before the mismatch,
+`committed` when at least one input effect is
 confirmed committed, and `unknown` when an input may have committed but its
 completion cannot be proven. A mismatch MUST NOT erase or downgrade an earlier
 input effect.
@@ -323,7 +327,10 @@ to that exact Host error and detail. It derives `effect_state` from the recorded
 input-effect trace: no committed input becomes `not_started`, confirmed input
 becomes `committed`, and an injected indeterminate completion becomes `unknown`.
 Message text and package names are ignored; code, detail discriminator,
-language mapping, and normalized effect state are compared.
+`retryable`, language mapping, and normalized effect state are compared. The
+implementation ERR-016 bridge MUST preserve the allowlisted
+`details.unavailable_reason` discriminator unchanged; it MUST NOT drop it while
+translating `HOST006_UNAVAILABLE` to `HostUnavailable`.
 
 ### HST-010 — Configuration, logging, and notification contracts
 
