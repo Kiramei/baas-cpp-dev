@@ -1314,7 +1314,12 @@ void test_prepared_backend_shutdown_reentry()
             static_assert(std::is_nothrow_invocable_v<decltype(stop_action)>);
             std::stop_callback callback{stop, stop_action};
             callback_registered = true;
-            while (!stop.stop_requested()) std::this_thread::yield();
+            // Keep the registration alive until request_stop() has actually
+            // invoked the callback. Merely observing the published stop bit
+            // is insufficient: the standard permits this thread to win the
+            // callback-unregistration race before the requester starts it.
+            while (!stop.stop_requested() || callback_returns.load() == 0)
+                std::this_thread::yield();
             prepare_returns.fetch_add(1);
             return false;
         }
