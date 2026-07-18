@@ -44,7 +44,8 @@ namespace {
 {
     if (limits.frame_width == 0 || limits.frame_width > 1'280 ||
         limits.frame_height == 0 || limits.frame_height > 720 ||
-        limits.max_screenshot_interval_ms == 0)
+        limits.max_screenshot_interval_ms == 0 ||
+        limits.max_screenshot_interval_ms > 60'000)
         return false;
     const auto pixels = static_cast<std::uint64_t>(limits.frame_width) *
         limits.frame_height * 3U;
@@ -289,9 +290,6 @@ public:
                 return false;
             const auto crop_width = static_cast<int>(crop.right - crop.left);
             const auto crop_height = static_cast<int>(crop.bottom - crop.top);
-            if (source->width() > static_cast<std::uint32_t>(crop_width) ||
-                source->height() > static_cast<std::uint32_t>(crop_height))
-                return false;
             const cv::Mat image(
                 static_cast<int>(frame.height), static_cast<int>(frame.width), CV_8UC3,
                 const_cast<std::byte*>(frame.pixels->data()), frame.row_stride);
@@ -309,14 +307,16 @@ public:
                              template_mean[static_cast<int>(channel)]) > tolerance)
                     return false;
             if (const auto error = control_error(control)) return *error;
+            cv::Mat resized;
+            cv::resize(cropped, resized, templ.size(), 0.0, 0.0, cv::INTER_AREA);
+            if (const auto error = control_error(control)) return *error;
             cv::Mat result;
-            cv::matchTemplate(cropped, templ, result, cv::TM_CCOEFF_NORMED);
-            double maximum{};
-            cv::minMaxLoc(result, nullptr, &maximum);
+            cv::matchTemplate(resized, templ, result, cv::TM_CCOEFF_NORMED);
+            const auto similarity = static_cast<double>(result.at<float>(0, 0));
             if (const auto error = guard(base, control)) return *error;
             const auto threshold = match.threshold.value_or(
                 static_cast<double>(source->threshold_milli()) / 1'000.0);
-            return std::isfinite(maximum) && maximum >= threshold;
+            return std::isfinite(similarity) && similarity > threshold;
         } catch (const cv::Exception& error) {
             return error.code == cv::Error::StsNoMem
                 ? CoDetectOperationError::ResourceExhausted

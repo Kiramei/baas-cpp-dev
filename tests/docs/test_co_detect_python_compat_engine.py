@@ -318,7 +318,8 @@ class CoDetectPythonCompatEngineContractTests(unittest.TestCase):
             "Immutable production session and feature view",
             "Reconnect, device switch, or profile change creates a new token",
             "copies\ncaptured/cache rows into packed immutable storage",
-            "bounded OpenCV `TM_CCOEFF_NORMED`",
+            "resizes the whole crop to the template with OpenCV `INTER_AREA`",
+            "single `TM_CCOEFF_NORMED` result and requires it to be strictly greater",
             "Missing features return `false`",
             "concrete application `CoDetectProductionDevicePort`",
         ):
@@ -349,6 +350,14 @@ class CoDetectPythonCompatEngineContractTests(unittest.TestCase):
         self.assertIn("make_activated_co_detect_production_executor", header)
         self.assertIn("identity_valid() const noexcept", executor_header)
         self.assertIn("!session_.identity_valid() || !features_.identity_valid()", executor_source)
+        for token in (
+            "cv::resize(cropped, resized, templ.size(), 0.0, 0.0, cv::INTER_AREA)",
+            "result.at<float>(0, 0)",
+            "similarity > threshold",
+            "limits.max_screenshot_interval_ms > 60'000",
+        ):
+            self.assertIn(token, source)
+        self.assertNotIn("cv::minMaxLoc", source)
         for forbidden in (
             "BAASConnection",
             "BAASConfig",

@@ -267,8 +267,9 @@ resource/config path, script definition, test hook, or ambient feature registry.
 The feature view reads RGB samples and decoded PNG templates only from its retained
 `CoDetectSupportBundle`. RGB samples are conjunctive and use exact BGR pixels at the
 canonical coordinates. Image matching validates the frozen crop, applies per-channel
-mean RGB tolerance, then runs bounded OpenCV `TM_CCOEFF_NORMED`; definition call
-threshold/RGB values override the bundle defaults. Missing features return `false`.
+mean RGB tolerance, resizes the whole crop to the template with OpenCV `INTER_AREA`,
+then reads the single `TM_CCOEFF_NORMED` result and requires it to be strictly greater
+than the threshold; definition call threshold/RGB values override the bundle defaults. Missing features return `false`.
 OpenCV work is not mid-call interruptible, but both sides are identity/control-polled
 and frame/crop/template dimensions are hard bounded.
 

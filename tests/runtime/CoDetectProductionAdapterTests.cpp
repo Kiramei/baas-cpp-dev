@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <iostream>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <stdexcept>
@@ -118,7 +119,7 @@ public:
         for (std::size_t column = 0; column < 4; ++column) {
             const auto offset = (row * 1'280U + column) * 3U;
             for (std::size_t channel = 0; channel < 3; ++channel) {
-                const auto value = static_cast<int>(pattern[row % 2][column % 2][channel]) +
+                const auto value = static_cast<int>(pattern[row / 2][column / 2][channel]) +
                     channel_offset;
                 (*pixels)[offset + channel] = static_cast<std::byte>(value);
             }
@@ -162,7 +163,14 @@ void test_owned_matching_and_missing_feature()
     check(std::get_if<bool>(&missing) && !std::get<bool>(missing),
           "missing bundle feature is a normal false result");
     check(std::get_if<bool>(&image) && std::get<bool>(image),
-          "strict crop, mean RGB, and OpenCV threshold accept an exact template");
+          "different-sized exact crop is resized before single-position comparison");
+
+    procedure::CoDetectImageMatch equal_threshold;
+    equal_threshold.threshold = 1.0;
+    equal_threshold.rgb_diff = 255;
+    image = pins.features->match_image(*frame, "image-hit", equal_threshold, control);
+    check(std::get_if<bool>(&image) && !std::get<bool>(image),
+          "similarity exactly equal to the threshold is false");
 
     (*port->pixels)[0] = std::byte{0};
     rgb = pins.features->match_rgb(*frame, "rgb-hit", control);
@@ -251,6 +259,18 @@ void test_immutable_retarget_and_factory_guards()
         rejected_token = true;
     }
     check(rejected_token, "equal-looking but non-owned device token is rejected");
+
+    bool rejected_unbounded_interval{};
+    try {
+        procedure::CoDetectProductionAdapterLimits limits;
+        limits.max_screenshot_interval_ms = std::numeric_limits<std::uint64_t>::max();
+        static_cast<void>(procedure::make_co_detect_production_pins(
+            port, second, bundle, bundle->generation(), limits));
+    } catch (const std::invalid_argument&) {
+        rejected_unbounded_interval = true;
+    }
+    check(rejected_unbounded_interval,
+          "unbounded screenshot interval limits are rejected before wait multiplication");
 
     port->identity = first;
     port->retarget_after_capture = second;
