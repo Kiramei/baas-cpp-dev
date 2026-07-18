@@ -71,6 +71,9 @@ struct SynchronousHostOptions {
     // Appended for aggregate source compatibility. The same immutable probe is
     // observed at every Host call entry and by cooperative native callbacks.
     std::shared_ptr<const HostCancellationProbe> cancellation;
+    // Appended for aggregate source compatibility. A composition token keeps
+    // independently constructed adapters alive through evaluator teardown.
+    std::shared_ptr<const void> lifetime_owner;
 };
 
 struct ModuleDiagnostic {

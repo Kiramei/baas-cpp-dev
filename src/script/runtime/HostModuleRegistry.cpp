@@ -575,4 +575,18 @@ std::vector<std::string> HostModuleRegistry::canonical_module_ids() const
     return result;
 }
 
+std::vector<HostModuleDescriptor> HostModuleRegistry::descriptors() const
+{
+    std::vector<HostModuleDescriptor> result;
+    result.reserve(module_version_count_);
+    for (const auto& [module_id, versions] : modules_) {
+        static_cast<void>(module_id);
+        for (const auto& [version, descriptor] : versions) {
+            static_cast<void>(version);
+            result.push_back(descriptor);
+        }
+    }
+    return result;
+}
+
 }  // namespace baas::script::runtime
