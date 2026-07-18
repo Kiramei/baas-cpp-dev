@@ -434,14 +434,34 @@ struct Probe final : runtime::HostCancellationProbe {
 
 struct FlippingProbe final : runtime::HostCancellationProbe {
     mutable std::atomic<std::size_t> cancel_polls{};
-    std::size_t cancel_on{};
+    mutable std::atomic<std::size_t> deadline_polls{};
+    std::size_t cancel_on{std::numeric_limits<std::size_t>::max()};
+    std::size_t deadline_on{std::numeric_limits<std::size_t>::max()};
     bool cancelled() const noexcept override
     {
         return cancel_polls.fetch_add(1, std::memory_order_relaxed) + 1 >=
             cancel_on;
     }
-    bool deadline_exceeded() const noexcept override { return false; }
+    bool deadline_exceeded() const noexcept override
+    {
+        return deadline_polls.fetch_add(1, std::memory_order_relaxed) + 1 >=
+            deadline_on;
+    }
 };
+
+runtime::JsonValue wide_object_with_late_invalid_key()
+{
+    runtime::JsonObject entries;
+    entries.reserve(1'025);
+    entries.emplace_back(
+        std::string("bad\xFF", 4), runtime::JsonValue(std::int64_t{0}));
+    for (std::size_t index{}; index < 1'024; ++index) {
+        entries.emplace_back(
+            "valid_" + std::to_string(index),
+            runtime::JsonValue(static_cast<std::int64_t>(index)));
+    }
+    return runtime::JsonValue(std::move(entries));
+}
 
 void test_limits_cancellation_and_adapter_failures()
 {
@@ -470,24 +490,63 @@ void test_limits_cancellation_and_adapter_failures()
               simultaneous_fixture.port->calls() == 0,
           "deadline must deterministically outrank simultaneous cancellation");
 
-    Fixture flipping_fixture;
-    auto flipping_probe = std::make_shared<FlippingProbe>();
-    flipping_probe->cancel_on = 3;
-    host::ConfigHostLimits flipping_limits;
-    flipping_limits.cooperative_check_interval = 1;
-    auto flipping_owner = host::make_config_host_runtime(
-        flipping_fixture.pinned, flipping_fixture.port, flipping_limits);
-    const auto flipped = invoke(
-        flipping_owner, "host.config.transact.v1",
-        {runtime::HostValue(std::int64_t{7}), runtime::HostValue(json_object({
-            {"/nested/value", runtime::JsonValue(std::int64_t{8})},
-            {"/unknown", runtime::JsonValue("changed")}}))},
-        flipping_probe);
-    check(flipped.has_error() &&
-              flipped.error().code == runtime::HostErrorCode::Cancelled &&
-              flipping_fixture.port->calls() == 0 &&
-              flipping_owner.host->stats().write_bytes == 0,
-          "cooperative cancellation flipping during patch validation must roll back");
+    for (const bool deadline_case : {false, true}) {
+        Fixture wide_fixture;
+        auto probe = std::make_shared<FlippingProbe>();
+        if (deadline_case) probe->deadline_on = 4;
+        else probe->cancel_on = 4;
+        host::ConfigHostLimits limits;
+        limits.cooperative_check_interval = 8;
+        auto owner = host::make_config_host_runtime(
+            wide_fixture.pinned, wide_fixture.port, limits);
+        const auto result = invoke(
+            owner, "host.config.transact.v1",
+            {runtime::HostValue(std::int64_t{7}),
+             runtime::HostValue(json_object({
+                 {"/wide", wide_object_with_late_invalid_key()}}))},
+            probe);
+        const auto expected = deadline_case
+            ? runtime::HostErrorCode::DeadlineExceeded
+            : runtime::HostErrorCode::Cancelled;
+        const auto relevant_polls = deadline_case
+            ? probe->deadline_polls.load(std::memory_order_relaxed)
+            : probe->cancel_polls.load(std::memory_order_relaxed);
+        check(result.has_error() && result.error().code == expected &&
+                  relevant_polls >= 4 && wide_fixture.port->calls() == 0 &&
+                  owner.host->stats().write_bytes == 0,
+              deadline_case
+                  ? "deadline flipping inside wide-object expansion must win before a late invalid key"
+                  : "cancellation flipping inside wide-object expansion must win before a late invalid key");
+    }
+
+    for (const bool deadline_case : {false, true}) {
+        Fixture copy_fixture;
+        auto probe = std::make_shared<FlippingProbe>();
+        if (deadline_case) probe->deadline_on = 4;
+        else probe->cancel_on = 4;
+        host::ConfigHostLimits limits;
+        limits.cooperative_check_interval = 256;
+        auto owner = host::make_config_host_runtime(
+            copy_fixture.pinned, copy_fixture.port, limits);
+        const auto result = invoke(
+            owner, "host.config.transact.v1",
+            {runtime::HostValue(std::int64_t{7}),
+             runtime::HostValue(json_object({
+                 {"/large", runtime::JsonValue(std::string(1U << 20U, 'x'))}}))},
+            probe);
+        const auto expected = deadline_case
+            ? runtime::HostErrorCode::DeadlineExceeded
+            : runtime::HostErrorCode::Cancelled;
+        const auto relevant_polls = deadline_case
+            ? probe->deadline_polls.load(std::memory_order_relaxed)
+            : probe->cancel_polls.load(std::memory_order_relaxed);
+        check(result.has_error() && result.error().code == expected &&
+                  relevant_polls >= 4 && copy_fixture.port->calls() == 0 &&
+                  owner.host->stats().write_bytes == 0,
+              deadline_case
+                  ? "deadline flipping during a large JSON deep copy must roll back"
+                  : "cancellation flipping during a large JSON deep copy must roll back");
+    }
 
     Fixture unavailable_fixture;
     unavailable_fixture.port->force({

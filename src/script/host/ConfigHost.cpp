@@ -110,6 +110,41 @@ enum class JsonValidationError {
     DeadlineExceeded,
 };
 
+class CooperativePoller final {
+public:
+    CooperativePoller(
+        const HostCallContext* context, const std::size_t interval) noexcept
+        : context_(context), interval_(interval), remaining_(interval) {}
+
+    [[nodiscard]] std::size_t next_chunk(const std::size_t available) const noexcept
+    {
+        return std::min(available, remaining_);
+    }
+
+    [[nodiscard]] JsonValidationError completed(
+        std::size_t work = 1) noexcept
+    {
+        while (work != 0) {
+            const auto chunk = std::min(work, remaining_);
+            work -= chunk;
+            remaining_ -= chunk;
+            if (remaining_ != 0) continue;
+            remaining_ = interval_;
+            if (!context_) continue;
+            if (context_->deadline_exceeded())
+                return JsonValidationError::DeadlineExceeded;
+            if (context_->cancelled())
+                return JsonValidationError::Cancelled;
+        }
+        return JsonValidationError::None;
+    }
+
+private:
+    const HostCallContext* context_{};
+    std::size_t interval_{};
+    std::size_t remaining_{};
+};
+
 [[nodiscard]] JsonValidationError checked_add(
     std::size_t& target, const std::size_t amount, const std::size_t maximum,
     const JsonValidationError error) noexcept
@@ -135,7 +170,7 @@ enum class JsonValidationError {
     struct Pending final { const JsonValue* value; std::size_t depth; };
     try {
         std::vector<Pending> pending{{&root, 1}};
-        std::size_t next_cooperative_check = cooperative_check_interval;
+        CooperativePoller poller{context, cooperative_check_interval};
         while (!pending.empty()) {
             const auto current = pending.back();
             pending.pop_back();
@@ -149,16 +184,8 @@ enum class JsonValidationError {
                     metrics.work, 1, limits.max_work,
                     JsonValidationError::Work); error != JsonValidationError::None)
                 return error;
-            if (context && metrics.work >= next_cooperative_check) {
-                if (context->deadline_exceeded())
-                    return JsonValidationError::DeadlineExceeded;
-                if (context->cancelled()) return JsonValidationError::Cancelled;
-                next_cooperative_check =
-                    metrics.work > std::numeric_limits<std::size_t>::max() -
-                            cooperative_check_interval
-                    ? std::numeric_limits<std::size_t>::max()
-                    : metrics.work + cooperative_check_interval;
-            }
+            if (const auto error = poller.completed();
+                error != JsonValidationError::None) return error;
             if (const auto error = checked_add(
                     metrics.total_bytes, 1, limits.max_total_bytes,
                     JsonValidationError::Bytes); error != JsonValidationError::None)
@@ -209,8 +236,11 @@ enum class JsonValidationError {
                             metrics.total_bytes, values.size(), sizeof(std::size_t),
                             limits.max_total_bytes, JsonValidationError::Bytes);
                         error != JsonValidationError::None) return error;
-                    for (auto iterator = values.rbegin(); iterator != values.rend(); ++iterator)
+                    for (auto iterator = values.rbegin(); iterator != values.rend(); ++iterator) {
                         pending.push_back({&*iterator, current.depth + 1});
+                        if (const auto error = poller.completed();
+                            error != JsonValidationError::None) return error;
+                    }
                     break;
                 }
                 case JsonKind::Object: {
@@ -238,6 +268,8 @@ enum class JsonValidationError {
                                 limits.max_total_bytes, JsonValidationError::Bytes);
                             error != JsonValidationError::None) return error;
                         pending.push_back({&iterator->second, current.depth + 1});
+                        if (const auto error = poller.completed();
+                            error != JsonValidationError::None) return error;
                     }
                     break;
                 }
@@ -245,6 +277,103 @@ enum class JsonValidationError {
         }
     } catch (...) {
         return JsonValidationError::Work;
+    }
+    return JsonValidationError::None;
+}
+
+[[nodiscard]] JsonValidationError copy_string_cooperatively(
+    const std::string& source, std::string& destination,
+    CooperativePoller& poller)
+{
+    destination.clear();
+    destination.reserve(source.size());
+    std::size_t offset{};
+    while (offset != source.size()) {
+        const auto chunk = poller.next_chunk(source.size() - offset);
+        destination.append(source.data() + offset, chunk);
+        offset += chunk;
+        if (const auto error = poller.completed(chunk);
+            error != JsonValidationError::None) return error;
+    }
+    return JsonValidationError::None;
+}
+
+[[nodiscard]] JsonValidationError copy_json_cooperatively(
+    const JsonValue& source, JsonValue& destination,
+    CooperativePoller& poller)
+{
+    struct Pending final {
+        const JsonValue* source{};
+        JsonValue* destination{};
+    };
+    std::vector<Pending> pending{{&source, &destination}};
+    while (!pending.empty()) {
+        const auto current = pending.back();
+        pending.pop_back();
+        if (const auto error = poller.completed();
+            error != JsonValidationError::None) return error;
+        switch (current.source->kind()) {
+            case JsonKind::Null:
+                current.destination->storage = std::monostate{};
+                break;
+            case JsonKind::Boolean:
+                current.destination->storage =
+                    std::get<bool>(current.source->value());
+                break;
+            case JsonKind::Integer:
+                current.destination->storage =
+                    std::get<std::int64_t>(current.source->value());
+                break;
+            case JsonKind::Float:
+                current.destination->storage =
+                    std::get<double>(current.source->value());
+                break;
+            case JsonKind::String: {
+                std::string copy;
+                if (const auto error = copy_string_cooperatively(
+                        std::get<std::string>(current.source->value()), copy,
+                        poller); error != JsonValidationError::None)
+                    return error;
+                current.destination->storage = std::move(copy);
+                break;
+            }
+            case JsonKind::Array: {
+                const auto& source_values =
+                    std::get<JsonArray>(current.source->value());
+                current.destination->storage = JsonArray{};
+                auto& destination_values =
+                    std::get<JsonArray>(current.destination->value());
+                destination_values.reserve(source_values.size());
+                for (const auto& value : source_values) {
+                    destination_values.emplace_back();
+                    pending.push_back({&value, &destination_values.back()});
+                    if (const auto error = poller.completed();
+                        error != JsonValidationError::None) return error;
+                }
+                break;
+            }
+            case JsonKind::Object: {
+                const auto& source_entries =
+                    std::get<JsonObject>(current.source->value());
+                current.destination->storage = JsonObject{};
+                auto& destination_entries =
+                    std::get<JsonObject>(current.destination->value());
+                destination_entries.reserve(source_entries.size());
+                for (const auto& [key, value] : source_entries) {
+                    std::string key_copy;
+                    if (const auto error = copy_string_cooperatively(
+                            key, key_copy, poller);
+                        error != JsonValidationError::None) return error;
+                    destination_entries.emplace_back(
+                        std::move(key_copy), JsonValue{});
+                    pending.push_back(
+                        {&value, &destination_entries.back().second});
+                    if (const auto error = poller.completed();
+                        error != JsonValidationError::None) return error;
+                }
+                break;
+            }
+        }
     }
     return JsonValidationError::None;
 }
@@ -523,8 +652,19 @@ struct ConfigHost::Impl final {
         std::vector<ConfigPatchEntry> patch;
         try {
             patch.reserve(parsed.size());
-            for (const auto& entry : parsed)
-                patch.push_back({entry.path, *entry.value});
+            CooperativePoller copy_poller{
+                &context, limits.cooperative_check_interval};
+            for (auto& entry : parsed) {
+                JsonValue value;
+                const auto copy = copy_json_cooperatively(
+                    *entry.value, value, copy_poller);
+                if (copy == JsonValidationError::DeadlineExceeded)
+                    return deadline();
+                if (copy == JsonValidationError::Cancelled)
+                    return cancelled();
+                patch.push_back(
+                    {std::move(entry.path), std::move(value)});
+            }
         } catch (...) {
             return failure(
                 HostErrorCode::Internal,
