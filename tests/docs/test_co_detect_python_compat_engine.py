@@ -179,6 +179,16 @@ class CoDetectPythonCompatEngineContractTests(unittest.TestCase):
             "build/conan/foundation-android-${{ matrix.abi }}/conan_toolchain.cmake",
         ):
             self.assertIn(token, self.workflow)
+        for dependency_path in (
+            "deploy/conan/recipes/baas-nlohmann-json/**",
+            "deploy/conan/profiles/android-clang-arm64-v8a-release",
+            "deploy/conan/profiles/android-clang-x86_64-release",
+        ):
+            self.assertEqual(
+                self.workflow.count(f"- '{dependency_path}'"),
+                2,
+                dependency_path,
+            )
 
 
 if __name__ == "__main__":
