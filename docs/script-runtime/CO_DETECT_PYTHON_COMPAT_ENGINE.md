@@ -67,18 +67,32 @@ rejected. Its root contains exactly `schema`, `engine`, and `payload`:
 | Field | Type | Contract |
 | --- | --- | --- |
 | `profile_source` | string | Must equal `device.server-and-locale/v1`. |
-| `ends` | object | Exactly `rgb` and `image`, each an ordered, duplicate-free array of feature IDs. |
+| `ends` | object | Exactly `rgb` and `image`; RGB entries are feature IDs and image entries are the strict image-feature form below. Both arrays are ordered and duplicate-free by feature ID. |
 | `reactions` | object | Exactly `rgb`, `rgb_profiled`, `image`, and `image_profiled`, each an ordered array of reaction objects. |
 | `popups` | object | Exactly `rgb` and `profiled_image`, each an ordered array of reaction objects. |
 | `loading` | object | Exactly `all_rgb`; an ordered, non-empty, duplicate-free feature array. |
 | `foreground_check` | object | Exactly `android_only`, `interval_ms`, and `idle_feature_ms`. |
 | `loop` | object | Exactly `skip_first_screenshot`, `timeout_ms`, `duplicate_click_window_ms`, and `tentative`. |
 
-A non-profiled reaction contains exactly `feature` and `click`. A profiled
-reaction contains exactly `profiles`, `feature`, and `click`. `feature` is a
-non-empty logical feature string. `click` is exactly two integral coordinates
-in the canonical 1280x720 landscape space. `profiles` is a non-empty,
-duplicate-free array drawn from this closed set:
+A non-profiled RGB reaction contains exactly `feature` and `click`. A profiled
+RGB reaction contains exactly `profiles`, `feature`, and `click`. Image
+reactions under `reactions.image` and `reactions.image_profiled` have the same
+required fields and may additionally contain `threshold`, or `threshold`
+followed by `rgb_diff`, matching Python's optional tuple positions. `rgb_diff`
+without `threshold` is invalid. Image ends are either a feature string, or a
+strict object containing `feature` plus the same optional image-match fields.
+The definition owns these per-call tuple overrides; the support bundle does
+not. Popup objects are exact feature/click forms and cannot carry image-match
+overrides because Python's popup path does not read tuple positions 2 and 3.
+
+`feature` is a non-empty logical feature string. `click` is exactly two
+integral coordinates in the canonical 1280x720 landscape space. Non-negative
+coordinates include the Python clamp boundary `x=1280`, `y=720`. If either
+reaction coordinate is negative, the reaction is match-only: it counts as a
+normal reaction match but issues no input. Tentative clicks must have two
+non-negative coordinates. `threshold` is finite and in `[0,1]`; `rgb_diff` is
+an integer in `[0,255]`. Omitted values mean Python's `0.8` and `20` defaults.
+`profiles` is a non-empty, duplicate-free array drawn from this closed set:
 
 ```text
 CN, JP, Global_en-us, Global_zh-tw, Global_ko-kr
@@ -89,7 +103,8 @@ The adapter derives the profile from the frozen device connection. `CN` and
 `Global` and the matching frozen OCR locale. Caller options, scripts, browser
 input, and procedure resources cannot override it. A device/profile mismatch
 fails before capture as unavailable; it does not silently select another
-locale.
+locale. This fail-closed mismatch handling is an intentional C++ safety
+hardening, not a claim that Python raises the same error at the same point.
 
 `android_only` must be `true` for this v1 migration. `interval_ms` and
 `idle_feature_ms` are positive integers. `timeout_ms` is a positive call
@@ -131,7 +146,9 @@ payload, publishes an immutable snapshot that owns the verified source bytes,
 and exposes both the exact-source SHA-256 and a deterministic semantic
 identity SHA-256. The semantic identity uses fixed field order while preserving
 every array order, so insignificant JSON whitespace does not change it and an
-array reorder does.
+array reorder does. Identity domain v2 includes effective image threshold/RGB
+tolerance and signed match-only coordinates. Spelling the defaults explicitly
+has the same semantic identity as omitting them.
 
 The implementation shares the bounded strict-JSON parser used by runtime
 procedure activation. Stable typed errors cover malformed UTF-8/JSON,
@@ -170,18 +187,54 @@ Each iteration performs exactly the following sequence:
     whose profile does not contain the frozen profile.
 13. If none matched, test `popups.rgb` in order.
 14. If none matched, test `popups.profiled_image` in order.
-15. Apply duplicate-click suppression to the selected feature/coordinate. A
-    suppressed click still counts as a matched feature and resets the failed
-    recognition count.
-16. If no feature matched, increment the failed count and apply the tentative
-    rule. A matched feature resets the failed count to zero.
+15. For an ordinary reaction selected in steps 9–12, apply duplicate-click
+    suppression to the feature/coordinate. A suppressed or match-only reaction
+    still updates `feature_last_appear_time` and resets the failed recognition
+    count. Only a non-negative, non-suppressed reaction issues input.
+16. A popup selected in steps 13–14 follows Python's separate popup path: it
+    does not perform ordinary-reaction duplicate suppression, does not update
+    `feature_last_appear_time`, and does not reset the tentative failure count.
+    It does prevent a tentative click in that iteration. A negative popup click
+    is likewise match-only.
+17. If neither an ordinary reaction nor a popup matched, increment the failed
+    count and apply the tentative rule. Only an ordinary reaction resets the
+    failed count to zero.
 
-An image feature uses its bundle crop, a threshold of 0.8, and per-channel mean
-RGB tolerance 20 unless the bundle explicitly carries the same Python tuple
-override. A missing or profile-inapplicable feature evaluates false. It is not
-an adapter error and must not resolve to another locale.
+An image feature uses its bundle template and crop. The definition supplies an
+optional per-call threshold/RGB tuple override; otherwise threshold 0.8 and
+per-channel mean RGB tolerance 20 apply. The support bundle exclusively owns
+the feature graph, RGB ranges, crop metadata, and PNG bytes and cannot alter a
+definition's call parameters. A missing or profile-inapplicable feature
+evaluates false. It is not an adapter error and must not resolve to another
+locale.
+
+### Device-session frame ownership
+
+The physical-device session owns one normalized, fully owned latest-frame
+cache across serialized procedure calls. A successful
+`navigation.to_main_page` leaves its terminal frame in that cache;
+`group.open`, whose definition sets `skip_first_screenshot=true`, consumes that
+same device/profile frame for its first iteration without capturing again. The
+cache is not stored in a procedure definition, script option, resource bundle,
+or execution request, and it never crosses a physical device or frozen profile.
+Per-call duplicate-click state is reset at procedure entry and is not shared.
+
+If `skip_first_screenshot` is requested without a valid cached frame, the
+adapter fails closed before vision or input with `HOST006_UNAVAILABLE` and
+`unavailable_reason=recent_frame_unavailable`; it must not silently capture a
+replacement and change Python ordering. The session also owns screenshot
+interval timing, deterministic/injectable click jitter RNG, normalized-device
+coordinate conversion, and cancellable waits. Those values are runtime device
+state, never definition or support-bundle data.
 
 ## Deadline, cancellation, and effect semantics
+
+The rules in this section are intentional C++ safety hardening, not bit-for-bit
+Python behavior. Python samples time before capture, does not poll timeout in
+its loading loop, may race from a cleared `flag_run` to a terminal, and normally
+schedules click helper work asynchronously. The production adapter deliberately
+uses the stricter rules below while retaining Python feature priority, click
+parameters, and tentative state transitions.
 
 The adapter is synchronous and cooperatively bounded. It observes the earlier
 of the execution-context deadline and `loop.timeout_ms` before and after every
@@ -192,8 +245,10 @@ payload timeout is a narrower call deadline and uses
 `details.deadline_scope=call`. Cancellation uses `HOST003_CANCELLED`.
 
 No cancellation or timeout path produces a successful `end`. Helper work is
-joined before `execute()` returns, and the request, reporter, screenshot, or
-bundle view is never retained afterward.
+joined before `execute()` returns. The request, reporter, support-bundle view,
+and local frame views are never retained afterward; only the device session may
+retain its single owned normalized latest-frame copy under the cache contract
+above.
 
 Both initial procedures declare all five effects, in this canonical order:
 
@@ -361,7 +416,10 @@ Its core payload is:
         {"profiles": ["JP"], "feature": "main_page", "click": [565, 648]}
       ],
       "image": [{"feature": "group_enter-button", "click": [297, 380]}],
-      "image_profiled": []
+      "image_profiled": [
+        {"profiles": ["CN"], "feature": "main_page_renewal-month-card", "click": [927, 109]},
+        {"profiles": ["Global_en-us", "Global_zh-tw", "Global_ko-kr"], "feature": "main_page_item-expiring-notice", "click": [931, 132]}
+      ]
     },
     "popups": {
       "rgb": [
@@ -370,8 +428,8 @@ Its core payload is:
         {"feature": "level_up", "click": [640, 200]}
       ],
       "profiled_image": [
-        {"profiles": ["CN"], "feature": "main_page_renewal-month-card", "click": [927, 109]},
-        {"profiles": ["Global_en-us", "Global_zh-tw", "Global_ko-kr"], "feature": "main_page_item-expiring-notice", "click": [931, 132]}
+        {"profiles": ["CN"], "feature": "main_page_net-work-unstable", "click": [767, 501]},
+        {"profiles": ["Global_en-us", "Global_zh-tw", "Global_ko-kr"], "feature": "main_page_login-store", "click": [883, 162]}
       ]
     },
     "loading": {"all_rgb": ["loadingNotWhite", "loadingWhite"]},
@@ -386,9 +444,12 @@ Its core payload is:
 }
 ```
 
-The complete `GAME_ONE_TIME_POP_UPS` and implicit server popup arrays are part of
-the production graph. The example is deliberately abbreviated and therefore is
-not a production definition.
+The complete `GAME_ONE_TIME_POP_UPS` table belongs to
+`reactions.image_profiled`, after `group_enter-button` and before every common
+or server popup, because Python appends it to `img_possible` before calling
+`co_detect`. Only the implicit server popup table belongs to
+`popups.profiled_image`. The example is deliberately abbreviated and therefore
+is not a production definition.
 
 ## Known Python baseline resource defects
 
