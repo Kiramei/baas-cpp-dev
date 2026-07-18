@@ -149,6 +149,8 @@ option(BUILD_SERVICE_RUNTIME_TASK_OWNER "Build the service-owned runtime task li
 option(BUILD_SERVICE_RUNTIME_TASK_OWNER_TESTS "Build runtime task lifecycle tests" OFF)
 option(BUILD_SERVICE_RUNTIME_SCRIPT_TASK_BACKEND "Build the explicit native script RuntimeTaskBackend" OFF)
 option(BUILD_SERVICE_RUNTIME_SCRIPT_TASK_BACKEND_TESTS "Build native script RuntimeTaskBackend tests" OFF)
+option(BUILD_SERVICE_PRODUCTION_RUNTIME_SCRIPT_TASK_FACTORY "Build the pinned production BAAS Script task factory" OFF)
+option(BUILD_SERVICE_PRODUCTION_RUNTIME_SCRIPT_TASK_FACTORY_TESTS "Build pinned production BAAS Script task factory tests" OFF)
 option(BUILD_SERVICE_RUNTIME_TASK_STATUS_JSON "Build runtime task status JSON serialization" OFF)
 option(BUILD_SERVICE_RUNTIME_TASK_STATUS_JSON_TESTS "Build runtime task status JSON tests" OFF)
 option(BUILD_SERVICE_ROUTER     "Build the transport-independent BAAS service router" OFF)
@@ -849,6 +851,39 @@ if(BUILD_SERVICE_RUNTIME_SCRIPT_TASK_BACKEND
         "Build the service-owned runtime task lifecycle" FORCE)
 endif()
 
+if(BUILD_SERVICE_PRODUCTION_RUNTIME_SCRIPT_TASK_FACTORY_TESTS
+   AND NOT BUILD_SERVICE_PRODUCTION_RUNTIME_SCRIPT_TASK_FACTORY)
+    set(BUILD_SERVICE_PRODUCTION_RUNTIME_SCRIPT_TASK_FACTORY ON CACHE BOOL
+        "Build the pinned production BAAS Script task factory" FORCE)
+endif()
+
+if(BUILD_SERVICE_PRODUCTION_RUNTIME_SCRIPT_TASK_FACTORY)
+    foreach(required_option
+            BUILD_SERVICE_RUNTIME_SCRIPT_TASK_BACKEND
+            BUILD_SERVICE_RUNTIME_TASK_OWNER
+            BUILD_RESOURCE_CORE
+            BUILD_RUNTIME_REPOSITORY
+            BUILD_RUNTIME_RESOURCE_SNAPSHOT_LOADER
+            BUILD_SCRIPT_RUNTIME
+            BUILD_RUNTIME_SCRIPT_PACKAGE_LOADER
+            BUILD_RUNTIME_SCRIPT_CATALOG
+            BUILD_RUNTIME_SCRIPT_EXECUTION_PLAN
+            BUILD_SCRIPT_PROCEDURE_SNAPSHOT
+            BUILD_RUNTIME_PROCEDURE_ACTIVATION
+            BUILD_RUNTIME_CO_DETECT_DEFINITION_MODEL
+            BUILD_RUNTIME_CO_DETECT_EXECUTOR
+            BUILD_RUNTIME_CO_DETECT_SUPPORT_BUNDLE
+            BUILD_RUNTIME_CO_DETECT_PRODUCTION_ADAPTER
+            BUILD_SCRIPT_RESOURCE_HOST
+            BUILD_SCRIPT_PROCEDURE_HOST
+            BUILD_SCRIPT_HOST_RUNTIME_COMPOSITION)
+        if(NOT ${required_option})
+            set(${required_option} ON CACHE BOOL
+                "Production BAAS Script task factory dependency" FORCE)
+        endif()
+    endforeach()
+endif()
+
 if(BUILD_SERVICE_RUNTIME_TASK_STATUS_JSON_TESTS
    AND NOT BUILD_SERVICE_RUNTIME_TASK_STATUS_JSON)
     set(BUILD_SERVICE_RUNTIME_TASK_STATUS_JSON ON CACHE BOOL
@@ -1169,6 +1204,10 @@ endif()
 
 if(BUILD_SERVICE_RUNTIME_SCRIPT_TASK_BACKEND)
     include("${CMAKE_CURRENT_LIST_DIR}/cmake/ServiceRuntimeScriptTaskBackend.cmake")
+endif()
+
+if(BUILD_SERVICE_PRODUCTION_RUNTIME_SCRIPT_TASK_FACTORY)
+    include("${CMAKE_CURRENT_LIST_DIR}/cmake/ServiceProductionRuntimeScriptTaskFactory.cmake")
 endif()
 
 if(BUILD_SERVICE_RUNTIME_TASK_STATUS_JSON)

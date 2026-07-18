@@ -29,6 +29,7 @@ struct LogHostIdentity {
     std::string task_id;
     std::string session_id;
     std::string config_name;
+    friend bool operator==(const LogHostIdentity&, const LogHostIdentity&) = default;
 };
 
 struct StructuredLogEvent {

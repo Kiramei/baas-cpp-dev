@@ -100,6 +100,7 @@ on:
       - 'docs/script-runtime/SERVICE_CONFIGURATION_TRIGGERS.md'
       - 'docs/script-runtime/SERVICE_RUNTIME_TASK_OWNER.md'
       - 'docs/script-runtime/SERVICE_RUNTIME_SCRIPT_TASK_BACKEND.md'
+      - 'docs/script-runtime/SERVICE_PRODUCTION_RUNTIME_SCRIPT_TASK_FACTORY.md'
       - 'docs/script-runtime/RUNTIME_SCRIPT_PACKAGE_LOADER.md'
       - 'docs/script-runtime/RUNTIME_SCRIPT_CATALOG.md'
       - 'docs/script-runtime/RUNTIME_SCRIPT_EXECUTION_PLAN.md'
@@ -207,6 +208,7 @@ on:
       - 'docs/script-runtime/SERVICE_CONFIGURATION_TRIGGERS.md'
       - 'docs/script-runtime/SERVICE_RUNTIME_TASK_OWNER.md'
       - 'docs/script-runtime/SERVICE_RUNTIME_SCRIPT_TASK_BACKEND.md'
+      - 'docs/script-runtime/SERVICE_PRODUCTION_RUNTIME_SCRIPT_TASK_FACTORY.md'
       - 'docs/script-runtime/RUNTIME_SCRIPT_PACKAGE_LOADER.md'
       - 'docs/script-runtime/RUNTIME_SCRIPT_CATALOG.md'
       - 'docs/script-runtime/RUNTIME_SCRIPT_EXECUTION_PLAN.md'
@@ -354,6 +356,7 @@ jobs:
           -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
           -DBUILD_TESTING=ON -DBUILD_RUNTIME_CO_DETECT_SUPPORT_BUNDLE_TESTS=ON
           -DBUILD_RUNTIME_CO_DETECT_PRODUCTION_ADAPTER_TESTS=ON
+          -DBUILD_SERVICE_PRODUCTION_RUNTIME_SCRIPT_TASK_FACTORY_TESTS=ON
           -DBUILD_APP_BAAS=OFF -DBUILD_APP_ISA=OFF -DBUILD_BAAS_OCR=OFF
           -DBUILD_BAAS_AW_CHECKER=OFF -DBUILD_BAAS_NMS_BENCHMARK=OFF
           -DBAAS_FETCH_RESOURCES=OFF
@@ -364,6 +367,7 @@ jobs:
           --config ${{ matrix.build_type }} --parallel 4
           --target BAAS_runtime_co_detect_support_bundle_tests
           BAAS_runtime_co_detect_production_adapter_tests
+          BAAS_service_production_runtime_script_task_factory_tests
 
       - name: Run support-bundle tests
         shell: cmd
@@ -421,6 +425,7 @@ jobs:
           -DCMAKE_BUILD_TYPE=Release
           -DBUILD_TESTING=ON -DBUILD_RUNTIME_CO_DETECT_SUPPORT_BUNDLE_TESTS=ON
           -DBUILD_RUNTIME_CO_DETECT_PRODUCTION_ADAPTER_TESTS=ON
+          -DBUILD_SERVICE_PRODUCTION_RUNTIME_SCRIPT_TASK_FACTORY_TESTS=ON
           -DBUILD_APP_BAAS=OFF -DBUILD_APP_ISA=OFF -DBUILD_BAAS_OCR=OFF
           -DBUILD_BAAS_AW_CHECKER=OFF -DBUILD_BAAS_NMS_BENCHMARK=OFF
           -DBAAS_FETCH_RESOURCES=OFF
@@ -431,6 +436,7 @@ jobs:
           --config Release --parallel 4
           --target BAAS_runtime_co_detect_support_bundle_tests
           BAAS_runtime_co_detect_production_adapter_tests
+          BAAS_service_production_runtime_script_task_factory_tests
 
       - name: Run support-bundle tests with the Conan runtime environment
         run: |
@@ -545,6 +551,7 @@ jobs:
           -DBUILD_RUNTIME_CO_DETECT_EXECUTOR=ON
           -DBUILD_RUNTIME_CO_DETECT_SUPPORT_BUNDLE=ON
           -DBUILD_RUNTIME_CO_DETECT_PRODUCTION_ADAPTER=ON
+          -DBUILD_SERVICE_PRODUCTION_RUNTIME_SCRIPT_TASK_FACTORY=ON
           -DBUILD_LEGACY_PROCEDURE_EXECUTION=ON
           -DBUILD_SCRIPT_PROCEDURE_HOST=ON
           -DBUILD_SCRIPT_HOST_RUNTIME_COMPOSITION=ON
@@ -573,6 +580,7 @@ jobs:
           BAAS_runtime_co_detect_executor
           BAAS_runtime_co_detect_support_bundle
           BAAS_runtime_co_detect_production_adapter
+          BAAS_service_production_runtime_script_task_factory
           BAAS_legacy_procedure_execution
           BAAS_script_procedure_host
           BAAS_script_host_runtime_composition
