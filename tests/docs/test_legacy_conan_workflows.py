@@ -210,6 +210,8 @@ class LegacyConanWorkflowTests(unittest.TestCase):
         self.assertNotIn("collect_libs", opencv_recipe)
         self.assertIn('"cmake_build_modules"', opencv_recipe)
         self.assertIn('"@BAAS_OPENCV_BUILD_TYPE@"', opencv_recipe)
+        self.assertIn("include_guard(DIRECTORY)", opencv_link_interface)
+        self.assertNotIn("include_guard(GLOBAL)", opencv_link_interface)
         self.assertIn("../opencv4/OpenCVConfig.cmake", opencv_link_interface)
         self.assertIn("OPENCV_MAP_IMPORTED_CONFIG", opencv_link_interface)
         self.assertIn(
@@ -219,6 +221,21 @@ class LegacyConanWorkflowTests(unittest.TestCase):
         self.assertIn("BAAS::OpenCVDnn", opencv_link_interface)
         for platform_library in ("libpng", "zlib", "carotene_o4t"):
             self.assertNotIn(platform_library, opencv_link_interface)
+
+        sibling_smoke = ROOT / "tests/conan/baas-opencv-sibling-scope"
+        smoke_root = (sibling_smoke / "CMakeLists.txt").read_text(encoding="utf-8")
+        self.assertIn("add_subdirectory(left)", smoke_root)
+        self.assertIn("add_subdirectory(right)", smoke_root)
+        smoke_main = (sibling_smoke / "main.cpp").read_text(encoding="utf-8")
+        self.assertIn("cv::resize", smoke_main)
+        self.assertIn('cv::imencode(".png"', smoke_main)
+        for sibling in ("left", "right"):
+            scope = (sibling_smoke / sibling / "CMakeLists.txt").read_text(
+                encoding="utf-8"
+            )
+            self.assertEqual(scope.count("find_package(baas-opencv CONFIG REQUIRED)"), 2)
+            self.assertIn("TARGET opencv_world", scope)
+            self.assertIn("PRIVATE BAAS::OpenCV", scope)
 
     def test_workflow_filters_cover_the_conan_contract(self) -> None:
         for workflow in (self.ocr, self.afwc):

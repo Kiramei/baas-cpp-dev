@@ -1,4 +1,8 @@
-include_guard(GLOBAL)
+# Conan's CMakeDeps targets are directory-scoped imported targets. Each
+# sibling directory that calls find_package() must therefore load the upstream
+# OpenCV targets in its own scope, while repeated calls in one directory should
+# still be idempotent.
+include_guard(DIRECTORY)
 
 # OpenCV's installed export owns the dependency graph for its monolithic
 # library. In static builds that graph includes bundled codec libraries and
