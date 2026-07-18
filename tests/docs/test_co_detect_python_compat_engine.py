@@ -15,6 +15,19 @@ class CoDetectPythonCompatEngineContractTests(unittest.TestCase):
         cls.workflow = (
             ROOT / ".github/workflows/foundation-runtime.yml"
         ).read_text(encoding="utf-8")
+        cls.workflow_event_paths = {}
+        for event, boundary in (("push", r"^  pull_request:"),
+                                ("pull_request", r"^permissions:")):
+            match = re.search(
+                rf"^  {event}:\n(?P<body>.*?)(?={boundary})",
+                cls.workflow,
+                re.MULTILINE | re.DOTALL,
+            )
+            if match is None:
+                raise AssertionError(f"missing workflow event section: {event}")
+            cls.workflow_event_paths[event] = set(
+                re.findall(r"^      - '([^']+)'$", match.group("body"), re.MULTILINE)
+            )
 
     def test_legacy_projection_is_explicitly_not_parity(self) -> None:
         for token in (
@@ -392,6 +405,11 @@ class CoDetectPythonCompatEngineContractTests(unittest.TestCase):
             "BAAS_runtime_baas_connection_co_detect_link_closure",
             "complete dependency graph",
             "BAAS_FETCH_RESOURCES=OFF",
+            "permanently tombstones that session",
+            "cannot revive the token",
+            "Allocation failure therefore leaves both the existing binding",
+            "Every backend access occurs under the session",
+            "safe ownership handoff barrier",
         ):
             self.assertIn(token, self.doc)
         cmake = (ROOT / "CMakeLists.txt").read_text(encoding="utf-8")
@@ -402,17 +420,39 @@ class CoDetectPythonCompatEngineContractTests(unittest.TestCase):
             "cmake/RuntimeBAASConnectionCoDetectPort.cmake",
         ):
             self.assertIn(token, cmake)
-        for token in (
+        workflow_tokens = (
             "-DBUILD_RUNTIME_BAAS_CONNECTION_CO_DETECT_PORT_TESTS=ON",
             "-DBUILD_RUNTIME_BAAS_CONNECTION_CO_DETECT_PORT=ON",
             "BAAS_runtime_baas_connection_co_detect_port_tests",
             "BAAS_runtime_baas_connection_co_detect_port",
+        )
+        for token in workflow_tokens:
+            self.assertIn(token, workflow)
+        closure_paths = {
             "deploy/conan/recipes/baas-spdlog/**",
             "deploy/conan/recipes/baas-simdutf/**",
+            "deploy/conan/profiles/dependency-versions-default",
+            "include/BAAS.h",
+            "src/BAAS.cpp",
             "include/device/BAASConnection.h",
+            "include/device/BAASConnectionAttr.h",
+            "include/device/control/BAASControl.h",
             "src/device/BAASConnection.cpp",
-        ):
-            self.assertIn(token, workflow)
+            "src/device/BAASConnectionAttr.cpp",
+            "src/device/control/BAASControl.cpp",
+            "include/device/screenshot/BAASScreenshot.h",
+            "src/device/screenshot/BAASScreenshot.cpp",
+        }
+        self.assertEqual(
+            self.workflow_event_paths["push"],
+            self.workflow_event_paths["pull_request"],
+            "foundation push.paths and pull_request.paths must remain identical",
+        )
+        for event in ("push", "pull_request"):
+            self.assertTrue(
+                closure_paths <= self.workflow_event_paths[event],
+                f"{event}.paths misses {sorted(closure_paths - self.workflow_event_paths[event])}",
+            )
         header = (ROOT / implementation_paths[0]).read_text(encoding="utf-8")
         owner = (ROOT / implementation_paths[1]).read_text(encoding="utf-8")
         backend = (ROOT / implementation_paths[2]).read_text(encoding="utf-8")

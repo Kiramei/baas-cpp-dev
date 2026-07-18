@@ -89,8 +89,12 @@ endif()
 if(BUILD_RUNTIME_BAAS_CONNECTION_CO_DETECT_PORT_TESTS)
     include(CTest)
     find_package(Threads REQUIRED)
+    target_compile_definitions(BAAS_runtime_baas_connection_co_detect_port
+        PRIVATE BAAS_CONNECTION_CO_DETECT_PORT_TESTING=1)
     add_executable(BAAS_runtime_baas_connection_co_detect_port_tests
         "${BAAS_PROJECT_PATH}/tests/runtime/BAASConnectionCoDetectPortTests.cpp")
+    target_compile_definitions(BAAS_runtime_baas_connection_co_detect_port_tests
+        PRIVATE BAAS_CONNECTION_CO_DETECT_PORT_TESTING=1)
     target_compile_features(BAAS_runtime_baas_connection_co_detect_port_tests
         PRIVATE cxx_std_20)
     target_link_libraries(BAAS_runtime_baas_connection_co_detect_port_tests

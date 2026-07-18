@@ -304,13 +304,25 @@ backend invalid. A caller performing an intentional reconnect or configuration
 switch calls `activate()` with the replacement application/backend and a strictly greater non-zero epoch.
 Activation creates a new port and shared immutable token;
 the old port returns no current identity and can never target the replacement.
+An observed invalid identity permanently tombstones that session and clears its
+latest frame. Restoring the same backend fields cannot revive the token (including
+an ABA-shaped restore). Production composition must call `invalidate()` before
+mutating or replacing the legacy device/config stack, then activate a new epoch.
+
+Activation preallocates the candidate session, immutable identity, and port before
+publishing anything. Allocation failure therefore leaves both the existing binding
+and the last accepted epoch unchanged. No test-only field changes the production
+owner/session/port object layout.
 
 Capture, click, and foreground operations serialize against replacement. An effect
 that has already linearized finishes before the old token is withdrawn; after token
 withdrawal no old-port effect reaches the legacy backend. Waits use at most 50 ms
 slices, are capped at 3,840,000 ms, and are explicitly woken by replacement or
 invalidation. Control and identity are checked before and after each operation and
-at screenshot/wait checkpoints.
+at screenshot/wait checkpoints. Every backend access occurs under the session
+operation mutex after checking current/tombstone state. Wait probes acquire that
+same mutex; after `invalidate()` or replacement returns, every retired entry point
+rejects without touching the old backend, providing a safe ownership handoff barrier.
 
 The live screenshot is normalized to exactly 1280x720 packed BGR8. Input screenshots
 must be three-channel 16:9 images no larger than 7680x4320; resizing uses OpenCV
@@ -326,7 +338,8 @@ The concrete backend currently requires the embedding owner to give it exclusive
 device-operation ownership for the duration of a runtime lease because the legacy
 `BAAS` public API does not expose a cross-consumer operation mutex. Application
 composition must create/rebind this owner whenever it replaces a `BAAS` instance;
-silently mutating the same instance is detected and fails closed, not adopted.
+silently mutating the same instance is permanently tombstoned and fails closed, not
+adopted or revived.
 
 ## Deadline, cancellation, and effect semantics
 

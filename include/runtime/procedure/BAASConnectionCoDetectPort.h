@@ -35,6 +35,7 @@ using BAASConnectionCoDetectCheckpoint =
 // Narrow seam around one already-created BAAS application. Implementations must
 // freeze the exact connection/device/profile source they were created from and
 // report false from identity_valid() after any in-place connection/config change.
+// The production owner must invalidate the lease before performing such mutation.
 class BAASConnectionCoDetectBackend {
 public:
     virtual ~BAASConnectionCoDetectBackend() = default;
@@ -55,7 +56,8 @@ struct BAASConnectionCoDetectBinding final {
 
 // Sole lifecycle owner for production device leases. activate() and invalidate()
 // linearize with capture/click/foreground work. Every activation creates a new
-// immutable token; old ports cannot retarget to the replacement backend.
+// immutable token; old ports cannot retarget to the replacement backend. Once
+// identity invalidity is observed, that token is permanently tombstoned.
 class BAASConnectionCoDetectOwner final {
 public:
     BAASConnectionCoDetectOwner();
@@ -88,6 +90,13 @@ private:
 // read or retained by this factory.
 [[nodiscard]] std::shared_ptr<BAASConnectionCoDetectBackend>
 make_baas_application_co_detect_backend(std::shared_ptr<BAAS> application);
+
+#if defined(BAAS_CONNECTION_CO_DETECT_PORT_TESTING)
+namespace detail {
+void fail_activation_allocation_after(std::size_t successful_checkpoints) noexcept;
+void clear_activation_allocation_failure() noexcept;
+}  // namespace detail
+#endif
 
 }  // namespace runtime::procedure
 }  // namespace baas

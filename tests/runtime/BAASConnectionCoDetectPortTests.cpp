@@ -44,21 +44,25 @@ class Backend final : public procedure::BAASConnectionCoDetectBackend {
 public:
     [[nodiscard]] const std::string& device_id() const noexcept override
     {
+        ++device_reads;
         return device;
     }
 
     [[nodiscard]] const std::string& profile_name() const noexcept override
     {
+        ++profile_reads;
         return profile;
     }
 
     [[nodiscard]] bool identity_valid() const noexcept override
     {
+        ++identity_checks;
         return valid.load(std::memory_order_acquire);
     }
 
     [[nodiscard]] std::uint64_t screenshot_interval_ms() const noexcept override
     {
+        ++interval_reads;
         return interval;
     }
 
@@ -66,6 +70,12 @@ public:
     capture(const procedure::BAASConnectionCoDetectCheckpoint& checkpoint) override
     {
         ++captures;
+        {
+            std::unique_lock lock(capture_mutex);
+            capture_started = true;
+            capture_condition.notify_all();
+            capture_condition.wait(lock, [this] { return !block_capture; });
+        }
         if (auto checked = checkpoint();
             std::holds_alternative<procedure::CoDetectOperationError>(checked))
             return std::get<procedure::CoDetectOperationError>(checked);
@@ -93,7 +103,18 @@ public:
     [[nodiscard]] procedure::CoDetectResult<bool> foreground_matches() override
     {
         ++foreground_checks;
+        std::unique_lock lock(foreground_mutex);
+        foreground_started = true;
+        foreground_condition.notify_all();
+        foreground_condition.wait(lock, [this] { return !block_foreground; });
         return foreground;
+    }
+
+    [[nodiscard]] std::size_t total_accesses() const noexcept
+    {
+        return device_reads.load() + profile_reads.load() + identity_checks.load() +
+            interval_reads.load() + captures.load() + clicks.load() +
+            foreground_checks.load();
     }
 
     std::string device{"emulator-5556"};
@@ -109,11 +130,23 @@ public:
     std::atomic<std::size_t> captures{};
     std::atomic<std::size_t> clicks{};
     std::atomic<std::size_t> foreground_checks{};
+    mutable std::atomic<std::size_t> device_reads{};
+    mutable std::atomic<std::size_t> profile_reads{};
+    mutable std::atomic<std::size_t> identity_checks{};
+    mutable std::atomic<std::size_t> interval_reads{};
     procedure::CoDetectClick last_click{};
     std::mutex click_mutex;
     std::condition_variable click_condition;
     bool block_click{};
     bool click_started{};
+    std::mutex capture_mutex;
+    std::condition_variable capture_condition;
+    bool block_capture{};
+    bool capture_started{};
+    std::mutex foreground_mutex;
+    std::condition_variable foreground_condition;
+    bool block_foreground{};
+    bool foreground_started{};
 };
 
 [[nodiscard]] bool error_is(
@@ -202,6 +235,10 @@ void test_postflight_identity_and_activation_guards()
     auto backend = std::make_shared<Backend>();
     const auto first = owner.activate(backend, procedure::CoDetectProfile::jp, 7);
     Control control;
+    const auto initial_capture = first.port->capture(control);
+    check(std::holds_alternative<procedure::CoDetectProductionBgrFrame>(initial_capture) &&
+              first.port->latest_frame(),
+          "the session has a valid latest frame before identity drift");
     backend->invalidate_after_capture = true;
     const auto captured = first.port->capture(control);
     check(error_is(captured, procedure::CoDetectOperationError::SessionChanged),
@@ -210,10 +247,12 @@ void test_postflight_identity_and_activation_guards()
           "in-place drift withdraws identity before cached-frame-only vision");
     backend->valid.store(true);
     backend->invalidate_after_capture = false;
-    check(first.port->current_identity().get() == first.identity.get(),
-          "restoring the exact backend snapshot restores the owner identity view");
-    check(!first.port->latest_frame(),
-          "a failed postflight capture is never published after identity ABA recovery");
+    const auto poisoned_accesses = backend->total_accesses();
+    check(!first.port->current_identity() && !first.port->latest_frame() &&
+              first.port->screenshot_interval_ms() == 0,
+          "identity drift permanently tombstones the token after backend ABA recovery");
+    check(backend->total_accesses() == poisoned_accesses,
+          "a tombstoned token never probes its backend again");
 
     backend->interval = 0;
     check(first.port->screenshot_interval_ms() == 0,
@@ -222,11 +261,6 @@ void test_postflight_identity_and_activation_guards()
     check(first.port->screenshot_interval_ms() == 0,
           "an over-limit dynamic screenshot interval fails closed");
     backend->interval = 300;
-
-    backend->valid.store(false);
-    check(!first.port->current_identity(),
-          "in-place backend drift withdraws identity before cached-frame-only vision");
-    backend->valid.store(true);
 
     bool rejected_epoch{};
     try {
@@ -303,10 +337,20 @@ void test_replacement_linearizes_effects_and_wakes_waits()
               second.port->current_identity().get() == second.identity.get(),
           "replacement invalidates rather than retargets the old port");
     const auto clicks_before = first_backend->clicks.load();
+    const auto retired_accesses = first_backend->total_accesses();
     const auto stale_click = first.port->click({1, 1}, control);
     check(error_is(stale_click, procedure::CoDetectOperationError::SessionChanged) &&
               first_backend->clicks.load() == clicks_before,
           "no stale effect reaches the old backend after replacement");
+    static_cast<void>(first.port->current_identity());
+    static_cast<void>(first.port->latest_frame());
+    static_cast<void>(first.port->screenshot_interval_ms());
+    static_cast<void>(first.port->publish_latest_frame({}));
+    static_cast<void>(first.port->capture(control));
+    static_cast<void>(first.port->foreground_matches(control));
+    static_cast<void>(first.port->wait(0, control));
+    check(first_backend->total_accesses() == retired_accesses,
+          "every retired port entry point rejects before touching its backend");
 
     auto wait_future = std::async(std::launch::async, [&] {
         return second.port->wait(5'000, control);
@@ -314,13 +358,125 @@ void test_replacement_linearizes_effects_and_wakes_waits()
     std::this_thread::sleep_for(20ms);
     const auto third = owner.activate(
         std::make_shared<Backend>(), procedure::CoDetectProfile::jp, 3);
+    const auto replaced_wait_accesses = second_backend->total_accesses();
     const auto wait_result = wait_future.get();
+    std::this_thread::sleep_for(70ms);
     check(error_is(wait_result, procedure::CoDetectOperationError::SessionChanged) &&
               third.port->current_identity().get() == third.identity.get(),
           "replacement wakes bounded waits and makes them fail closed");
+    check(second_backend->total_accesses() == replaced_wait_accesses,
+          "replacement return is a no-further-wait-probe backend handoff barrier");
 
     owner.invalidate();
     check(!third.port->current_identity(), "explicit invalidation withdraws the final token");
+}
+
+void test_operation_and_wait_handoff_barriers()
+{
+    using namespace std::chrono_literals;
+    procedure::BAASConnectionCoDetectOwner owner;
+    Control control;
+
+    auto capture_backend = std::make_shared<Backend>();
+    capture_backend->block_capture = true;
+    const auto capture_binding = owner.activate(
+        capture_backend, procedure::CoDetectProfile::jp, 20);
+    auto capture_future = std::async(std::launch::async, [&] {
+        return capture_binding.port->capture(control);
+    });
+    {
+        std::unique_lock lock(capture_backend->capture_mutex);
+        capture_backend->capture_condition.wait(
+            lock, [&] { return capture_backend->capture_started; });
+    }
+    auto invalidate_future =
+        std::async(std::launch::async, [&] { owner.invalidate(); });
+    check(invalidate_future.wait_for(30ms) == std::future_status::timeout,
+          "invalidate waits for an already-linearized capture");
+    {
+        std::scoped_lock lock(capture_backend->capture_mutex);
+        capture_backend->block_capture = false;
+    }
+    capture_backend->capture_condition.notify_all();
+    check(std::holds_alternative<procedure::CoDetectProductionBgrFrame>(
+              capture_future.get()),
+          "the in-flight capture completes before invalidation retires it");
+    invalidate_future.get();
+    const auto capture_retired_accesses = capture_backend->total_accesses();
+    static_cast<void>(capture_binding.port->capture(control));
+    check(capture_backend->total_accesses() == capture_retired_accesses,
+          "invalidate return is a no-further-capture backend handoff barrier");
+
+    auto foreground_backend = std::make_shared<Backend>();
+    foreground_backend->block_foreground = true;
+    const auto foreground_binding = owner.activate(
+        foreground_backend, procedure::CoDetectProfile::jp, 21);
+    auto foreground_future = std::async(std::launch::async, [&] {
+        return foreground_binding.port->foreground_matches(control);
+    });
+    {
+        std::unique_lock lock(foreground_backend->foreground_mutex);
+        foreground_backend->foreground_condition.wait(
+            lock, [&] { return foreground_backend->foreground_started; });
+    }
+    auto foreground_invalidate_future =
+        std::async(std::launch::async, [&] { owner.invalidate(); });
+    check(foreground_invalidate_future.wait_for(30ms) == std::future_status::timeout,
+          "invalidate waits for an already-linearized foreground query");
+    {
+        std::scoped_lock lock(foreground_backend->foreground_mutex);
+        foreground_backend->block_foreground = false;
+    }
+    foreground_backend->foreground_condition.notify_all();
+    const auto foreground_result = foreground_future.get();
+    check(std::get_if<bool>(&foreground_result) != nullptr,
+          "foreground query completes before invalidation handoff");
+    foreground_invalidate_future.get();
+    const auto foreground_retired_accesses = foreground_backend->total_accesses();
+    static_cast<void>(foreground_binding.port->foreground_matches(control));
+    check(foreground_backend->total_accesses() == foreground_retired_accesses,
+          "invalidate return is a no-further-foreground backend handoff barrier");
+
+    auto replacement_backend = std::make_shared<Backend>();
+    const auto replacement = owner.activate(
+        replacement_backend, procedure::CoDetectProfile::jp, 22);
+    auto wait_future = std::async(std::launch::async, [&] {
+        return replacement.port->wait(5'000, control);
+    });
+    std::this_thread::sleep_for(70ms);
+    owner.invalidate();
+    const auto wait_barrier_accesses = replacement_backend->total_accesses();
+    const auto wait_result = wait_future.get();
+    std::this_thread::sleep_for(70ms);
+    check(error_is(wait_result, procedure::CoDetectOperationError::SessionChanged),
+          "wait observes invalidation through operation-mutex probes");
+    check(replacement_backend->total_accesses() == wait_barrier_accesses,
+          "invalidate return is a no-further-wait-probe backend handoff barrier");
+}
+
+void test_activation_allocation_failure_is_strong()
+{
+    procedure::BAASConnectionCoDetectOwner owner;
+    auto original_backend = std::make_shared<Backend>();
+    const auto original = owner.activate(
+        original_backend, procedure::CoDetectProfile::jp, 30);
+    auto replacement_backend = std::make_shared<Backend>();
+    procedure::detail::fail_activation_allocation_after(2);
+    bool allocation_failed{};
+    try {
+        static_cast<void>(owner.activate(
+            replacement_backend, procedure::CoDetectProfile::jp, 31));
+    } catch (const std::bad_alloc&) {
+        allocation_failed = true;
+    }
+    procedure::detail::clear_activation_allocation_failure();
+    check(allocation_failed &&
+              original.port->current_identity().get() == original.identity.get(),
+          "activation allocation failure leaves the old binding published");
+    const auto replacement = owner.activate(
+        replacement_backend, procedure::CoDetectProfile::jp, 31);
+    check(replacement.port->current_identity().get() == replacement.identity.get(),
+          "activation allocation failure does not consume the requested epoch");
 }
 
 }  // namespace
@@ -331,6 +487,8 @@ int main()
         test_owned_capture_cache_and_boundaries();
         test_postflight_identity_and_activation_guards();
         test_replacement_linearizes_effects_and_wakes_waits();
+        test_operation_and_wait_handoff_barriers();
+        test_activation_allocation_failure_is_strong();
     } catch (const std::exception& error) {
         ++failures;
         std::cerr << "UNCAUGHT: " << error.what() << '\n';

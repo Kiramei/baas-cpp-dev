@@ -1,6 +1,7 @@
 #include "runtime/procedure/BAASConnectionCoDetectPort.h"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <limits>
@@ -64,16 +65,46 @@ inline constexpr std::uint64_t maximum_wait_slice_ms = 50U;
 
 }  // namespace
 
+#if defined(BAAS_CONNECTION_CO_DETECT_PORT_TESTING)
+namespace detail {
+namespace {
+std::atomic<std::int64_t> activation_allocation_countdown{-1};
+}
+
+void fail_activation_allocation_after(
+    const std::size_t successful_checkpoints) noexcept
+{
+    activation_allocation_countdown.store(
+        successful_checkpoints > static_cast<std::size_t>(
+                                     std::numeric_limits<std::int64_t>::max())
+            ? std::numeric_limits<std::int64_t>::max()
+            : static_cast<std::int64_t>(successful_checkpoints),
+        std::memory_order_release);
+}
+
+void clear_activation_allocation_failure() noexcept
+{
+    activation_allocation_countdown.store(-1, std::memory_order_release);
+}
+}  // namespace detail
+#endif
+
 class BAASConnectionCoDetectOwner::State final
     : public std::enable_shared_from_this<BAASConnectionCoDetectOwner::State> {
 public:
     struct Session final {
+        enum class Status : std::uint8_t { Candidate, Current, Tombstoned, Retired };
+
+        explicit Session(std::shared_ptr<BAASConnectionCoDetectBackend> value) noexcept
+            : backend(std::move(value)) {}
+
         std::shared_ptr<BAASConnectionCoDetectBackend> backend;
         std::shared_ptr<const CoDetectProductionDeviceIdentity> identity;
         mutable std::mutex operation_mutex;
         mutable std::mutex wait_mutex;
         std::condition_variable wait_condition;
         std::shared_ptr<const CoDetectProductionBgrFrame> latest;
+        Status status{Status::Candidate};
     };
 
     class Port final : public CoDetectProductionDevicePort {
@@ -86,8 +117,8 @@ public:
         {
             try {
                 std::scoped_lock lock(session_->operation_mutex);
-                if (!session_->backend->identity_valid()) return {};
-                return state_->current_identity_for(session_);
+                if (session_error_locked()) return {};
+                return session_->identity;
             } catch (...) {
                 return {};
             }
@@ -105,9 +136,9 @@ public:
         {
             try {
                 std::scoped_lock lock(session_->operation_mutex);
-                if (!state_->is_current(session_) || !session_->backend->identity_valid())
-                    return 0;
+                if (session_error_locked()) return 0;
                 const auto value = session_->backend->screenshot_interval_ms();
+                if (session_error_locked()) return 0;
                 return value >= 1U && value <= 60'000U ? value : 0U;
             } catch (...) {
                 return 0;
@@ -119,8 +150,7 @@ public:
         {
             try {
                 std::scoped_lock lock(session_->operation_mutex);
-                if (!state_->is_current(session_) || !session_->backend->identity_valid() ||
-                    !session_->latest ||
+                if (session_error_locked() || !session_->latest ||
                     !valid_published_frame(*session_->latest, session_->identity))
                     return {};
                 return session_->latest;
@@ -134,8 +164,7 @@ public:
         {
             try {
                 std::scoped_lock lock(session_->operation_mutex);
-                if (!frame || !state_->is_current(session_) ||
-                    !session_->backend->identity_valid() ||
+                if (!frame || session_error_locked() ||
                     !valid_published_frame(*frame, session_->identity))
                     return false;
                 session_->latest = std::move(frame);
@@ -168,8 +197,10 @@ public:
                     session_->identity, baas_connection_co_detect_width,
                     baas_connection_co_detect_height, baas_connection_co_detect_row_stride,
                     std::move(pixels)};
+                auto latest =
+                    std::make_shared<const CoDetectProductionBgrFrame>(result);
                 if (const auto error = guard(control)) return *error;
-                session_->latest = std::make_shared<const CoDetectProductionBgrFrame>(result);
+                session_->latest = std::move(latest);
                 return result;
             } catch (const std::bad_alloc&) {
                 return CoDetectOperationError::ResourceExhausted;
@@ -202,19 +233,19 @@ public:
             const std::uint64_t milliseconds, const CoDetectControl& control) override
         {
             if (milliseconds > maximum_wait_ms) return CoDetectOperationError::Unavailable;
-            if (const auto error = guard(control)) return *error;
+            if (const auto error = probe(control)) return *error;
             const auto start = std::chrono::steady_clock::now();
             const auto deadline = start + std::chrono::milliseconds(milliseconds);
             std::unique_lock wait_lock(session_->wait_mutex);
             while (std::chrono::steady_clock::now() < deadline) {
-                if (const auto error = guard(control)) return *error;
+                if (const auto error = probe(control)) return *error;
                 const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
                     deadline - std::chrono::steady_clock::now());
                 const auto slice = std::min(
                     remaining, std::chrono::milliseconds(maximum_wait_slice_ms));
                 if (slice.count() > 0) session_->wait_condition.wait_for(wait_lock, slice);
             }
-            if (const auto error = guard(control)) return *error;
+            if (const auto error = probe(control)) return *error;
             return std::monostate{};
         }
 
@@ -235,13 +266,33 @@ public:
         }
 
     private:
+        [[nodiscard]] std::optional<CoDetectOperationError> session_error_locked()
+            const noexcept
+        {
+            if (session_->status != Session::Status::Current ||
+                !state_->is_current(session_))
+                return CoDetectOperationError::SessionChanged;
+            if (!session_->backend->identity_valid()) {
+                session_->status = Session::Status::Tombstoned;
+                session_->latest.reset();
+                session_->wait_condition.notify_all();
+                return CoDetectOperationError::SessionChanged;
+            }
+            return std::nullopt;
+        }
+
         [[nodiscard]] std::optional<CoDetectOperationError> guard(
             const CoDetectControl& control) const noexcept
         {
             if (const auto error = control_error(control)) return error;
-            if (!state_->is_current(session_) || !session_->backend->identity_valid())
-                return CoDetectOperationError::SessionChanged;
-            return std::nullopt;
+            return session_error_locked();
+        }
+
+        [[nodiscard]] std::optional<CoDetectOperationError> probe(
+            const CoDetectControl& control) const noexcept
+        {
+            std::scoped_lock lock(session_->operation_mutex);
+            return guard(control);
         }
 
         std::shared_ptr<State> state_;
@@ -254,23 +305,27 @@ public:
         const std::uint64_t session_epoch,
         const bool android)
     {
-        if (!backend || !android || session_epoch == 0 || !valid_profile(profile) ||
-            !valid_device_id(backend->device_id()) || !backend->identity_valid() ||
-            backend->profile_name() != co_detect_profile_name(profile) ||
-            backend->screenshot_interval_ms() < 1U ||
-            backend->screenshot_interval_ms() > 60'000U)
+        if (!backend || !android || session_epoch == 0 || !valid_profile(profile))
             throw std::invalid_argument("invalid BAAS co-detect device binding");
 
         std::scoped_lock lifecycle_lock(lifecycle_mutex_);
         if (session_epoch <= last_epoch_)
             throw std::invalid_argument("BAAS co-detect epoch must strictly increase");
 
+        activation_allocation_checkpoint();
+        auto next = std::make_shared<Session>(std::move(backend));
+        std::string device_id;
+        {
+            std::scoped_lock next_lock(next->operation_mutex);
+            device_id = candidate_device_id_locked(*next, profile);
+        }
+        activation_allocation_checkpoint();
         auto identity = std::make_shared<const CoDetectProductionDeviceIdentity>(
             CoDetectProductionDeviceIdentity{
-                backend->device_id(), profile, session_epoch, true});
-        auto next = std::make_shared<Session>();
-        next->backend = std::move(backend);
+                std::move(device_id), profile, session_epoch, true});
         next->identity = identity;
+        activation_allocation_checkpoint();
+        auto port = std::make_shared<Port>(shared_from_this(), next);
 
         std::shared_ptr<Session> previous;
         {
@@ -279,19 +334,19 @@ public:
         }
         std::unique_lock previous_lock(
             previous ? previous->operation_mutex : unused_operation_mutex_);
-        if (!next->backend->identity_valid() ||
-            next->backend->profile_name() != co_detect_profile_name(profile) ||
-            next->backend->device_id() != identity->device_id ||
-            next->backend->screenshot_interval_ms() < 1U ||
-            next->backend->screenshot_interval_ms() > 60'000U)
-            throw std::invalid_argument("BAAS co-detect binding changed before publication");
+        std::scoped_lock next_lock(next->operation_mutex);
+        validate_candidate_locked(*next, *identity);
         {
             std::scoped_lock current_lock(current_mutex_);
+            if (previous) {
+                previous->status = Session::Status::Retired;
+                previous->latest.reset();
+            }
+            next->status = Session::Status::Current;
             current_ = next;
             last_epoch_ = session_epoch;
         }
         if (previous) previous->wait_condition.notify_all();
-        auto port = std::make_shared<Port>(shared_from_this(), std::move(next));
         return {std::move(port), std::move(identity)};
     }
 
@@ -308,7 +363,11 @@ public:
             std::scoped_lock operation_lock(previous->operation_mutex);
             {
                 std::scoped_lock current_lock(current_mutex_);
-                if (current_.get() == previous.get()) current_.reset();
+                if (current_.get() == previous.get()) {
+                    previous->status = Session::Status::Retired;
+                    previous->latest.reset();
+                    current_.reset();
+                }
             }
             previous->wait_condition.notify_all();
         } catch (...) {
@@ -326,19 +385,59 @@ public:
         }
     }
 
-    [[nodiscard]] std::shared_ptr<const CoDetectProductionDeviceIdentity>
-    current_identity_for(const std::shared_ptr<Session>& session) const noexcept
+private:
+    static void activation_allocation_checkpoint()
     {
-        try {
-            std::scoped_lock lock(current_mutex_);
-            if (current_.get() != session.get()) return {};
-            return current_->identity;
-        } catch (...) {
-            return {};
+#if defined(BAAS_CONNECTION_CO_DETECT_PORT_TESTING)
+        const auto remaining = detail::activation_allocation_countdown.load(
+            std::memory_order_acquire);
+        if (remaining == 0) throw std::bad_alloc{};
+        if (remaining > 0)
+            detail::activation_allocation_countdown.fetch_sub(
+                1, std::memory_order_acq_rel);
+#endif
+    }
+
+    [[nodiscard]] static std::string candidate_device_id_locked(
+        Session& session, const CoDetectProfile profile)
+    {
+        if (session.status != Session::Status::Candidate ||
+            !session.backend->identity_valid()) {
+            session.status = Session::Status::Tombstoned;
+            throw std::invalid_argument("invalid BAAS co-detect device binding");
+        }
+        const auto device_id = session.backend->device_id();
+        const auto profile_name = session.backend->profile_name();
+        const auto interval = session.backend->screenshot_interval_ms();
+        if (!session.backend->identity_valid() || !valid_device_id(device_id) ||
+            profile_name != co_detect_profile_name(profile) || interval < 1U ||
+            interval > 60'000U) {
+            session.status = Session::Status::Tombstoned;
+            throw std::invalid_argument("invalid BAAS co-detect device binding");
+        }
+        return device_id;
+    }
+
+    static void validate_candidate_locked(
+        Session& session, const CoDetectProductionDeviceIdentity& identity)
+    {
+        if (session.status != Session::Status::Candidate ||
+            !session.backend->identity_valid() ||
+            session.backend->device_id() != identity.device_id ||
+            session.backend->profile_name() != co_detect_profile_name(identity.profile)) {
+            session.status = Session::Status::Tombstoned;
+            throw std::invalid_argument(
+                "BAAS co-detect binding changed before publication");
+        }
+        const auto interval = session.backend->screenshot_interval_ms();
+        if (interval < 1U || interval > 60'000U ||
+            !session.backend->identity_valid()) {
+            session.status = Session::Status::Tombstoned;
+            throw std::invalid_argument(
+                "BAAS co-detect binding changed before publication");
         }
     }
 
-private:
     mutable std::mutex lifecycle_mutex_;
     mutable std::mutex current_mutex_;
     std::mutex unused_operation_mutex_;
