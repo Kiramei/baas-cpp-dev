@@ -104,6 +104,8 @@ option(BUILD_RUNTIME_REPOSITORY_UPDATER "Build the transport-independent runtime
 option(BUILD_RUNTIME_REPOSITORY_UPDATER_TESTS "Build runtime repository updater tests" OFF)
 option(BUILD_RUNTIME_REPOSITORY_GIT2 "Build the optional libgit2 repository dependency boundary" OFF)
 option(BUILD_RUNTIME_REPOSITORY_GIT2_TESTS "Build real optional libgit2 repository backend tests" OFF)
+option(BUILD_RUNTIME_GROUP_PUBLICATION_COMPILER "Build deterministic group resource publication compiler" OFF)
+option(BUILD_RUNTIME_GROUP_PUBLICATION_COMPILER_TESTS "Build group publication compiler tests" OFF)
 option(BUILD_RUNTIME_SCRIPT_PACKAGE_LOADER "Build pathless BAAS Script package discovery from a runtime repository" OFF)
 option(BUILD_RUNTIME_SCRIPT_PACKAGE_LOADER_TESTS "Build runtime BAAS Script package loader tests" OFF)
 option(BUILD_RUNTIME_SCRIPT_CATALOG "Build the immutable runtime BAAS Script task catalog" OFF)
@@ -378,6 +380,13 @@ if(BUILD_RUNTIME_CO_DETECT_PRODUCTION_ADAPTER)
         "Build pure C++ co-detect procedure executor" FORCE)
 endif()
 
+if(BUILD_RUNTIME_GROUP_PUBLICATION_COMPILER_TESTS)
+    set(BUILD_RUNTIME_GROUP_PUBLICATION_COMPILER ON CACHE BOOL
+        "Build deterministic group resource publication compiler" FORCE)
+    set(BUILD_RUNTIME_CO_DETECT_SUPPORT_BUNDLE ON CACHE BOOL
+        "Build verified co-detect locale support bundle loader" FORCE)
+endif()
+
 if(BUILD_RUNTIME_CO_DETECT_SUPPORT_BUNDLE_TESTS)
     set(BUILD_RUNTIME_CO_DETECT_SUPPORT_BUNDLE ON CACHE BOOL
         "Build verified co-detect locale support bundle loader" FORCE)
@@ -414,6 +423,10 @@ endif()
 
 if(BUILD_RUNTIME_REPOSITORY_GIT2_TESTS AND NOT BUILD_RUNTIME_REPOSITORY_GIT2)
     set(BUILD_RUNTIME_REPOSITORY_GIT2 ON CACHE BOOL "Build the optional libgit2 repository backend" FORCE)
+endif()
+
+if(BUILD_RUNTIME_GROUP_PUBLICATION_COMPILER)
+    set(BUILD_RESOURCE_CORE ON CACHE BOOL "Build immutable resource snapshot core" FORCE)
 endif()
 
 if(BUILD_RUNTIME_REPOSITORY_GIT2 AND NOT BUILD_RUNTIME_REPOSITORY_UPDATER)
@@ -1062,11 +1075,13 @@ if(BUILD_SERVICE_SYNC_HANDLER OR BUILD_SERVICE_REMOTE_HANDLER
    OR BUILD_RUNTIME_CO_DETECT_DEFINITION_MODEL
    OR BUILD_RUNTIME_CO_DETECT_SUPPORT_BUNDLE
    OR BUILD_SCHEDULER_POLICY
-   OR BUILD_LEGACY_PROCEDURE_DEFINITION_VALIDATION)
+   OR BUILD_LEGACY_PROCEDURE_DEFINITION_VALIDATION
+   OR BUILD_RUNTIME_GROUP_PUBLICATION_COMPILER)
     baas_request_dependencies(nlohmann_json)
 endif()
 
-if(BUILD_SERVICE_FILE_RESOURCE_STORE OR BUILD_RUNTIME_CO_DETECT_SUPPORT_BUNDLE)
+if(BUILD_SERVICE_FILE_RESOURCE_STORE OR BUILD_RUNTIME_CO_DETECT_SUPPORT_BUNDLE
+   OR BUILD_RUNTIME_GROUP_PUBLICATION_COMPILER)
     baas_request_dependencies(miniz)
 endif()
 
@@ -1084,6 +1099,10 @@ endif()
 
 if(BUILD_RUNTIME_REPOSITORY_GIT2)
     baas_request_dependencies(libgit2 miniz cpp_httplib)
+endif()
+
+if(BUILD_RUNTIME_GROUP_PUBLICATION_COMPILER)
+    baas_request_dependencies(libgit2 miniz nlohmann_json)
 endif()
 
 baas_load_requested_dependencies()
@@ -1116,6 +1135,7 @@ list(FILTER BAAS_CORE_SOURCES EXCLUDE REGEX "/src/runtime/script/.*\\.cpp$")
 list(FILTER BAAS_CORE_SOURCES EXCLUDE REGEX "/src/runtime/procedure/.*\\.cpp$")
 list(FILTER BAAS_CORE_SOURCES EXCLUDE REGEX "/src/runtime/json/.*\\.cpp$")
 list(FILTER BAAS_CORE_SOURCES EXCLUDE REGEX "/src/runtime/resources/.*\\.cpp$")
+list(FILTER BAAS_CORE_SOURCES EXCLUDE REGEX "/src/runtime/publisher/.*\\.cpp$")
 list(FILTER BAAS_CORE_SOURCES EXCLUDE REGEX "/src/service/.*\\.cpp$")
 
 if(TARGET_OS_NAME STREQUAL "Windows")
@@ -1190,7 +1210,8 @@ if(BUILD_SCRIPT_PROCEDURE_SNAPSHOT)
 endif()
 
 if(BUILD_RUNTIME_PROCEDURE_ACTIVATION OR BUILD_RUNTIME_CO_DETECT_DEFINITION_MODEL
-   OR BUILD_RUNTIME_CO_DETECT_SUPPORT_BUNDLE)
+   OR BUILD_RUNTIME_CO_DETECT_SUPPORT_BUNDLE
+   OR BUILD_RUNTIME_GROUP_PUBLICATION_COMPILER)
     include("${CMAKE_CURRENT_LIST_DIR}/cmake/RuntimeStrictJson.cmake")
 endif()
 
@@ -1200,6 +1221,10 @@ endif()
 
 if(BUILD_RUNTIME_CO_DETECT_SUPPORT_BUNDLE)
     include("${CMAKE_CURRENT_LIST_DIR}/cmake/RuntimeCoDetectSupportBundle.cmake")
+endif()
+
+if(BUILD_RUNTIME_GROUP_PUBLICATION_COMPILER)
+    include("${CMAKE_CURRENT_LIST_DIR}/cmake/RuntimeGroupPublicationCompiler.cmake")
 endif()
 
 if(BUILD_RUNTIME_PROCEDURE_ACTIVATION)

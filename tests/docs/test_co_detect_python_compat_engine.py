@@ -137,8 +137,15 @@ class CoDetectPythonCompatEngineContractTests(unittest.TestCase):
     def test_support_bundle_ids_counts_and_external_ownership_are_exact(self) -> None:
         self.assertIn("procedure-support/navigation.to-main-page/v1", self.doc)
         self.assertIn("procedure-support/group.open/v1", self.doc)
-        self.assertIn("77 logical members", self.doc)
-        self.assertIn("25 logical members", self.doc)
+        self.assertIn("77 logical identities", self.doc)
+        self.assertIn("25 logical identities", self.doc)
+        for profile_counts in (
+            "CN 63, JP 56",
+            "Global_en-us 60, Global_zh-tw 57, and Global_ko-kr 56",
+            "CN 16, JP 12",
+            "Global_en-us 17, Global_zh-tw 14, and Global_ko-kr 13",
+        ):
+            self.assertIn(profile_counts, self.doc)
         self.assertIn("external resources repository", self.doc)
         self.assertIn("fake images", self.doc)
         for token in (
