@@ -16,6 +16,8 @@ inline constexpr std::string_view group_publication_lock_schema =
 inline constexpr std::string_view group_publication_compiler_schema =
     "baas.runtime-publisher/v1";
 inline constexpr std::uint32_t group_publication_compiler_version = 1;
+inline constexpr std::string_view group_publication_python_baseline =
+    "b8cc64705feb0067aba349892031a450d1bf8083";
 
 enum class PublicationErrorCode : std::uint8_t {
     invalid_lock,
@@ -74,11 +76,16 @@ private:
     friend GroupPublicationLock parse_group_publication_lock(std::string_view);
     friend void verify_group_publication_sources(
         const GroupPublicationLock&, const std::filesystem::path&);
+    friend void validate_group_production_lock(const GroupPublicationLock&);
     friend std::vector<PublicationOutput> compile_group_publication(
         const GroupPublicationLock&, const std::filesystem::path&);
 };
 
 [[nodiscard]] GroupPublicationLock parse_group_publication_lock(std::string_view json);
+
+// Applies the frozen production policy. Generic library fixtures deliberately
+// do not satisfy this gate; every host CLI command does.
+void validate_group_production_lock(const GroupPublicationLock& lock);
 
 // Opens exactly repository_path and resolves every source through the pinned
 // commit/tree/libgit2 object database. Mutable checkout bytes are never read.

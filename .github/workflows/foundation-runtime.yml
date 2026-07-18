@@ -457,6 +457,16 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
+      - name: Check out frozen Python publication baseline
+        if: matrix.os == 'ubuntu-latest'
+        uses: actions/checkout@v4
+        with:
+          repository: Kiramei/baas-dev
+          ref: b8cc64705feb0067aba349892031a450d1bf8083
+          path: build/baas-python-baseline
+          fetch-depth: 1
+          persist-credentials: false
+
       - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
@@ -518,6 +528,24 @@ jobs:
         run: |
           . build/conan/co-detect-support-bundle/conanrun.sh
           ctest --test-dir build/co-detect-support-bundle --build-config Release --output-on-failure --timeout 120
+
+      - name: Verify all frozen real group publication variants
+        if: matrix.os == 'ubuntu-latest'
+        shell: bash
+        run: |
+          set -euo pipefail
+          . build/conan/co-detect-support-bundle/conanrun.sh
+          lock="${RUNNER_TEMP}/baas.group-publication.lock.json"
+          output="${RUNNER_TEMP}/baas-group-publication"
+          python tests/runtime/generate_group_publication_b8cc_lock.py \
+            --repository build/baas-python-baseline --output "${lock}"
+          publisher=build/co-detect-support-bundle/bin/baas-runtime-publisher
+          tests=build/co-detect-support-bundle/bin/BAAS_runtime_group_publication_compiler_tests
+          "${publisher}" verify-source --repository build/baas-python-baseline --lock "${lock}"
+          "${publisher}" check-reproducible --repository build/baas-python-baseline --lock "${lock}"
+          "${publisher}" compile-group --repository build/baas-python-baseline --lock "${lock}" --output "${output}"
+          "${publisher}" verify-publication --repository build/baas-python-baseline --lock "${lock}" --output "${output}"
+          "${tests}" --real-repository build/baas-python-baseline --lock "${lock}"
 
   android-runtime-repository:
     name: Android foundation ${{ matrix.abi }} / Release
@@ -691,6 +719,7 @@ jobs:
           --parallel 4
           --target BAAS_runtime_repository_updater BAAS_service_runtime_task_owner
           BAAS_runtime_group_publication_compiler
+          BAAS_runtime_group_publication_compiler_link_probe
           BAAS_runtime_resource_snapshot_loader
           BAAS_service_runtime_script_task_backend
           BAAS_runtime_script_package_loader

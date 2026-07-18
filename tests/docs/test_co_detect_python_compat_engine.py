@@ -140,8 +140,8 @@ class CoDetectPythonCompatEngineContractTests(unittest.TestCase):
         self.assertIn("77 logical identities", self.doc)
         self.assertIn("25 logical identities", self.doc)
         for profile_counts in (
-            "CN 64, JP 56, Global_en-us 61",
-            "Global_zh-tw 58, and Global_ko-kr 57",
+            "CN 63, JP 56",
+            "Global_en-us 60, Global_zh-tw 57, and Global_ko-kr 56",
             "CN 16, JP 12",
             "Global_en-us 17, Global_zh-tw 14, and Global_ko-kr 13",
         ):

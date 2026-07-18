@@ -121,7 +121,8 @@ void png_chunk(
     append_be32(output, crc);
 }
 
-[[nodiscard]] std::vector<std::byte> png(const std::uint32_t width, const std::uint32_t height)
+[[nodiscard]] std::vector<std::byte> png(
+    const std::uint32_t width, const std::uint32_t height, const bool varied = true)
 {
     std::vector<std::byte> output{
         std::byte{0x89}, std::byte{'P'}, std::byte{'N'}, std::byte{'G'},
@@ -136,9 +137,9 @@ void png_chunk(
         const auto offset = static_cast<std::size_t>(row) * (width * 3U + 1U);
         raw[offset] = 0;
         for (std::uint32_t column = 0; column < width; ++column) {
-            raw[offset + 1U + column * 3U] = static_cast<unsigned char>(10U + row);
-            raw[offset + 2U + column * 3U] = static_cast<unsigned char>(20U + column);
-            raw[offset + 3U + column * 3U] = 30U;
+            raw[offset + 1U + column * 3U] = varied ? static_cast<unsigned char>(10U + row) : 42U;
+            raw[offset + 2U + column * 3U] = varied ? static_cast<unsigned char>(20U + column) : 42U;
+            raw[offset + 3U + column * 3U] = varied ? 30U : 42U;
         }
     }
     mz_ulong compressed_size = mz_compressBound(static_cast<mz_ulong>(raw.size()));
@@ -193,15 +194,21 @@ public:
         if (git_libgit2_init() < 0) throw std::runtime_error("git init failed");
         sources_ = {
             {"src/rgb_feature/JP.json", bytes(
-                R"({"rgb_feature":{"main_page":[[[1,1]],[[1,2,3,4,5,6]]]}})"), {}},
+                R"({"rgb_feature":{"main_page":[[[1,1],[1,1]],[[1,2,3,4,5,6],[1,2,3,4,5,6]]]}})"), {}},
             {"src/images/JP/main_page/news.png", png(2, 2), {}},
             {"src/images/JP/main_page/placeholder.png", png(1, 1), {}},
+            {"src/images/JP/main_page/blank.png", png(2, 2, false), {}},
+            {"src/images/JP/dead/news.png", png(2, 2), {}},
             {"src/images/JP/main_page/missing.png", png(2, 2), {}},
             {"src/images/JP/x_y_range/main_page.py", bytes(
                 "prefix = \"main_page\"\npath = \"main_page\"\nx_y_range = {\n"
-                "    'news': (0, 0, 2, 2),\n"
+                "    'news': (0, 0, 3, 3),\n"
                 "    'placeholder': (0, 0, 2, 2),\n"
+                "    'blank': (0, 0, 2, 2),\n"
                 "    # 'missing': (0, 0, 2, 2),\n}\n"), {}},
+            {"src/images/JP/x_y_range/dead.py", bytes(
+                "if False:\n    prefix = \"dead\"\n    path = \"dead\"\n"
+                "    x_y_range = {\n        'news': (0, 0, 2, 2),\n    }\n"), {}},
         };
         git_repository* raw_repository{};
         const auto root = path_.path().string();
@@ -275,11 +282,13 @@ private:
 
 [[nodiscard]] Json lock_json(
     const GitFixture& git, const std::string_view png_path =
-        "src/images/JP/main_page/news.png", const std::string_view feature = "main_page_news")
+        "src/images/JP/main_page/news.png", const std::string_view feature = "main_page_news",
+    const std::string_view crop_path = "src/images/JP/x_y_range/main_page.py",
+    Json crop_value = Json::array({0, 0, 3, 3}))
 {
     const auto& rgb = git.source("src/rgb_feature/JP.json");
     const auto& image = git.source(png_path);
-    const auto& crop = git.source("src/images/JP/x_y_range/main_page.py");
+    const auto& crop = git.source(crop_path);
     Json members = Json::array({
         Json{{"id", "feature/navigation.to-main-page"}, {"kind", "feature-graph"}},
         Json{{"id", "rgb/main-page"}, {"kind", "rgb-range-set"},
@@ -287,7 +296,7 @@ private:
              {"source_key", "main_page"}},
         Json{{"id", "image/" + std::string{feature}}, {"kind", "png-template"},
              {"feature", feature}, {"source", source_json(image)},
-             {"crop_source", source_json(crop)}, {"crop", Json::array({0, 0, 2, 2})},
+             {"crop_source", source_json(crop)}, {"crop", std::move(crop_value)},
              {"threshold_milli", 800}, {"mean_rgb_tolerance", 20}},
     });
     return Json{
@@ -323,7 +332,10 @@ struct File final { std::string path; std::vector<std::byte> value; };
 }
 
 [[nodiscard]] std::shared_ptr<const procedure::CoDetectSupportBundle> activate_bundle(
-    const std::vector<publisher::PublicationOutput>& output)
+    const std::vector<publisher::PublicationOutput>& output,
+    const std::string_view bundle_id = "procedure-support/navigation.to-main-page/v1",
+    const std::string_view locale = "JP",
+    const procedure::CoDetectProfile profile = procedure::CoDetectProfile::jp)
 {
     TemporaryDirectory root;
     std::vector<File> resource_files;
@@ -360,16 +372,68 @@ struct File final { std::string path; std::vector<std::byte> value; };
     auto activated = repository::RuntimeRepositorySnapshot::activate(root.path());
     auto read = activated->open_read_bundle();
     const auto resources_result = runtime_resources::load_runtime_resource_snapshot(
-        read->resources(), {"JP", std::nullopt});
+        read->resources(), {std::string{locale}, std::nullopt});
     if (!resources_result) throw std::runtime_error("compiled resource snapshot rejected");
     const auto loaded = procedure::load_co_detect_support_bundle(
         resources_result.activation, generation,
-        "procedure-support/navigation.to-main-page/v1", "JP",
-        procedure::CoDetectProfile::jp);
+        bundle_id, locale, profile);
     if (!loaded) throw std::runtime_error(
         "compiled support bundle rejected: " +
         std::string{procedure::co_detect_support_bundle_error_name(loaded.error)});
     return loaded.bundle;
+}
+
+void test_real_production_lock(
+    const std::filesystem::path& source_repository,
+    const std::filesystem::path& lock_path)
+{
+    std::ifstream input(lock_path, std::ios::binary);
+    if (!input) throw std::runtime_error("real production lock open failed");
+    const std::string lock_text{std::istreambuf_iterator<char>{input},
+                                std::istreambuf_iterator<char>{}};
+    if (input.bad()) throw std::runtime_error("real production lock read failed");
+    auto lock = publisher::parse_group_publication_lock(lock_text);
+    publisher::validate_group_production_lock(lock);
+    publisher::verify_group_publication_sources(lock, source_repository);
+    const auto first = publisher::compile_group_publication(lock, source_repository);
+    const auto second = publisher::compile_group_publication(lock, source_repository);
+    bool reproducible = first.size() == second.size();
+    for (std::size_t index = 0; reproducible && index < first.size(); ++index)
+        reproducible = first[index].relative_path == second[index].relative_path &&
+            first[index].bytes == second[index].bytes;
+    check(reproducible && first.size() == 11,
+          "real production publication must contain ten reproducible bundles and manifest");
+    struct Expected final {
+        std::string_view id;
+        std::string_view locale;
+        procedure::CoDetectProfile profile;
+        std::size_t count;
+    };
+    constexpr std::array<Expected, 10> expected{{
+        {"procedure-support/group.open/v1", "CN", procedure::CoDetectProfile::cn, 16},
+        {"procedure-support/group.open/v1", "Global_en-us",
+         procedure::CoDetectProfile::global_en_us, 17},
+        {"procedure-support/group.open/v1", "Global_ko-kr",
+         procedure::CoDetectProfile::global_ko_kr, 13},
+        {"procedure-support/group.open/v1", "Global_zh-tw",
+         procedure::CoDetectProfile::global_zh_tw, 14},
+        {"procedure-support/group.open/v1", "JP", procedure::CoDetectProfile::jp, 12},
+        {"procedure-support/navigation.to-main-page/v1", "CN",
+         procedure::CoDetectProfile::cn, 63},
+        {"procedure-support/navigation.to-main-page/v1", "Global_en-us",
+         procedure::CoDetectProfile::global_en_us, 60},
+        {"procedure-support/navigation.to-main-page/v1", "Global_ko-kr",
+         procedure::CoDetectProfile::global_ko_kr, 56},
+        {"procedure-support/navigation.to-main-page/v1", "Global_zh-tw",
+         procedure::CoDetectProfile::global_zh_tw, 57},
+        {"procedure-support/navigation.to-main-page/v1", "JP",
+         procedure::CoDetectProfile::jp, 56},
+    }};
+    for (const auto& item : expected) {
+        const auto bundle = activate_bundle(first, item.id, item.locale, item.profile);
+        check(bundle && bundle->member_count() == item.count,
+              "every real production variant must activate with its exact closure");
+    }
 }
 
 void test_compile_reproducible_and_activate()
@@ -385,12 +449,16 @@ void test_compile_reproducible_and_activate()
     check(first[0].bytes == second[0].bytes && first[1].bytes == second[1].bytes,
           "two compilations must be byte-identical");
     const auto digest = resources::sha256_hex(first[0].bytes);
-    check(digest == "5e3a4f47edcad434dbcc39308f993627861dd2ed5ac2b703cd599bb70d94c8dd",
-          "canonical archive digest must stay fixed");
+    check(digest == "edaa4f617dd3a3938fc4ba1543f61b3f69dab5541029d758a2087b6359039d24",
+          "canonical archive digest must stay fixed; actual=" + digest);
     auto bundle = activate_bundle(first);
     check(bundle->member_count() == 3 && bundle->find_rgb("main_page") != nullptr &&
+              bundle->find_rgb("main_page")->samples.size() == 2 &&
               bundle->find_image("main_page_news") != nullptr,
-          "existing strict loader must activate the generated archive");
+          "loader must preserve repeated RGB samples and resized-template metadata");
+    expect_error([&] { publisher::validate_group_production_lock(lock); },
+        publisher::PublicationErrorCode::incomplete_bundle,
+        "generic fixture must not satisfy the production CLI gate");
 
     git.dirty_checkout();
     const auto dirty = publisher::compile_group_publication(lock, git.path());
@@ -411,10 +479,31 @@ void test_compile_reproducible_and_activate()
         noncanonical, publication.path(), false); },
         publisher::PublicationErrorCode::publication_invalid,
         "atomic writer must reject a non-canonical resource manifest");
+    auto case_collision = first;
+    case_collision.insert(case_collision.end() - 1, first[0]);
+    case_collision[case_collision.size() - 2].relative_path =
+        "PAYLOAD/NAVIGATION-jp.BUNDLE";
+    expect_error([&] { publisher::write_group_publication(
+        case_collision, publication.path(), false); },
+        publisher::PublicationErrorCode::publication_invalid,
+        "case-folding output collision must fail before mutation");
     publisher::write_group_publication(first, publication.path(), false);
     publisher::write_group_publication(first, publication.path(), true);
     publisher::verify_group_publication(lock, git.path(), publication.path());
+#ifndef _WIN32
+    std::filesystem::create_symlink(
+        publication.path() / first[0].relative_path, publication.path() / "linked.bundle");
+    expect_error([&] { publisher::write_group_publication(
+        first, publication.path(), false); },
+        publisher::PublicationErrorCode::publication_mismatch,
+        "writer must reject a symlink before mutation");
+    std::filesystem::remove(publication.path() / "linked.bundle");
+#endif
     write_file(publication.path() / "undeclared.bin", "extra");
+    expect_error([&] { publisher::write_group_publication(
+        first, publication.path(), false); },
+        publisher::PublicationErrorCode::publication_mismatch,
+        "write mode must reject stale undeclared publication files before mutation");
     expect_error([&] { publisher::write_group_publication(
         first, publication.path(), true); },
         publisher::PublicationErrorCode::publication_mismatch,
@@ -433,6 +522,12 @@ void test_lock_and_source_negatives()
 {
     GitFixture git;
     auto valid = lock_json(git);
+    auto oversized = valid;
+    oversized["bundles"][0]["members"][1]["source"]["size"] =
+        16U * 1024U * 1024U + 1U;
+    expect_error([&] { static_cast<void>(parse(oversized)); },
+        publisher::PublicationErrorCode::invalid_lock,
+        "source member over the consumer-aligned limit must fail");
     auto duplicate = valid.dump();
     duplicate.insert(1, R"("schema":"baas.group-publication-lock/v1",)");
     expect_error([&] { static_cast<void>(
@@ -471,8 +566,9 @@ void test_lock_and_source_negatives()
     auto alias = valid;
     alias["bundles"][0]["members"][2]["feature"] = "main_page_news2";
     alias["bundles"][0]["members"][2]["id"] = "image/main_page_news2";
-    expect_error([&] { static_cast<void>(parse(alias)); },
-        publisher::PublicationErrorCode::alias_forbidden,
+    auto alias_lock = parse(alias);
+    expect_error([&] { publisher::verify_group_publication_sources(
+        alias_lock, git.path()); }, publisher::PublicationErrorCode::alias_forbidden,
         "alias repair must fail");
 
     auto fallback = valid;
@@ -489,12 +585,34 @@ void test_lock_and_source_negatives()
         "support bundle matcher defaults must remain exactly 800 and 20");
 
     auto placeholder = lock_json(
-        git, "src/images/JP/main_page/placeholder.png", "main_page_placeholder");
+        git, "src/images/JP/main_page/placeholder.png", "main_page_placeholder",
+        "src/images/JP/x_y_range/main_page.py", Json::array({0, 0, 2, 2}));
     auto placeholder_lock = parse(placeholder);
     expect_error([&] { publisher::verify_group_publication_sources(
         placeholder_lock, git.path()); },
         publisher::PublicationErrorCode::placeholder_forbidden,
         "placeholder dimensions must fail");
+
+    auto blank = lock_json(
+        git, "src/images/JP/main_page/blank.png", "main_page_blank",
+        "src/images/JP/x_y_range/main_page.py", Json::array({0, 0, 2, 2}));
+    auto blank_lock = parse(blank);
+    expect_error([&] { publisher::verify_group_publication_sources(
+        blank_lock, git.path()); }, publisher::PublicationErrorCode::placeholder_forbidden,
+        "same-size blank placeholder must fail");
+
+    auto dead = lock_json(git, "src/images/JP/dead/news.png", "dead_news",
+                          "src/images/JP/x_y_range/dead.py", Json::array({0, 0, 2, 2}));
+    auto dead_lock = parse(dead);
+    expect_error([&] { publisher::verify_group_publication_sources(
+        dead_lock, git.path()); }, publisher::PublicationErrorCode::source_content_invalid,
+        "dead-code crop declarations must not become active resources");
+
+    auto rgb_alias = valid;
+    rgb_alias["bundles"][0]["members"][1]["id"] = "rgb/not-main-page";
+    expect_error([&] { static_cast<void>(parse(rgb_alias)); },
+        publisher::PublicationErrorCode::alias_forbidden,
+        "RGB member identity must be bound to its exact feature");
 
     auto missing_crop = lock_json(
         git, "src/images/JP/main_page/missing.png", "main_page_missing");
@@ -507,11 +625,18 @@ void test_lock_and_source_negatives()
 
 }  // namespace
 
-int main()
+int main(const int argc, char** argv)
 {
     try {
-        test_compile_reproducible_and_activate();
-        test_lock_and_source_negatives();
+        if (argc == 5 && std::string_view{argv[1]} == "--real-repository" &&
+            std::string_view{argv[3]} == "--lock") {
+            test_real_production_lock(argv[2], argv[4]);
+        } else if (argc == 1) {
+            test_compile_reproducible_and_activate();
+            test_lock_and_source_negatives();
+        } else {
+            throw std::runtime_error("invalid group publication test arguments");
+        }
     } catch (const std::exception& error) {
         ++failures;
         std::cerr << "UNEXPECTED: " << error.what() << '\n';

@@ -64,6 +64,25 @@ if(NOT (ANDROID OR CMAKE_SYSTEM_NAME STREQUAL "Android"
     endif()
 endif()
 
+if(ANDROID OR CMAKE_SYSTEM_NAME STREQUAL "Android"
+   OR TARGET_OS_NAME STREQUAL "Android")
+    add_executable(
+        BAAS_runtime_group_publication_compiler_link_probe
+        "${BAAS_PROJECT_PATH}/tests/runtime/GroupPublicationCompilerLinkProbe.cpp"
+    )
+    target_compile_features(
+        BAAS_runtime_group_publication_compiler_link_probe PRIVATE cxx_std_20
+    )
+    target_link_libraries(
+        BAAS_runtime_group_publication_compiler_link_probe
+        PRIVATE BAAS_runtime_group_publication_compiler
+    )
+    target_compile_options(
+        BAAS_runtime_group_publication_compiler_link_probe
+        PRIVATE -Wall -Wextra -Wpedantic -Werror
+    )
+endif()
+
 if(BUILD_RUNTIME_GROUP_PUBLICATION_COMPILER_TESTS)
     if(ANDROID OR CMAKE_SYSTEM_NAME STREQUAL "Android"
        OR TARGET_OS_NAME STREQUAL "Android")

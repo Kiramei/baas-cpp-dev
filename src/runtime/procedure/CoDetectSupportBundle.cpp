@@ -655,7 +655,6 @@ struct FeatureDeclaration final {
         fail(CoDetectSupportBundleError::rgb_invalid, member_index);
     std::vector<CoDetectRgbSample> result;
     result.reserve(samples.size());
-    std::set<std::pair<std::uint16_t, std::uint16_t>> coordinates;
     for (const auto& value : samples) {
         if (!exact_fields(value, {"x", "y", "r", "g", "b"}))
             fail(CoDetectSupportBundleError::rgb_invalid, member_index);
@@ -671,8 +670,6 @@ struct FeatureDeclaration final {
         sample.red = parse_channel_range(value.at("r"), member_index);
         sample.green = parse_channel_range(value.at("g"), member_index);
         sample.blue = parse_channel_range(value.at("b"), member_index);
-        if (!coordinates.emplace(sample.x, sample.y).second)
-            fail(CoDetectSupportBundleError::rgb_invalid, member_index);
         result.push_back(sample);
     }
     return result;

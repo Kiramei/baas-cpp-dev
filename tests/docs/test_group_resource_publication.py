@@ -67,8 +67,11 @@ class GroupResourcePublicationContractTests(unittest.TestCase):
         self.assertIn("BAAS_runtime_group_publication_compiler_tests", text)
         self.assertIn("BUILD_RUNTIME_GROUP_PUBLICATION_COMPILER=ON", text)
         self.assertIn("BAAS_runtime_group_publication_compiler", text)
+        self.assertIn("BAAS_runtime_group_publication_compiler_link_probe", text)
         self.assertIn("android-clang-arm64-v8a-release", text)
         self.assertIn("android-clang-x86_64-release", text)
+        self.assertIn("Kiramei/baas-dev", text)
+        self.assertIn("generate_group_publication_b8cc_lock.py", text)
 
     def test_cpp_repository_contains_no_generated_dynamic_publication(self) -> None:
         tracked_candidates = [
@@ -84,7 +87,7 @@ class GroupResourcePublicationContractTests(unittest.TestCase):
         ]
         self.assertEqual(tracked_candidates, [])
 
-    def test_documentation_freezes_union_counts_as_upper_bounds(self) -> None:
+    def test_documentation_freezes_exact_counts_and_union_upper_bounds(self) -> None:
         publication = (
             ROOT / "docs" / "script-runtime" / "GROUP_RESOURCE_PUBLICATION.md"
         ).read_text(encoding="utf-8")
@@ -93,9 +96,21 @@ class GroupResourcePublicationContractTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
         for text in (publication, co_detect):
             self.assertIn("union", text)
-            for count in ("64", "56", "61", "58", "57", "16", "12", "17", "14", "13"):
+            for count in ("63", "56", "60", "57", "16", "12", "17", "14", "13"):
                 self.assertIn(count, text)
+            self.assertIn("alias", text)
         self.assertIn("b8cc64705feb0067aba349892031a450d1bf8083", publication)
+
+    def test_production_gate_is_public_and_generator_is_integration_only(self) -> None:
+        header = (
+            ROOT / "include" / "runtime" / "publisher" / "GroupPublicationCompiler.h"
+        ).read_text(encoding="utf-8")
+        generator = (
+            ROOT / "tests" / "runtime" / "generate_group_publication_b8cc_lock.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn("validate_group_production_lock", header)
+        self.assertIn("b8cc64705feb0067aba349892031a450d1bf8083", header)
+        self.assertIn("integration-test inventory tool", generator.lower())
 
 
 if __name__ == "__main__":

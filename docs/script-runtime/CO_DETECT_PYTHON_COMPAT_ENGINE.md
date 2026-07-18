@@ -459,9 +459,13 @@ No native resource path or ambient registry is accepted.
 
 The audited cross-profile union closure has at most 77 logical identities: one
 feature graph, seven RGB definitions, and 69 image-template identities. This is
-not a per-locale member count. Real locale bundles contain only the exact
-crop-metadata/PNG intersection: CN 64, JP 56, Global_en-us 61,
-Global_zh-tw 58, and Global_ko-kr 57 members, including the graph. Its
+not a per-locale member count. Real locale bundles contain only the exact active
+Python feature-set, crop-metadata, and PNG-path intersection: CN 63, JP 56,
+Global_en-us 60, Global_zh-tw 57, and Global_ko-kr 56 members, including the
+graph. Earlier non-JP counts were one too high because an audit repaired invalid
+aliases: the CN draw-card reference lacks its `main_page` prefix and the Global
+failed-to-convert references do not exactly match the crop/PNG identities. No
+alias or placeholder repair is part of the compatibility contract. Its
 non-image IDs are:
 
 ```text

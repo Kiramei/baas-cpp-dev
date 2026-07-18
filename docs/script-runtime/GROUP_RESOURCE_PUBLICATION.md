@@ -68,20 +68,26 @@ size, and SHA-256 before parsing. Working-tree files, Git filters, line-ending
 conversion, untracked replacements, environment variables, and ambient resource
 directories are never consulted.
 
-For an image `src/images/<profile>/<group>/<name>.png`, the Python feature must
-be exactly `<group>_<name>`, including case and spelling. Its crop source must be
-exactly `src/images/<profile>/x_y_range/<group>.py`, whose active `prefix`,
-`path`, key, and coordinates must match. A commented declaration is absent.
-This preserves the Python baseline defects: missing crop, missing PNG, prefix,
-case, or spelling disagreements remain false instead of being repaired.
+For an active crop module, the Python feature must be exactly
+`<active-prefix>_<name>`, including case and spelling, and its PNG must be the
+exact `src/images/<profile>/<active-path>/<name>.png`. The active prefix and
+path may intentionally differ (for example a prefix with a nested image path),
+so neither is inferred from the crop-module filename. Only one top-level
+`prefix`, `path`, and `x_y_range` dictionary is accepted; commented, indented,
+or reassigned declarations are absent or invalid. This preserves the Python
+baseline defects: missing crop, missing PNG, prefix, case, or spelling
+disagreements remain false instead of being repaired.
 
 PNG bytes are validated in place (signature, bounded canonical chunks, CRC,
-IHDR, zlib stream, filter bytes, and crop dimensions) and copied directly from
-the ODB blob into the archive. They are never decoded and re-encoded. RGB
-samples are strictly extracted from the exact profile JSON and converted to the
-frozen RGB-range schema. The feature graph is derived only from reviewed lock
-members; click/reaction priority belongs in the procedure definition, not the
-graph.
+IHDR, zlib stream, filter bytes, and non-placeholder pixels) and copied directly
+from the ODB blob into the archive. They are never decoded and re-encoded. The
+template dimensions need not equal the screenshot crop because both the Python
+implementation and C++ production adapter resize the crop to the template.
+RGB samples are strictly extracted from the exact profile JSON and converted to
+the frozen RGB-range schema; repeated coordinates retain their original order,
+matching Python list semantics. The feature graph is derived only from reviewed
+lock members; click/reaction priority belongs in the procedure definition, not
+the graph.
 
 ## Deterministic output
 
@@ -115,7 +121,11 @@ baas-runtime-publisher check-reproducible --repository DIR --lock FILE
 writing. `compile-group` compiles once and writes or checks. `verify-publication`
 recompiles from the ODB, compares every byte, and rejects undeclared output.
 `check-reproducible` performs two independent ODB compilations and compares all
-paths and bytes.
+paths and bytes. These CLI commands accept only the reviewed production closure:
+the exact baseline commit, all ten profile/procedure variants, their canonical
+output paths, exact member counts, and exact ordered member-identity digests. The
+generic library API remains available for isolated fixture tests, but cannot be
+used as evidence that an arbitrary lock is a production publication.
 
 ## Reviewed production inventory boundary
 
@@ -124,11 +134,18 @@ The reviewed inventory counts are per profile and include the feature graph:
 
 | Profile | navigation members | group members |
 | --- | ---: | ---: |
-| `CN` | 64 | 16 |
+| `CN` | 63 | 16 |
 | `JP` | 56 | 12 |
-| `Global_en-us` | 61 | 17 |
-| `Global_zh-tw` | 58 | 14 |
-| `Global_ko-kr` | 57 | 13 |
+| `Global_en-us` | 60 | 17 |
+| `Global_zh-tw` | 57 | 14 |
+| `Global_ko-kr` | 56 | 13 |
+
+These are the exact active Python feature-set intersections with active crop
+metadata and exact PNG paths. Earlier `64/56/61/58/57` navigation figures were
+one too high outside JP because the audit silently repaired source aliases. The
+CN draw-card reference lacks the required `main_page` prefix, while the Global
+failed-to-convert references do not exactly match their crop/PNG identities.
+The compiler deliberately performs no alias or placeholder repair.
 
 The often quoted navigation `77` and group `25` counts are union-closure upper
 bounds across profiles (one graph plus all audited RGB/image identities), not a
@@ -145,4 +162,8 @@ checks a fixed archive SHA-256, exercises source and schema negatives, checks
 atomic/`--check` behavior, and activates the generated archive through the
 existing `RuntimeResourceSnapshotLoader` and `CoDetectSupportBundle` loader.
 The existing strict bundle suite remains the authoritative ZIP/manifest/PNG
-negative corpus and runs in the same CI job.
+negative corpus and runs in the same CI job. Ubuntu CI additionally checks out
+the external Python repository at the exact reviewed commit, generates its lock
+outside this repository, verifies and compiles all ten variants, and activates
+every resulting bundle. Android CI links the compiler through a final executable
+probe for both supported ABIs; a static-library-only build is not sufficient.
