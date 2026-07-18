@@ -113,6 +113,8 @@ option(BUILD_RUNTIME_SCRIPT_EXECUTION_PLAN_TESTS "Build runtime BAAS Script exec
 option(BUILD_SCRIPT_PROCEDURE_SNAPSHOT "Build immutable procedure descriptor snapshots" OFF)
 option(BUILD_RUNTIME_PROCEDURE_ACTIVATION "Build generation-bound runtime procedure activation" OFF)
 option(BUILD_RUNTIME_PROCEDURE_ACTIVATION_TESTS "Build runtime procedure activation tests" OFF)
+option(BUILD_RUNTIME_CO_DETECT_DEFINITION_MODEL "Build strict immutable co-detect definition model" OFF)
+option(BUILD_RUNTIME_CO_DETECT_DEFINITION_MODEL_TESTS "Build co-detect definition model tests" OFF)
 option(BUILD_SCRIPT_RESOURCE_HOST "Build baas/resource script Host adapter" OFF)
 option(BUILD_SCRIPT_RESOURCE_HOST_TESTS "Build baas/resource script Host tests" OFF)
 option(BUILD_SCRIPT_PROCEDURE_HOST "Build snapshot-owned baas/procedure script Host" OFF)
@@ -396,6 +398,16 @@ if(BUILD_RUNTIME_PROCEDURE_ACTIVATION)
         "Build pathless BAAS Script package discovery from a runtime repository" FORCE)
     set(BUILD_SCRIPT_RUNTIME ON CACHE BOOL
         "Build the standalone BAAS script runtime" FORCE)
+endif()
+
+if(BUILD_RUNTIME_CO_DETECT_DEFINITION_MODEL_TESTS)
+    set(BUILD_RUNTIME_CO_DETECT_DEFINITION_MODEL ON CACHE BOOL
+        "Build strict immutable co-detect definition model" FORCE)
+endif()
+
+if(BUILD_RUNTIME_CO_DETECT_DEFINITION_MODEL)
+    set(BUILD_RESOURCE_CORE ON CACHE BOOL
+        "Build immutable resource snapshot core" FORCE)
 endif()
 
 if(BUILD_RUNTIME_SCRIPT_PACKAGE_LOADER_TESTS)
@@ -874,6 +886,8 @@ if(BUILD_SERVICE_SYNC_HANDLER OR BUILD_SERVICE_REMOTE_HANDLER
    OR BUILD_SERVICE_RUNTIME_REPOSITORY_PLAN
    OR BUILD_SERVICE_RUNTIME_TASK_TRIGGERS
    OR BUILD_RUNTIME_RESOURCE_SNAPSHOT_LOADER
+   OR BUILD_RUNTIME_PROCEDURE_ACTIVATION
+   OR BUILD_RUNTIME_CO_DETECT_DEFINITION_MODEL
    OR BUILD_SCHEDULER_POLICY)
     baas_request_dependencies(nlohmann_json)
 endif()
@@ -914,6 +928,7 @@ list(FILTER BAAS_CORE_SOURCES EXCLUDE REGEX "/src/scheduler/.*\\.cpp$")
 list(FILTER BAAS_CORE_SOURCES EXCLUDE REGEX "/src/runtime/repository/.*\\.cpp$")
 list(FILTER BAAS_CORE_SOURCES EXCLUDE REGEX "/src/runtime/script/.*\\.cpp$")
 list(FILTER BAAS_CORE_SOURCES EXCLUDE REGEX "/src/runtime/procedure/.*\\.cpp$")
+list(FILTER BAAS_CORE_SOURCES EXCLUDE REGEX "/src/runtime/json/.*\\.cpp$")
 list(FILTER BAAS_CORE_SOURCES EXCLUDE REGEX "/src/service/.*\\.cpp$")
 
 if(TARGET_OS_NAME STREQUAL "Windows")
@@ -985,6 +1000,14 @@ endif()
 
 if(BUILD_SCRIPT_PROCEDURE_SNAPSHOT)
     include("${CMAKE_CURRENT_LIST_DIR}/cmake/ScriptProcedureSnapshot.cmake")
+endif()
+
+if(BUILD_RUNTIME_PROCEDURE_ACTIVATION OR BUILD_RUNTIME_CO_DETECT_DEFINITION_MODEL)
+    include("${CMAKE_CURRENT_LIST_DIR}/cmake/RuntimeStrictJson.cmake")
+endif()
+
+if(BUILD_RUNTIME_CO_DETECT_DEFINITION_MODEL)
+    include("${CMAKE_CURRENT_LIST_DIR}/cmake/RuntimeCoDetectDefinitionModel.cmake")
 endif()
 
 if(BUILD_RUNTIME_PROCEDURE_ACTIVATION)
