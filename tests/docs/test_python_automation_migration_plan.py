@@ -20,6 +20,9 @@ class PythonAutomationMigrationPlanTests(unittest.TestCase):
             "baas-dev@b8cc64705feb0067aba349892031a450d1bf8083",
             'for name in ("module", "core", "service", "src"):',
             'tree = ast.parse((root / "core/Baas_thread.py")',
+            '(root / "src/images").glob("**/x_y_range/**/*.py")',
+            "assert coordinate_module_count == 253",
+            'print("x_y_range recursive data modules", coordinate_module_count)',
             "| `module/**/*.py` | 109 | 9,501 |",
             "| `core/**/*.py` | 65 | 13,912 |",
             "| `service/**/*.py` | 58 | 9,510 |",
@@ -48,7 +51,7 @@ class PythonAutomationMigrationPlanTests(unittest.TestCase):
         ):
             self.assertIn(heading, self.plan)
         for anchor in (
-            "253 `src/images/**/x_y_range/*.py` files",
+            "253 `src/images/**/x_y_range/**/*.py` files",
             "must not be executed as Python, rewritten as C++, or\nlinked into an executable",
             "Resources, BAAS Script packages, Procedure definitions, and user configuration\nare runtime state",
             "None is compiled into `baas-cpp-dev`",
@@ -119,8 +122,17 @@ class PythonAutomationMigrationPlanTests(unittest.TestCase):
             "This proves the normalized script/ProcedureHost/LogHost contract for those\nfixtures only",
             "does not prove real `group` image resources",
             "service task-backend execution",
+            "Integration baseline `e165c76` already contains the merged schema-2",
+            "retained resource-activation provenance",
+            "pinned\nProcedure-definition activation foundations",
+            "external real `group` definitions/resources",
+            "production RuntimeTaskBackend, or emulator parity; those remain\nunfinished",
         ):
             self.assertIn(anchor, self.plan)
+        self.assertNotIn(
+            "Schema-2 closure, resource/procedure activation, and the native legacy",
+            self.plan,
+        )
         batches = re.findall(r"^\| (M\d{2}) —", self.plan, re.MULTILINE)
         self.assertEqual(batches, [f"M{number:02d}" for number in range(1, 14)])
         for column_anchor in (
@@ -143,6 +155,7 @@ class PythonAutomationMigrationPlanTests(unittest.TestCase):
             "production RuntimeTaskBackend",
             "capability catalog alone is not an implementation",
             "full Actions batch before explicit\nmerge to `main`",
+            "merged foundations already execute a real automation task",
         ):
             self.assertIn(anchor, self.plan)
 

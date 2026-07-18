@@ -51,10 +51,17 @@ for path in sorted((root / "module/activities").glob("*.py")):
     shape = ast.dump(ast.parse(path.read_text("utf-8")), include_attributes=False)
     activity_shapes.setdefault(shape, []).append(path.name)
 print(sorted(len(paths) for paths in activity_shapes.values()))
+
+coordinate_modules = sorted(
+    (root / "src/images").glob("**/x_y_range/**/*.py")
+)
+coordinate_module_count = len(coordinate_modules)
+assert coordinate_module_count == 253
+print("x_y_range recursive data modules", coordinate_module_count)
 ```
 
 The resource counts use recursive file-extension counts under `src`: `*.png`,
-`*.json`, and `src/images/**/x_y_range/*.py`. At the pinned baseline the result
+`*.json`, and `src/images/**/x_y_range/**/*.py`. At the pinned baseline the result
 is:
 
 | Scope | Files | Logical lines / detail |
@@ -128,7 +135,7 @@ selector, signing key, or unrestricted filesystem/device handle.
 
 ### Coordinate Python becomes external structured data
 
-The 253 `src/images/**/x_y_range/*.py` files only declare prefixes, paths,
+The 253 `src/images/**/x_y_range/**/*.py` files only declare prefixes, paths,
 coordinates, and image metadata. They must be converted to a strict external
 JSON or equivalent structured-resource schema and validated together with the
 corresponding images. They must not be executed as Python, rewritten as C++, or
@@ -183,10 +190,13 @@ goldens also cover cancellation and foreground-package mismatch.
 
 This proves the normalized script/ProcedureHost/LogHost contract for those
 fixtures only. It does not prove real `group` image resources, legacy Procedure
-definitions, production activation, service task-backend execution, or emulator
-parity. Schema-2 closure, resource/procedure activation, and the native legacy
-adapter remain prerequisite work until their own branches are reviewed and
-explicitly merged.
+definitions, production `group` activation, service task-backend execution, or emulator
+parity. Integration baseline `e165c76` already contains the merged schema-2
+package Procedure closure, retained resource-activation provenance, and pinned
+Procedure-definition activation foundations. Those foundations do not provide
+the external real `group` definitions/resources, native legacy execution
+adapter, production RuntimeTaskBackend, or emulator parity; those remain
+unfinished.
 
 ## Remaining conversion batches
 
@@ -211,6 +221,12 @@ batch must explicitly merge back and delete its branch/worktree.
 | M13 — lifecycle/privileged compatibility | `restart.py` (`restart`); `refresh_uiautomator2.py` (`refresh_uiautomator2`); `de_clothes.py` (`de_clothes`); `purchase_ap.py` unregistered empty stub | controlled app lifecycle/device-maintenance/resource-push bindings, procedure/log/config/wait; never expose arbitrary path/process/socket access | dynamic `LocalizeConfig.txt` by resource ID; no compiled payload | Preserve foreground checks and stop/start timing. uiautomator refresh belongs to C++ maintenance. `de_clothes` may push only a policy-approved resource to a fixed logical destination. Keep `purchase_ap` as explicit no-op/deprecation evidence unless a real Python behavior appears |
 
 ## Infrastructure gates before broad conversion
+
+At integration baseline `e165c76`, the schema-2 closure, resource provenance,
+and pinned Procedure activation foundations named above are merged. The list
+below retains their invariants as production composition gates and identifies
+the still-unfinished adapter/backend/parity work; it is not a claim that the
+merged foundations already execute a real automation task.
 
 The first production-capable batch must not bypass these shared gates:
 
