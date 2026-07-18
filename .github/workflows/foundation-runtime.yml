@@ -14,6 +14,8 @@ on:
       - 'CMakePresets.json'
       - 'cmake/**'
       - 'deploy/conan/recipes/baas-nlohmann-json/**'
+      - 'deploy/conan/recipes/baas-miniz/**'
+      - 'deploy/conan/recipes/baas-opencv/**'
       - 'deploy/conan/profiles/android-clang-arm64-v8a-release'
       - 'deploy/conan/profiles/android-clang-x86_64-release'
       - 'include/script/**'
@@ -117,6 +119,8 @@ on:
       - 'CMakePresets.json'
       - 'cmake/**'
       - 'deploy/conan/recipes/baas-nlohmann-json/**'
+      - 'deploy/conan/recipes/baas-miniz/**'
+      - 'deploy/conan/recipes/baas-opencv/**'
       - 'deploy/conan/profiles/android-clang-arm64-v8a-release'
       - 'deploy/conan/profiles/android-clang-x86_64-release'
       - 'include/script/**'
@@ -281,10 +285,89 @@ jobs:
         if: matrix.build_type == 'Debug'
         run: python -B -m unittest discover -s tests/docs -p "test_*.py" -v
 
+  co-detect-support-bundle-windows:
+    name: Co-detect support bundle / Windows / ${{ matrix.build_type }}
+    runs-on: windows-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - build_type: Debug
+            conan_settings: '-s:h compiler.runtime_type=Debug'
+          - build_type: Release
+            conan_settings: '-s:h compiler.runtime_type=Release'
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install pinned Conan client
+        run: python -m pip install --disable-pip-version-check conan==2.30.0
+
+      - name: Detect host profile
+        run: conan profile detect --force
+
+      - name: Build pinned nlohmann-json recipe
+        run: >-
+          conan create deploy/conan/recipes/baas-nlohmann-json
+          -s:h build_type=${{ matrix.build_type }} -s:b build_type=Release
+          ${{ matrix.conan_settings }} --build=missing --no-remote
+
+      - name: Build pinned miniz recipe
+        run: >-
+          conan create deploy/conan/recipes/baas-miniz
+          -s:h build_type=${{ matrix.build_type }} -s:b build_type=Release
+          ${{ matrix.conan_settings }} --build=missing --no-remote
+
+      - name: Build pinned OpenCV recipe
+        run: >-
+          conan create deploy/conan/recipes/baas-opencv
+          -s:h build_type=${{ matrix.build_type }} -s:b build_type=Release
+          ${{ matrix.conan_settings }} --build=missing --no-remote
+
+      - name: Generate support-bundle dependencies
+        run: >-
+          conan install --requires=baas-nlohmann-json/3.11.3
+          --requires=baas-miniz/3.1.2 --requires=baas-opencv/4.13.0
+          -of build/conan/co-detect-support-bundle
+          -s:h build_type=${{ matrix.build_type }} -s:b build_type=Release
+          ${{ matrix.conan_settings }}
+          -g CMakeDeps -g CMakeToolchain --build=missing --no-remote
+
+      - name: Configure support-bundle tests
+        run: >-
+          cmake -S . -B build/co-detect-support-bundle
+          "-DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}/build/conan/co-detect-support-bundle/conan_toolchain.cmake"
+          -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
+          -DBUILD_TESTING=ON -DBUILD_RUNTIME_CO_DETECT_SUPPORT_BUNDLE_TESTS=ON
+          -DBUILD_APP_BAAS=OFF -DBUILD_APP_ISA=OFF -DBUILD_BAAS_OCR=OFF
+          -DBUILD_BAAS_AW_CHECKER=OFF -DBUILD_BAAS_NMS_BENCHMARK=OFF
+          -DBAAS_FETCH_RESOURCES=OFF
+
+      - name: Build support-bundle tests
+        run: >-
+          cmake --build build/co-detect-support-bundle
+          --config ${{ matrix.build_type }} --parallel 4
+          --target BAAS_runtime_co_detect_support_bundle_tests
+
+      - name: Run support-bundle tests
+        run: >-
+          ctest --test-dir build/co-detect-support-bundle
+          --build-config ${{ matrix.build_type }} --output-on-failure --timeout 120
+
   android-runtime-repository:
     name: Android foundation ${{ matrix.abi }} / Release
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -335,10 +418,32 @@ jobs:
           --build=missing
           --no-remote
 
+      - name: Cross-build pinned miniz recipe
+        shell: bash
+        run: >-
+          conan create deploy/conan/recipes/baas-miniz
+          -pr:h=deploy/conan/profiles/${{ matrix.profile }}
+          -pr:b=default
+          -c:h "tools.android:ndk_path=${ANDROID_NDK_HOME}"
+          --build=missing
+          --no-remote
+
+      - name: Cross-build pinned OpenCV recipe
+        shell: bash
+        run: >-
+          conan create deploy/conan/recipes/baas-opencv
+          -pr:h=deploy/conan/profiles/${{ matrix.profile }}
+          -pr:b=default
+          -c:h "tools.android:ndk_path=${ANDROID_NDK_HOME}"
+          --build=missing
+          --no-remote
+
       - name: Generate Android foundation dependency
         shell: bash
         run: >-
           conan install --requires=baas-nlohmann-json/3.11.3
+          --requires=baas-miniz/3.1.2
+          --requires=baas-opencv/4.13.0
           -of build/conan/foundation-android-${{ matrix.abi }}
           -pr:h=deploy/conan/profiles/${{ matrix.profile }}
           -pr:b=default
@@ -363,6 +468,7 @@ jobs:
           -DBUILD_RUNTIME_SCRIPT_EXECUTION_PLAN=ON
           -DBUILD_RUNTIME_PROCEDURE_ACTIVATION=ON
           -DBUILD_RUNTIME_CO_DETECT_DEFINITION_MODEL=ON
+          -DBUILD_RUNTIME_CO_DETECT_SUPPORT_BUNDLE=ON
           -DBUILD_LEGACY_PROCEDURE_EXECUTION=ON
           -DBUILD_SCRIPT_PROCEDURE_HOST=ON
           -DBUILD_SERVICE_RUNTIME_TASK_STATUS_JSON=ON
@@ -386,6 +492,7 @@ jobs:
           BAAS_runtime_script_execution_plan
           BAAS_runtime_procedure_activation
           BAAS_runtime_co_detect_definition_model
+          BAAS_runtime_co_detect_support_bundle
           BAAS_legacy_procedure_execution
           BAAS_script_procedure_host
           BAAS_service_runtime_task_status_json
