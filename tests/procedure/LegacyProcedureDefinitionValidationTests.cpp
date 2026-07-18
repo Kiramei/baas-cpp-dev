@@ -95,12 +95,31 @@ void test_feature_preflight()
     }
 }
 
+void test_validation_allocation_failures_propagate()
+{
+    for (const auto checkpoint : {std::size_t{1}, std::size_t{2}}) {
+        baas::testing::fail_legacy_procedure_definition_validation_at_allocation(
+            checkpoint);
+        try {
+            static_cast<void>(baas::valid_legacy_procedure_definition(
+                valid_definition()));
+            check(false,
+                  checkpoint == 1
+                      ? "validator allocation failure must propagate"
+                      : "ends validation allocation failure must propagate");
+        } catch (const std::bad_alloc&) {
+        }
+        baas::testing::clear_legacy_procedure_definition_validation_failure();
+    }
+}
+
 }  // namespace
 
 int main()
 {
     test_bounds_and_shape();
     test_feature_preflight();
+    test_validation_allocation_failures_propagate();
     if (failures != 0) return EXIT_FAILURE;
     std::cout << "legacy procedure definition validation tests passed\n";
     return EXIT_SUCCESS;

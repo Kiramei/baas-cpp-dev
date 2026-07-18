@@ -1,12 +1,31 @@
 #include "procedure/LegacyProcedureDefinitionValidation.h"
 
+#include <array>
+#include <atomic>
 #include <cmath>
 #include <cstdint>
-#include <set>
+#include <new>
 #include <string_view>
 
 BAAS_NAMESPACE_BEGIN
 namespace {
+
+#ifdef BAAS_LEGACY_PROCEDURE_DEFINITION_TEST_HOOKS
+std::atomic<std::size_t> validation_failure_checkpoint{};
+std::atomic<std::size_t> validation_checkpoint_count{};
+
+void validation_allocation_checkpoint()
+{
+    const auto checkpoint = validation_checkpoint_count.fetch_add(
+        1, std::memory_order_relaxed) + 1;
+    if (checkpoint == validation_failure_checkpoint.load(std::memory_order_relaxed))
+        throw std::bad_alloc{};
+}
+#else
+void validation_allocation_checkpoint() noexcept
+{
+}
+#endif
 
 [[nodiscard]] bool integer_between(
     const nlohmann::json& value, const std::int64_t minimum,
@@ -50,14 +69,17 @@ namespace {
     return true;
 }
 
-[[nodiscard]] bool valid_ends(const nlohmann::json& value) noexcept
+[[nodiscard]] bool valid_ends(const nlohmann::json& value)
 {
+    validation_allocation_checkpoint();
     if (bounded_name(value)) return true;
     if (!value.is_array() || value.empty() || value.size() > 256) return false;
-    std::set<std::string_view> unique;
-    for (const auto& item : value) {
+    for (std::size_t index{}; index < value.size(); ++index) {
+        const auto& item = value[index];
         if (!bounded_name(item)) return false;
-        if (!unique.insert(item.get_ref<const std::string&>()).second) return false;
+        const auto& name = item.get_ref<const std::string&>();
+        for (std::size_t previous{}; previous < index; ++previous)
+            if (value[previous].get_ref<const std::string&>() == name) return false;
     }
     return true;
 }
@@ -80,19 +102,23 @@ namespace {
 
 }  // namespace
 
-bool valid_legacy_procedure_definition(const nlohmann::json& definition) noexcept
+bool valid_legacy_procedure_definition(const nlohmann::json& definition)
 {
     try {
+        validation_allocation_checkpoint();
         if (!definition.is_object() || !definition.contains("procedure_type") ||
             !integer_between(definition.at("procedure_type"), 0, 0) ||
             !definition.contains("ends") || !valid_ends(definition.at("ends")))
             return false;
-        static const std::set<std::string_view> allowed{
+        static constexpr std::array<std::string_view, 8> allowed{
             "procedure_type", "ends", "max_stuck_time", "max_execute_time",
             "max_click_times", "show_log", "possibles", "tentative_click"};
         for (const auto& [key, value] : definition.items()) {
             static_cast<void>(value);
-            if (!allowed.contains(key)) return false;
+            bool found{};
+            for (const auto candidate : allowed)
+                found = found || candidate == key;
+            if (!found) return false;
         }
         if (definition.contains("max_stuck_time") &&
             !finite_between(definition.at("max_stuck_time"), 0.001, 604'800.0))
@@ -120,6 +146,8 @@ bool valid_legacy_procedure_definition(const nlohmann::json& definition) noexcep
                 !finite_between(tentative[3], 0.001, 86'400.0)) return false;
         }
         return true;
+    } catch (const std::bad_alloc&) {
+        throw;
     } catch (...) {
         return false;
     }
@@ -147,5 +175,24 @@ bool legacy_procedure_definition_features_available(
         return false;
     }
 }
+
+#ifdef BAAS_LEGACY_PROCEDURE_DEFINITION_TEST_HOOKS
+namespace testing {
+
+void fail_legacy_procedure_definition_validation_at_allocation(
+    const std::size_t checkpoint) noexcept
+{
+    validation_checkpoint_count.store(0, std::memory_order_relaxed);
+    validation_failure_checkpoint.store(checkpoint, std::memory_order_relaxed);
+}
+
+void clear_legacy_procedure_definition_validation_failure() noexcept
+{
+    validation_failure_checkpoint.store(0, std::memory_order_relaxed);
+    validation_checkpoint_count.store(0, std::memory_order_relaxed);
+}
+
+}  // namespace testing
+#endif
 
 BAAS_NAMESPACE_END

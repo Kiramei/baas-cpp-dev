@@ -537,6 +537,7 @@ std::unique_ptr<BaseProcedure> BAAS::_make_procedure(
 }
 
 BAAS::~BAAS() {
+    procedures.clear();
     delete control;
     delete screenshot;
     delete connection;

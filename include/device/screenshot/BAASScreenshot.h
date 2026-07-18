@@ -23,6 +23,13 @@ public:
             const double interval = 0.3
     );
 
+    ~BAASScreenshot() noexcept;
+
+    BAASScreenshot(const BAASScreenshot&) = delete;
+    BAASScreenshot& operator=(const BAASScreenshot&) = delete;
+    BAASScreenshot(BAASScreenshot&&) = delete;
+    BAASScreenshot& operator=(BAASScreenshot&&) = delete;
+
     void init();
 
     void set_interval(double value) noexcept;
@@ -57,7 +64,9 @@ public:
 
 private:
 
-    BaseScreenshot* screenshot_instance;
+    void destroy_screenshot_instance(bool call_exit) noexcept;
+
+    BaseScreenshot* screenshot_instance{};
 
     std::string screenshot_method;
 

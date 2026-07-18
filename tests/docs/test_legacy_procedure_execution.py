@@ -65,12 +65,17 @@ class LegacyProcedureExecutionTests(unittest.TestCase):
         )
         self.assertIn("auto owned_config = std::make_unique<BAASUserConfig>", self.baas_source)
         self.assertIn("owned_control.release()", self.baas_source)
+        self.assertIn("procedures.clear();", self.baas_source)
         screenshot = (ROOT / "src/device/screenshot/BAASScreenshot.cpp").read_text(
             encoding="utf-8"
-        ).split("void BAASScreenshot::screenshot_controlled", 1)[1].split(
+        )
+        self.assertIn("BAASScreenshot::~BAASScreenshot() noexcept", screenshot)
+        self.assertIn("destroy_screenshot_instance(true);", screenshot)
+        self.assertIn("make_initialized_backend", screenshot)
+        controlled = screenshot.split("void BAASScreenshot::screenshot_controlled", 1)[1].split(
             "void BAASScreenshot::immediate_screenshot", 1
         )[0]
-        self.assertLess(screenshot.index("last_screenshot_time ="), screenshot.rindex("checkpoint();"))
+        self.assertLess(controlled.index("last_screenshot_time ="), controlled.rindex("checkpoint();"))
         for anchor in ("RuntimeProcedureActivation", "ProcedureDescriptor", "terminal set"):
             self.assertIn(anchor, self.spec)
 
@@ -93,7 +98,15 @@ class LegacyProcedureExecutionTests(unittest.TestCase):
             self.assertIn("BAAS_legacy_procedure_definition_tests", workflow)
         self.assertIn("-DBUILD_LEGACY_PROCEDURE_EXECUTION=ON", self.foundation)
         self.assertIn("BAAS_legacy_procedure_execution", self.foundation)
-        for path in ("include/BAAS.h", "include/procedure/**", "src/BAAS.cpp", "src/procedure/**"):
+        for path in (
+            "include/BAAS.h",
+            "include/device/ExactBackendLifetime.h",
+            "include/device/control/BAASControl.h",
+            "include/procedure/**",
+            "src/BAAS.cpp",
+            "src/device/control/BAASControl.cpp",
+            "src/procedure/**",
+        ):
             self.assertIn(f"- '{path}'", self.app)
 
     def test_effect_machine_is_operation_strict_and_unknown_is_terminal(self) -> None:

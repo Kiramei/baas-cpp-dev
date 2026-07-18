@@ -31,11 +31,19 @@ endif()
 
 if(BUILD_LEGACY_PROCEDURE_DEFINITION_TESTS)
     include(CTest)
+    target_compile_definitions(
+            BAAS_legacy_procedure_definition_validation
+            PRIVATE BAAS_LEGACY_PROCEDURE_DEFINITION_TEST_HOOKS=1
+    )
     add_executable(
             BAAS_legacy_procedure_definition_tests
             "${BAAS_PROJECT_PATH}/tests/procedure/LegacyProcedureDefinitionValidationTests.cpp"
     )
     target_compile_features(BAAS_legacy_procedure_definition_tests PRIVATE cxx_std_20)
+    target_compile_definitions(
+            BAAS_legacy_procedure_definition_tests
+            PRIVATE BAAS_LEGACY_PROCEDURE_DEFINITION_TEST_HOOKS=1
+    )
     target_link_libraries(
             BAAS_legacy_procedure_definition_tests
             PRIVATE BAAS_legacy_procedure_definition_validation

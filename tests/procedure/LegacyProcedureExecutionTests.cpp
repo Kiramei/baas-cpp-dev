@@ -1,4 +1,5 @@
 #include "BAASExceptions.h"
+#include "device/ExactBackendLifetime.h"
 #include "procedure/LegacyProcedureExecution.h"
 #include "device/screenshot/ScreenshotInterval.h"
 
@@ -214,6 +215,45 @@ void test_controlled_screenshot_interval()
     }
 }
 
+struct BackendLifetimeBase {
+};
+
+struct BackendLifetimeProbe final : BackendLifetimeBase {
+    explicit BackendLifetimeProbe(int& destruction_count) noexcept
+        : destruction_count_(&destruction_count)
+    {
+    }
+
+    ~BackendLifetimeProbe()
+    {
+        ++*destruction_count_;
+    }
+
+private:
+    int* destruction_count_;
+};
+
+void test_exact_backend_lifetime()
+{
+    int destroyed{};
+    try {
+        static_cast<void>(baas::detail::make_initialized_backend<BackendLifetimeProbe>(
+            [](BackendLifetimeProbe&) { throw std::runtime_error("init failed"); },
+            destroyed));
+        check(false, "throwing backend initialization must propagate");
+    } catch (const std::runtime_error&) {
+    }
+    check(destroyed == 1,
+          "throwing backend initialization must destroy the concrete backend");
+
+    auto owner = baas::detail::make_initialized_backend<BackendLifetimeProbe>(
+        [](BackendLifetimeProbe&) {}, destroyed);
+    BackendLifetimeBase* backend = owner.release();
+    baas::detail::delete_exact_backend<BackendLifetimeProbe>(backend);
+    check(backend == nullptr && destroyed == 2,
+          "normal wrapper teardown must exactly delete a non-virtual backend");
+}
+
 }  // namespace
 
 int main()
@@ -222,6 +262,7 @@ int main()
     test_control_precedence();
     test_effect_scope();
     test_controlled_screenshot_interval();
+    test_exact_backend_lifetime();
     if (failures != 0) return EXIT_FAILURE;
     std::cout << "legacy procedure execution foundation tests passed\n";
     return EXIT_SUCCESS;
