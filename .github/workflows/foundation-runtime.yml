@@ -92,6 +92,7 @@ on:
       - 'docs/script-runtime/RUNTIME_SCRIPT_EXECUTION_PLAN.md'
       - 'docs/script-runtime/RUNTIME_RESOURCE_SNAPSHOT_LOADER.md'
       - 'docs/script-runtime/RUNTIME_PROCEDURE_ACTIVATION.md'
+      - 'docs/script-runtime/CO_DETECT_PYTHON_COMPAT_ENGINE.md'
       - 'docs/script-runtime/SERVICE_RUNTIME_TASK_STATUS_JSON.md'
   pull_request:
     branches:
@@ -184,6 +185,7 @@ on:
       - 'docs/script-runtime/RUNTIME_SCRIPT_EXECUTION_PLAN.md'
       - 'docs/script-runtime/RUNTIME_RESOURCE_SNAPSHOT_LOADER.md'
       - 'docs/script-runtime/RUNTIME_PROCEDURE_ACTIVATION.md'
+      - 'docs/script-runtime/CO_DETECT_PYTHON_COMPAT_ENGINE.md'
       - 'docs/script-runtime/SERVICE_RUNTIME_TASK_STATUS_JSON.md'
 
 permissions:
