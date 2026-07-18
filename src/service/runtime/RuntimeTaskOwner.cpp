@@ -1332,6 +1332,11 @@ private:
         const std::shared_ptr<Job>& job,
         const RuntimeTaskRequest& request) noexcept
     {
+        // Preparation is part of the owned worker lifetime. A prepared
+        // backend may synchronously reenter shutdown(), including through a
+        // stop callback, and must therefore receive the same initiation-only
+        // self-shutdown semantics as execute().
+        WorkerGuard worker_context{this};
         const bool prepared = !request.prepared_backend
             || request.prepared_backend->prepare(
                 job->stop_source.get_token());
@@ -1365,7 +1370,6 @@ private:
         const std::shared_ptr<Job>& job,
         const RuntimeTaskRequest& request) noexcept
     {
-        WorkerGuard worker_context{this};
         RuntimeTaskTerminal terminal{false, 1};
         try {
             const RuntimeTaskProgressReporter reporter =

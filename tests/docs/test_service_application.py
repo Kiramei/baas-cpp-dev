@@ -127,6 +127,55 @@ class ServiceApplicationContractTests(unittest.TestCase):
             self.assertEqual(self.workflow.count(path), 2)
         self.assertNotIn("'cmake/Service*.cmake'", self.workflow)
 
+    def test_android_ci_explicitly_enables_every_built_production_runtime_target(self) -> None:
+        configure = self.workflow[
+            self.workflow.index("- name: Configure Android service composition") :
+            self.workflow.index("- name: Cross-build Android service composition")
+        ]
+        build = self.workflow[
+            self.workflow.index("- name: Cross-build Android service composition") :
+        ]
+        for option in (
+            "-DBUILD_SERVICE_PRODUCTION_RUNTIME_SCRIPT_TASK_FACTORY=ON",
+            "-DBUILD_SERVICE_PRODUCTION_RUNTIME_TASK_CONTROL=ON",
+        ):
+            self.assertIn(option, configure)
+        for target in (
+            "BAAS_service_production_runtime_script_task_factory",
+            "BAAS_service_production_runtime_task_control",
+        ):
+            self.assertIn(target, build)
+
+    def test_default_lightweight_ci_build_has_no_opencv_injected(self) -> None:
+        dependencies = self.workflow[
+            self.workflow.index(
+                "- name: Generate default lightweight application dependencies"
+            ) : self.workflow.index(
+                "- name: Configure default lightweight application without OpenCV"
+            )
+        ]
+        configure = self.workflow[
+            self.workflow.index(
+                "- name: Configure default lightweight application without OpenCV"
+            ) : self.workflow.index(
+                "- name: Build default lightweight application"
+            )
+        ]
+        build = self.workflow[
+            self.workflow.index("- name: Build default lightweight application") :
+            self.workflow.index("- name: Build pinned OpenCV recipe")
+        ]
+        self.assertNotIn("opencv", dependencies.lower())
+        self.assertIn("-DBUILD_SERVICE_APP=ON", configure)
+        for option in (
+            "-DBUILD_SERVICE_PRODUCTION_RUNTIME_SCRIPT_TASK_FACTORY=OFF",
+            "-DBUILD_SERVICE_PRODUCTION_RUNTIME_TASK_CONTROL=OFF",
+            "-DBAAS_FETCH_RESOURCES=OFF",
+        ):
+            self.assertIn(option, configure)
+        for target in ("BAAS_service", "BAAS_service_application"):
+            self.assertIn(target, build)
+
 
 if __name__ == "__main__":
     unittest.main()

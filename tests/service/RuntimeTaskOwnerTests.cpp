@@ -69,6 +69,8 @@ void test_start_reservation_commit_and_rollback()
                       runtime::RuntimeTaskStartDecision::thread_start_failed) == 6);
     static_assert(static_cast<std::uint8_t>(
                       runtime::RuntimeTaskStartDecision::reservation_conflict) == 7);
+    static_assert(static_cast<std::uint8_t>(
+                      runtime::RuntimeTaskStartDecision::preparation_failed) == 8);
     static_assert(!std::is_copy_constructible_v<
                   runtime::RuntimeTaskStartReservation>);
     static_assert(std::is_nothrow_move_constructible_v<
@@ -1247,6 +1249,118 @@ void test_self_shutdown_and_reentrant_stop_callback()
           "manual stop does not overwrite explicit backend terminal fields");
 }
 
+void test_prepared_backend_shutdown_reentry()
+{
+    struct SelfShutdownBackend final : runtime::RuntimeTaskPreparedBackend {
+        runtime::RuntimeTaskOwner* owner{};
+        std::atomic<int> prepare_calls{};
+        std::atomic<int> shutdown_returns{};
+        std::atomic<int> execute_calls{};
+
+        [[nodiscard]] bool prepare(std::stop_token) noexcept override
+        {
+            prepare_calls.fetch_add(1);
+            owner->shutdown();
+            shutdown_returns.fetch_add(1);
+            return false;
+        }
+
+        [[nodiscard]] runtime::RuntimeTaskTerminal execute(
+            const runtime::RuntimeTaskRequest&, std::stop_token,
+            const runtime::RuntimeTaskProgressReporter&) noexcept override
+        {
+            execute_calls.fetch_add(1);
+            return {false, 91};
+        }
+    };
+
+    auto self_backend = std::make_shared<SelfShutdownBackend>();
+    runtime::RuntimeTaskOwner self_owner{
+        [](const runtime::RuntimeTaskRequest&, std::stop_token,
+           const runtime::RuntimeTaskProgressReporter&) {
+            return runtime::RuntimeTaskTerminal{false, 90};
+        }};
+    self_backend->owner = &self_owner;
+    auto self_request = request("prepare-self-shutdown");
+    self_request.prepared_backend = self_backend;
+    const auto self_result = self_owner.prepare_start(std::move(self_request));
+    check(self_result.decision
+              == runtime::RuntimeTaskStartDecision::preparation_failed
+              && self_backend->prepare_calls.load() == 1
+              && self_backend->shutdown_returns.load() == 1
+              && self_backend->execute_calls.load() == 0,
+          "prepared backend can synchronously initiate shutdown without deadlock");
+    check(!self_owner.snapshot("prepare-self-shutdown")
+              && self_owner.snapshots().empty(),
+          "failed reentrant preparation publishes no task generation");
+    check(self_owner.start(request("after-prepare-shutdown")).decision
+              == runtime::RuntimeTaskStartDecision::owner_stopped,
+          "prepare-time shutdown permanently closes admission");
+    self_owner.shutdown();
+
+    struct CallbackShutdownBackend final : runtime::RuntimeTaskPreparedBackend {
+        runtime::RuntimeTaskOwner* owner{};
+        std::atomic<bool> callback_registered{};
+        std::atomic<int> callback_returns{};
+        std::atomic<int> prepare_returns{};
+        std::atomic<int> execute_calls{};
+
+        [[nodiscard]] bool prepare(const std::stop_token stop) noexcept override
+        {
+            auto stop_action = [this]() noexcept {
+                owner->shutdown();
+                callback_returns.fetch_add(1);
+            };
+            static_assert(std::is_nothrow_invocable_v<decltype(stop_action)>);
+            std::stop_callback callback{stop, stop_action};
+            callback_registered = true;
+            while (!stop.stop_requested()) std::this_thread::yield();
+            prepare_returns.fetch_add(1);
+            return false;
+        }
+
+        [[nodiscard]] runtime::RuntimeTaskTerminal execute(
+            const runtime::RuntimeTaskRequest&, std::stop_token,
+            const runtime::RuntimeTaskProgressReporter&) noexcept override
+        {
+            execute_calls.fetch_add(1);
+            return {false, 92};
+        }
+    };
+
+    auto callback_backend = std::make_shared<CallbackShutdownBackend>();
+    runtime::RuntimeTaskOwner callback_owner{
+        [](const runtime::RuntimeTaskRequest&, std::stop_token,
+           const runtime::RuntimeTaskProgressReporter&) {
+            return runtime::RuntimeTaskTerminal{false, 93};
+        }};
+    callback_backend->owner = &callback_owner;
+    std::atomic<runtime::RuntimeTaskStartDecision> callback_decision{
+        runtime::RuntimeTaskStartDecision::started};
+    std::thread prepare_caller{[&] {
+        auto callback_request = request("prepare-stop-callback");
+        callback_request.prepared_backend = callback_backend;
+        callback_decision = callback_owner.prepare_start(
+                                std::move(callback_request))
+                                .decision;
+    }};
+    check(wait_until([&callback_backend] {
+              return callback_backend->callback_registered.load();
+          }),
+          "prepared backend registers its shutdown-reentrant stop callback");
+    callback_owner.shutdown();
+    prepare_caller.join();
+    check(callback_decision.load()
+              == runtime::RuntimeTaskStartDecision::preparation_failed
+              && callback_backend->callback_returns.load() == 1
+              && callback_backend->prepare_returns.load() == 1
+              && callback_backend->execute_calls.load() == 0,
+          "prepare stop callback can reenter shutdown while external drain completes");
+    check(!callback_owner.snapshot("prepare-stop-callback")
+              && callback_owner.snapshots().empty(),
+          "cancelled preparation releases its reserved capacity before drain returns");
+}
+
 void test_nested_stop_delivery_and_join_lock_order()
 {
     runtime::RuntimeTaskOwner* nested_owner = nullptr;
@@ -1575,6 +1689,7 @@ int main()
     test_stop_transactions_generation_exhaustion_and_stress();
     test_explicit_terminal_outcomes_and_bounded_snapshots();
     test_self_shutdown_and_reentrant_stop_callback();
+    test_prepared_backend_shutdown_reentry();
     test_nested_stop_delivery_and_join_lock_order();
     test_concurrent_external_and_worker_shutdown_stress();
     test_escaped_reporter_and_timestamp_ordering();

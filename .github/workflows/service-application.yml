@@ -176,6 +176,35 @@ jobs:
           -s:h build_type=${{ matrix.build_type }} -s:b build_type=Release
           ${{ matrix.conan_settings }} --build=missing --no-remote
 
+      - name: Generate default lightweight application dependencies
+        run: >-
+          conan install --requires=baas-libsodium/1.0.22
+          --requires=baas-cpp-httplib/0.50.1
+          --requires=baas-nlohmann-json/3.11.3
+          --requires=baas-miniz/3.1.2
+          -of build/conan/service-application-lightweight
+          -s:h build_type=${{ matrix.build_type }} -s:b build_type=Release
+          ${{ matrix.conan_settings }}
+          -g CMakeDeps -g CMakeToolchain --build=missing --no-remote
+
+      - name: Configure default lightweight application without OpenCV
+        run: >-
+          cmake -S . -B build/service-application-lightweight
+          "-DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}/build/conan/service-application-lightweight/conan_toolchain.cmake"
+          -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
+          -DBUILD_SERVICE_APP=ON
+          -DBUILD_SERVICE_PRODUCTION_RUNTIME_SCRIPT_TASK_FACTORY=OFF
+          -DBUILD_SERVICE_PRODUCTION_RUNTIME_TASK_CONTROL=OFF
+          -DBUILD_APP_BAAS=OFF -DBUILD_APP_ISA=OFF -DBUILD_BAAS_OCR=OFF
+          -DBUILD_BAAS_AW_CHECKER=OFF -DBUILD_BAAS_NMS_BENCHMARK=OFF
+          -DBAAS_FETCH_RESOURCES=OFF
+
+      - name: Build default lightweight application
+        run: >-
+          cmake --build build/service-application-lightweight
+          --config ${{ matrix.build_type }} --parallel 4
+          --target BAAS_service BAAS_service_application
+
       - name: Build pinned OpenCV recipe
         run: >-
           conan create deploy/conan/recipes/baas-opencv
@@ -368,6 +397,8 @@ jobs:
           -DCMAKE_BUILD_TYPE=Release
           -DBUILD_SCHEDULER_POLICY=ON
           -DBUILD_SERVICE_APP=ON
+          -DBUILD_SERVICE_PRODUCTION_RUNTIME_SCRIPT_TASK_FACTORY=ON
+          -DBUILD_SERVICE_PRODUCTION_RUNTIME_TASK_CONTROL=ON
           -DBUILD_APP_BAAS=OFF
           -DBUILD_APP_ISA=OFF
           -DBUILD_BAAS_OCR=OFF
