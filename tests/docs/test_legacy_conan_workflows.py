@@ -194,10 +194,31 @@ class LegacyConanWorkflowTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
         self.assertEqual(opencv_data.count('WITH_ITT: "OFF"'), 2)
         self.assertEqual(opencv_data.count('BUILD_WITH_STATIC_CRT: "OFF"'), 2)
+        self.assertEqual(opencv_data.count('BUILD_opencv_gapi: "OFF"'), 2)
+        self.assertEqual(opencv_data.count('WITH_ADE: "OFF"'), 2)
+        self.assertEqual(opencv_data.count('BUILD_PROTOBUF: "OFF"'), 1)
+        self.assertEqual(opencv_data.count('WITH_PROTOBUF: "OFF"'), 1)
         self.assertIn('str(self.settings.os) == "Emscripten"', opencv_recipe)
         self.assertIn('options["CPU_BASELINE"] = ""', opencv_recipe)
         self.assertIn('options["CPU_DISPATCH"] = ""', opencv_recipe)
         self.assertIn('options["CV_ENABLE_INTRINSICS"] = "ON"', opencv_recipe)
+
+        opencv_link_interface = (
+            ROOT
+            / "deploy/conan/recipes/baas-opencv/baas-opencv-link-interface.cmake"
+        ).read_text(encoding="utf-8")
+        self.assertNotIn("collect_libs", opencv_recipe)
+        self.assertIn('"cmake_build_modules"', opencv_recipe)
+        self.assertIn('"@BAAS_OPENCV_BUILD_TYPE@"', opencv_recipe)
+        self.assertIn("../opencv4/OpenCVConfig.cmake", opencv_link_interface)
+        self.assertIn("OPENCV_MAP_IMPORTED_CONFIG", opencv_link_interface)
+        self.assertIn(
+            "target_link_libraries(BAAS::OpenCV INTERFACE opencv_world)",
+            opencv_link_interface,
+        )
+        self.assertIn("BAAS::OpenCVDnn", opencv_link_interface)
+        for platform_library in ("libpng", "zlib", "carotene_o4t"):
+            self.assertNotIn(platform_library, opencv_link_interface)
 
     def test_workflow_filters_cover_the_conan_contract(self) -> None:
         for workflow in (self.ocr, self.afwc):
