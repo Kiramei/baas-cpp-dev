@@ -15,6 +15,9 @@ namespace baas::runtime::procedure {
 class CoDetectFrame {
 public:
     virtual ~CoDetectFrame() = default;
+    [[nodiscard]] virtual std::string_view device_id() const noexcept = 0;
+    [[nodiscard]] virtual CoDetectProfile profile() const noexcept = 0;
+    [[nodiscard]] virtual std::uint64_t session_epoch() const noexcept = 0;
 };
 
 enum class CoDetectOperationError : std::uint8_t {
@@ -25,6 +28,7 @@ enum class CoDetectOperationError : std::uint8_t {
     ResourceNotFound,
     ResourceExhausted,
     Unavailable,
+    SessionChanged,
     Internal,
 };
 
@@ -33,6 +37,7 @@ enum class CoDetectControlState : std::uint8_t {
     ContextDeadlineExceeded,
     CallDeadlineExceeded,
     Cancelled,
+    SessionChanged,
 };
 
 class CoDetectControl {
@@ -44,11 +49,14 @@ public:
 template <class T>
 using CoDetectResult = std::variant<T, CoDetectOperationError>;
 
-class CoDetectDeviceSession {
+// One immutable physical-device/profile lease. Adapters create a new object
+// when reconnecting or switching profile; they must never retarget a live pin.
+class CoDetectPinnedDeviceSession {
 public:
-    virtual ~CoDetectDeviceSession() = default;
+    virtual ~CoDetectPinnedDeviceSession() = default;
     [[nodiscard]] virtual const std::string& device_id() const noexcept = 0;
     [[nodiscard]] virtual CoDetectProfile profile() const noexcept = 0;
+    [[nodiscard]] virtual std::uint64_t session_epoch() const noexcept = 0;
     [[nodiscard]] virtual bool is_android() const noexcept = 0;
     [[nodiscard]] virtual std::uint64_t monotonic_ms() const noexcept = 0;
     [[nodiscard]] virtual std::uint64_t screenshot_interval_ms() const noexcept = 0;
@@ -64,9 +72,13 @@ public:
         const CoDetectControl& control) = 0;
 };
 
-class CoDetectFeatureView {
+// One immutable activation-generation/profile feature view. Runtime repository
+// updates publish a new view instead of retargeting a live execution view.
+class CoDetectPinnedFeatureView {
 public:
-    virtual ~CoDetectFeatureView() = default;
+    virtual ~CoDetectPinnedFeatureView() = default;
+    [[nodiscard]] virtual std::string_view generation() const noexcept = 0;
+    [[nodiscard]] virtual CoDetectProfile profile() const noexcept = 0;
     [[nodiscard]] virtual CoDetectResult<bool> match_rgb(
         const CoDetectFrame& frame, std::string_view feature,
         const CoDetectControl& control) = 0;
@@ -84,8 +96,11 @@ struct CoDetectTerminalBinding final {
 make_co_detect_python_compat_executor(
     std::shared_ptr<const CoDetectPythonCompatDefinition> definition,
     std::vector<CoDetectTerminalBinding> terminals,
-    std::shared_ptr<CoDetectDeviceSession> session,
-    std::shared_ptr<CoDetectFeatureView> features);
+    std::shared_ptr<CoDetectPinnedDeviceSession> session,
+    std::shared_ptr<CoDetectPinnedFeatureView> features,
+    std::shared_ptr<const ::baas::script::host::ProcedureSnapshot> expected_snapshot,
+    std::shared_ptr<const ::baas::script::host::ProcedureDescriptor> expected_descriptor,
+    std::string expected_generation);
 
 // Parses only the exact verified bytes owned by the immutable activation and
 // binds execution to that activation's snapshot, descriptor identity, engine,
@@ -94,7 +109,7 @@ make_co_detect_python_compat_executor(
 make_activated_co_detect_python_compat_executor(
     std::shared_ptr<const RuntimeProcedureActivation> activation,
     std::string_view procedure_id,
-    std::shared_ptr<CoDetectDeviceSession> session,
-    std::shared_ptr<CoDetectFeatureView> features);
+    std::shared_ptr<CoDetectPinnedDeviceSession> session,
+    std::shared_ptr<CoDetectPinnedFeatureView> features);
 
 }  // namespace baas::runtime::procedure

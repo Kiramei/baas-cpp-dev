@@ -121,17 +121,30 @@ public:
 
 class Frame final : public procedure::CoDetectFrame {
 public:
-    explicit Frame(const int value) : id(value) {}
+    explicit Frame(
+        const int value, std::string device = "device",
+        const procedure::CoDetectProfile frame_profile = procedure::CoDetectProfile::cn,
+        const std::uint64_t frame_epoch = 1)
+        : id(value), device(std::move(device)), frame_profile(frame_profile),
+          frame_epoch(frame_epoch) {}
+    std::string_view device_id() const noexcept override { return device; }
+    procedure::CoDetectProfile profile() const noexcept override { return frame_profile; }
+    std::uint64_t session_epoch() const noexcept override { return frame_epoch; }
     int id{};
+    std::string device;
+    procedure::CoDetectProfile frame_profile{};
+    std::uint64_t frame_epoch{};
 };
 
-class Session final : public procedure::CoDetectDeviceSession {
+class Session final : public procedure::CoDetectPinnedDeviceSession {
 public:
     const std::string& device_id() const noexcept override { return id; }
     procedure::CoDetectProfile profile() const noexcept override
     {
-        return procedure::CoDetectProfile::cn;
+        ++profile_reads;
+        return current_profile;
     }
+    std::uint64_t session_epoch() const noexcept override { return epoch; }
     bool is_android() const noexcept override { return android; }
     std::uint64_t monotonic_ms() const noexcept override { return now; }
     std::uint64_t screenshot_interval_ms() const noexcept override { return interval; }
@@ -154,13 +167,15 @@ public:
         now += capture_advance;
         if (cancel_on_capture && probe) probe->cancel = true;
         return std::shared_ptr<const procedure::CoDetectFrame>(
-            std::make_shared<Frame>(captures));
+            std::make_shared<Frame>(captures, id, current_profile, epoch));
     }
     procedure::CoDetectResult<std::monostate> click(
         const procedure::CoDetectClick click,
         const procedure::CoDetectControl&) override
     {
         clicks.push_back(click);
+        now += click_advance;
+        if (cancel_on_click && probe) probe->cancel = true;
         return std::monostate{};
     }
     procedure::CoDetectResult<std::monostate> wait(
@@ -179,6 +194,9 @@ public:
     }
 
     std::string id{"device"};
+    procedure::CoDetectProfile current_profile{procedure::CoDetectProfile::cn};
+    std::uint64_t epoch{1};
+    mutable std::size_t profile_reads{};
     bool android{true};
     bool foreground{true};
     std::uint64_t now{};
@@ -187,6 +205,8 @@ public:
     int captures{};
     int foreground_checks{};
     bool cancel_on_capture{};
+    bool cancel_on_click{};
+    std::uint64_t click_advance{};
     bool throw_bad_alloc_on_capture{};
     bool throw_on_capture{};
     std::optional<procedure::CoDetectOperationError> capture_error;
@@ -196,14 +216,26 @@ public:
     std::vector<std::uint64_t> waits;
 };
 
-class Features final : public procedure::CoDetectFeatureView {
+class Features final : public procedure::CoDetectPinnedFeatureView {
 public:
+    std::string_view generation() const noexcept override { return generation_id; }
+    procedure::CoDetectProfile profile() const noexcept override { return view_profile; }
     procedure::CoDetectResult<bool> match_rgb(
         const procedure::CoDetectFrame& base, const std::string_view feature,
         const procedure::CoDetectControl&) override
     {
         const auto id = static_cast<const Frame&>(base).id;
         calls.push_back(std::to_string(id) + ":rgb:" + std::string(feature));
+        if (feature == "react") {
+            ++react_calls;
+            if (advance_session && react_calls == advance_on_react_call)
+                advance_session->now += advance_on_react_ms;
+            if (switch_session_profile && react_calls == switch_on_react_call)
+                switch_session_profile->current_profile =
+                    procedure::CoDetectProfile::jp;
+            if (switch_view_generation && react_calls == switch_view_on_react_call)
+                generation_id = "drifted-generation";
+        }
         return matches[{id, std::string(feature)}];
     }
     procedure::CoDetectResult<bool> match_image(
@@ -217,8 +249,18 @@ public:
         return matches[{id, std::string(feature)}];
     }
     std::map<std::pair<int, std::string>, bool> matches;
+    std::string generation_id{"test-generation"};
+    procedure::CoDetectProfile view_profile{procedure::CoDetectProfile::cn};
     std::vector<std::string> calls;
     std::vector<procedure::CoDetectImageMatch> image_matches;
+    Session* advance_session{};
+    std::size_t advance_on_react_call{};
+    std::uint64_t advance_on_react_ms{};
+    Session* switch_session_profile{};
+    std::size_t switch_on_react_call{};
+    bool switch_view_generation{};
+    std::size_t switch_view_on_react_call{};
+    std::size_t react_calls{};
 };
 
 host::ProcedureExecutorOutcome run(
@@ -229,7 +271,8 @@ host::ProcedureExecutorOutcome run(
     auto snap = snapshot();
     auto descriptor = snap->resolve("fixture");
     auto executor = procedure::make_co_detect_python_compat_executor(
-        model, {{"end", "done"}, {"image-end", "done"}}, session, features);
+        model, {{"end", "done"}, {"image-end", "done"}}, session, features,
+        snap, descriptor, "test-generation");
     host::ProcedureExecutionRequest request(
         snap, descriptor, "device", {}, probe, reporter);
     return executor->execute(request);
@@ -311,7 +354,8 @@ void test_foreground_and_control_precedence()
     check(!outcome.ok() && outcome.error().code ==
               host::ProcedureExecutorErrorCode::ForegroundPackageMismatch,
           "strict greater-than foreground gates produce typed mismatch");
-    check(session->foreground_checks == 1, "both foreground gates are required");
+    check(session->foreground_checks == 1 && session->captures == 2,
+          "foreground timing uses Python's pre-capture iteration sample");
 
     auto probe = std::make_shared<Probe>();
     probe->deadline = true;
@@ -395,6 +439,112 @@ void test_operation_failures_are_typed_and_fail_closed()
           "unexpected operation exception is fail-closed");
 }
 
+void test_frozen_identity_and_exact_descriptor()
+{
+    auto session = std::make_shared<Session>();
+    session->latest = std::make_shared<Frame>(
+        0, "other-device", procedure::CoDetectProfile::cn, 1);
+    auto features = std::make_shared<Features>();
+    Reporter frame_reporter;
+    auto outcome = run(definition(true), session, features,
+                       std::make_shared<Probe>(), frame_reporter);
+    check(!outcome.ok() && outcome.error().code ==
+              host::ProcedureExecutorErrorCode::Unavailable,
+          "skip-first rejects a frame from another pinned device identity");
+
+    session = std::make_shared<Session>();
+    features = std::make_shared<Features>();
+    features->matches[{1, "react"}] = true;
+    features->switch_session_profile = session.get();
+    features->switch_on_react_call = 1;
+    Reporter profile_reporter;
+    outcome = run(definition(), session, features, std::make_shared<Probe>(),
+                  profile_reporter);
+    check(!outcome.ok() && outcome.error().code ==
+              host::ProcedureExecutorErrorCode::Unavailable &&
+              features->react_calls == 1,
+          "profile drift fails closed without evaluating another profile");
+
+    session = std::make_shared<Session>();
+    features = std::make_shared<Features>();
+    features->matches[{1, "react"}] = true;
+    features->switch_view_generation = true;
+    features->switch_view_on_react_call = 1;
+    Reporter view_reporter;
+    outcome = run(definition(), session, features, std::make_shared<Probe>(),
+                  view_reporter);
+    check(!outcome.ok() && outcome.error().code ==
+              host::ProcedureExecutorErrorCode::Unavailable &&
+              features->react_calls == 1 && session->clicks.empty(),
+          "feature generation drift is detected before input or another match");
+
+    auto expected_snapshot = snapshot();
+    auto foreign_snapshot = snapshot();
+    auto expected_descriptor = expected_snapshot->resolve("fixture");
+    auto foreign_descriptor = foreign_snapshot->resolve("fixture");
+    session = std::make_shared<Session>();
+    features = std::make_shared<Features>();
+    auto executor = procedure::make_co_detect_python_compat_executor(
+        definition(), {{"end", "done"}, {"image-end", "done"}}, session,
+        features, expected_snapshot, expected_descriptor, "test-generation");
+    Reporter identity_reporter;
+    host::ProcedureExecutionRequest forged_request(
+        expected_snapshot, foreign_descriptor, "device", {},
+        std::make_shared<Probe>(), identity_reporter);
+    outcome = executor->execute(forged_request);
+    check(!outcome.ok() && outcome.error().code ==
+              host::ProcedureExecutorErrorCode::InvalidRequest,
+          "descriptor identity cannot be borrowed from another snapshot");
+
+    features = std::make_shared<Features>();
+    features->generation_id = "wrong-generation";
+    bool rejected{};
+    try {
+        static_cast<void>(procedure::make_co_detect_python_compat_executor(
+            definition(), {{"end", "done"}, {"image-end", "done"}}, session,
+            features, expected_snapshot, expected_descriptor,
+            "test-generation"));
+    } catch (const std::invalid_argument&) {
+        rejected = true;
+    }
+    check(rejected, "feature view generation mismatch is rejected at binding");
+}
+
+void test_python_iteration_time_and_committed_input()
+{
+    auto session = std::make_shared<Session>();
+    auto features = std::make_shared<Features>();
+    features->matches[{1, "react"}] = true;
+    features->matches[{2, "react"}] = true;
+    features->matches[{3, "end"}] = true;
+    features->advance_session = session.get();
+    features->advance_on_react_call = 2;
+    features->advance_on_react_ms = 2'501;
+    Reporter timing_reporter;
+    auto outcome = run(definition(false, 5'000), session, features,
+                       std::make_shared<Probe>(), timing_reporter);
+    check(outcome.ok() && session->clicks.size() == 1,
+          "RGB duplicate window uses the pre-capture Python iteration sample");
+
+    auto probe = std::make_shared<Probe>();
+    session = std::make_shared<Session>();
+    session->cancel_on_click = true;
+    session->probe = probe.get();
+    features = std::make_shared<Features>();
+    features->matches[{1, "react"}] = true;
+    Reporter committed_reporter;
+    outcome = run(definition(), session, features, probe, committed_reporter);
+    check(!outcome.ok() && outcome.error().code ==
+              host::ProcedureExecutorErrorCode::Cancelled &&
+              outcome.error().effect_state == runtime::HostEffectState::NotStarted,
+          "post-click cancellation leaves supplied effect neutral for Host merge");
+    check(committed_reporter.events.size() >= 4 &&
+              committed_reporter.events.back() == std::pair{
+                  host::ProcedureEffect::Input,
+                  host::ProcedureEffectStage::Committed},
+          "confirmed click remains committed when cancellation wins postflight");
+}
+
 }  // namespace
 
 int main()
@@ -404,6 +554,8 @@ int main()
     test_foreground_and_control_precedence();
     test_missing_shared_frame_fails_closed();
     test_operation_failures_are_typed_and_fail_closed();
+    test_frozen_identity_and_exact_descriptor();
+    test_python_iteration_time_and_committed_input();
     if (failures != 0) {
         std::cerr << failures << " co-detect executor test(s) failed\n";
         return 1;

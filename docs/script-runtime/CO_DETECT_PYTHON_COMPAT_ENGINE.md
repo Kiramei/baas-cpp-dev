@@ -164,9 +164,9 @@ does not open the production
 activation gate.
 
 `BAAS_runtime_co_detect_executor` implements the synchronous
-`ProcedureExecutor` state machine. Its `CoDetectDeviceSession` owns the frozen
+`ProcedureExecutor` state machine. Its `CoDetectPinnedDeviceSession` owns the frozen
 device/profile, clock, latest frame, capture, input, wait, and foreground
-boundary. `CoDetectFeatureView` is the narrow pathless RGB/image matching seam
+boundary. `CoDetectPinnedFeatureView` is the narrow pathless RGB/image matching seam
 for the pinned support-bundle adapter. The executor never opens native paths,
 consults a global feature registry, or embeds resource/configuration data.
 
@@ -241,14 +241,24 @@ interval timing, deterministic/injectable click jitter RNG, normalized-device
 coordinate conversion, and cancellable waits. Those values are runtime device
 state, never definition or support-bundle data.
 
+The executor accepts only a pinned device-session object whose device ID,
+profile, and session epoch are immutable. Every cached or captured frame carries
+the same identity and is checked before vision. The feature view is bound to the
+same profile and exact activation generation. Identity drift, a cross-device
+frame, a cross-profile view, or a descriptor not owned by the exact activation
+snapshot fails closed before further device work.
+
 ## Deadline, cancellation, and effect semantics
 
 The rules in this section are intentional C++ safety hardening, not bit-for-bit
 Python behavior. Python samples time before capture, does not poll timeout in
 its loading loop, may race from a cleared `flag_run` to a terminal, and normally
-schedules click helper work asynchronously. The production adapter deliberately
-uses the stricter rules below while retaining Python feature priority, click
-parameters, and tentative state transitions.
+schedules click helper work asynchronously. The adapter preserves that
+pre-capture iteration time for foreground gates, feature-last-appearance state,
+and ordinary duplicate-click decisions while real-time cooperative polls remain
+independent. The production adapter uses the stricter control rules below while
+retaining Python feature priority, click parameters, timing state, and tentative
+transitions.
 
 The adapter is synchronous and cooperatively bounded. It observes the earlier
 of the execution-context deadline and `loop.timeout_ms` before and after every

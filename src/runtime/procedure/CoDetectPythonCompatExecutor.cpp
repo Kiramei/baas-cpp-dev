@@ -41,6 +41,8 @@ using ::baas::script::runtime::HostEffectState;
             return {ProcedureExecutorErrorCode::ResourceExhausted, false, effect};
         case CoDetectOperationError::Unavailable:
             return {ProcedureExecutorErrorCode::Unavailable, true, effect};
+        case CoDetectOperationError::SessionChanged:
+            return {ProcedureExecutorErrorCode::Unavailable, false, effect};
         case CoDetectOperationError::Internal:
             return {ProcedureExecutorErrorCode::Internal, false, effect};
     }
@@ -56,6 +58,8 @@ using ::baas::script::runtime::HostEffectState;
             return CoDetectOperationError::CallDeadlineExceeded;
         case CoDetectControlState::Cancelled:
             return CoDetectOperationError::Cancelled;
+        case CoDetectControlState::SessionChanged:
+            return CoDetectOperationError::SessionChanged;
         case CoDetectControlState::Proceed: break;
     }
     return CoDetectOperationError::Internal;
@@ -64,9 +68,16 @@ using ::baas::script::runtime::HostEffectState;
 class RequestControl final : public CoDetectControl {
 public:
     RequestControl(const ProcedureExecutionRequest& request,
-                   const CoDetectDeviceSession& session,
+                   const CoDetectPinnedDeviceSession& session,
+                   const CoDetectPinnedFeatureView& features,
+                   const std::string_view device_id,
+                   const CoDetectProfile profile,
+                   const std::uint64_t session_epoch,
+                   const std::string_view generation,
                    const std::uint64_t start, const std::uint64_t timeout) noexcept
-        : request_(request), session_(session), start_(start), timeout_(timeout)
+        : request_(request), session_(session), features_(features),
+          device_id_(device_id), profile_(profile), session_epoch_(session_epoch),
+          generation_(generation), start_(start), timeout_(timeout)
     {
     }
 
@@ -77,13 +88,22 @@ public:
         const auto now = session_.monotonic_ms();
         if (now < start_ || now - start_ >= timeout_)
             return CoDetectControlState::CallDeadlineExceeded;
+        if (session_.device_id() != device_id_ || session_.profile() != profile_ ||
+            session_.session_epoch() != session_epoch_ ||
+            features_.profile() != profile_ || features_.generation() != generation_)
+            return CoDetectControlState::SessionChanged;
         if (request_.cancelled()) return CoDetectControlState::Cancelled;
         return CoDetectControlState::Proceed;
     }
 
 private:
     const ProcedureExecutionRequest& request_;
-    const CoDetectDeviceSession& session_;
+    const CoDetectPinnedDeviceSession& session_;
+    const CoDetectPinnedFeatureView& features_;
+    std::string_view device_id_;
+    CoDetectProfile profile_{};
+    std::uint64_t session_epoch_{};
+    std::string_view generation_;
     std::uint64_t start_{};
     std::uint64_t timeout_{};
 };
@@ -127,16 +147,18 @@ class Executor final : public ::baas::script::host::ProcedureExecutor {
 public:
     Executor(std::shared_ptr<const CoDetectPythonCompatDefinition> definition,
              std::vector<CoDetectTerminalBinding> terminals,
-             std::shared_ptr<CoDetectDeviceSession> session,
-             std::shared_ptr<CoDetectFeatureView> features,
-             std::shared_ptr<const ::baas::script::host::ProcedureSnapshot> expected_snapshot = {},
-             std::string expected_procedure_id = {},
-             std::string expected_implementation = {})
+             std::shared_ptr<CoDetectPinnedDeviceSession> session,
+             std::shared_ptr<CoDetectPinnedFeatureView> features,
+             std::shared_ptr<const ::baas::script::host::ProcedureSnapshot> expected_snapshot,
+             std::shared_ptr<const ::baas::script::host::ProcedureDescriptor> expected_descriptor,
+             std::string expected_generation)
         : definition_(std::move(definition)), terminals_(std::move(terminals)),
           session_(std::move(session)), features_(std::move(features)),
           expected_snapshot_(std::move(expected_snapshot)),
-          expected_procedure_id_(std::move(expected_procedure_id)),
-          expected_implementation_(std::move(expected_implementation))
+          expected_descriptor_(std::move(expected_descriptor)),
+          expected_generation_(std::move(expected_generation)),
+          device_id_(session_->device_id()), profile_(session_->profile()),
+          session_epoch_(session_->session_epoch())
     {
     }
 
@@ -148,11 +170,11 @@ public:
         } catch (const std::bad_alloc&) {
             return ProcedureExecutorOutcome::failure(
                 {ProcedureExecutorErrorCode::ResourceExhausted, false,
-                 HostEffectState::Unknown});
+                 HostEffectState::NotStarted});
         } catch (...) {
             return ProcedureExecutorOutcome::failure(
                 {ProcedureExecutorErrorCode::Internal, false,
-                 HostEffectState::Unknown});
+                 HostEffectState::NotStarted});
         }
     }
 
@@ -167,20 +189,26 @@ private:
     [[nodiscard]] ProcedureExecutorOutcome execute_checked(
         const ProcedureExecutionRequest& request)
     {
-        if (!request.procedure() || request.device_id() != session_->device_id())
+        if (!request.snapshot() || !request.procedure() ||
+            request.device_id() != device_id_ ||
+            session_->device_id() != device_id_ || session_->profile() != profile_ ||
+            session_->session_epoch() != session_epoch_ ||
+            features_->profile() != profile_ ||
+            features_->generation() != expected_generation_)
             return ProcedureExecutorOutcome::failure(
                 {ProcedureExecutorErrorCode::InvalidRequest, false,
                  HostEffectState::NotStarted});
-        if (expected_snapshot_ &&
-            (request.snapshot().get() != expected_snapshot_.get() ||
-             request.procedure()->procedure_id() != expected_procedure_id_ ||
-             request.procedure()->implementation_sha256() !=
-                 expected_implementation_))
+        if (request.snapshot().get() != expected_snapshot_.get() ||
+            request.procedure().get() != expected_descriptor_.get() ||
+            request.snapshot()->resolve(expected_descriptor_->procedure_id()).get() !=
+                expected_descriptor_.get())
             return ProcedureExecutorOutcome::failure(
                 {ProcedureExecutorErrorCode::InvalidRequest, false,
                  HostEffectState::NotStarted});
         const auto start = session_->monotonic_ms();
-        RequestControl control(request, *session_, start, definition_->loop().timeout_ms);
+        RequestControl control(
+            request, *session_, *features_, device_id_, profile_, session_epoch_,
+            expected_generation_, start, definition_->loop().timeout_ms);
         if (const auto state = control.poll(); state != CoDetectControlState::Proceed)
             return fail(control_error(state));
 
@@ -195,6 +223,10 @@ private:
             if (const auto state = control.poll(); state != CoDetectControlState::Proceed)
                 return fail(control_error(state));
 
+            // Python samples current_time before capture and reuses it for the
+            // iteration's foreground and ordinary-reaction state transitions.
+            const auto iteration_time = session_->monotonic_ms();
+
             std::shared_ptr<const CoDetectFrame> frame;
             if (skip_first) {
                 skip_first = false;
@@ -206,6 +238,8 @@ private:
                         ProcedureUnavailableReason::RecentFrameUnavailable};
                     return ProcedureExecutorOutcome::failure(error);
                 }
+                if (!valid_frame(*frame))
+                    return fail(CoDetectOperationError::SessionChanged);
             } else {
                 auto captured = invoke_effect<std::shared_ptr<const CoDetectFrame>>(
                     request, control, ProcedureEffect::Capture,
@@ -214,17 +248,18 @@ private:
                     return fail(*error);
                 frame = std::get<std::shared_ptr<const CoDetectFrame>>(std::move(captured));
                 if (!frame) return fail(CoDetectOperationError::Internal);
+                if (!valid_frame(*frame))
+                    return fail(CoDetectOperationError::SessionChanged);
                 session_->publish_latest_frame(frame);
             }
 
-            auto now = session_->monotonic_ms();
-            if (now < feature_last || now < foreground_last)
+            if (iteration_time < feature_last || iteration_time < foreground_last)
                 return fail(CoDetectOperationError::Internal);
             const auto& foreground = definition_->foreground_check();
             if ((!foreground.android_only || session_->is_android()) &&
-                now - feature_last > foreground.idle_feature_ms &&
-                now - foreground_last > foreground.interval_ms) {
-                foreground_last = now;
+                iteration_time - feature_last > foreground.idle_feature_ms &&
+                iteration_time - foreground_last > foreground.interval_ms) {
+                foreground_last = iteration_time;
                 auto matched = invoke_effect<bool>(
                     request, control, ProcedureEffect::ForegroundCheck,
                     [&] { return session_->foreground_matches(control); });
@@ -255,6 +290,8 @@ private:
                     return fail(*error);
                 frame = std::get<std::shared_ptr<const CoDetectFrame>>(std::move(captured));
                 if (!frame) return fail(CoDetectOperationError::Internal);
+                if (!valid_frame(*frame))
+                    return fail(CoDetectOperationError::SessionChanged);
                 session_->publish_latest_frame(frame);
                 auto waited = invoke_effect<std::monostate>(
                     request, control, ProcedureEffect::Wait,
@@ -277,6 +314,7 @@ private:
             }
 
             const CoDetectReaction* ordinary{};
+            bool ordinary_image{};
             const auto select_ordinary = [&](const auto& reactions, const bool image)
                 -> std::optional<ProcedureExecutorOutcome> {
                 auto selected = first_reaction(
@@ -285,6 +323,7 @@ private:
                         std::get_if<CoDetectOperationError>(&selected))
                     return fail(*error);
                 ordinary = std::get<const CoDetectReaction*>(selected);
+                ordinary_image = ordinary && image;
                 return std::nullopt;
             };
             if (auto error = select_ordinary(definition_->reactions_rgb(), false))
@@ -305,22 +344,25 @@ private:
             }
             bool popup_matched{};
             if (ordinary) {
-                now = session_->monotonic_ms();
-                if (now < feature_last) return fail(CoDetectOperationError::Internal);
-                feature_last = now;
+                if (iteration_time < feature_last)
+                    return fail(CoDetectOperationError::Internal);
+                feature_last = iteration_time;
                 failed_cycles = 0;
+                const auto duplicate_time = ordinary_image
+                    ? session_->monotonic_ms() : iteration_time;
                 bool duplicate{};
                 if (last_click && last_click->first == ordinary->feature &&
                     last_click->second == ordinary->click) {
-                    if (now < last_click_time) return fail(CoDetectOperationError::Internal);
-                    duplicate = now - last_click_time <=
+                    if (duplicate_time < last_click_time)
+                        return fail(CoDetectOperationError::Internal);
+                    duplicate = duplicate_time - last_click_time <=
                         definition_->loop().duplicate_click_window_ms;
                 }
                 if (!ordinary->click.match_only() && !duplicate) {
                     if (auto error = issue_click(request, control, ordinary->click))
-                        return fail(*error, HostEffectState::Unknown);
+                        return fail(*error);
                     last_click = std::pair{ordinary->feature, ordinary->click};
-                    last_click_time = session_->monotonic_ms();
+                    last_click_time = iteration_time;
                 }
             } else {
                 auto popup_result = first_reaction(
@@ -343,7 +385,7 @@ private:
                     popup_matched = true;
                     if (!popup->click.match_only()) {
                         if (auto error = issue_click(request, control, popup->click))
-                            return fail(*error, HostEffectState::Unknown);
+                            return fail(*error);
                         last_click = std::pair{popup->feature, popup->click};
                         last_click_time = session_->monotonic_ms();
                     }
@@ -354,7 +396,7 @@ private:
                 const auto& tentative = definition_->loop().tentative;
                 if (tentative.enabled && failed_cycles > tentative.after_failed_cycles) {
                     if (auto error = issue_click(request, control, tentative.click))
-                        return fail(*error, HostEffectState::Unknown);
+                        return fail(*error);
                     const auto interval = session_->screenshot_interval_ms();
                     if (tentative.post_wait_screenshot_intervals != 0 &&
                         interval > UINT64_MAX / tentative.post_wait_screenshot_intervals)
@@ -370,6 +412,12 @@ private:
                 }
             }
         }
+    }
+
+    [[nodiscard]] bool valid_frame(const CoDetectFrame& frame) const noexcept
+    {
+        return frame.device_id() == device_id_ && frame.profile() == profile_ &&
+            frame.session_epoch() == session_epoch_;
     }
 
     [[nodiscard]] CoDetectResult<bool> match_rgb(
@@ -396,7 +444,7 @@ private:
         const bool image)
     {
         for (const auto& reaction : reactions) {
-            if (!applicable(reaction, session_->profile())) continue;
+            if (!applicable(reaction, profile_)) continue;
             auto result = image
                 ? match_image(request, control, frame, reaction.feature, reaction.image_match)
                 : match_rgb(request, control, frame, reaction.feature);
@@ -435,11 +483,14 @@ private:
 
     std::shared_ptr<const CoDetectPythonCompatDefinition> definition_;
     std::vector<CoDetectTerminalBinding> terminals_;
-    std::shared_ptr<CoDetectDeviceSession> session_;
-    std::shared_ptr<CoDetectFeatureView> features_;
+    std::shared_ptr<CoDetectPinnedDeviceSession> session_;
+    std::shared_ptr<CoDetectPinnedFeatureView> features_;
     std::shared_ptr<const ::baas::script::host::ProcedureSnapshot> expected_snapshot_;
-    std::string expected_procedure_id_;
-    std::string expected_implementation_;
+    std::shared_ptr<const ::baas::script::host::ProcedureDescriptor> expected_descriptor_;
+    std::string expected_generation_;
+    std::string device_id_;
+    CoDetectProfile profile_{};
+    std::uint64_t session_epoch_{};
 };
 
 void validate_terminal_bindings(
@@ -467,22 +518,33 @@ void validate_terminal_bindings(
 std::shared_ptr<::baas::script::host::ProcedureExecutor> make_co_detect_python_compat_executor(
     std::shared_ptr<const CoDetectPythonCompatDefinition> definition,
     std::vector<CoDetectTerminalBinding> terminals,
-    std::shared_ptr<CoDetectDeviceSession> session,
-    std::shared_ptr<CoDetectFeatureView> features)
+    std::shared_ptr<CoDetectPinnedDeviceSession> session,
+    std::shared_ptr<CoDetectPinnedFeatureView> features,
+    std::shared_ptr<const ::baas::script::host::ProcedureSnapshot> expected_snapshot,
+    std::shared_ptr<const ::baas::script::host::ProcedureDescriptor> expected_descriptor,
+    std::string expected_generation)
 {
-    if (!definition || !session || !features)
+    if (!definition || !session || !features || !expected_snapshot ||
+        !expected_descriptor || expected_generation.empty())
         throw std::invalid_argument("co-detect executor dependency is absent");
+    if (expected_snapshot->resolve(expected_descriptor->procedure_id()).get() !=
+            expected_descriptor.get() ||
+        session->profile() != features->profile() ||
+        features->generation() != expected_generation)
+        throw std::invalid_argument("co-detect executor binding identity is invalid");
     validate_terminal_bindings(*definition, terminals);
-    return std::make_shared<Executor>(std::move(definition), std::move(terminals),
-                                      std::move(session), std::move(features));
+    return std::make_shared<Executor>(
+        std::move(definition), std::move(terminals), std::move(session),
+        std::move(features), std::move(expected_snapshot),
+        std::move(expected_descriptor), std::move(expected_generation));
 }
 
 std::shared_ptr<::baas::script::host::ProcedureExecutor>
 make_activated_co_detect_python_compat_executor(
     std::shared_ptr<const RuntimeProcedureActivation> activation,
     const std::string_view procedure_id,
-    std::shared_ptr<CoDetectDeviceSession> session,
-    std::shared_ptr<CoDetectFeatureView> features)
+    std::shared_ptr<CoDetectPinnedDeviceSession> session,
+    std::shared_ptr<CoDetectPinnedFeatureView> features)
 {
     if (!activation || !session || !features)
         throw std::invalid_argument("co-detect activation dependency is absent");
@@ -497,10 +559,14 @@ make_activated_co_detect_python_compat_executor(
     for (const auto& terminal : activated->terminals())
         terminals.push_back({terminal.source, terminal.id});
     validate_terminal_bindings(*loaded.definition, terminals);
+    auto descriptor = activation->snapshot()->resolve(activated->procedure_id());
+    if (!descriptor || features->generation() != activation->generation() ||
+        features->profile() != session->profile())
+        throw std::invalid_argument("co-detect activated binding identity is invalid");
     return std::make_shared<Executor>(
         std::move(loaded.definition), std::move(terminals), std::move(session),
-        std::move(features), activation->snapshot(), activated->procedure_id(),
-        activated->implementation_sha256());
+        std::move(features), activation->snapshot(), std::move(descriptor),
+        activation->generation());
 }
 
 }  // namespace baas::runtime::procedure
