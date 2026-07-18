@@ -1,6 +1,6 @@
 # Python-compatible `co_detect` procedure engine contract
 
-Status: design contract only. The engine adapter, external resource bundles,
+Status: strict immutable definition parsing/model implemented. The engine adapter, external resource bundles,
 real resource digests, and production procedure definitions do not exist yet.
 Nothing in this document authorizes a placeholder `baas.procedures.json` entry.
 
@@ -122,6 +122,28 @@ All arrays are semantically ordered. Reordering them changes the definition
 digest and may change behavior. Feature IDs are resolved only from the pinned
 support bundle; native paths and ambient global feature registries are
 forbidden.
+
+### Implemented definition boundary
+
+`BAAS_runtime_co_detect_definition_model` now implements only the pure C++
+definition boundary described above. It strictly parses the wrapper and
+payload, publishes an immutable snapshot that owns the verified source bytes,
+and exposes both the exact-source SHA-256 and a deterministic semantic
+identity SHA-256. The semantic identity uses fixed field order while preserving
+every array order, so insignificant JSON whitespace does not change it and an
+array reorder does.
+
+The implementation shares the bounded strict-JSON parser used by runtime
+procedure activation. Stable typed errors cover malformed UTF-8/JSON,
+duplicate object names, field closure, profiles, duplicates, coordinate and
+integer ranges, tentative forms, and caller-supplied byte/node/string/item/work
+limits. It accepts and retains logical feature strings with their exact case;
+it does not resolve those strings to filesystem paths or ambient registries.
+
+This target has no image/resource payloads, support bundles, procedure
+definitions, native-path fields, engine adapter, capture/vision/input/wait
+calls, or other execution effects. Its presence does not open the production
+activation gate below.
 
 ## Deterministic execution order
 

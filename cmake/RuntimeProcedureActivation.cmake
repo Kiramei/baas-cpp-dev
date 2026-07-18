@@ -5,7 +5,7 @@ foreach(required_target
         BAAS_runtime_resource_snapshot_loader
         BAAS_runtime_script_execution_plan
         BAAS_script_procedure_snapshot
-        BAAS::nlohmann_json)
+        BAAS_runtime_strict_json)
     if(NOT TARGET ${required_target})
         message(FATAL_ERROR "RuntimeProcedureActivation requires ${required_target}")
     endif()
@@ -29,7 +29,7 @@ target_link_libraries(
             BAAS_runtime_resource_snapshot_loader
             BAAS_runtime_script_execution_plan
             BAAS_script_procedure_snapshot
-        PRIVATE BAAS::nlohmann_json
+        PRIVATE BAAS_runtime_strict_json
 )
 if(MSVC)
     target_compile_options(

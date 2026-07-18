@@ -1,8 +1,7 @@
 #include "runtime/procedure/RuntimeProcedureActivation.h"
 
 #include "resources/ResourceSnapshot.h"
-
-#include <nlohmann/json.hpp>
+#include "runtime/json/StrictJson.h"
 
 #include <algorithm>
 #include <atomic>
@@ -61,44 +60,6 @@ private:
            limits.max_json_nodes != 0 && limits.max_work != 0;
 }
 
-[[nodiscard]] bool valid_utf8(const std::string_view text) noexcept {
-    std::size_t offset{};
-    while (offset < text.size()) {
-        const auto lead = static_cast<unsigned char>(text[offset]);
-        std::uint32_t code{};
-        std::size_t length{};
-        if (lead <= 0x7fU) {
-            code = lead;
-            length = 1;
-        } else if (lead >= 0xc2U && lead <= 0xdfU) {
-            code = lead & 0x1fU;
-            length = 2;
-        } else if (lead >= 0xe0U && lead <= 0xefU) {
-            code = lead & 0x0fU;
-            length = 3;
-        } else if (lead >= 0xf0U && lead <= 0xf4U) {
-            code = lead & 0x07U;
-            length = 4;
-        } else {
-            return false;
-        }
-        if (length > text.size() - offset)
-            return false;
-        for (std::size_t index = 1; index < length; ++index) {
-            const auto continuation = static_cast<unsigned char>(text[offset + index]);
-            if ((continuation & 0xc0U) != 0x80U)
-                return false;
-            code = (code << 6U) | (continuation & 0x3fU);
-        }
-        if ((length == 2 && code < 0x80U) || (length == 3 && code < 0x800U) ||
-            (length == 4 && code < 0x10000U) || code > 0x10ffffU ||
-            (code >= 0xd800U && code <= 0xdfffU))
-            return false;
-        offset += length;
-    }
-    return true;
-}
-
 [[nodiscard]] bool exact_fields(
     const Json& object, const std::initializer_list<std::string_view> required) {
     if (!object.is_object() || object.size() != required.size())
@@ -114,47 +75,20 @@ private:
     return true;
 }
 
-struct DuplicateKeyState final {
-    bool duplicate{};
-    std::size_t nodes{};
-    std::vector<std::set<std::string, std::less<>>> objects;
-};
-
 [[nodiscard]] Json parse_strict_json(
     const std::string& text, const RuntimeProcedureActivationLimits& limits) {
-    if (!valid_utf8(text))
+    const auto result = ::baas::runtime::json::parse_strict_json(
+        text, {limits.max_json_depth, limits.max_json_nodes,
+               limits.max_string_bytes});
+    if (result) return *result.document;
+    using enum ::baas::runtime::json::StrictJsonError;
+    if (result.error == invalid_utf8)
         fail(RuntimeProcedureActivationError::invalid_utf8);
-    DuplicateKeyState state;
-    auto callback = [&state, &limits](const int depth, const Json::parse_event_t event,
-                                      Json& parsed) {
-        if (depth < 0 || static_cast<std::size_t>(depth) > limits.max_json_depth)
-            fail(RuntimeProcedureActivationError::invalid_json);
-        if ((event == Json::parse_event_t::key || event == Json::parse_event_t::value) &&
-            parsed.is_string() &&
-            parsed.get_ref<const std::string&>().size() > limits.max_string_bytes)
-            fail(RuntimeProcedureActivationError::string_limit_exceeded);
-        if (event == Json::parse_event_t::object_start ||
-            event == Json::parse_event_t::array_start || event == Json::parse_event_t::value) {
-            if (++state.nodes > limits.max_json_nodes)
-                fail(RuntimeProcedureActivationError::invalid_json);
-        }
-        if (event == Json::parse_event_t::object_start) {
-            state.objects.emplace_back();
-        } else if (event == Json::parse_event_t::key) {
-            if (state.objects.empty() ||
-                !state.objects.back().insert(parsed.get<std::string>()).second)
-                state.duplicate = true;
-        } else if (event == Json::parse_event_t::object_end) {
-            if (state.objects.empty())
-                fail(RuntimeProcedureActivationError::invalid_json);
-            state.objects.pop_back();
-        }
-        return true;
-    };
-    auto result = Json::parse(text, callback, true, false);
-    if (state.duplicate || !state.objects.empty())
-        fail(RuntimeProcedureActivationError::invalid_json);
-    return result;
+    if (result.error == string_limit_exceeded)
+        fail(RuntimeProcedureActivationError::string_limit_exceeded);
+    if (result.error == resource_exhausted)
+        fail(RuntimeProcedureActivationError::resource_exhausted);
+    fail(RuntimeProcedureActivationError::invalid_json);
 }
 
 [[nodiscard]] const repository::RuntimeRepositoryReadEntry* manifested(

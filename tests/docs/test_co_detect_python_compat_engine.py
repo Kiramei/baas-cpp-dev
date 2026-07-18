@@ -143,6 +143,53 @@ class CoDetectPythonCompatEngineContractTests(unittest.TestCase):
         self.assertEqual(self.workflow.count(doc_path), 2)
         self.assertGreaterEqual(self.workflow.count("tests/docs/**"), 2)
 
+    def test_implemented_definition_model_is_bounded_and_ci_gated(self) -> None:
+        for path in (
+            "include/runtime/json/StrictJson.h",
+            "src/runtime/json/StrictJson.cpp",
+            "include/runtime/procedure/CoDetectPythonCompatDefinition.h",
+            "src/runtime/procedure/CoDetectPythonCompatDefinition.cpp",
+            "tests/runtime/CoDetectPythonCompatDefinitionTests.cpp",
+            "cmake/RuntimeStrictJson.cmake",
+            "cmake/RuntimeCoDetectDefinitionModel.cmake",
+        ):
+            self.assertTrue((ROOT / path).is_file(), path)
+        for token in (
+            "strict immutable definition parsing/model implemented",
+            "BAAS_runtime_co_detect_definition_model",
+            "owns the verified source bytes",
+            "deterministic semantic\nidentity SHA-256",
+            "has no image/resource payloads",
+            "does not open the production\nactivation gate",
+        ):
+            self.assertIn(token, self.doc)
+        self.assertIn("-DBUILD_RUNTIME_CO_DETECT_DEFINITION_MODEL_TESTS=ON",
+                      self.workflow)
+        self.assertIn("-DBUILD_RUNTIME_CO_DETECT_DEFINITION_MODEL=ON",
+                      self.workflow)
+        self.assertGreaterEqual(
+            self.workflow.count("BAAS_runtime_co_detect_definition_model"), 2
+        )
+        for token in (
+            "android-clang-arm64-v8a-release",
+            "android-clang-x86_64-release",
+            "conan create deploy/conan/recipes/baas-nlohmann-json",
+            "--requires=baas-nlohmann-json/3.11.3",
+            "tools.android:ndk_path=${ANDROID_NDK_HOME}",
+            "build/conan/foundation-android-${{ matrix.abi }}/conan_toolchain.cmake",
+        ):
+            self.assertIn(token, self.workflow)
+        for dependency_path in (
+            "deploy/conan/recipes/baas-nlohmann-json/**",
+            "deploy/conan/profiles/android-clang-arm64-v8a-release",
+            "deploy/conan/profiles/android-clang-x86_64-release",
+        ):
+            self.assertEqual(
+                self.workflow.count(f"- '{dependency_path}'"),
+                2,
+                dependency_path,
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
