@@ -85,7 +85,7 @@ void queued_acquisition_allocation_checkpoint(
 
 [[nodiscard]] HostResult deadline(const HostEffectState effect_state)
 {
-    return error(HostErrorCode::DeadlineExceeded, "procedure deadline exceeded", true,
+    return error(HostErrorCode::DeadlineExceeded, "procedure deadline exceeded", false,
                  effect_state, detail("deadline_scope", "call"));
 }
 
@@ -158,29 +158,47 @@ public:
     explicit BoundedEffectTrace(const ProcedureDescriptor& descriptor) noexcept
     {
         for (const auto effect : descriptor.declared_effects())
-            declared_.fetch_or(bit(effect), std::memory_order_relaxed);
+            declared_ |= bit(effect);
     }
 
     bool report(const ProcedureEffect effect, const ProcedureEffectStage stage) noexcept override
     {
         const auto mask = bit(effect);
-        if (mask == 0 || (declared_.load(std::memory_order_relaxed) & mask) == 0) {
+        if (mask == 0 || (declared_ & mask) == 0) {
             invalid_.store(true, std::memory_order_release);
             return false;
         }
+        const auto index = static_cast<std::size_t>(effect);
+        auto expected = static_cast<std::uint8_t>(EffectState::NotStarted);
+        std::uint8_t desired{};
         switch (stage) {
-            case ProcedureEffectStage::Began:
-                began_.fetch_or(mask, std::memory_order_release);
-                return true;
+            case ProcedureEffectStage::Began: {
+                desired = static_cast<std::uint8_t>(EffectState::Began);
+                auto current = states_[index].load(std::memory_order_acquire);
+                while (current == static_cast<std::uint8_t>(EffectState::NotStarted) ||
+                       current == static_cast<std::uint8_t>(EffectState::Committed)) {
+                    if (states_[index].compare_exchange_weak(
+                            current, desired, std::memory_order_acq_rel,
+                            std::memory_order_acquire)) return true;
+                }
+                invalid_.store(true, std::memory_order_release);
+                return false;
+            }
             case ProcedureEffectStage::Committed:
-                began_.fetch_or(mask, std::memory_order_release);
-                committed_.fetch_or(mask, std::memory_order_release);
-                return true;
+                expected = static_cast<std::uint8_t>(EffectState::Began);
+                desired = static_cast<std::uint8_t>(EffectState::Committed);
+                break;
             case ProcedureEffectStage::Unknown:
-                began_.fetch_or(mask, std::memory_order_release);
-                unknown_.fetch_or(mask, std::memory_order_release);
-                return true;
+                expected = static_cast<std::uint8_t>(EffectState::Began);
+                desired = static_cast<std::uint8_t>(EffectState::Unknown);
+                break;
+            default:
+                invalid_.store(true, std::memory_order_release);
+                return false;
         }
+        if (states_[index].compare_exchange_strong(
+                expected, desired, std::memory_order_acq_rel, std::memory_order_acquire))
+            return true;
         invalid_.store(true, std::memory_order_release);
         return false;
     }
@@ -192,28 +210,30 @@ public:
 
     [[nodiscard]] HostEffectState effect_state() const noexcept
     {
-        if (unknown_.load(std::memory_order_acquire) != 0 ||
-            (began_.load(std::memory_order_acquire) &
-             ~committed_.load(std::memory_order_acquire)) != 0)
-            return HostEffectState::Unknown;
-        return committed_.load(std::memory_order_acquire) != 0
-            ? HostEffectState::Committed
-            : HostEffectState::NotStarted;
+        bool committed{};
+        for (const auto& state : states_) {
+            const auto value = static_cast<EffectState>(state.load(std::memory_order_acquire));
+            if (value == EffectState::Began || value == EffectState::Unknown)
+                return HostEffectState::Unknown;
+            committed = committed || value == EffectState::Committed;
+        }
+        return committed ? HostEffectState::Committed : HostEffectState::NotStarted;
     }
 
     [[nodiscard]] HostEffectState input_effect_state() const noexcept
     {
-        const auto mask = bit(ProcedureEffect::Input);
-        if ((unknown_.load(std::memory_order_acquire) & mask) != 0 ||
-            ((began_.load(std::memory_order_acquire) & mask) != 0 &&
-             (committed_.load(std::memory_order_acquire) & mask) == 0))
+        const auto value = static_cast<EffectState>(
+            states_[static_cast<std::size_t>(ProcedureEffect::Input)].load(
+                std::memory_order_acquire));
+        if (value == EffectState::Began || value == EffectState::Unknown)
             return HostEffectState::Unknown;
-        return (committed_.load(std::memory_order_acquire) & mask) != 0
-            ? HostEffectState::Committed
-            : HostEffectState::NotStarted;
+        return value == EffectState::Committed
+            ? HostEffectState::Committed : HostEffectState::NotStarted;
     }
 
 private:
+    enum class EffectState : std::uint8_t { NotStarted, Began, Committed, Unknown };
+
     [[nodiscard]] static std::uint32_t bit(const ProcedureEffect effect) noexcept
     {
         const auto value = static_cast<unsigned int>(effect);
@@ -221,10 +241,8 @@ private:
             ? (UINT32_C(1) << value) : 0;
     }
 
-    std::atomic<std::uint32_t> declared_{};
-    std::atomic<std::uint32_t> began_{};
-    std::atomic<std::uint32_t> committed_{};
-    std::atomic<std::uint32_t> unknown_{};
+    std::uint32_t declared_{};
+    std::array<std::atomic<std::uint8_t>, 5> states_{};
     std::atomic<bool> invalid_{};
 };
 
@@ -251,8 +269,12 @@ private:
         case ProcedureExecutorErrorCode::DeadlineExceeded: return deadline(effect);
         case ProcedureExecutorErrorCode::BudgetExceeded:
             return error(HostErrorCode::BudgetExceeded,
-                         "procedure executor budget exceeded", true, effect,
+                         "procedure executor budget exceeded", supplied.retryable, effect,
                          detail("budget_scope", "host_operation"));
+        case ProcedureExecutorErrorCode::ResourceExhausted:
+            return error(HostErrorCode::BudgetExceeded,
+                         "procedure executor resource exhausted", false, effect,
+                         detail("budget_scope", "external_memory"));
         case ProcedureExecutorErrorCode::Unavailable:
             return error(HostErrorCode::Unavailable,
                          "procedure executor unavailable", supplied.retryable, effect);
@@ -266,7 +288,7 @@ private:
                          "procedure device disconnected", supplied.retryable, effect);
         case ProcedureExecutorErrorCode::ResourceNotFound:
             return error(HostErrorCode::ResourceNotFound,
-                         "procedure resource unavailable", false, effect);
+                         "procedure resource unavailable", supplied.retryable, effect);
         case ProcedureExecutorErrorCode::Internal:
             return error(HostErrorCode::Internal,
                          "procedure executor internal failure", false, effect);
@@ -729,7 +751,7 @@ struct ProcedureHost::Impl {
         } catch (const std::bad_alloc&) {
             ++failed;
             return error(HostErrorCode::BudgetExceeded,
-                         "procedure executor allocation failed", true,
+                         "procedure executor allocation failed", false,
                          trace.effect_state(),
                          detail("budget_scope", "external_memory"));
         } catch (const std::exception&) {

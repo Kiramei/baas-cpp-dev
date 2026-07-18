@@ -349,6 +349,9 @@ void test_metadata_success_options_and_lifetime()
                       "options must preserve ordered-map insertion order");
             check(request.effects().report(
                       host::ProcedureEffect::ForegroundCheck,
+                      host::ProcedureEffectStage::Began) &&
+                      request.effects().report(
+                      host::ProcedureEffect::ForegroundCheck,
                       host::ProcedureEffectStage::Committed),
                   "declared effect reporting must succeed");
             return host::ProcedureExecutorOutcome::success("joined");
@@ -449,15 +452,77 @@ void test_validation_terminal_and_error_mapping()
     check(effect.has_error() && effect.error().code == runtime::HostErrorCode::Internal,
           "undeclared effects must fail closed after allocation-free trace reporting");
 
+    const auto invalid_sequence = [&](const auto& report_sequence, const std::string_view message) {
+        auto owner = make_owner([&](const host::ProcedureExecutionRequest& request) {
+            report_sequence(request.effects());
+            return host::ProcedureExecutorOutcome::success("joined");
+        });
+        const auto result = invoke(owner, arguments());
+        check(result.has_error() && result.error().code == runtime::HostErrorCode::Internal,
+              message);
+    };
+    invalid_sequence([](host::ProcedureEffectReporter& reporter) {
+        check(reporter.report(host::ProcedureEffect::Capture,
+                  host::ProcedureEffectStage::Began), "first began must be accepted");
+        check(!reporter.report(host::ProcedureEffect::Capture,
+                   host::ProcedureEffectStage::Began), "duplicate began must be rejected");
+    }, "duplicate began must invalidate the complete effect trace");
+    invalid_sequence([](host::ProcedureEffectReporter& reporter) {
+        check(!reporter.report(host::ProcedureEffect::Capture,
+                   host::ProcedureEffectStage::Committed),
+              "committed without began must be rejected");
+    }, "committed without began must invalidate the complete effect trace");
+    invalid_sequence([](host::ProcedureEffectReporter& reporter) {
+        check(!reporter.report(host::ProcedureEffect::Capture,
+                   host::ProcedureEffectStage::Unknown),
+              "unknown without began must be rejected");
+    }, "unknown without began must invalidate the complete effect trace");
+    invalid_sequence([](host::ProcedureEffectReporter& reporter) {
+        check(reporter.report(host::ProcedureEffect::Capture,
+                  host::ProcedureEffectStage::Began) &&
+                  reporter.report(host::ProcedureEffect::Capture,
+                      host::ProcedureEffectStage::Committed),
+              "valid terminal sequence must be accepted");
+        check(!reporter.report(host::ProcedureEffect::Capture,
+                   host::ProcedureEffectStage::Unknown),
+              "report after terminal must be rejected");
+    }, "a terminal report without a new began must invalidate the complete effect trace");
+
+    auto repeated_effect = make_owner([](const host::ProcedureExecutionRequest& request) {
+        check(request.effects().report(
+                  host::ProcedureEffect::Capture, host::ProcedureEffectStage::Began) &&
+                  request.effects().report(
+                      host::ProcedureEffect::Capture,
+                      host::ProcedureEffectStage::Committed) &&
+                  request.effects().report(
+                      host::ProcedureEffect::Capture,
+                      host::ProcedureEffectStage::Began) &&
+                  request.effects().report(
+                      host::ProcedureEffect::Capture,
+                      host::ProcedureEffectStage::Committed),
+              "two complete operations of one declared effect must be accepted");
+        return host::ProcedureExecutorOutcome::success("joined");
+    });
+    check(invoke(repeated_effect, arguments()).ok(),
+          "committed aggregate state must allow a subsequent paired operation");
+    invalid_sequence([](host::ProcedureEffectReporter& reporter) {
+        check(reporter.report(host::ProcedureEffect::Capture,
+                  host::ProcedureEffectStage::Began) &&
+                  reporter.report(host::ProcedureEffect::Capture,
+                      host::ProcedureEffectStage::Unknown),
+              "began-to-unknown must be accepted once");
+        check(!reporter.report(host::ProcedureEffect::Capture,
+                   host::ProcedureEffectStage::Began),
+              "unknown aggregate state must permanently reject another operation");
+    }, "unknown completion must permanently invalidate later reports");
+
     auto foreground = make_owner([](const host::ProcedureExecutionRequest& request) {
-        (void)request.effects().report(
-            host::ProcedureEffect::Capture, host::ProcedureEffectStage::Committed);
-        (void)request.effects().report(
-            host::ProcedureEffect::Vision, host::ProcedureEffectStage::Committed);
-        (void)request.effects().report(
-            host::ProcedureEffect::Wait, host::ProcedureEffectStage::Committed);
-        (void)request.effects().report(
-            host::ProcedureEffect::ForegroundCheck, host::ProcedureEffectStage::Committed);
+        for (const auto effect : {host::ProcedureEffect::Capture,
+                 host::ProcedureEffect::Vision, host::ProcedureEffect::Wait,
+                 host::ProcedureEffect::ForegroundCheck}) {
+            (void)request.effects().report(effect, host::ProcedureEffectStage::Began);
+            (void)request.effects().report(effect, host::ProcedureEffectStage::Committed);
+        }
         return host::ProcedureExecutorOutcome::failure({
             host::ProcedureExecutorErrorCode::ForegroundPackageMismatch, false,
             runtime::HostEffectState::Committed});
@@ -484,6 +549,8 @@ void test_validation_terminal_and_error_mapping()
           "foreground mismatch before effects must remain retryable/not_started");
     auto foreground_committed = make_owner([](const host::ProcedureExecutionRequest& request) {
         (void)request.effects().report(
+            host::ProcedureEffect::Input, host::ProcedureEffectStage::Began);
+        (void)request.effects().report(
             host::ProcedureEffect::Input, host::ProcedureEffectStage::Committed);
         return host::ProcedureExecutorOutcome::failure({
             host::ProcedureExecutorErrorCode::ForegroundPackageMismatch, false,
@@ -502,7 +569,10 @@ void test_validation_terminal_and_error_mapping()
              host::ProcedureEffectStage::Unknown}) {
         auto foreground_unknown = make_owner([stage](
             const host::ProcedureExecutionRequest& request) {
-            (void)request.effects().report(host::ProcedureEffect::Input, stage);
+            (void)request.effects().report(
+                host::ProcedureEffect::Input, host::ProcedureEffectStage::Began);
+            if (stage == host::ProcedureEffectStage::Unknown)
+                (void)request.effects().report(host::ProcedureEffect::Input, stage);
             return host::ProcedureExecutorOutcome::failure({
                 host::ProcedureExecutorErrorCode::ForegroundPackageMismatch, false,
                 runtime::HostEffectState::NotStarted});
@@ -518,6 +588,8 @@ void test_validation_terminal_and_error_mapping()
 
     auto disconnected = make_owner([](const host::ProcedureExecutionRequest& request) {
         (void)request.effects().report(
+            host::ProcedureEffect::Input, host::ProcedureEffectStage::Began);
+        (void)request.effects().report(
             host::ProcedureEffect::Input, host::ProcedureEffectStage::Committed);
         return host::ProcedureExecutorOutcome::failure({
             host::ProcedureExecutorErrorCode::DeviceDisconnected, true,
@@ -532,22 +604,25 @@ void test_validation_terminal_and_error_mapping()
     struct TypedErrorCase {
         host::ProcedureExecutorErrorCode supplied;
         runtime::HostErrorCode expected;
+        bool expected_retryable;
     };
     const std::array typed_errors{
         TypedErrorCase{host::ProcedureExecutorErrorCode::InvalidRequest,
-                       runtime::HostErrorCode::InvalidArgument},
+                       runtime::HostErrorCode::InvalidArgument, false},
         TypedErrorCase{host::ProcedureExecutorErrorCode::Cancelled,
-                       runtime::HostErrorCode::Cancelled},
+                       runtime::HostErrorCode::Cancelled, false},
         TypedErrorCase{host::ProcedureExecutorErrorCode::DeadlineExceeded,
-                       runtime::HostErrorCode::DeadlineExceeded},
+                       runtime::HostErrorCode::DeadlineExceeded, false},
         TypedErrorCase{host::ProcedureExecutorErrorCode::BudgetExceeded,
-                       runtime::HostErrorCode::BudgetExceeded},
+                       runtime::HostErrorCode::BudgetExceeded, true},
+        TypedErrorCase{host::ProcedureExecutorErrorCode::ResourceExhausted,
+                       runtime::HostErrorCode::BudgetExceeded, false},
         TypedErrorCase{host::ProcedureExecutorErrorCode::Unavailable,
-                       runtime::HostErrorCode::Unavailable},
+                       runtime::HostErrorCode::Unavailable, true},
         TypedErrorCase{host::ProcedureExecutorErrorCode::ResourceNotFound,
-                       runtime::HostErrorCode::ResourceNotFound},
+                       runtime::HostErrorCode::ResourceNotFound, true},
         TypedErrorCase{host::ProcedureExecutorErrorCode::Internal,
-                       runtime::HostErrorCode::Internal},
+                       runtime::HostErrorCode::Internal, false},
     };
     for (const auto& typed : typed_errors) {
         auto typed_owner = make_owner([typed](const host::ProcedureExecutionRequest&) {
@@ -556,7 +631,8 @@ void test_validation_terminal_and_error_mapping()
         });
         const auto mapped = invoke(typed_owner, arguments());
         check(mapped.has_error() && mapped.error().code == typed.expected &&
-                  mapped.error().effect_state == runtime::HostEffectState::NotStarted,
+                  mapped.error().effect_state == runtime::HostEffectState::NotStarted &&
+                  mapped.error().retryable == typed.expected_retryable,
               "every typed executor error must map to its exact public Host code");
     }
 }
@@ -633,7 +709,8 @@ void test_same_device_serialization_and_wait_cancellation()
     deadline_waiter.join();
     check(deadline_result.has_error() &&
               deadline_result.error().code == runtime::HostErrorCode::DeadlineExceeded &&
-              deadline_result.error().effect_state == runtime::HostEffectState::NotStarted,
+              deadline_result.error().effect_state == runtime::HostEffectState::NotStarted &&
+              !deadline_result.error().retryable,
           "strand wait must cooperatively observe deadline without starting effects");
     release_first = true;
     deadline_holder.join();
@@ -938,7 +1015,8 @@ void test_cancellation_deadline_and_exception_safety()
               execution_deadline_result.error().code ==
                   runtime::HostErrorCode::DeadlineExceeded &&
               execution_deadline_result.error().effect_state ==
-                  runtime::HostEffectState::Unknown,
+                  runtime::HostEffectState::Unknown &&
+              !execution_deadline_result.error().retryable,
           "deadline during executor must preserve uncertain begun effect state");
 
     auto both = std::make_shared<Probe>();
@@ -947,6 +1025,7 @@ void test_cancellation_deadline_and_exception_safety()
     const auto precedence = invoke(owner, arguments(), both);
     check(precedence.has_error() &&
               precedence.error().code == runtime::HostErrorCode::DeadlineExceeded &&
+              !precedence.error().retryable &&
               detail_string(precedence, "deadline_scope") == "call",
           "deadline must win whenever cancellation and deadline are both observable");
 
@@ -954,6 +1033,8 @@ void test_cancellation_deadline_and_exception_safety()
         procedure_snapshot(), "emulator-5556",
         std::make_shared<LambdaExecutor>([](const host::ProcedureExecutionRequest& request)
             -> host::ProcedureExecutorOutcome {
+            (void)request.effects().report(
+                host::ProcedureEffect::Input, host::ProcedureEffectStage::Began);
             (void)request.effects().report(
                 host::ProcedureEffect::Input, host::ProcedureEffectStage::Committed);
             throw std::runtime_error("unsafe adapter detail");
@@ -973,6 +1054,7 @@ void test_cancellation_deadline_and_exception_safety()
     const auto allocation = invoke(allocating, arguments());
     check(allocation.has_error() &&
               allocation.error().code == runtime::HostErrorCode::BudgetExceeded &&
+              !allocation.error().retryable &&
               allocation.error().effect_state == runtime::HostEffectState::Unknown &&
               detail_string(allocation, "budget_scope") == "external_memory",
           "executor allocation failure must map to bounded HOST005 without ABI unwind");
@@ -1033,6 +1115,8 @@ void test_real_evaluator_mock_procedure_log_golden_runner()
                       request.options()[0].first == "scenario" &&
                       request.options()[0].second == runtime::JsonValue("reward"),
                   "real evaluator must pass exact logical procedure/options to mock executor");
+            (void)request.effects().report(
+                host::ProcedureEffect::Capture, host::ProcedureEffectStage::Began);
             (void)request.effects().report(
                 host::ProcedureEffect::Capture, host::ProcedureEffectStage::Committed);
             return host::ProcedureExecutorOutcome::success("group_sign-up-reward");

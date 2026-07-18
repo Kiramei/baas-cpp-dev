@@ -50,6 +50,7 @@ enum class ProcedureExecutorErrorCode : std::uint8_t {
     Cancelled,
     DeadlineExceeded,
     BudgetExceeded,
+    ResourceExhausted,
     Unavailable,
     ForegroundPackageMismatch,
     DeviceDisconnected,

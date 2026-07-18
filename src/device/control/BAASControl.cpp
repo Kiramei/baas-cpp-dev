@@ -2,6 +2,8 @@
 //
 #include "device/control/BAASControl.h"
 
+#include "device/ExactBackendLifetime.h"
+
 #include "device/control/AdbControl.h"
 #ifdef _WIN32
 #include "device/control/NemuControl.h"
@@ -41,6 +43,11 @@ BAASControl::BAASControl(
 
     control = nullptr;
     set_control_method(method);
+}
+
+BAASControl::~BAASControl() noexcept
+{
+    destroy_control(true);
 }
 
 void BAASControl::init()
@@ -185,27 +192,51 @@ void BAASControl::set_control_method(
         return;
     }
 
-    if (control != nullptr) {
-        if (exit) {
-            logger->BAASInfo("Exiting current control method : [ " + control_method + " ]");
-            control->exit();
-        }
-        delete control;
+    const auto install = [this, &method, exit]<class Backend>(
+                             std::unique_ptr<Backend> owned) {
+        std::string next_method{method};
+        destroy_control(exit);
+        control_method.swap(next_method);
+        control = owned.release();
+    };
+    if (method == "adb") {
+        install(detail::make_initialized_backend<AdbControl>(
+            [](AdbControl& backend) { backend.init(); }, connection));
+        return;
     }
+    else if (method == "scrcpy") {
+        install(detail::make_initialized_backend<ScrcpyControl>(
+            [](ScrcpyControl& backend) { backend.init(); }, connection));
+        return;
+    }
+#ifdef _WIN32
+    else if (method == "nemu") {
+        install(detail::make_initialized_backend<NemuControl>(
+            [](NemuControl& backend) { backend.init(); }, connection));
+        return;
+    }
+#endif // _WIN32
+}
 
-    control_method = method;
-    if (control_method == "adb") {
-        control = new AdbControl(connection);
+void BAASControl::destroy_control(const bool call_exit) noexcept
+{
+    if (control == nullptr) return;
+    if (call_exit) {
+        try {
+            control->exit();
+        } catch (...) {
+        }
     }
-    else if (control_method == "scrcpy") {
-        control = new ScrcpyControl(connection);
+    if (control_method == "adb") {
+        detail::delete_exact_backend<AdbControl>(control);
+    } else if (control_method == "scrcpy") {
+        detail::delete_exact_backend<ScrcpyControl>(control);
     }
 #ifdef _WIN32
     else if (control_method == "nemu") {
-        control = new NemuControl(connection);
+        detail::delete_exact_backend<NemuControl>(control);
     }
 #endif // _WIN32
-    init();
 }
 
 void BAASControl::set_x_y_offset(

@@ -151,7 +151,10 @@ cannot be interrupted MUST run on a bounded adapter pool and report
 translation, an execution-context deadline becomes terminal `DeadlineExceeded`;
 a narrower call deadline becomes catchable `Timeout`, as required by ERR-004.
 The adapter MUST set `details.deadline_scope` to exactly `context` or `call`
-before returning `HOST004_DEADLINE_EXCEEDED`.
+before returning `HOST004_DEADLINE_EXCEEDED`. Deadline expiry is not retryable
+by default (`retryable=false`) at the common callback boundary and every Host
+adapter, so retry semantics cannot change depending on whether expiry was
+observed before callback entry, during admission, or during execution.
 
 The common `invoke_host_callback` boundary MUST check deadline first and then
 cancellation before every callback, independent of whether the binding's mode
@@ -163,6 +166,12 @@ bounded work/wait chunk. Catalog validation MUST reject any binding that omits
 either framework error.
 
 ### HST-006 — Reservation and incremental budgets
+
+Typed executor adapters MUST distinguish business `BudgetExceeded` from
+`ResourceExhausted`. The latter maps to `HOST005_BUDGET_EXCEEDED` with
+`retryable=false` and `details.budget_scope=external_memory`. Procedure
+`BudgetExceeded` and `ResourceNotFound` preserve the adapter-supplied retryable
+bit; the Host boundary must not silently replace it.
 
 Each invocation MUST charge the named catalog budget. Fixed work is reserved
 transactionally before side effects; bytes, pixels, OCR tokens, process rows,

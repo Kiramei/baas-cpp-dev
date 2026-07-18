@@ -115,6 +115,10 @@ option(BUILD_RUNTIME_PROCEDURE_ACTIVATION "Build generation-bound runtime proced
 option(BUILD_RUNTIME_PROCEDURE_ACTIVATION_TESTS "Build runtime procedure activation tests" OFF)
 option(BUILD_RUNTIME_CO_DETECT_DEFINITION_MODEL "Build strict immutable co-detect definition model" OFF)
 option(BUILD_RUNTIME_CO_DETECT_DEFINITION_MODEL_TESTS "Build co-detect definition model tests" OFF)
+option(BUILD_LEGACY_PROCEDURE_EXECUTION "Build pure legacy procedure typed/control/effect seam" OFF)
+option(BUILD_LEGACY_PROCEDURE_EXECUTION_TESTS "Build legacy procedure execution seam tests" OFF)
+option(BUILD_LEGACY_PROCEDURE_DEFINITION_VALIDATION "Build strict direct legacy procedure definition validation" OFF)
+option(BUILD_LEGACY_PROCEDURE_DEFINITION_TESTS "Build direct legacy procedure definition validation tests" OFF)
 option(BUILD_SCRIPT_RESOURCE_HOST "Build baas/resource script Host adapter" OFF)
 option(BUILD_SCRIPT_RESOURCE_HOST_TESTS "Build baas/resource script Host tests" OFF)
 option(BUILD_SCRIPT_PROCEDURE_HOST "Build snapshot-owned baas/procedure script Host" OFF)
@@ -408,6 +412,16 @@ endif()
 if(BUILD_RUNTIME_CO_DETECT_DEFINITION_MODEL)
     set(BUILD_RESOURCE_CORE ON CACHE BOOL
         "Build immutable resource snapshot core" FORCE)
+endif()
+
+if(BUILD_LEGACY_PROCEDURE_EXECUTION_TESTS AND NOT BUILD_LEGACY_PROCEDURE_EXECUTION)
+    set(BUILD_LEGACY_PROCEDURE_EXECUTION ON CACHE BOOL
+        "Build pure legacy procedure typed/control/effect seam" FORCE)
+endif()
+
+if(BUILD_LEGACY_PROCEDURE_DEFINITION_TESTS AND NOT BUILD_LEGACY_PROCEDURE_DEFINITION_VALIDATION)
+    set(BUILD_LEGACY_PROCEDURE_DEFINITION_VALIDATION ON CACHE BOOL
+        "Build strict direct legacy procedure definition validation" FORCE)
 endif()
 
 if(BUILD_RUNTIME_SCRIPT_PACKAGE_LOADER_TESTS)
@@ -888,7 +902,8 @@ if(BUILD_SERVICE_SYNC_HANDLER OR BUILD_SERVICE_REMOTE_HANDLER
    OR BUILD_RUNTIME_RESOURCE_SNAPSHOT_LOADER
    OR BUILD_RUNTIME_PROCEDURE_ACTIVATION
    OR BUILD_RUNTIME_CO_DETECT_DEFINITION_MODEL
-   OR BUILD_SCHEDULER_POLICY)
+   OR BUILD_SCHEDULER_POLICY
+   OR BUILD_LEGACY_PROCEDURE_DEFINITION_VALIDATION)
     baas_request_dependencies(nlohmann_json)
 endif()
 
@@ -929,6 +944,7 @@ list(FILTER BAAS_CORE_SOURCES EXCLUDE REGEX "/src/runtime/repository/.*\\.cpp$")
 list(FILTER BAAS_CORE_SOURCES EXCLUDE REGEX "/src/runtime/script/.*\\.cpp$")
 list(FILTER BAAS_CORE_SOURCES EXCLUDE REGEX "/src/runtime/procedure/.*\\.cpp$")
 list(FILTER BAAS_CORE_SOURCES EXCLUDE REGEX "/src/runtime/json/.*\\.cpp$")
+list(FILTER BAAS_CORE_SOURCES EXCLUDE REGEX "/src/runtime/resources/.*\\.cpp$")
 list(FILTER BAAS_CORE_SOURCES EXCLUDE REGEX "/src/service/.*\\.cpp$")
 
 if(TARGET_OS_NAME STREQUAL "Windows")
@@ -1012,6 +1028,14 @@ endif()
 
 if(BUILD_RUNTIME_PROCEDURE_ACTIVATION)
     include("${CMAKE_CURRENT_LIST_DIR}/cmake/RuntimeProcedureActivation.cmake")
+endif()
+
+if(BUILD_LEGACY_PROCEDURE_EXECUTION)
+    include("${CMAKE_CURRENT_LIST_DIR}/cmake/LegacyProcedureExecution.cmake")
+endif()
+
+if(BUILD_LEGACY_PROCEDURE_DEFINITION_VALIDATION)
+    include("${CMAKE_CURRENT_LIST_DIR}/cmake/LegacyProcedureDefinitionValidation.cmake")
 endif()
 
 if(BUILD_SCRIPT_RESOURCE_HOST)

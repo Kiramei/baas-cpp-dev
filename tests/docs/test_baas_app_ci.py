@@ -54,6 +54,29 @@ class BaasAppCiTests(unittest.TestCase):
         ):
             self.assertIn(f"- '{path}'", self.workflow)
 
+    def test_legacy_procedure_sources_and_native_tests_are_in_scope(self) -> None:
+        for path in (
+            "cmake/LegacyProcedureExecution.cmake",
+            "cmake/LegacyProcedureDefinitionValidation.cmake",
+            "include/BAAS.h",
+            "include/device/ExactBackendLifetime.h",
+            "include/device/control/BAASControl.h",
+            "include/procedure/**",
+            "src/BAAS.cpp",
+            "src/device/control/BAASControl.cpp",
+            "src/procedure/**",
+            "include/device/screenshot/BAASScreenshot.h",
+            "include/device/screenshot/ScreenshotInterval.h",
+            "src/device/screenshot/BAASScreenshot.cpp",
+            "tests/procedure/**",
+            "tests/docs/test_legacy_procedure_execution.py",
+        ):
+            self.assertIn(f"- '{path}'", self.workflow)
+        self.assertIn("-DBUILD_LEGACY_PROCEDURE_EXECUTION_TESTS=ON", self.workflow)
+        self.assertIn("-DBUILD_LEGACY_PROCEDURE_DEFINITION_TESTS=ON", self.workflow)
+        self.assertIn("BAAS_legacy_procedure_execution_tests", self.workflow)
+        self.assertIn("BAAS_legacy_procedure_definition_tests", self.workflow)
+
 
 if __name__ == "__main__":
     unittest.main()

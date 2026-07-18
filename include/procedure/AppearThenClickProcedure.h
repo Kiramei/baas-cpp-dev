@@ -31,14 +31,17 @@ struct _click_param {
 
 class AppearThenClickProcedure : public BaseProcedure {
 public:
-    explicit AppearThenClickProcedure(BAAS* baas,const BAASConfig& possible_features);
+    explicit AppearThenClickProcedure(
+        BAAS* baas, const BAASConfig& possible_features,
+        const LegacyProcedureExecutionControl* execution_control = nullptr,
+        LegacyProcedureEffectObserver* effect_observer = nullptr);
 
     void implement(
             BAASConfig& output,
             bool skip_first_screenshot = false
     ) override;
 
-    void clear_resource() override;
+    void clear_resource() noexcept override;
 
 private:
 
