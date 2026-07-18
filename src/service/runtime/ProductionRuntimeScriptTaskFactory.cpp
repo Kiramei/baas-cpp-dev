@@ -256,7 +256,8 @@ bool valid_inputs(
     }
     if (inputs.extensions) {
         const auto& extension = inputs.extensions->identity();
-        if (extension.config_snapshot_id != config.snapshot_id
+        if (extension.config_id != config.config_id
+            || extension.config_snapshot_id != config.snapshot_id
             || extension.generation != bundle.generation()
             || extension.scripts_commit != bundle.scripts().commit()
             || extension.resources_commit != bundle.resources().commit())
