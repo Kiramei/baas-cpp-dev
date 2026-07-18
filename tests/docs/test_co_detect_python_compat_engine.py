@@ -251,6 +251,8 @@ class CoDetectPythonCompatEngineContractTests(unittest.TestCase):
             "m00000000",
             "baas.co-detect-support-bundle/v1",
             "actually decodes every PNG through OpenCV",
+            "reserves each entry's declared uncompressed size before\ncalling miniz",
+            "individual miniz extraction call is not\nmid-inflate interruptible",
             "A feature omitted from the profile graph is a normal\n`false` lookup",
             "externally published real\nlocale bundles",
         ):
@@ -270,6 +272,7 @@ class CoDetectPythonCompatEngineContractTests(unittest.TestCase):
             self.assertIn(token, cmake)
         for token in (
             "co-detect-support-bundle-windows",
+            "co-detect-support-bundle-unix",
             "-DBUILD_RUNTIME_CO_DETECT_SUPPORT_BUNDLE_TESTS=ON",
             "-DBUILD_RUNTIME_CO_DETECT_SUPPORT_BUNDLE=ON",
             "BAAS_runtime_co_detect_support_bundle_tests",
@@ -278,8 +281,12 @@ class CoDetectPythonCompatEngineContractTests(unittest.TestCase):
             "conan create deploy/conan/recipes/baas-opencv",
             "--requires=baas-miniz/3.1.2",
             "--requires=baas-opencv/4.13.0",
+            "Compile and link support-bundle test executable",
         ):
             self.assertIn(token, self.workflow)
+        self.assertIn("conanrun.bat", self.workflow)
+        self.assertIn("conanrun.sh", self.workflow)
+        self.assertEqual(self.workflow.count("Run support-bundle tests"), 2)
         for dependency_path in (
             "deploy/conan/recipes/baas-miniz/**",
             "deploy/conan/recipes/baas-opencv/**",

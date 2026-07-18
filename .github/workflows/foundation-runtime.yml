@@ -360,9 +360,74 @@ jobs:
           --target BAAS_runtime_co_detect_support_bundle_tests
 
       - name: Run support-bundle tests
+        shell: cmd
+        run: |
+          call build\conan\co-detect-support-bundle\conanrun.bat
+          ctest --test-dir build/co-detect-support-bundle --build-config ${{ matrix.build_type }} --output-on-failure --timeout 120
+
+  co-detect-support-bundle-unix:
+    name: Co-detect support bundle / ${{ matrix.os }} / Release
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - macos-latest
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install pinned Conan client
+        run: python -m pip install --disable-pip-version-check conan==2.30.0
+
+      - name: Detect host profile
+        run: conan profile detect --force
+
+      - name: Build pinned support-bundle recipes
+        run: |
+          conan create deploy/conan/recipes/baas-nlohmann-json -s:h build_type=Release -s:b build_type=Release --build=missing --no-remote
+          conan create deploy/conan/recipes/baas-miniz -s:h build_type=Release -s:b build_type=Release --build=missing --no-remote
+          conan create deploy/conan/recipes/baas-opencv -s:h build_type=Release -s:b build_type=Release --build=missing --no-remote
+
+      - name: Generate support-bundle dependencies
         run: >-
-          ctest --test-dir build/co-detect-support-bundle
-          --build-config ${{ matrix.build_type }} --output-on-failure --timeout 120
+          conan install --requires=baas-nlohmann-json/3.11.3
+          --requires=baas-miniz/3.1.2 --requires=baas-opencv/4.13.0
+          -of build/conan/co-detect-support-bundle
+          -s:h build_type=Release -s:b build_type=Release
+          -g CMakeDeps -g CMakeToolchain --build=missing --no-remote
+
+      - name: Configure support-bundle compile-link gate
+        run: >-
+          cmake -S . -B build/co-detect-support-bundle
+          "-DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}/build/conan/co-detect-support-bundle/conan_toolchain.cmake"
+          -DCMAKE_BUILD_TYPE=Release
+          -DBUILD_TESTING=ON -DBUILD_RUNTIME_CO_DETECT_SUPPORT_BUNDLE_TESTS=ON
+          -DBUILD_APP_BAAS=OFF -DBUILD_APP_ISA=OFF -DBUILD_BAAS_OCR=OFF
+          -DBUILD_BAAS_AW_CHECKER=OFF -DBUILD_BAAS_NMS_BENCHMARK=OFF
+          -DBAAS_FETCH_RESOURCES=OFF
+
+      - name: Compile and link support-bundle test executable
+        run: >-
+          cmake --build build/co-detect-support-bundle
+          --config Release --parallel 4
+          --target BAAS_runtime_co_detect_support_bundle_tests
+
+      - name: Run support-bundle tests with the Conan runtime environment
+        run: |
+          . build/conan/co-detect-support-bundle/conanrun.sh
+          ctest --test-dir build/co-detect-support-bundle --build-config Release --output-on-failure --timeout 120
 
   android-runtime-repository:
     name: Android foundation ${{ matrix.abi }} / Release

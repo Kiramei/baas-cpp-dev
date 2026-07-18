@@ -372,7 +372,8 @@ struct BundleOptions final {
     const std::stop_token stop = {},
     const std::optional<std::string_view> expected_generation = std::nullopt,
     std::string media_type = std::string{procedure::co_detect_support_bundle_media_type},
-    std::optional<std::string> entry_locale = std::string{"JP"})
+    std::optional<std::string> entry_locale = std::string{"JP"},
+    const procedure::CoDetectProfile frozen_profile = procedure::CoDetectProfile::jp)
 {
     RepositoryFixture fixture{
         std::move(archive), std::move(media_type), std::move(entry_locale)};
@@ -380,7 +381,7 @@ struct BundleOptions final {
         fixture.activation(),
         expected_generation.value_or(fixture.activation()->generation()),
         "procedure-support/navigation.to-main-page/v1", "JP",
-        procedure::CoDetectProfile::jp, limits, stop);
+        frozen_profile, limits, stop);
 }
 
 void expect_error(
@@ -414,6 +415,22 @@ void put_u16(std::vector<std::byte>& value, const std::size_t offset, const std:
 {
     value[offset] = static_cast<std::byte>(input & 0xffU);
     value[offset + 1] = static_cast<std::byte>(input >> 8U);
+}
+
+[[nodiscard]] std::uint16_t get_u16(
+    const std::span<const std::byte> value, const std::size_t offset)
+{
+    return std::to_integer<std::uint16_t>(value[offset]) |
+        std::to_integer<std::uint16_t>(value[offset + 1]) << 8U;
+}
+
+[[nodiscard]] std::uint32_t get_u32(
+    const std::span<const std::byte> value, const std::size_t offset)
+{
+    return std::to_integer<std::uint32_t>(value[offset]) |
+        std::to_integer<std::uint32_t>(value[offset + 1]) << 8U |
+        std::to_integer<std::uint32_t>(value[offset + 2]) << 16U |
+        std::to_integer<std::uint32_t>(value[offset + 3]) << 24U;
 }
 
 void test_success_and_owned_pixels()
@@ -459,6 +476,12 @@ void test_generation_selector_and_media_guards()
                       std::string{procedure::co_detect_support_bundle_media_type}, std::nullopt),
                  procedure::CoDetectSupportBundleError::selector_mismatch,
                  "neutral ResourceSnapshot fallback must be rejected");
+    expect_error(load(support_archive(), {}, {}, std::nullopt,
+                      std::string{procedure::co_detect_support_bundle_media_type},
+                      std::string{"JP"},
+                      static_cast<procedure::CoDetectProfile>(0xffU)),
+                 procedure::CoDetectSupportBundleError::profile_mismatch,
+                 "out-of-range profile enum values must fail closed");
 }
 
 void test_magic_manifest_and_member_integrity()
@@ -607,6 +630,30 @@ void test_bombs_limits_and_cancellation()
     expect_error(load(archive, limits),
                  procedure::CoDetectSupportBundleError::work_limit_exceeded,
                  "aggregate work must be bounded");
+
+    option = {};
+    option.graph.resize(64U);
+    std::uint32_t random_state = 0x6d2b79f5U;
+    for (auto& value : option.graph) {
+        random_state ^= random_state << 13U;
+        random_state ^= random_state >> 17U;
+        random_state ^= random_state << 5U;
+        value = static_cast<char>(random_state & 0xffU);
+    }
+    option.graph_compression = MZ_BEST_COMPRESSION;
+    archive = support_archive(option);
+    const auto manifest_local = signature_offset(archive, 0x04034b50U, 1);
+    const auto graph_local = signature_offset(archive, 0x04034b50U, 2);
+    const auto graph_data = graph_local + 30U + get_u16(archive, graph_local + 26U);
+    archive[graph_data] ^= std::byte{0xffU};
+    limits = {};
+    limits.max_work = archive.size() + 16U +
+        2U * get_u32(archive, manifest_local + 22U) +
+        get_u32(archive, graph_local + 22U) - 1U;
+    expect_error(load(archive, limits),
+                 procedure::CoDetectSupportBundleError::work_limit_exceeded,
+                 "declared inflate output must be reserved before touching compressed bytes");
+
     std::stop_source cancelled;
     cancelled.request_stop();
     expect_error(load(std::move(archive), {}, cancelled.get_token()),

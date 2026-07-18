@@ -79,6 +79,19 @@ private:
         limits.max_total_decoded_png_bytes <= max_total && limits.max_work != 0;
 }
 
+[[nodiscard]] bool valid_profile(const CoDetectProfile profile) noexcept
+{
+    switch (profile) {
+    case CoDetectProfile::cn:
+    case CoDetectProfile::jp:
+    case CoDetectProfile::global_en_us:
+    case CoDetectProfile::global_zh_tw:
+    case CoDetectProfile::global_ko_kr:
+        return true;
+    }
+    return false;
+}
+
 [[nodiscard]] std::uint16_t le16(
     const std::span<const std::byte> bytes, const std::size_t offset) noexcept
 {
@@ -925,6 +938,8 @@ CoDetectSupportBundleLoadResult load_co_detect_support_bundle(
             fail(CoDetectSupportBundleError::resource_not_found);
         if (activation->generation() != expected_generation)
             fail(CoDetectSupportBundleError::generation_mismatch);
+        if (!valid_profile(frozen_profile))
+            fail(CoDetectSupportBundleError::profile_mismatch);
         if (!snapshot_resources::valid_resource_id(resource_id, limits.max_string_bytes) ||
             (resource_id != "procedure-support/navigation.to-main-page/v1" &&
              resource_id != "procedure-support/group.open/v1") ||
@@ -944,8 +959,8 @@ CoDetectSupportBundleLoadResult load_co_detect_support_bundle(
         const auto entries = preflight_zip(archive->bytes(), limits, work, stop);
         MinizReader reader{archive->bytes()};
         if (!reader) fail(CoDetectSupportBundleError::invalid_zip);
+        work.charge(entries[0].uncompressed_size);
         auto magic = reader.extract(0, entries[0].uncompressed_size);
-        work.charge(magic.size());
         check_cancelled(stop);
         constexpr std::string_view magic_prefix = "BAASCDSB";
         if (magic.size() != co_detect_support_bundle_magic.size() ||
@@ -953,8 +968,8 @@ CoDetectSupportBundleLoadResult load_co_detect_support_bundle(
             fail(CoDetectSupportBundleError::bad_magic);
         if (!std::ranges::equal(magic, co_detect_support_bundle_magic))
             fail(CoDetectSupportBundleError::unsupported_version);
+        work.charge(entries[1].uncompressed_size);
         auto manifest_bytes = reader.extract(1, entries[1].uncompressed_size);
-        work.charge(manifest_bytes.size());
         check_cancelled(stop);
         const auto manifest = parse_manifest(
             manifest_bytes, resource_id, frozen_locale, frozen_profile, limits, work);
@@ -972,9 +987,11 @@ CoDetectSupportBundleLoadResult load_co_detect_support_bundle(
         for (std::size_t index = 0; index < manifest.members.size(); ++index) {
             check_cancelled(stop);
             const auto& member = manifest.members[index];
+            // Reserve the full declared output before miniz can allocate or inflate it.
+            work.charge(member.size);
             auto payload = reader.extract(index + 2, member.size);
-            work.charge(payload.size());
             check_cancelled(stop);
+            // Digesting is a separate bounded pass over the extracted payload.
             work.charge(payload.size());
             if (snapshot_resources::sha256_hex(payload) != member.sha256)
                 fail(CoDetectSupportBundleError::member_digest_mismatch, index);

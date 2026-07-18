@@ -314,6 +314,13 @@ symlinks, path separators, duplicate names, central/local disagreement, unlisted
 members, leading/trailing bytes, and compression-ratio bombs are rejected before
 payload extraction. Payload members use only STORE or DEFLATE.
 
+The aggregate work budget reserves each entry's declared uncompressed size before
+calling miniz, so an inflate cannot begin when its output work is unaffordable.
+Cancellation is polled immediately before and after each extraction and throughout
+container/JSON/PNG validation. The individual miniz extraction call is not
+mid-inflate interruptible; cancellation latency during that call is therefore
+bounded by the per-member compressed/uncompressed and ratio limits.
+
 The strict manifest root contains exactly `schema`, `format_version`, `bundle_id`,
 `locale`, `profile`, `member_count`, `payload_size`, and `members`. Its schema is
 `baas.co-detect-support-bundle/v1`; every ordered member contains exactly `id`,
