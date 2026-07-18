@@ -175,7 +175,7 @@ class CoDetectPythonCompatEngineContractTests(unittest.TestCase):
 
     def test_production_definitions_are_gated_on_real_adapter_resources_and_digests(self) -> None:
         for token in (
-            "engine adapter, external resource bundles",
+            "engine adapter, externally published real",
             "real resource digests",
             "Nothing in this document authorizes a placeholder",
             "production definitions are forbidden",
@@ -235,6 +235,74 @@ class CoDetectPythonCompatEngineContractTests(unittest.TestCase):
                 2,
                 dependency_path,
             )
+
+    def test_real_support_bundle_loader_is_frozen_bounded_and_ci_gated(self) -> None:
+        implementation_paths = (
+            "include/runtime/procedure/CoDetectSupportBundle.h",
+            "src/runtime/procedure/CoDetectSupportBundle.cpp",
+            "tests/runtime/CoDetectSupportBundleTests.cpp",
+            "cmake/RuntimeCoDetectSupportBundle.cmake",
+        )
+        for path in implementation_paths:
+            self.assertTrue((ROOT / path).is_file(), path)
+        for token in (
+            "application/vnd.baas.co-detect-support-bundle.v1+zip",
+            "bundle.magic",
+            "m00000000",
+            "baas.co-detect-support-bundle/v1",
+            "actually decodes every PNG through OpenCV",
+            "reserves each entry's declared uncompressed size before\ncalling miniz",
+            "individual miniz extraction call is not\nmid-inflate interruptible",
+            "A feature omitted from the profile graph is a normal\n`false` lookup",
+            "externally published real\nlocale bundles",
+        ):
+            self.assertIn(token, self.doc)
+        self.assertNotIn(
+            "The concrete archive encoding and media type must\nbe frozen",
+            self.doc,
+        )
+        cmake = (ROOT / "CMakeLists.txt").read_text(encoding="utf-8")
+        for token in (
+            "BUILD_RUNTIME_CO_DETECT_SUPPORT_BUNDLE",
+            "BUILD_RUNTIME_CO_DETECT_SUPPORT_BUNDLE_TESTS",
+            "baas_request_dependencies(opencv)",
+            "baas_request_dependencies(miniz)",
+            "cmake/RuntimeCoDetectSupportBundle.cmake",
+        ):
+            self.assertIn(token, cmake)
+        for token in (
+            "co-detect-support-bundle-windows",
+            "co-detect-support-bundle-unix",
+            "-DBUILD_RUNTIME_CO_DETECT_SUPPORT_BUNDLE_TESTS=ON",
+            "-DBUILD_RUNTIME_CO_DETECT_SUPPORT_BUNDLE=ON",
+            "BAAS_runtime_co_detect_support_bundle_tests",
+            "BAAS_runtime_co_detect_support_bundle",
+            "conan create deploy/conan/recipes/baas-miniz",
+            "conan create deploy/conan/recipes/baas-opencv",
+            "--requires=baas-miniz/3.1.2",
+            "--requires=baas-opencv/4.13.0",
+            "Compile and link support-bundle test executable",
+        ):
+            self.assertIn(token, self.workflow)
+        self.assertIn("conanrun.bat", self.workflow)
+        self.assertIn("conanrun.sh", self.workflow)
+        self.assertEqual(self.workflow.count("Run support-bundle tests"), 2)
+        for dependency_path in (
+            "deploy/conan/recipes/baas-miniz/**",
+            "deploy/conan/recipes/baas-opencv/**",
+        ):
+            self.assertEqual(self.workflow.count(f"- '{dependency_path}'"), 2)
+        implementation = "\n".join(
+            (ROOT / path).read_text(encoding="utf-8") for path in implementation_paths
+        )
+        for forbidden in (
+            "BAAS_FETCH_RESOURCES",
+            "RESOURCE_DIR",
+            "FetchContent",
+            "ExternalProject",
+            "configure_file(",
+        ):
+            self.assertNotIn(forbidden, implementation)
 
 
 if __name__ == "__main__":

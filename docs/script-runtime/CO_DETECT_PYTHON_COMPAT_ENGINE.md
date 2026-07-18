@@ -1,9 +1,9 @@
 # Python-compatible `co_detect` procedure engine contract
 
 Status: strict immutable definition parsing/model implemented; the pure C++
-execution state machine is also implemented. The concrete feature-view
-engine adapter, external resource bundles, real resource digests, and production
-procedure definitions do not exist yet.
+execution state machine and bounded generation-bound support-bundle loader are
+also implemented. The production device/feature engine adapter, externally published real
+locale bundles, real resource digests, and production procedure definitions do not exist yet.
 Nothing in this document authorizes a placeholder `baas.procedures.json` entry.
 
 This contract freezes the required migration boundary for
@@ -310,14 +310,57 @@ effect.
 This bundle boundary is necessary because `RuntimeProcedureActivation` requires
 every declared resource ID to resolve. A naive union of per-locale PNG IDs would
 otherwise require fake images for intentionally absent Python templates. Such
-placeholders are forbidden. The concrete archive encoding and media type must
-be frozen with the adapter implementation; until then no bundle digest is
-production-authoritative.
+placeholders are forbidden. The concrete archive encoding and media type are frozen
+below. No bundle digest is production-authoritative until the external resources
+repository publishes and verifies the real locale bundles.
 
 The bundle's internal IDs use only lowercase canonical resource characters.
 Runtime feature names remain the exact case-sensitive Python names and are
 mapped by the feature graph; lowercasing a resource ID does not rename a
 terminal.
+
+### Frozen support-bundle v1 encoding
+
+The outer `ResourceEntry.media_type` is exactly
+`application/vnd.baas.co-detect-support-bundle.v1+zip`. The ZIP byte stream has no
+prefix or suffix and contains, in physical order:
+
+1. `bundle.magic`, STORE, with the 16 bytes `BAASCDSB`, little-endian major `1`,
+   minor `0`, and four reserved zero bytes;
+2. `manifest.json`, STORE; and
+3. one flat member per manifest item, named `m00000000`, `m00000001`, ... in
+   lowercase hexadecimal order.
+
+These fixed ASCII names are container labels, never filesystem paths. ZIP64,
+encryption, data descriptors, entry/archive comments, extra fields, directories,
+symlinks, path separators, duplicate names, central/local disagreement, unlisted
+members, leading/trailing bytes, and compression-ratio bombs are rejected before
+payload extraction. Payload members use only STORE or DEFLATE.
+
+The aggregate work budget reserves each entry's declared uncompressed size before
+calling miniz, so an inflate cannot begin when its output work is unaffordable.
+Cancellation is polled immediately before and after each extraction and throughout
+container/JSON/PNG validation. The individual miniz extraction call is not
+mid-inflate interruptible; cancellation latency during that call is therefore
+bounded by the per-member compressed/uncompressed and ratio limits.
+
+The strict manifest root contains exactly `schema`, `format_version`, `bundle_id`,
+`locale`, `profile`, `member_count`, `payload_size`, and `members`. Its schema is
+`baas.co-detect-support-bundle/v1`; every ordered member contains exactly `id`,
+`kind`, `media_type`, `size`, and lowercase `sha256`. The first logical member is
+the sole feature graph, followed by bytewise-sorted RGB members and then
+bytewise-sorted PNG members. Member IDs are lowercase canonical resource IDs; the
+graph maps them to exact case-sensitive Python feature names.
+
+`BAAS_runtime_co_detect_support_bundle` accepts only a
+`RuntimeResourceSnapshotActivation`, its expected generation, the exact support
+resource ID, and the frozen locale/profile. A neutral or activity fallback returned
+by generic `ResourceSnapshot` resolution is rejected. It verifies every archive and
+member bound/digest, strict graph/RGB/crop schema, PNG structure and CRC, then
+actually decodes every PNG through OpenCV to an owned immutable packed BGR8
+template before publication. A feature omitted from the profile graph is a normal
+`false` lookup; an absent or mismatched whole bundle is unavailable before capture.
+No native resource path or ambient registry is accepted.
 
 ### `navigation.to_main_page` closure
 

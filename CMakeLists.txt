@@ -117,6 +117,8 @@ option(BUILD_RUNTIME_CO_DETECT_DEFINITION_MODEL "Build strict immutable co-detec
 option(BUILD_RUNTIME_CO_DETECT_DEFINITION_MODEL_TESTS "Build co-detect definition model tests" OFF)
 option(BUILD_RUNTIME_CO_DETECT_EXECUTOR "Build pure C++ co-detect procedure executor" OFF)
 option(BUILD_RUNTIME_CO_DETECT_EXECUTOR_TESTS "Build deterministic co-detect executor tests" OFF)
+option(BUILD_RUNTIME_CO_DETECT_SUPPORT_BUNDLE "Build verified co-detect locale support bundle loader" OFF)
+option(BUILD_RUNTIME_CO_DETECT_SUPPORT_BUNDLE_TESTS "Build co-detect support bundle loader tests" OFF)
 option(BUILD_LEGACY_PROCEDURE_EXECUTION "Build pure legacy procedure typed/control/effect seam" OFF)
 option(BUILD_LEGACY_PROCEDURE_EXECUTION_TESTS "Build legacy procedure execution seam tests" OFF)
 option(BUILD_LEGACY_PROCEDURE_DEFINITION_VALIDATION "Build strict direct legacy procedure definition validation" OFF)
@@ -328,6 +330,18 @@ endif()
 
 if(BUILD_RESOURCE_CORE_TESTS AND NOT BUILD_RESOURCE_CORE)
     set(BUILD_RESOURCE_CORE ON CACHE BOOL "Build immutable resource snapshot core" FORCE)
+endif()
+
+if(BUILD_RUNTIME_CO_DETECT_SUPPORT_BUNDLE_TESTS)
+    set(BUILD_RUNTIME_CO_DETECT_SUPPORT_BUNDLE ON CACHE BOOL
+        "Build verified co-detect locale support bundle loader" FORCE)
+endif()
+
+if(BUILD_RUNTIME_CO_DETECT_SUPPORT_BUNDLE)
+    set(BUILD_RUNTIME_RESOURCE_SNAPSHOT_LOADER ON CACHE BOOL
+        "Build pinned runtime resource snapshot loader" FORCE)
+    set(BUILD_RUNTIME_CO_DETECT_DEFINITION_MODEL ON CACHE BOOL
+        "Build strict immutable co-detect definition model" FORCE)
 endif()
 
 if(BUILD_RUNTIME_RESOURCE_SNAPSHOT_LOADER_TESTS)
@@ -931,13 +945,18 @@ if(BUILD_SERVICE_SYNC_HANDLER OR BUILD_SERVICE_REMOTE_HANDLER
    OR BUILD_RUNTIME_RESOURCE_SNAPSHOT_LOADER
    OR BUILD_RUNTIME_PROCEDURE_ACTIVATION
    OR BUILD_RUNTIME_CO_DETECT_DEFINITION_MODEL
+   OR BUILD_RUNTIME_CO_DETECT_SUPPORT_BUNDLE
    OR BUILD_SCHEDULER_POLICY
    OR BUILD_LEGACY_PROCEDURE_DEFINITION_VALIDATION)
     baas_request_dependencies(nlohmann_json)
 endif()
 
-if(BUILD_SERVICE_FILE_RESOURCE_STORE)
+if(BUILD_SERVICE_FILE_RESOURCE_STORE OR BUILD_RUNTIME_CO_DETECT_SUPPORT_BUNDLE)
     baas_request_dependencies(miniz)
+endif()
+
+if(BUILD_RUNTIME_CO_DETECT_SUPPORT_BUNDLE)
+    baas_request_dependencies(opencv)
 endif()
 
 if(BUILD_RUNTIME_REPOSITORY_GIT2)
@@ -1047,12 +1066,17 @@ if(BUILD_SCRIPT_PROCEDURE_SNAPSHOT)
     include("${CMAKE_CURRENT_LIST_DIR}/cmake/ScriptProcedureSnapshot.cmake")
 endif()
 
-if(BUILD_RUNTIME_PROCEDURE_ACTIVATION OR BUILD_RUNTIME_CO_DETECT_DEFINITION_MODEL)
+if(BUILD_RUNTIME_PROCEDURE_ACTIVATION OR BUILD_RUNTIME_CO_DETECT_DEFINITION_MODEL
+   OR BUILD_RUNTIME_CO_DETECT_SUPPORT_BUNDLE)
     include("${CMAKE_CURRENT_LIST_DIR}/cmake/RuntimeStrictJson.cmake")
 endif()
 
 if(BUILD_RUNTIME_CO_DETECT_DEFINITION_MODEL)
     include("${CMAKE_CURRENT_LIST_DIR}/cmake/RuntimeCoDetectDefinitionModel.cmake")
+endif()
+
+if(BUILD_RUNTIME_CO_DETECT_SUPPORT_BUNDLE)
+    include("${CMAKE_CURRENT_LIST_DIR}/cmake/RuntimeCoDetectSupportBundle.cmake")
 endif()
 
 if(BUILD_RUNTIME_PROCEDURE_ACTIVATION)
