@@ -130,6 +130,8 @@ option(BUILD_LEGACY_PROCEDURE_DEFINITION_VALIDATION "Build strict direct legacy 
 option(BUILD_LEGACY_PROCEDURE_DEFINITION_TESTS "Build direct legacy procedure definition validation tests" OFF)
 option(BUILD_SCRIPT_RESOURCE_HOST "Build baas/resource script Host adapter" OFF)
 option(BUILD_SCRIPT_RESOURCE_HOST_TESTS "Build baas/resource script Host tests" OFF)
+option(BUILD_SCRIPT_CONFIG_HOST "Build request-local baas/config script Host" OFF)
+option(BUILD_SCRIPT_CONFIG_HOST_TESTS "Build request-local baas/config Host tests" OFF)
 option(BUILD_SCRIPT_PROCEDURE_HOST "Build snapshot-owned baas/procedure script Host" OFF)
 option(BUILD_SCRIPT_PROCEDURE_HOST_TESTS "Build snapshot-owned baas/procedure Host tests" OFF)
 option(BUILD_SCRIPT_HOST_RUNTIME_COMPOSITION "Build immutable script Host runtime composition" OFF)
@@ -536,6 +538,21 @@ endif()
 if(BUILD_SCRIPT_RESOURCE_HOST)
     set(BUILD_RESOURCE_CORE ON CACHE BOOL "Build immutable resource snapshot core" FORCE)
     set(BUILD_SCRIPT_RUNTIME ON CACHE BOOL "Build the standalone BAAS script runtime" FORCE)
+endif()
+
+if(BUILD_SCRIPT_CONFIG_HOST_TESTS AND NOT BUILD_SCRIPT_CONFIG_HOST)
+    set(BUILD_SCRIPT_CONFIG_HOST ON CACHE BOOL
+        "Build request-local baas/config script Host" FORCE)
+endif()
+
+if(BUILD_SCRIPT_CONFIG_HOST_TESTS AND NOT BUILD_SCRIPT_HOST_RUNTIME_COMPOSITION)
+    set(BUILD_SCRIPT_HOST_RUNTIME_COMPOSITION ON CACHE BOOL
+        "Build composed Host runtime foundation" FORCE)
+endif()
+
+if(BUILD_SCRIPT_CONFIG_HOST AND NOT BUILD_SCRIPT_RUNTIME)
+    set(BUILD_SCRIPT_RUNTIME ON CACHE BOOL
+        "Build the standalone BAAS script runtime" FORCE)
 endif()
 
 if(BUILD_SCRIPT_PROCEDURE_HOST_TESTS AND NOT BUILD_SCRIPT_PROCEDURE_HOST)
@@ -1186,6 +1203,10 @@ endif()
 
 if(BUILD_SCRIPT_RESOURCE_HOST)
     include("${CMAKE_CURRENT_LIST_DIR}/cmake/ScriptResourceHost.cmake")
+endif()
+
+if(BUILD_SCRIPT_CONFIG_HOST)
+    include("${CMAKE_CURRENT_LIST_DIR}/cmake/ScriptConfigHost.cmake")
 endif()
 
 if(BUILD_SCRIPT_PROCEDURE_HOST)
