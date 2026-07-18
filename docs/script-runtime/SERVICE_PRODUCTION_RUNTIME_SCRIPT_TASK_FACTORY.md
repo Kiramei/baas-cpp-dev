@@ -32,9 +32,13 @@ modules/bindings, and extension identity mismatch all fail closed.
 
 The built-in production procedure engine is
 `co_detect.python-compat/v1`. Its definition and support archive are read from
-the pinned scripts/resources repositories at runtime. Additional typed engines
-and request-local Host contributions enter through an immutable extension whose
-identity must cover the exact config snapshot and repository commits.
+the pinned scripts/resources repositories at runtime. The configured support
+resource must also be an exact member of that procedure activation descriptor's
+declared resource ids. An immutable extension may provide request-local Host
+contributions and the already activation-supported
+`legacy.appear_then_click/v1` executor. It is not an arbitrary engine registry:
+unknown or future engines fail closed during activation. Extension identity
+must cover the exact config snapshot and repository commits.
 
 ## Execution and cleanup
 
@@ -43,12 +47,13 @@ exact Boolean value `true`; `false`, `null`, numbers, exceptions, or Host
 failure map to ordinary failure. Boundary precedence is deadline, then stop,
 then ordinary failure.
 
-Every task owns an RAII cleanup boundary. Normal completion, a later plan build
-failure, cancellation, extension exception, final device drift, or destruction
-without execution performs evaluator close, retries detached typed-handle
-releases, shuts down and drains LogHost, and finally releases all Host lifetime
-owners. A partially constructed multi-task runtime therefore cannot strand an
-earlier evaluator or log queue.
+Every task owns an RAII cleanup boundary. On normal completion and the supported
+adapter failure paths, a later plan build failure, cancellation, extension
+exception, final device drift, or destruction without execution performs
+evaluator close, retries detached typed-handle releases, shuts down and drains
+LogHost, and finally releases Host lifetime owners. Internal dispatcher
+invariant corruption remains fail-fast; this boundary does not claim to turn an
+unsafe dispatcher state into recoverable success.
 
 ## Build and test
 

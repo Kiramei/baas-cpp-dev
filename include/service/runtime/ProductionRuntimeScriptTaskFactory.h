@@ -56,11 +56,14 @@ struct ProductionRuntimeScriptExtensionIdentity final {
 };
 
 // Optional immutable extension publication for later OCR/config/clock/device
-// Hosts and additional typed procedure engines. Every contribution is rebuilt
-// for one task and passes through final HostRuntimeComposition validation;
-// duplicate/orphan bindings and permission mismatches therefore fail closed.
-// Implementations retain only state covered by identity() and return fresh
-// request-local adapters that do not consult mutable registries.
+// Hosts and the activation-supported legacy.appear_then_click/v1 executor.
+// This is not an open engine-registration API: co-detect is built in and an
+// unknown/future engine must fail at RuntimeProcedureActivation. Every Host
+// contribution is rebuilt for one task and passes through final
+// HostRuntimeComposition validation; duplicate/orphan bindings and permission
+// mismatches therefore fail closed. Implementations retain only state covered
+// by identity() and return fresh request-local adapters that do not consult
+// mutable registries.
 class ProductionRuntimeScriptExtensions {
 public:
     virtual ~ProductionRuntimeScriptExtensions() = default;
@@ -79,7 +82,7 @@ public:
             cancellation) const = 0;
     [[nodiscard]] virtual std::shared_ptr<
         ::baas::script::host::ProcedureExecutor>
-    make_procedure_executor(
+    make_activated_legacy_procedure_executor(
         std::shared_ptr<const
             ::baas::runtime::procedure::RuntimeProcedureActivation> activation,
         std::string_view procedure_id,

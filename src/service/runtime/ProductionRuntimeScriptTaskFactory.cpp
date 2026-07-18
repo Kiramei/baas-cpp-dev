@@ -562,6 +562,11 @@ private:
                     == runtime_procedure::co_detect_python_compat_engine) {
                     const auto support = find_support(config, procedure_id);
                     if (!support) return std::nullopt;
+                    const auto descriptor =
+                        activation->snapshot()->resolve(procedure_id);
+                    if (!descriptor || !std::ranges::binary_search(
+                            descriptor->resource_ids(), support->resource_id))
+                        return std::nullopt;
                     const auto loaded =
                         runtime_procedure::load_co_detect_support_bundle(
                             resources, repositories.generation(),
@@ -579,8 +584,11 @@ private:
                             limits_.device_adapter);
                     support_bundles.push_back(loaded.bundle);
                 }
-                else if (inputs.extensions) {
-                    executor = inputs.extensions->make_procedure_executor(
+                else if (definition->engine()
+                             == runtime_procedure::runtime_procedure_legacy_engine
+                         && inputs.extensions) {
+                    executor = inputs.extensions->
+                        make_activated_legacy_procedure_executor(
                         activation, procedure_id, control);
                 }
                 if (!executor) return std::nullopt;

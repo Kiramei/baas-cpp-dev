@@ -212,7 +212,8 @@ struct ZipItem final {
     return result;
 }
 
-[[nodiscard]] std::vector<std::byte> support_archive()
+[[nodiscard]] std::vector<std::byte> support_archive(
+    const std::string_view bundle_id)
 {
     const auto graph = bytes(
         R"({"schema":"baas.co-detect-feature-graph/v1","features":[{"name":"rgb-hit","type":"rgb","member":"rgb/hit"},{"name":"rgb-miss","type":"rgb","member":"rgb/miss"},{"name":"image-hit","type":"image","member":"image/hit","crop":[0,0,4,4],"threshold_milli":800,"mean_rgb_tolerance":20}]})");
@@ -223,7 +224,8 @@ struct ZipItem final {
     const auto png = png_fixture();
     const auto payload_size = graph.size() + rgb.size() + rgb_miss.size() + png.size();
     const std::string manifest =
-        R"({"schema":"baas.co-detect-support-bundle/v1","format_version":1,"bundle_id":"procedure-support/navigation.to-main-page/v1","locale":"JP","profile":"JP","member_count":4,"payload_size":)" +
+        R"({"schema":"baas.co-detect-support-bundle/v1","format_version":1,"bundle_id":")" +
+        std::string{bundle_id} + R"(","locale":"JP","profile":"JP","member_count":4,"payload_size":)" +
         std::to_string(payload_size) +
         R"(,"members":[{"id":"feature/navigation.to-main-page","kind":"feature-graph","media_type":"application/vnd.baas.co-detect-feature-graph.v1+json","size":)" +
         std::to_string(graph.size()) + R"(,"sha256":")" + sha256(graph) +
@@ -246,9 +248,10 @@ struct ZipItem final {
 
 }  // namespace
 
-std::vector<std::byte> make_co_detect_production_test_archive()
+std::vector<std::byte> make_co_detect_production_test_archive(
+    const std::string_view bundle_id)
 {
-    return support_archive();
+    return support_archive(bundle_id);
 }
 
 std::shared_ptr<const baas::runtime::procedure::CoDetectSupportBundle>

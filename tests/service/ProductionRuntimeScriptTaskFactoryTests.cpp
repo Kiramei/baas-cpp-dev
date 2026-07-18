@@ -157,17 +157,44 @@ std::string catalog_json(const bool procedure = false)
         + task("packages/two", "two", "start_two", false) + "]}";
 }
 
-std::string co_detect_definition()
+std::string procedure_definition(
+    const std::string_view engine =
+        runtime_procedure::co_detect_python_compat_engine)
 {
-    return R"({"schema":"baas.procedure-definition/v1","engine":"co_detect.python-compat/v1","payload":{"profile_source":"device.server-and-locale/v1","ends":{"rgb":["rgb-hit"],"image":[]},"reactions":{"rgb":[],"rgb_profiled":[],"image":[],"image_profiled":[]},"popups":{"rgb":[],"profiled_image":[]},"loading":{"all_rgb":["rgb-miss"]},"foreground_check":{"android_only":true,"interval_ms":100,"idle_feature_ms":100},"loop":{"skip_first_screenshot":false,"timeout_ms":1000,"duplicate_click_window_ms":2000,"tentative":{"enabled":false}}}})";
+    return R"({"schema":"baas.procedure-definition/v1","engine":")"
+        + std::string{engine}
+        + R"(","payload":{"profile_source":"device.server-and-locale/v1","ends":{"rgb":["rgb-hit"],"image":[]},"reactions":{"rgb":[],"rgb_profiled":[],"image":[],"image_profiled":[]},"popups":{"rgb":[],"profiled_image":[]},"loading":{"all_rgb":["rgb-miss"]},"foreground_check":{"android_only":true,"interval_ms":100,"idle_feature_ms":100},"loop":{"skip_first_screenshot":false,"timeout_ms":1000,"duplicate_click_window_ms":2000,"tentative":{"enabled":false}}}})";
 }
 
-std::string procedure_manifest(const std::string_view definition)
+std::string procedure_entry(
+    const std::string_view id,
+    const std::string_view path,
+    const std::string_view resource_id,
+    const std::string_view definition)
 {
-    return R"({"schema":"baas.procedures/v1","entries":[{"id":"navigation.to-main-page","definition":{"path":"procedures/navigation.to-main-page.json","size":)"
+    return R"({"id":")" + std::string{id}
+        + R"(","definition":{"path":")" + std::string{path}
+        + R"(","size":)"
         + std::to_string(definition.size()) + R"(,"sha256":")"
         + sha256(definition)
-        + R"("},"terminals":[{"source":"rgb-hit","id":"done"}],"effects":["capture","vision","input","wait","foreground_check"],"resources":["procedure-support/navigation.to-main-page/v1"]}]})";
+        + R"("},"terminals":[{"source":"rgb-hit","id":"done"}],"effects":["capture","vision","input","wait","foreground_check"],"resources":[")"
+        + std::string{resource_id} + R"("]})";
+}
+
+std::string procedure_manifest(
+    const std::string_view main_definition,
+    const std::string_view other_definition)
+{
+    return R"({"schema":"baas.procedures/v1","entries":[)"
+        + procedure_entry(
+            "navigation.other", "procedures/navigation.other.json",
+            "procedure-support/navigation.other/v1", other_definition)
+        + ","
+        + procedure_entry(
+            "navigation.to-main-page",
+            "procedures/navigation.to-main-page.json",
+            "procedure-support/navigation.to-main-page/v1", main_definition)
+        + "]}";
 }
 
 class RepositoryFixture final {
@@ -176,7 +203,8 @@ public:
         const std::string_view first_result = "true",
         const std::string_view second_result = "true",
         const bool procedure = false,
-        const bool corrupt_second_package = false)
+        const bool corrupt_second_package = false,
+        const bool legacy_procedure = false)
     {
         const std::string first = procedure
             ? std::string{
@@ -192,16 +220,27 @@ public:
             + std::string{second_result} + "; }\n";
         std::vector<File> resources;
         if (procedure) {
-            const auto archive = make_co_detect_production_test_archive();
+            const auto archive = make_co_detect_production_test_archive(
+                "procedure-support/navigation.to-main-page/v1");
+            const auto other_archive = make_co_detect_production_test_archive(
+                "procedure-support/navigation.other/v1");
             const std::string archive_bytes{
                 reinterpret_cast<const char*>(archive.data()), archive.size()};
+            const std::string other_archive_bytes{
+                reinterpret_cast<const char*>(other_archive.data()),
+                other_archive.size()};
             resources = {
                 {"baas.resources.json",
-                 R"({"schema":"baas.resources/v1","entries":[{"id":"procedure-support/navigation.to-main-page/v1","path":"payload/support.bundle","media_type":")"
+                 R"({"schema":"baas.resources/v1","entries":[{"id":"procedure-support/navigation.other/v1","path":"payload/other-support.bundle","media_type":")"
+                    + std::string{runtime_procedure::co_detect_support_bundle_media_type}
+                    + R"(","size":)" + std::to_string(other_archive.size())
+                    + R"(,"sha256":")" + sha256(other_archive_bytes)
+                    + R"(","locale":"JP"},{"id":"procedure-support/navigation.to-main-page/v1","path":"payload/support.bundle","media_type":")"
                     + std::string{runtime_procedure::co_detect_support_bundle_media_type}
                     + R"(","size":)" + std::to_string(archive.size())
                     + R"(,"sha256":")" + sha256(archive_bytes)
                     + R"(","locale":"JP"}]})"},
+                {"payload/other-support.bundle", other_archive_bytes},
                 {"payload/support.bundle", archive_bytes},
             };
         }
@@ -222,9 +261,16 @@ public:
             {"packages/two/main.baas", second},
         };
         if (procedure) {
-            const auto definition = co_detect_definition();
+            const auto definition = procedure_definition(
+                legacy_procedure
+                    ? runtime_procedure::runtime_procedure_legacy_engine
+                    : runtime_procedure::co_detect_python_compat_engine);
+            const auto other_definition = procedure_definition();
             scripts.push_back({"baas.procedures.json",
-                               procedure_manifest(definition)});
+                               procedure_manifest(
+                                   definition, other_definition)});
+            scripts.push_back({"procedures/navigation.other.json",
+                               other_definition});
             scripts.push_back({"procedures/navigation.to-main-page.json",
                                definition});
         }
@@ -467,9 +513,12 @@ struct Harness final {
         const std::string_view first_result = "true",
         const std::string_view second_result = "true",
         const bool procedure = false,
-        const bool corrupt_second_package = false)
+        const bool corrupt_second_package = false,
+        const bool wrong_procedure_support = false,
+        const bool legacy_procedure = false)
         : repositories(
-              first_result, second_result, procedure, corrupt_second_package),
+              first_result, second_result, procedure, corrupt_second_package,
+              legacy_procedure),
           trust(std::make_shared<Trust>(
               repositories.bundle()->generation(),
               repositories.bundle()->scripts().commit())),
@@ -488,7 +537,9 @@ struct Harness final {
               procedure
                   ? std::vector<service_runtime::ProductionRuntimeProcedureSupport>{
                         {"navigation.to-main-page",
-                         "procedure-support/navigation.to-main-page/v1"}}
+                         wrong_procedure_support
+                             ? "procedure-support/navigation.other/v1"
+                             : "procedure-support/navigation.to-main-page/v1"}}
                   : std::vector<service_runtime::ProductionRuntimeProcedureSupport>{})),
           factory(service_runtime::make_production_runtime_script_task_factory(
               provider))
@@ -516,9 +567,29 @@ enum class ExtensionMode {
 
 struct ExtensionCounters final {
     std::atomic<int> calls{};
+    std::atomic<int> legacy_executor_calls{};
+    std::atomic<int> legacy_executions{};
     std::atomic<int> created{};
     std::atomic<int> destroyed{};
     std::atomic<int> live{};
+};
+
+class LegacyTestExecutor final : public script_host::ProcedureExecutor {
+public:
+    explicit LegacyTestExecutor(std::shared_ptr<ExtensionCounters> counters)
+        : counters_(std::move(counters))
+    {
+    }
+
+    [[nodiscard]] script_host::ProcedureExecutorOutcome execute(
+        const script_host::ProcedureExecutionRequest&) override
+    {
+        ++counters_->legacy_executions;
+        return script_host::ProcedureExecutorOutcome::success("done");
+    }
+
+private:
+    std::shared_ptr<ExtensionCounters> counters_;
 };
 
 class ExtensionOwner final {
@@ -606,12 +677,19 @@ public:
     }
 
     [[nodiscard]] std::shared_ptr<script_host::ProcedureExecutor>
-    make_procedure_executor(
-        std::shared_ptr<const runtime_procedure::RuntimeProcedureActivation>,
-        std::string_view,
+    make_activated_legacy_procedure_executor(
+        std::shared_ptr<const runtime_procedure::RuntimeProcedureActivation>
+            activation,
+        const std::string_view procedure_id,
         const service_runtime::RuntimeScriptTaskExecutionControl&) const override
     {
-        return {};
+        const auto definition = activation
+            ? activation->resolve_definition(procedure_id) : nullptr;
+        if (!definition || definition->engine()
+                != runtime_procedure::runtime_procedure_legacy_engine)
+            return {};
+        ++counters_->legacy_executor_calls;
+        return std::make_shared<LegacyTestExecutor>(counters_);
     }
 
 private:
@@ -722,6 +800,38 @@ void test_real_co_detect_activation_bundle_device_and_evaluator()
           "scripts view through activation/support/device/evaluator must execute co-detect");
     check(harness.device->latest_frame() != nullptr,
           "production co-detect execution must capture and publish an owned frame");
+}
+
+void test_co_detect_support_must_belong_to_the_activated_procedure()
+{
+    Harness wrong_mapping{"true", "true", true, false, true};
+    auto task = request();
+    task.waiting_tasks.clear();
+    const std::vector<std::string> requested{"start_one"};
+    const service_runtime::RuntimeScriptTaskExecutionControl control{
+        {}, std::chrono::steady_clock::now() + std::chrono::minutes{1}};
+    check(!wrong_mapping.factory->create(task, requested, control)
+              && wrong_mapping.device->latest_frame() == nullptr,
+          "a valid bundle declared by another procedure must not be substituted"
+          " through config support mapping");
+}
+
+void test_activation_supported_legacy_executor_extension_is_reachable()
+{
+    Harness harness{"true", "true", true, false, false, true};
+    auto counters = std::make_shared<ExtensionCounters>();
+    harness.provider->set_extensions(std::make_shared<TestExtensions>(
+        extension_identity(harness), ExtensionMode::Valid, counters));
+    auto task = request();
+    task.waiting_tasks.clear();
+    const auto terminal =
+        service_runtime::make_runtime_script_task_backend(harness.factory)(
+            task, {}, [](auto) { return true; });
+    check(terminal.exit_code == 0
+              && counters->legacy_executor_calls == 1
+              && counters->legacy_executions == 1,
+          "the extension seam must be reachable for the activation-supported"
+          " legacy engine only");
 }
 
 void test_runtime_retains_pins_and_never_rereads_provider()
@@ -920,6 +1030,8 @@ int main()
     test_real_catalog_plan_hosts_and_ordered_evaluation();
     test_entry_export_requires_exact_boolean_true();
     test_real_co_detect_activation_bundle_device_and_evaluator();
+    test_co_detect_support_must_belong_to_the_activated_procedure();
+    test_activation_supported_legacy_executor_extension_is_reachable();
     test_runtime_retains_pins_and_never_rereads_provider();
     test_identity_changes_and_trust_fail_closed();
     test_extension_identity_composition_and_lifetime();

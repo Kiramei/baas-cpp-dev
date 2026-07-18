@@ -16,6 +16,9 @@ class ServiceProductionRuntimeScriptTaskFactoryTests(unittest.TestCase):
             ROOT
             / "src/service/runtime/ProductionRuntimeScriptTaskFactory.cpp"
         ).read_text(encoding="utf-8")
+        cls.activation_tests = (
+            ROOT / "tests/runtime/RuntimeProcedureActivationTests.cpp"
+        ).read_text(encoding="utf-8")
         cls.cmake = (ROOT / "CMakeLists.txt").read_text(encoding="utf-8")
         cls.workflow = (
             ROOT / ".github/workflows/foundation-runtime.yml"
@@ -45,6 +48,7 @@ class ServiceProductionRuntimeScriptTaskFactoryTests(unittest.TestCase):
             "RuntimeRepositoryReadBundle",
             "CoDetectProductionDeviceIdentity",
             "ProductionRuntimeScriptTaskProvider",
+            "make_activated_legacy_procedure_executor",
         ):
             self.assertIn(anchor, self.header)
         for anchor in (
@@ -53,8 +57,17 @@ class ServiceProductionRuntimeScriptTaskFactoryTests(unittest.TestCase):
             "retry_detached_releases",
             "log_host->shutdown",
             "exact_device_identity",
+            "descriptor->resource_ids()",
         ):
             self.assertIn(anchor, self.source)
+
+    def test_extension_engine_contract_is_closed(self) -> None:
+        self.assertIn("legacy.appear_then_click/v1 executor", self.header)
+        self.assertIn("not an open engine-registration API", self.header)
+        self.assertIn("future.engine/v2", self.activation_tests)
+        self.assertIn("unsupported_engine", self.activation_tests)
+        self.assertIn("not an arbitrary engine registry", self.doc)
+        self.assertIn("Internal dispatcher\ninvariant corruption remains fail-fast", self.doc)
 
     def test_dependency_complete_ci_covers_host_and_android(self) -> None:
         self.assertGreaterEqual(
