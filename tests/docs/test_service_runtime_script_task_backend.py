@@ -43,7 +43,8 @@ class ServiceRuntimeScriptTaskBackendTests(unittest.TestCase):
             "runtime_generation",
             "scripts_commit",
             "resources_commit",
-            "canonical_task",
+            "requested_task_plan",
+            "canonical_task_plan",
             "RuntimeScriptTaskExecutionControl",
             "RuntimeScriptTaskRuntimeFactory",
         ):
@@ -51,6 +52,19 @@ class ServiceRuntimeScriptTaskBackendTests(unittest.TestCase):
         self.assertIn("catch (...)", self.source)
         self.assertIn("runtime_script_task_deadline_exit_code = 124", self.header)
         self.assertIn("runtime_script_task_cancelled_exit_code = 130", self.header)
+        self.assertIn("exact_generation", self.source)
+        self.assertIn("exact_commit", self.source)
+
+    def test_complete_plan_progress_and_terminal_contract(self) -> None:
+        for anchor in (
+            "complete ordered requested task plan",
+            "runtime owns execution of the entire retained plan",
+            "deadline, then stop, then ordinary failure",
+            "preserving both\n  `is_flag_run` and its exit code",
+        ):
+            self.assertIn(anchor, self.doc)
+        self.assertIn("const RuntimeTaskProgressReporter& report_progress", self.header)
+        self.assertNotIn("if (terminal.is_flag_run)", self.source)
 
     def test_runtime_state_is_injected_not_embedded(self) -> None:
         for anchor in (

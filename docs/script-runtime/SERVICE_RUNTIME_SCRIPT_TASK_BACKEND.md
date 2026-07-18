@@ -10,22 +10,31 @@ change the Tauri launch path, or replace the legacy Python backend.
 The first slice deliberately separates service task ownership from runtime
 construction. `RuntimeScriptTaskRuntimeFactory::create()` is the only seam that
 may resolve a user-created configuration, open the pinned runtime repository
-view, build the catalog resolution/execution plan and procedure activation, and
-construct Procedure/Log/Resource Hosts. It returns a fresh task-local runtime
+view, build every ordered catalog resolution/execution plan and procedure
+activation, and construct Procedure/Log/Resource Hosts. It returns a fresh
+request-plan-local runtime
 which retains all of those immutable owners until `execute()` returns.
 
 ## Identity and ownership contract
 
-Before execution, the backend requires the returned runtime to identify:
+Before execution, the backend derives the complete ordered requested task plan
+as `current_task` followed by every `waiting_tasks` entry, or the waiting list
+alone when no current task is present. It requires the returned runtime to
+identify:
 
 - the exact requested config id and immutable config snapshot id;
 - profile and concrete device id;
-- nonzero runtime repository generation plus exact scripts/resources commits;
-- requested run mode/task and the resolved canonical task.
+- the exact 64-character lowercase-hex runtime repository generation plus
+  exact 40- or 64-character lowercase-hex scripts/resources commits;
+- requested run mode, the complete ordered requested task plan, and a
+  same-length ordered resolved canonical task plan.
 
-Missing, empty, oversized, or request-mismatched identity fails closed before
-user script or native device code executes. A factory must not reread a mutable
-config, catalog, repository pin, or adapter registry after it returns. The
+Missing, empty, malformed, embedded-NUL, oversized, or request/plan-mismatched
+identity fails closed before user script or native device code executes. A
+factory copies exact identity from its retained repository bundle, execution
+plans and procedure activations rather than synthesizing a numeric generation
+or an unverified commit label. It must not reread a mutable config, catalog,
+repository pin, or adapter registry after it returns. The
 returned runtime owns its execution plan, `RuntimeProcedureActivation`, config
 snapshot, per-task native procedure adapter, evaluator and Host lifetimes.
 
@@ -37,23 +46,30 @@ shared device coordinator rather than global backend scratch state.
 
 ## Stop, deadline, progress and terminal mapping
 
-The backend selects `current_task`, or the first waiting task when current is
-absent, and publishes one deterministic initial progress projection. A `false`
-progress result only means that the weak reporter lease is stale; cancellation
-is owned by the supplied stop token.
+The backend publishes a deterministic initial progress projection for the first
+entry and passes the reporter into `RuntimeScriptTaskRuntime::execute()`. The
+runtime owns execution of the entire retained plan, in order, and publishes
+intermediate `current_task`/`waiting_tasks` projections as it advances. It must
+not retain the reporter after `execute()` returns. A `false` progress result
+means either that the weak reporter lease is stale or that deadline/stop became
+active across the report; the runtime checks control after every report.
 
 `RuntimeScriptTaskExecutionControl` gives both factory and runtime the same
 stop token and absolute monotonic deadline. They must poll at bounded safe
 points and pass the same cancellation/deadline context into evaluator and Host
-calls. The backend also checks both boundaries before and after execution:
+calls. The backend checks after factory creation, initial progress reporting,
+runtime execution and exception translation. At every simultaneous boundary
+the stable priority is deadline, then stop, then ordinary failure:
 
-- exception, allocation failure, invalid identity or invalid terminal: `1`;
+- exception, allocation failure or invalid identity: `1`;
 - deadline exceeded: `124`;
 - cooperative cancellation: `130`;
-- otherwise the runtime's exact terminal exit code (including null or zero).
+- otherwise the runtime's exact terminal state, preserving both
+  `is_flag_run` and its exit code (including null or zero).
 
-Exceptions never cross the `RuntimeTaskOwner` worker boundary. A runtime result
-with `is_flag_run=true` is not terminal and therefore fails closed.
+Exceptions never cross the `RuntimeTaskOwner` worker boundary. If an exception
+coincides with deadline or stop, the same deadline-before-stop precedence is
+preserved rather than rewriting the boundary as generic failure.
 
 ## Runtime-state boundary
 
