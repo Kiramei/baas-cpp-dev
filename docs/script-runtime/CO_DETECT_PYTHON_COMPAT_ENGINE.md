@@ -1,7 +1,9 @@
 # Python-compatible `co_detect` procedure engine contract
 
-Status: strict immutable definition parsing/model implemented. The engine adapter, external resource bundles,
-real resource digests, and production procedure definitions do not exist yet.
+Status: strict immutable definition parsing/model implemented; the pure C++
+execution state machine is also implemented. The concrete feature-view
+engine adapter, external resource bundles, real resource digests, and production
+procedure definitions do not exist yet.
 Nothing in this document authorizes a placeholder `baas.procedures.json` entry.
 
 This contract freezes the required migration boundary for
@@ -138,9 +140,9 @@ digest and may change behavior. Feature IDs are resolved only from the pinned
 support bundle; native paths and ambient global feature registries are
 forbidden.
 
-### Implemented definition boundary
+### Implemented definition and execution boundaries
 
-`BAAS_runtime_co_detect_definition_model` now implements only the pure C++
+`BAAS_runtime_co_detect_definition_model` implements the pure C++
 definition boundary described above. It strictly parses the wrapper and
 payload, publishes an immutable snapshot that owns the verified source bytes,
 and exposes both the exact-source SHA-256 and a deterministic semantic
@@ -156,11 +158,23 @@ duplicate object names, field closure, profiles, duplicates, coordinate and
 integer ranges, tentative forms, and caller-supplied byte/node/string/item/work
 limits. It accepts and retains logical feature strings with their exact case;
 it does not resolve those strings to filesystem paths or ambient registries.
+The definition-model target has no image/resource payloads and performs no
+capture, vision, input, wait, or foreground effects. By itself, the target
+does not open the production
+activation gate.
 
-This target has no image/resource payloads, support bundles, procedure
-definitions, native-path fields, engine adapter, capture/vision/input/wait
-calls, or other execution effects. Its presence does not open the production
-activation gate below.
+`BAAS_runtime_co_detect_executor` implements the synchronous
+`ProcedureExecutor` state machine. Its `CoDetectDeviceSession` owns the frozen
+device/profile, clock, latest frame, capture, input, wait, and foreground
+boundary. `CoDetectFeatureView` is the narrow pathless RGB/image matching seam
+for the pinned support-bundle adapter. The executor never opens native paths,
+consults a global feature registry, or embeds resource/configuration data.
+
+The executor enforces the ordered loop below, shared-frame fail-closed behavior,
+deadline-before-cancellation precedence, synchronous effect boundaries, typed
+device/resource failures, and exception/allocation fail-closed behavior.
+Production activation still additionally requires the support-bundle loader and
+activation adapter; this execution target does not manufacture either one.
 
 ## Deterministic execution order
 

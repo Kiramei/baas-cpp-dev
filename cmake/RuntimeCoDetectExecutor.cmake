@@ -1,0 +1,35 @@
+include_guard(GLOBAL)
+
+foreach(required_target BAAS_runtime_co_detect_definition_model BAAS_runtime_procedure_activation BAAS_script_procedure_host)
+    if(NOT TARGET ${required_target})
+        message(FATAL_ERROR "RuntimeCoDetectExecutor requires ${required_target}")
+    endif()
+endforeach()
+
+add_library(BAAS_runtime_co_detect_executor STATIC
+    "${BAAS_PROJECT_PATH}/src/runtime/procedure/CoDetectPythonCompatExecutor.cpp")
+add_library(BAAS::runtime_co_detect_executor ALIAS BAAS_runtime_co_detect_executor)
+target_compile_features(BAAS_runtime_co_detect_executor PUBLIC cxx_std_20)
+target_include_directories(BAAS_runtime_co_detect_executor PUBLIC "${BAAS_PROJECT_PATH}/include")
+target_link_libraries(BAAS_runtime_co_detect_executor
+    PUBLIC BAAS_runtime_co_detect_definition_model BAAS_runtime_procedure_activation BAAS_script_procedure_host)
+if(MSVC)
+    target_compile_options(BAAS_runtime_co_detect_executor PUBLIC /utf-8 PRIVATE /W4 /permissive- /EHsc)
+else()
+    target_compile_options(BAAS_runtime_co_detect_executor PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+
+if(BUILD_RUNTIME_CO_DETECT_EXECUTOR_TESTS)
+    include(CTest)
+    add_executable(BAAS_runtime_co_detect_executor_tests
+        "${BAAS_PROJECT_PATH}/tests/runtime/CoDetectPythonCompatExecutorTests.cpp")
+    target_compile_features(BAAS_runtime_co_detect_executor_tests PRIVATE cxx_std_20)
+    target_link_libraries(BAAS_runtime_co_detect_executor_tests PRIVATE BAAS_runtime_co_detect_executor)
+    if(MSVC)
+        target_compile_options(BAAS_runtime_co_detect_executor_tests PRIVATE /utf-8 /W4 /permissive- /EHsc)
+    else()
+        target_compile_options(BAAS_runtime_co_detect_executor_tests PRIVATE -Wall -Wextra -Wpedantic)
+    endif()
+    add_test(NAME BAAS_runtime_co_detect_executor_tests COMMAND BAAS_runtime_co_detect_executor_tests)
+    set_tests_properties(BAAS_runtime_co_detect_executor_tests PROPERTIES TIMEOUT 60)
+endif()

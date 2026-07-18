@@ -58,10 +58,15 @@ enum class ProcedureExecutorErrorCode : std::uint8_t {
     Internal,
 };
 
+enum class ProcedureDeadlineScope : std::uint8_t { Call, Context };
+enum class ProcedureUnavailableReason : std::uint8_t { None, RecentFrameUnavailable };
+
 struct ProcedureExecutorError {
     ProcedureExecutorErrorCode code{ProcedureExecutorErrorCode::Internal};
     bool retryable{};
     runtime::HostEffectState effect_state{runtime::HostEffectState::Unknown};
+    ProcedureDeadlineScope deadline_scope{ProcedureDeadlineScope::Call};
+    ProcedureUnavailableReason unavailable_reason{ProcedureUnavailableReason::None};
 };
 
 class ProcedureExecutorOutcome final {
