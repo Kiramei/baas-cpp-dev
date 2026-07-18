@@ -38,6 +38,11 @@ class CoDetectPythonCompatEngineContractTests(unittest.TestCase):
             "duplicate_click_window_ms",
             "after_failed_cycles",
             "post_wait_screenshot_intervals",
+            "match-only",
+            "threshold",
+            "rgb_diff",
+            "x=1280",
+            "y=720",
             "CN, JP, Global_en-us, Global_zh-tw, Global_ko-kr",
             "Caller options, scripts, browser",
             "Feature IDs are resolved only from the pinned\nsupport bundle",
@@ -58,12 +63,45 @@ class CoDetectPythonCompatEngineContractTests(unittest.TestCase):
             "test `reactions.image_profiled`",
             "test `popups.rgb`",
             "test `popups.profiled_image`",
-            "Apply duplicate-click suppression",
-            "increment the failed count",
+            "apply duplicate-click\n    suppression",
+            "A popup selected",
+            "increment the failed\n    count",
         )
         positions = [self.doc.index(token) for token in ordered]
         self.assertEqual(positions, sorted(positions))
         self.assertIn("first tentative click\ntherefore happens on failure 11", self.doc)
+
+    def test_python_popup_state_and_group_game_priority_are_exact(self) -> None:
+        for token in (
+            "does not perform ordinary-reaction duplicate suppression",
+            "does not update\n    `feature_last_appear_time`",
+            "does not reset the tentative failure count",
+            "Only an ordinary reaction resets the\n    failed count to zero",
+            "`GAME_ONE_TIME_POP_UPS` table belongs to\n`reactions.image_profiled`",
+            "after `group_enter-button` and before every common\nor server popup",
+            "Only the implicit server popup table belongs to\n`popups.profiled_image`",
+        ):
+            self.assertIn(token, self.doc)
+        game = self.doc.index('"feature": "main_page_renewal-month-card"')
+        common_popup = self.doc.index('"feature": "reward_acquired"', game)
+        server_popup = self.doc.index('"feature": "main_page_net-work-unstable"', game)
+        self.assertLess(game, common_popup)
+        self.assertLess(common_popup, server_popup)
+
+    def test_latest_frame_session_and_safety_divergences_are_owned(self) -> None:
+        for token in (
+            "Device-session frame ownership",
+            "latest-frame\ncache across serialized procedure calls",
+            "`navigation.to_main_page` leaves its terminal frame",
+            "`group.open`, whose definition sets `skip_first_screenshot=true`",
+            "unavailable_reason=recent_frame_unavailable",
+            "Per-call duplicate-click state is reset",
+            "intentional C++ safety hardening, not bit-for-bit\nPython behavior",
+            "samples time before capture",
+            "does not poll timeout in\nits loading loop",
+            "schedules click helper work asynchronously",
+        ):
+            self.assertIn(token, self.doc)
 
     def test_deadline_cancel_effect_and_foreground_semantics_are_bound(self) -> None:
         for token in (
@@ -79,6 +117,7 @@ class CoDetectPythonCompatEngineContractTests(unittest.TestCase):
             "unknown",
             "HOST006_UNAVAILABLE",
             "unavailable_reason=foreground_package_mismatch",
+            "fail-closed mismatch handling is an intentional C++ safety\nhardening",
         ):
             self.assertIn(token, self.doc)
 
@@ -89,6 +128,13 @@ class CoDetectPythonCompatEngineContractTests(unittest.TestCase):
         self.assertIn("25 logical members", self.doc)
         self.assertIn("external resources repository", self.doc)
         self.assertIn("fake images", self.doc)
+        for token in (
+            "definition owns these per-call tuple overrides",
+            "Popup objects are exact feature/click forms",
+            "support bundle exclusively owns\nthe feature graph, RGB ranges, crop metadata, and PNG bytes",
+            "screenshot\ninterval timing, deterministic/injectable click jitter RNG",
+        ):
+            self.assertIn(token, self.doc)
 
         navigation = re.search(
             r"The `navigation\.to_main_page` image-template IDs are:\s+"

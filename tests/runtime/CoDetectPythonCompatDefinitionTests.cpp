@@ -15,6 +15,10 @@ namespace {
 namespace procedure = ::baas::runtime::procedure;
 using Error = procedure::CoDetectDefinitionError;
 
+static_assert(static_cast<unsigned>(Error::invalid_profile) == 19U);
+static_assert(static_cast<unsigned>(Error::internal_failure) == 27U);
+static_assert(static_cast<unsigned>(Error::invalid_image_match) == 28U);
+
 int failures{};
 
 void check(const bool condition, const std::string_view message) {
@@ -33,12 +37,12 @@ void check(const bool condition, const std::string_view message) {
   "engine": "co_detect.python-compat/v1",
   "payload": {
     "profile_source": "device.server-and-locale/v1",
-    "ends": {"rgb": ["main_page", "group_menu"], "image": ["home-image"]},
+    "ends": {"rgb": ["main_page", "group_menu"], "image": ["home-image", {"feature": "strict-end", "threshold": 0.91, "rgb_diff": 12}]},
     "reactions": {
       "rgb": [{"feature": "notice", "click": [120, 80]}],
       "rgb_profiled": [{"profiles": ["JP", "Global_en-us"], "feature": "server-button", "click": [565, 600]}],
-      "image": [{"feature": "image-button", "click": [1279, 719]}],
-      "image_profiled": [{"profiles": ["CN"], "feature": "cn-image", "click": [1, 2]}]
+      "image": [{"feature": "image-button", "click": [1280, 720], "threshold": 0.75, "rgb_diff": 10}],
+      "image_profiled": [{"profiles": ["CN"], "feature": "cn-image", "click": [-1, 2]}]
     },
     "popups": {
       "rgb": [{"feature": "common-popup", "click": [5, 6]}],
@@ -97,8 +101,17 @@ void test_valid_model_and_owned_lifetime() {
                   procedure::CoDetectProfile::jp,
                   procedure::CoDetectProfile::global_en_us},
           "profile order is preserved");
-    check(model.reactions_image().front().click == procedure::CoDetectClick{1279, 719},
-          "canonical coordinate upper bounds are accepted");
+    check(model.reactions_image().front().click == procedure::CoDetectClick{1280, 720},
+          "Python canonical coordinate boundary is accepted");
+    check(model.reactions_image().front().image_match.threshold == 0.75 &&
+              model.reactions_image().front().image_match.rgb_diff == 10,
+          "image reaction tuple overrides are materialized");
+    check(model.ends_image().size() == 2 &&
+              model.ends_image()[1].match.threshold == 0.91 &&
+              model.ends_image()[1].match.rgb_diff == 12,
+          "image end tuple overrides are materialized");
+    check(model.reactions_image_profiled().front().click.match_only(),
+          "negative reaction coordinates preserve Python match-only behavior");
     check(model.loading_all_rgb().size() == 2, "loading conjunction is materialized");
     check(model.foreground_check().android_only &&
               model.foreground_check().interval_ms == 1000,
@@ -145,6 +158,24 @@ void test_canonical_identity() {
     if (a && c)
         check(a.definition->canonical_sha256() != c.definition->canonical_sha256(),
               "array order changes canonical identity");
+
+    auto explicit_defaults = first;
+    replace_once(explicit_defaults, "\"home-image\"",
+                 "{\"feature\": \"home-image\", \"threshold\": 0.8, \"rgb_diff\": 20}");
+    const auto defaults = load(explicit_defaults);
+    check(static_cast<bool>(defaults), "explicit Python image defaults must load");
+    if (a && defaults)
+        check(a.definition->canonical_sha256() == defaults.definition->canonical_sha256(),
+              "explicit image defaults have the same semantic identity as omission");
+
+    auto changed_match = first;
+    replace_once(changed_match, "\"home-image\"",
+                 "{\"feature\": \"home-image\", \"threshold\": 0.81}");
+    const auto changed = load(changed_match);
+    check(static_cast<bool>(changed), "changed image override must load");
+    if (a && changed)
+        check(a.definition->canonical_sha256() != changed.definition->canonical_sha256(),
+              "effective image match parameters change semantic identity");
 }
 
 void test_strict_json_and_field_closure() {
@@ -222,15 +253,46 @@ void test_reaction_profile_and_click_validation() {
 
     for (const auto& [replacement, message] :
          std::vector<std::pair<std::string, std::string_view>>{
-             {"[-1, 80]", "negative click coordinate"},
-             {"[1280, 80]", "x coordinate outside canonical space"},
-             {"[120, 720]", "y coordinate outside canonical space"},
+             {"[1281, 80]", "x coordinate outside Python canonical space"},
+             {"[120, 721]", "y coordinate outside Python canonical space"},
+             {"[-2147483649, 80]", "match-only coordinate outside model range"},
              {"[120.0, 80]", "non-integral click coordinate"},
              {"[120]", "wrong click arity"}}) {
         value = valid_definition();
         replace_once(value, "[120, 80]", replacement);
         expect_error(std::move(value), Error::invalid_click, message);
     }
+
+    value = valid_definition();
+    replace_once(value, "\"threshold\": 0.75", "\"threshold\": 1.01");
+    expect_error(std::move(value), Error::invalid_image_match,
+                 "image threshold is a normalized finite similarity");
+    value = valid_definition();
+    replace_once(value, "\"threshold\": 0.75, \"rgb_diff\": 10",
+                 "\"rgb_diff\": 10");
+    expect_error(std::move(value), Error::invalid_reaction,
+                 "rgb_diff cannot exist without the preceding Python threshold tuple item");
+    value = valid_definition();
+    replace_once(value, "\"rgb_diff\": 10", "\"rgb_diff\": 256");
+    expect_error(std::move(value), Error::invalid_image_match,
+                 "image RGB mean tolerance is byte-bounded");
+    value = valid_definition();
+    replace_once(value, "\"home-image\"",
+                 "{\"feature\": \"home-image\", \"rgb_diff\": 20}");
+    expect_error(std::move(value), Error::invalid_image_match,
+                 "image end override preserves Python tuple arity");
+    value = valid_definition();
+    replace_once(value, "{\"feature\": \"common-popup\", \"click\": [5, 6]}",
+                 "{\"feature\": \"common-popup\", \"click\": [5, 6], \"threshold\": 0.5}");
+    expect_error(std::move(value), Error::invalid_reaction,
+                 "RGB popup cannot carry image match parameters");
+
+    value = valid_definition();
+    replace_once(value, "\"click\": [5, 6]", "\"click\": [-2, 6]");
+    const auto match_only_popup = load(value);
+    check(match_only_popup &&
+              match_only_popup.definition->popups_rgb().front().click.match_only(),
+          "popup negative coordinate remains an explicit Python match-only action");
 }
 
 void test_foreground_loop_and_tentative_validation() {
@@ -260,6 +322,10 @@ void test_foreground_loop_and_tentative_validation() {
                  "\"after_failed_cycles\": 0");
     expect_error(std::move(value), Error::invalid_tentative,
                  "tentative failure threshold is positive");
+    value = valid_definition();
+    replace_once(value, "\"click\": [1238, 45]", "\"click\": [-1, 45]");
+    expect_error(std::move(value), Error::invalid_click,
+                 "tentative click cannot be match-only");
 
     value = valid_definition();
     replace_once(value,
@@ -313,7 +379,7 @@ void test_limits_and_stable_errors() {
           "zero limits are rejected before parsing");
 
     std::set<std::string_view> names;
-    for (unsigned raw = 0; raw <= static_cast<unsigned>(Error::internal_failure); ++raw) {
+    for (unsigned raw = 0; raw <= static_cast<unsigned>(Error::invalid_image_match); ++raw) {
         const auto name = procedure::co_detect_definition_error_name(
             static_cast<Error>(raw));
         check(!name.empty() && names.insert(name).second,

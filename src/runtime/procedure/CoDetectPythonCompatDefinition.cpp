@@ -4,8 +4,11 @@
 #include "runtime/json/StrictJson.h"
 
 #include <algorithm>
+#include <bit>
+#include <cmath>
 #include <cstring>
 #include <initializer_list>
+#include <limits>
 #include <new>
 #include <optional>
 #include <set>
@@ -102,14 +105,53 @@ private:
     return *result;
 }
 
-[[nodiscard]] CoDetectClick click(const Json& value, const std::string_view field) {
+[[nodiscard]] std::optional<std::int64_t> signed_integer(const Json& value) {
+    if (value.is_number_unsigned()) {
+        const auto parsed = value.get<std::uint64_t>();
+        if (parsed > static_cast<std::uint64_t>(
+                         std::numeric_limits<std::int32_t>::max()))
+            return std::nullopt;
+        return static_cast<std::int64_t>(parsed);
+    }
+    if (!value.is_number_integer()) return std::nullopt;
+    return value.get<std::int64_t>();
+}
+
+[[nodiscard]] CoDetectClick click(const Json& value, const std::string_view field,
+                                  const bool allow_match_only) {
     if (!value.is_array() || value.size() != 2)
         fail(CoDetectDefinitionError::invalid_click, std::string{field});
-    const auto x = unsigned_integer(value[0]);
-    const auto y = unsigned_integer(value[1]);
-    if (!x || !y || *x >= 1280 || *y >= 720)
+    const auto x = signed_integer(value[0]);
+    const auto y = signed_integer(value[1]);
+    if (!x || !y || *x < std::numeric_limits<std::int32_t>::min() ||
+        *y < std::numeric_limits<std::int32_t>::min() ||
+        (!allow_match_only && (*x < 0 || *y < 0)) ||
+        (*x >= 0 && *x > 1280) || (*y >= 0 && *y > 720))
         fail(CoDetectDefinitionError::invalid_click, std::string{field});
-    return {static_cast<std::uint16_t>(*x), static_cast<std::uint16_t>(*y)};
+    return {static_cast<std::int32_t>(*x), static_cast<std::int32_t>(*y)};
+}
+
+[[nodiscard]] CoDetectImageMatch image_match(const Json& value,
+                                              const std::string_view field) {
+    CoDetectImageMatch result;
+    if (value.contains("threshold")) {
+        if (!value["threshold"].is_number())
+            fail(CoDetectDefinitionError::invalid_image_match, std::string{field});
+        auto threshold = value["threshold"].get<double>();
+        if (!std::isfinite(threshold) || threshold < 0.0 || threshold > 1.0)
+            fail(CoDetectDefinitionError::invalid_image_match, std::string{field});
+        if (threshold == 0.0) threshold = 0.0;
+        result.threshold = threshold;
+    }
+    if (value.contains("rgb_diff")) {
+        if (!result.threshold)
+            fail(CoDetectDefinitionError::invalid_image_match, std::string{field});
+        const auto rgb_diff = unsigned_integer(value["rgb_diff"]);
+        if (!rgb_diff || *rgb_diff > 255)
+            fail(CoDetectDefinitionError::invalid_image_match, std::string{field});
+        result.rgb_diff = static_cast<std::uint16_t>(*rgb_diff);
+    }
+    return result;
 }
 
 [[nodiscard]] CoDetectProfile profile(const std::string_view value,
@@ -151,17 +193,56 @@ private:
     return result;
 }
 
+[[nodiscard]] CoDetectImageFeature image_feature(const Json& value, Budget& budget,
+                                                 const std::string_view field) {
+    if (value.is_string()) return {feature(value, budget, field), {}};
+    if (!value.is_object() || !value.contains("feature"))
+        fail(CoDetectDefinitionError::invalid_image_match, std::string{field});
+    const bool has_threshold = value.contains("threshold");
+    const bool has_rgb_diff = value.contains("rgb_diff");
+    const auto expected_size = 1U + static_cast<unsigned>(has_threshold) +
+                               static_cast<unsigned>(has_rgb_diff);
+    if (value.size() != expected_size || (has_rgb_diff && !has_threshold))
+        fail(CoDetectDefinitionError::invalid_image_match, std::string{field});
+    return {feature(value["feature"], budget, field), image_match(value, field)};
+}
+
+[[nodiscard]] std::vector<CoDetectImageFeature> image_feature_array(
+    const Json& value, Budget& budget, const std::string_view field) {
+    if (!value.is_array())
+        fail(CoDetectDefinitionError::invalid_image_match, std::string{field});
+    budget.array(value.size(), field);
+    std::vector<CoDetectImageFeature> result;
+    result.reserve(value.size());
+    std::set<std::string, std::less<>> seen;
+    for (const auto& item : value) {
+        auto parsed = image_feature(item, budget, field);
+        if (!seen.insert(parsed.feature).second)
+            fail(CoDetectDefinitionError::duplicate_feature, std::string{field});
+        result.push_back(std::move(parsed));
+    }
+    return result;
+}
+
 [[nodiscard]] CoDetectReaction reaction(const Json& value, Budget& budget,
                                         const std::string_view field,
-                                        const bool profiled) {
-    const bool closed = profiled
-        ? exact_fields(value, {"profiles", "feature", "click"})
-        : exact_fields(value, {"feature", "click"});
+                                        const bool profiled, const bool image,
+                                        const bool allow_image_override) {
+    const bool has_threshold = value.is_object() && value.contains("threshold");
+    const bool has_rgb_diff = value.is_object() && value.contains("rgb_diff");
+    const auto base_size = profiled ? 3U : 2U;
+    const bool closed = value.is_object() && value.contains("feature") &&
+        value.contains("click") && (!profiled || value.contains("profiles")) &&
+        value.size() == base_size + static_cast<unsigned>(has_threshold) +
+                            static_cast<unsigned>(has_rgb_diff) &&
+        (allow_image_override || (!has_threshold && !has_rgb_diff)) &&
+        (!has_rgb_diff || has_threshold);
     if (!closed) fail(CoDetectDefinitionError::invalid_reaction, std::string{field});
 
     CoDetectReaction result;
     result.feature = feature(value["feature"], budget, field);
-    result.click = click(value["click"], field);
+    result.click = click(value["click"], field, true);
+    if (image) result.image_match = image_match(value, field);
     if (!profiled) return result;
 
     const auto& profiles = value["profiles"];
@@ -185,20 +266,21 @@ private:
 
 [[nodiscard]] std::vector<CoDetectReaction> reaction_array(
     const Json& value, Budget& budget, const std::string_view field,
-    const bool profiled) {
+    const bool profiled, const bool image, const bool allow_image_override) {
     if (!value.is_array())
         fail(CoDetectDefinitionError::invalid_reaction, std::string{field});
     budget.array(value.size(), field);
     std::vector<CoDetectReaction> result;
     result.reserve(value.size());
     for (const auto& item : value)
-        result.push_back(reaction(item, budget, field, profiled));
+        result.push_back(reaction(item, budget, field, profiled, image,
+                                  allow_image_override));
     return result;
 }
 
 struct Parsed final {
     std::vector<std::string> ends_rgb;
-    std::vector<std::string> ends_image;
+    std::vector<CoDetectImageFeature> ends_image;
     std::vector<CoDetectReaction> reactions_rgb;
     std::vector<CoDetectReaction> reactions_rgb_profiled;
     std::vector<CoDetectReaction> reactions_image;
@@ -237,21 +319,25 @@ struct Parsed final {
 
     Parsed result;
     result.ends_rgb = feature_array(ends["rgb"], budget, "payload.ends.rgb", false);
-    result.ends_image = feature_array(ends["image"], budget,
-                                      "payload.ends.image", false);
+    result.ends_image = image_feature_array(ends["image"], budget,
+                                            "payload.ends.image");
     result.reactions_rgb = reaction_array(reactions["rgb"], budget,
-                                          "payload.reactions.rgb", false);
+                                          "payload.reactions.rgb", false, false,
+                                          false);
     result.reactions_rgb_profiled = reaction_array(
-        reactions["rgb_profiled"], budget, "payload.reactions.rgb_profiled", true);
+        reactions["rgb_profiled"], budget, "payload.reactions.rgb_profiled", true,
+        false, false);
     result.reactions_image = reaction_array(reactions["image"], budget,
-                                            "payload.reactions.image", false);
+                                            "payload.reactions.image", false, true,
+                                            true);
     result.reactions_image_profiled = reaction_array(
         reactions["image_profiled"], budget,
-        "payload.reactions.image_profiled", true);
+        "payload.reactions.image_profiled", true, true, true);
     result.popups_rgb = reaction_array(popups["rgb"], budget,
-                                       "payload.popups.rgb", false);
+                                       "payload.popups.rgb", false, false, false);
     result.popups_profiled_image = reaction_array(
-        popups["profiled_image"], budget, "payload.popups.profiled_image", true);
+        popups["profiled_image"], budget, "payload.popups.profiled_image", true,
+        true, false);
     result.loading_all_rgb = feature_array(loading["all_rgb"], budget,
                                            "payload.loading.all_rgb", true);
 
@@ -308,7 +394,7 @@ struct Parsed final {
             "payload.loop.tentative.after_failed_cycles");
         result.loop.tentative.repeat_each_failed_cycle = true;
         result.loop.tentative.click = click(tentative["click"],
-                                             "payload.loop.tentative.click");
+                                            "payload.loop.tentative.click", false);
         result.loop.tentative.post_wait_screenshot_intervals = integer(
             tentative["post_wait_screenshot_intervals"], true,
             CoDetectDefinitionError::invalid_tentative,
@@ -333,7 +419,13 @@ public:
         const auto source = std::as_bytes(std::span{value.data(), value.size()});
         bytes_.insert(bytes_.end(), source.begin(), source.end());
     }
-    void click(const CoDetectClick value) { number(value.x); number(value.y); }
+    void signed_number(const std::int32_t value) {
+        number(std::bit_cast<std::uint32_t>(value));
+    }
+    void click(const CoDetectClick value) {
+        signed_number(value.x);
+        signed_number(value.y);
+    }
 
     [[nodiscard]] std::vector<std::byte> finish() && { return std::move(bytes_); }
 
@@ -356,8 +448,23 @@ void append_features(CanonicalBuilder& out, const std::vector<std::string>& valu
     for (const auto& value : values) out.text(value);
 }
 
+void append_image_match(CanonicalBuilder& out, const CoDetectImageMatch& value) {
+    out.number(std::bit_cast<std::uint64_t>(value.effective_threshold()));
+    out.number(value.effective_rgb_diff());
+}
+
+void append_image_features(CanonicalBuilder& out,
+                           const std::vector<CoDetectImageFeature>& values) {
+    out.number(values.size());
+    for (const auto& value : values) {
+        out.text(value.feature);
+        append_image_match(out, value.match);
+    }
+}
+
 void append_reactions(CanonicalBuilder& out,
-                      const std::vector<CoDetectReaction>& values) {
+                      const std::vector<CoDetectReaction>& values,
+                      const bool image) {
     out.number(values.size());
     for (const auto& value : values) {
         out.number(value.profiles.size());
@@ -365,24 +472,25 @@ void append_reactions(CanonicalBuilder& out,
             out.text(co_detect_profile_name(item));
         out.text(value.feature);
         out.click(value.click);
+        if (image) append_image_match(out, value.image_match);
     }
 }
 
 [[nodiscard]] std::vector<std::byte> canonical_identity(
     const Parsed& value, const std::size_t limit) {
     CanonicalBuilder out{limit};
-    out.text("BAAS co_detect definition identity v1");
+    out.text("BAAS co_detect definition identity v2");
     out.text(co_detect_definition_schema);
     out.text(co_detect_python_compat_engine);
     out.text(co_detect_profile_source);
     append_features(out, value.ends_rgb);
-    append_features(out, value.ends_image);
-    append_reactions(out, value.reactions_rgb);
-    append_reactions(out, value.reactions_rgb_profiled);
-    append_reactions(out, value.reactions_image);
-    append_reactions(out, value.reactions_image_profiled);
-    append_reactions(out, value.popups_rgb);
-    append_reactions(out, value.popups_profiled_image);
+    append_image_features(out, value.ends_image);
+    append_reactions(out, value.reactions_rgb, false);
+    append_reactions(out, value.reactions_rgb_profiled, false);
+    append_reactions(out, value.reactions_image, true);
+    append_reactions(out, value.reactions_image_profiled, true);
+    append_reactions(out, value.popups_rgb, false);
+    append_reactions(out, value.popups_profiled_image, true);
     append_features(out, value.loading_all_rgb);
     out.boolean(value.foreground_check.android_only);
     out.number(value.foreground_check.interval_ms);
@@ -440,7 +548,7 @@ CoDetectPythonCompatDefinition::~CoDetectPythonCompatDefinition() = default;
         return impl_->parsed.field; \
     }
 BAAS_CO_DETECT_GETTER(ends_rgb, ends_rgb, std::vector<std::string>)
-BAAS_CO_DETECT_GETTER(ends_image, ends_image, std::vector<std::string>)
+BAAS_CO_DETECT_GETTER(ends_image, ends_image, std::vector<CoDetectImageFeature>)
 BAAS_CO_DETECT_GETTER(reactions_rgb, reactions_rgb, std::vector<CoDetectReaction>)
 BAAS_CO_DETECT_GETTER(reactions_rgb_profiled, reactions_rgb_profiled, std::vector<CoDetectReaction>)
 BAAS_CO_DETECT_GETTER(reactions_image, reactions_image, std::vector<CoDetectReaction>)
@@ -501,6 +609,7 @@ std::string_view co_detect_definition_error_name(
     case duplicate_feature: return "CDD016_DUPLICATE_FEATURE";
     case array_limit_exceeded: return "CDD017_ARRAY_LIMIT_EXCEEDED";
     case invalid_reaction: return "CDD018_INVALID_REACTION";
+    case invalid_image_match: return "CDD028_INVALID_IMAGE_MATCH";
     case invalid_profile: return "CDD019_INVALID_PROFILE";
     case duplicate_profile: return "CDD020_DUPLICATE_PROFILE";
     case invalid_click: return "CDD021_INVALID_CLICK";

@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -28,15 +29,36 @@ enum class CoDetectProfile : std::uint8_t {
 [[nodiscard]] std::string_view co_detect_profile_name(CoDetectProfile profile) noexcept;
 
 struct CoDetectClick final {
-    std::uint16_t x{};
-    std::uint16_t y{};
+    std::int32_t x{};
+    std::int32_t y{};
+    [[nodiscard]] bool match_only() const noexcept { return x < 0 || y < 0; }
     friend bool operator==(const CoDetectClick&, const CoDetectClick&) = default;
+};
+
+struct CoDetectImageMatch final {
+    std::optional<double> threshold;
+    std::optional<std::uint16_t> rgb_diff;
+
+    [[nodiscard]] double effective_threshold() const noexcept {
+        return threshold.value_or(0.8);
+    }
+    [[nodiscard]] std::uint16_t effective_rgb_diff() const noexcept {
+        return rgb_diff.value_or(20);
+    }
+    friend bool operator==(const CoDetectImageMatch&, const CoDetectImageMatch&) = default;
+};
+
+struct CoDetectImageFeature final {
+    std::string feature;
+    CoDetectImageMatch match;
+    friend bool operator==(const CoDetectImageFeature&, const CoDetectImageFeature&) = default;
 };
 
 struct CoDetectReaction final {
     std::string feature;
     CoDetectClick click;
     std::vector<CoDetectProfile> profiles;
+    CoDetectImageMatch image_match;
 };
 
 struct CoDetectForegroundCheck final {
@@ -101,6 +123,7 @@ enum class CoDetectDefinitionError : std::uint8_t {
     canonical_identity_limit_exceeded,
     resource_exhausted,
     internal_failure,
+    invalid_image_match,
 };
 
 [[nodiscard]] std::string_view co_detect_definition_error_name(
@@ -122,7 +145,7 @@ public:
     [[nodiscard]] const std::string& canonical_sha256() const noexcept;
 
     [[nodiscard]] const std::vector<std::string>& ends_rgb() const noexcept;
-    [[nodiscard]] const std::vector<std::string>& ends_image() const noexcept;
+    [[nodiscard]] const std::vector<CoDetectImageFeature>& ends_image() const noexcept;
     [[nodiscard]] const std::vector<CoDetectReaction>& reactions_rgb() const noexcept;
     [[nodiscard]] const std::vector<CoDetectReaction>& reactions_rgb_profiled() const noexcept;
     [[nodiscard]] const std::vector<CoDetectReaction>& reactions_image() const noexcept;
