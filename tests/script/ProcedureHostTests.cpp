@@ -463,6 +463,31 @@ void test_structured_result_schema_limits_and_precedence()
     auto duplicate = payload;
     duplicate.insert(duplicate.begin() + 1, duplicate.front());
     expect_invalid(std::move(duplicate), "duplicate structured fields must fail closed");
+    std::vector<host::ProcedureResultFieldSchema> linear_schema;
+    runtime::JsonObject linear_payload;
+    for (std::size_t index{}; index < 64; ++index) {
+        auto name = std::string(1'000, 'a') + std::to_string(index);
+        linear_schema.push_back({name, true, Type::String, {}});
+        linear_payload.emplace_back(std::move(name), runtime::JsonValue(""));
+    }
+    linear_payload.push_back(linear_payload.front());
+    auto linear_snapshot = host::ProcedureSnapshot::build(
+        {descriptor("linear", {"done"}, {}, {}, std::move(linear_schema))},
+        resource_snapshot());
+    auto linear_limits = host::ProcedureHostLimits{};
+    linear_limits.max_result_validation_work = 256;
+    const auto linear_owner = host::make_procedure_host_runtime(
+        std::move(linear_snapshot), "emulator-5556",
+        std::make_shared<LambdaExecutor>(
+            [linear_payload = std::move(linear_payload)](
+                const host::ProcedureExecutionRequest&) {
+                return host::ProcedureExecutorOutcome::success(
+                    "done", linear_payload);
+            }), coordinator, linear_limits);
+    const auto linear_duplicate = invoke(linear_owner, arguments("linear"));
+    check(linear_duplicate.has_error() &&
+              linear_duplicate.error().code == runtime::HostErrorCode::Internal,
+          "long common-prefix payloads must stay linear while duplicates fail schema validation");
     auto forged_end = payload;
     forged_end.insert(forged_end.begin(), {"end", runtime::JsonValue("forged")});
     expect_invalid(std::move(forged_end), "executor payload must never override end");

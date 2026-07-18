@@ -161,12 +161,10 @@ struct ResultMetrics {
             return key.empty() || key == "end"
                 ? ResultValidationCode::SchemaMismatch
                 : ResultValidationCode::LimitExceeded;
-        for (std::size_t previous{}; previous < object_index; ++previous) {
-            if (!add_bounded(metrics.work, 1, limits.max_result_validation_work))
-                return ResultValidationCode::LimitExceeded;
-            if (object[previous].first == key)
-                return ResultValidationCode::SchemaMismatch;
-        }
+        // schema_index advances monotonically through a descriptor whose field
+        // names are unique. A repeated payload key therefore cannot match the
+        // next schema position and is rejected below without rescanning every
+        // prior attacker-controlled key.
         while (schema_index < schemas.size() && schemas[schema_index].name != key) {
             if (schemas[schema_index].required)
                 return ResultValidationCode::SchemaMismatch;

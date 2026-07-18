@@ -99,8 +99,8 @@ struct ProcedureDescriptorInput {
     std::vector<ProcedureEffect> declared_effects;
     std::vector<std::string> resource_ids;
     // SHA-256 over the executable implementation contract. Runtime loaders bind
-    // the engine, definition-file digest, and ordered source-to-terminal mapping
-    // into this value before descriptor publication.
+    // the engine, definition-file digest, ordered source-to-terminal mapping,
+    // and complete ordered result schema into this value before publication.
     std::string implementation_sha256;
     // SHA-256 over the descriptor's canonical logical fields, excluding this field.
     std::string sha256;
