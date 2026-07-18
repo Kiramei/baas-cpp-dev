@@ -14,6 +14,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <utility>
 
 namespace host = baas::script::host;
 namespace runtime = baas::script::runtime;
@@ -50,6 +51,7 @@ public:
     {
         calls_.fetch_add(1, std::memory_order_relaxed);
         if (throw_on_call_) throw std::runtime_error("secret persistence failure");
+        if (forced_commit_) return *forced_commit_;
         if (forced_error_) return *forced_error_;
         std::scoped_lock lock(mutex_);
         if (request.expected_revision != revision_)
@@ -103,6 +105,7 @@ public:
     }
 
     void force(host::ConfigPortError error) { forced_error_ = error; }
+    void force(host::ConfigCommit commit) { forced_commit_ = std::move(commit); }
     void throw_on_call() noexcept { throw_on_call_ = true; }
 
 private:
@@ -112,6 +115,7 @@ private:
     std::int64_t revision_{};
     std::atomic<std::size_t> calls_{};
     std::optional<host::ConfigPortError> forced_error_;
+    std::optional<host::ConfigCommit> forced_commit_;
     bool throw_on_call_{};
 };
 
@@ -133,6 +137,34 @@ struct Fixture final {
         pinned->identity, pinned->values, pinned->revision)};
     host::ConfigHostRuntime owner{host::make_config_host_runtime(pinned, port)};
 };
+
+runtime::SynchronousHostOptions options(const host::ConfigHostRuntime& owner)
+{
+    runtime::SynchronousHostOptions result;
+    result.metadata = owner.metadata;
+    result.bindings = owner.bindings;
+    result.permissions.declared_modules.push_back({"baas/config", 1, 0});
+    result.permissions.declared_capabilities = {"config.read", "config.write"};
+    result.permissions.policy_capabilities = {"config.read", "config.write"};
+    result.permissions.platform_capabilities = {"config.read", "config.write"};
+    result.permissions.task_capabilities = {"config.read", "config.write"};
+    return result;
+}
+
+template <class Function>
+void expect_evaluation(
+    const runtime::LanguageErrorCode code, Function&& function,
+    const std::string_view message)
+{
+    try {
+        std::forward<Function>(function)();
+        check(false, message);
+    } catch (const runtime::EvaluationError& error) {
+        check(error.code() == code, message);
+    } catch (...) {
+        check(false, message);
+    }
+}
 
 runtime::HostCallContext context(
     const runtime::SynchronousNativeBinding& binding,
@@ -282,6 +314,48 @@ void test_snapshot_reads_and_deep_copy()
           "returned objects must be deep copies of the immutable snapshot");
 }
 
+void test_evaluator_optional_named_and_argument_regressions()
+{
+    Fixture fixture;
+    runtime::SynchronousEvaluator evaluator(
+        {{"main",
+          "import \"baas/config\" as config;\n"
+          "let one = config.get(\"/bounty_coin\");\n"
+          "let named = config.get(path = \"/missing\", default = 17);\n"
+          "let explicit_null = config.get(\"/missing\", null);\n"}},
+        options(fixture.owner));
+    (void)evaluator.execute("main");
+    check(evaluator.module_export("main", "one").as_integer() == 3 &&
+              evaluator.module_export("main", "named").as_integer() == 17 &&
+              evaluator.module_export("main", "explicit_null") ==
+                  runtime::Value::null(),
+          "evaluator must support one-argument get, named default, and explicit null");
+
+    Fixture unknown_fixture;
+    runtime::SynchronousEvaluator unknown(
+        {{"main",
+          "import \"baas/config\" as config;\n"
+          "config.get(path = \"/bounty_coin\", bogus = 1 / 0);\n"}},
+        options(unknown_fixture.owner));
+    expect_evaluation(runtime::LanguageErrorCode::CallArgumentUnknown, [&] {
+        (void)unknown.execute("main");
+    }, "unknown config arguments must fail before expression evaluation");
+    check(unknown_fixture.owner.host->stats().value_reads == 0,
+          "unknown config arguments must not enter ConfigHost");
+
+    Fixture duplicate_fixture;
+    runtime::SynchronousEvaluator duplicate(
+        {{"main",
+          "import \"baas/config\" as config;\n"
+          "config.get(\"/bounty_coin\", path = 1 / 0);\n"}},
+        options(duplicate_fixture.owner));
+    expect_evaluation(runtime::LanguageErrorCode::CallArgumentDuplicate, [&] {
+        (void)duplicate.execute("main");
+    }, "duplicate config arguments must fail before expression evaluation");
+    check(duplicate_fixture.owner.host->stats().value_reads == 0,
+          "duplicate config arguments must not enter ConfigHost");
+}
+
 runtime::JsonValue patch(std::int64_t coin)
 {
     return json_object({{"/bounty_coin", runtime::JsonValue(coin)}});
@@ -316,6 +390,7 @@ void test_atomic_transaction_and_pinned_read()
           "stale expected revision must report a fail-closed config conflict");
 
     const auto calls = fixture.port->calls();
+    const auto write_bytes = fixture.owner.host->stats().write_bytes;
     const auto overlap = invoke(
         fixture.owner, "host.config.transact.v1",
         {runtime::HostValue(std::int64_t{8}), runtime::HostValue(json_object({
@@ -323,7 +398,8 @@ void test_atomic_transaction_and_pinned_read()
             {"/nested/value", runtime::JsonValue(std::int64_t{4})}}))});
     check(overlap.has_error() &&
               overlap.error().code == runtime::HostErrorCode::InvalidArgument &&
-              fixture.port->calls() == calls,
+              fixture.port->calls() == calls &&
+              fixture.owner.host->stats().write_bytes == write_bytes,
           "overlapping patch paths must be rejected before persistence");
 }
 
@@ -356,6 +432,17 @@ struct Probe final : runtime::HostCancellationProbe {
     bool deadline_exceeded() const noexcept override { return deadline; }
 };
 
+struct FlippingProbe final : runtime::HostCancellationProbe {
+    mutable std::atomic<std::size_t> cancel_polls{};
+    std::size_t cancel_on{};
+    bool cancelled() const noexcept override
+    {
+        return cancel_polls.fetch_add(1, std::memory_order_relaxed) + 1 >=
+            cancel_on;
+    }
+    bool deadline_exceeded() const noexcept override { return false; }
+};
+
 void test_limits_cancellation_and_adapter_failures()
 {
     Fixture fixture;
@@ -369,6 +456,38 @@ void test_limits_cancellation_and_adapter_failures()
               cancelled.error().code == runtime::HostErrorCode::Cancelled &&
               fixture.port->calls() == 0,
           "pre-cancelled transaction must never reach persistence");
+
+    Fixture simultaneous_fixture;
+    auto simultaneous_probe = std::make_shared<Probe>();
+    simultaneous_probe->cancel = true;
+    simultaneous_probe->deadline = true;
+    const auto simultaneous = invoke(
+        simultaneous_fixture.owner, "host.config.transact.v1",
+        {runtime::HostValue(std::int64_t{7}), runtime::HostValue(patch(8))},
+        simultaneous_probe);
+    check(simultaneous.has_error() &&
+              simultaneous.error().code == runtime::HostErrorCode::DeadlineExceeded &&
+              simultaneous_fixture.port->calls() == 0,
+          "deadline must deterministically outrank simultaneous cancellation");
+
+    Fixture flipping_fixture;
+    auto flipping_probe = std::make_shared<FlippingProbe>();
+    flipping_probe->cancel_on = 3;
+    host::ConfigHostLimits flipping_limits;
+    flipping_limits.cooperative_check_interval = 1;
+    auto flipping_owner = host::make_config_host_runtime(
+        flipping_fixture.pinned, flipping_fixture.port, flipping_limits);
+    const auto flipped = invoke(
+        flipping_owner, "host.config.transact.v1",
+        {runtime::HostValue(std::int64_t{7}), runtime::HostValue(json_object({
+            {"/nested/value", runtime::JsonValue(std::int64_t{8})},
+            {"/unknown", runtime::JsonValue("changed")}}))},
+        flipping_probe);
+    check(flipped.has_error() &&
+              flipped.error().code == runtime::HostErrorCode::Cancelled &&
+              flipping_fixture.port->calls() == 0 &&
+              flipping_owner.host->stats().write_bytes == 0,
+          "cooperative cancellation flipping during patch validation must roll back");
 
     Fixture unavailable_fixture;
     unavailable_fixture.port->force({
@@ -401,8 +520,46 @@ void test_limits_cancellation_and_adapter_failures()
         {runtime::HostValue(std::int64_t{7}), runtime::HostValue(patch(8))});
     check(failure.has_error() &&
               failure.error().code == runtime::HostErrorCode::Internal &&
-              failure.error().message.find("secret") == std::string::npos,
+              failure.error().message.find("secret") == std::string::npos &&
+              failure.error().effect_state == runtime::HostEffectState::Unknown,
           "persistence exceptions must be redacted and fail closed");
+
+    Fixture unsafe_conflict_fixture;
+    unsafe_conflict_fixture.port->force({
+        host::ConfigPortErrorCode::Conflict, false,
+        runtime::HostEffectState::Committed});
+    const auto unsafe_conflict = invoke(
+        unsafe_conflict_fixture.owner, "host.config.transact.v1",
+        {runtime::HostValue(std::int64_t{7}), runtime::HostValue(patch(8))});
+    check(unsafe_conflict.has_error() &&
+              unsafe_conflict.error().code == runtime::HostErrorCode::Internal &&
+              unsafe_conflict.error().effect_state ==
+                  runtime::HostEffectState::Committed,
+          "effectful adapter conflicts must become redacted Internal failures");
+
+    Fixture unsafe_patch_fixture;
+    unsafe_patch_fixture.port->force({
+        host::ConfigPortErrorCode::InvalidPatch, false,
+        runtime::HostEffectState::Unknown});
+    const auto unsafe_patch = invoke(
+        unsafe_patch_fixture.owner, "host.config.transact.v1",
+        {runtime::HostValue(std::int64_t{7}), runtime::HostValue(patch(8))});
+    check(unsafe_patch.has_error() &&
+              unsafe_patch.error().code == runtime::HostErrorCode::Internal &&
+              unsafe_patch.error().effect_state == runtime::HostEffectState::Unknown,
+          "effect-unknown validation results must not claim InvalidArgument safety");
+
+    Fixture oversized_commit_fixture;
+    oversized_commit_fixture.port->force(
+        host::ConfigCommit{8, std::string(1'020, 's')});
+    const auto oversized_commit = invoke(
+        oversized_commit_fixture.owner, "host.config.transact.v1",
+        {runtime::HostValue(std::int64_t{7}), runtime::HostValue(patch(8))});
+    check(oversized_commit.has_error() &&
+              oversized_commit.error().code == runtime::HostErrorCode::Internal &&
+              oversized_commit.error().effect_state ==
+                  runtime::HostEffectState::Committed,
+          "commit identity budget must cover config_id plus the new snapshot_id");
 
     host::ConfigHostLimits limits;
     limits.max_total_read_bytes = 1;
@@ -417,6 +574,12 @@ void test_limits_cancellation_and_adapter_failures()
     check(exhausted.has_error() &&
               exhausted.error().code == runtime::HostErrorCode::BudgetExceeded,
           "read byte limits must fail before value publication");
+    const auto repeated_exhausted = invoke(
+        limited, "host.config.get.v1",
+        {runtime::HostValue("/unknown"), std::nullopt});
+    check(repeated_exhausted.has_error() &&
+              limited.host->stats().read_bytes == 0,
+          "failed aggregate reservation must not copy or consume retry budget bytes");
 
     limits = {};
     limits.max_read_operations = 1;
@@ -434,6 +597,61 @@ void test_limits_cancellation_and_adapter_failures()
               operation_exhausted.error().code ==
                   runtime::HostErrorCode::BudgetExceeded,
           "snapshot and get must share one aggregate read-operation budget");
+}
+
+void test_whole_patch_aggregate_json_limits()
+{
+    const auto tiny = std::make_shared<const host::ConfigHostSnapshot>(
+        host::ConfigHostSnapshot{
+            {"u", "s"}, 1,
+            {{"x", runtime::JsonValue(std::int64_t{1})}}});
+    const auto rejected = [&](host::ConfigHostLimits limits,
+                              runtime::JsonValue value,
+                              const std::string_view message) {
+        auto port = std::make_shared<AtomicConfigPort>(
+            tiny->identity, tiny->values, tiny->revision);
+        auto owner = host::make_config_host_runtime(tiny, port, limits);
+        const auto result = invoke(
+            owner, "host.config.transact.v1",
+            {runtime::HostValue(std::int64_t{1}),
+             runtime::HostValue(std::move(value))});
+        check(result.has_error() &&
+                  result.error().code == runtime::HostErrorCode::BudgetExceeded &&
+                  port->calls() == 0 && owner.host->stats().write_bytes == 0,
+              message);
+    };
+
+    host::ConfigHostLimits limits;
+    limits.json.max_nodes = 8;
+    rejected(limits, json_object({
+        {"/a", runtime::JsonValue(runtime::JsonArray{
+            runtime::JsonValue(std::int64_t{1}), runtime::JsonValue(std::int64_t{2}),
+            runtime::JsonValue(std::int64_t{3}), runtime::JsonValue(std::int64_t{4})})},
+        {"/b", runtime::JsonValue(runtime::JsonArray{
+            runtime::JsonValue(std::int64_t{5}), runtime::JsonValue(std::int64_t{6}),
+            runtime::JsonValue(std::int64_t{7}), runtime::JsonValue(std::int64_t{8})})}}),
+        "patch node limits must aggregate across every entry");
+
+    limits = {};
+    limits.json.max_string_bytes = 16;
+    rejected(limits, json_object({
+        {"/a", runtime::JsonValue(std::string(8, 'a'))},
+        {"/b", runtime::JsonValue(std::string(8, 'b'))}}),
+        "patch string limits must aggregate keys and values across entries");
+
+    limits = {};
+    limits.json.max_total_bytes = 40;
+    rejected(limits, json_object({
+        {"/a", runtime::JsonValue(std::string(12, 'a'))},
+        {"/b", runtime::JsonValue(std::string(12, 'b'))}}),
+        "patch byte limits must aggregate the complete ordered map");
+
+    limits = {};
+    limits.json.max_work = 4;
+    rejected(limits, json_object({
+        {"/a", runtime::JsonValue(std::int64_t{1})},
+        {"/b", runtime::JsonValue(std::int64_t{2})}}),
+        "patch work limits must aggregate the complete ordered map");
 }
 
 void test_invalid_json_and_composition()
@@ -480,9 +698,11 @@ int main()
     test_catalog_and_identity();
     test_four_layer_capability_narrowing();
     test_snapshot_reads_and_deep_copy();
+    test_evaluator_optional_named_and_argument_regressions();
     test_atomic_transaction_and_pinned_read();
     test_concurrent_cas_exactly_one_winner();
     test_limits_cancellation_and_adapter_failures();
+    test_whole_patch_aggregate_json_limits();
     test_invalid_json_and_composition();
     if (failures != 0) {
         std::cerr << failures << " ConfigHost checks failed\n";

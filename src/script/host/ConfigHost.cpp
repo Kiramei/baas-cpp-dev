@@ -106,6 +106,8 @@ enum class JsonValidationError {
     Strings,
     Bytes,
     Work,
+    Cancelled,
+    DeadlineExceeded,
 };
 
 [[nodiscard]] JsonValidationError checked_add(
@@ -127,11 +129,13 @@ enum class JsonValidationError {
 
 [[nodiscard]] JsonValidationError validate_json(
     const JsonValue& root, const runtime::JsonBridgeLimits& limits,
-    JsonMetrics& metrics) noexcept
+    JsonMetrics& metrics, const HostCallContext* context = nullptr,
+    const std::size_t cooperative_check_interval = 1) noexcept
 {
     struct Pending final { const JsonValue* value; std::size_t depth; };
     try {
         std::vector<Pending> pending{{&root, 1}};
+        std::size_t next_cooperative_check = cooperative_check_interval;
         while (!pending.empty()) {
             const auto current = pending.back();
             pending.pop_back();
@@ -145,6 +149,16 @@ enum class JsonValidationError {
                     metrics.work, 1, limits.max_work,
                     JsonValidationError::Work); error != JsonValidationError::None)
                 return error;
+            if (context && metrics.work >= next_cooperative_check) {
+                if (context->deadline_exceeded())
+                    return JsonValidationError::DeadlineExceeded;
+                if (context->cancelled()) return JsonValidationError::Cancelled;
+                next_cooperative_check =
+                    metrics.work > std::numeric_limits<std::size_t>::max() -
+                            cooperative_check_interval
+                    ? std::numeric_limits<std::size_t>::max()
+                    : metrics.work + cooperative_check_interval;
+            }
             if (const auto error = checked_add(
                     metrics.total_bytes, 1, limits.max_total_bytes,
                     JsonValidationError::Bytes); error != JsonValidationError::None)
@@ -241,6 +255,49 @@ enum class JsonValidationError {
         error == JsonValidationError::Strings || error == JsonValidationError::Bytes ||
         error == JsonValidationError::Work;
 }
+
+[[nodiscard]] bool try_reserve_bytes(
+    std::atomic<std::size_t>& counter, const std::size_t amount,
+    const std::size_t maximum) noexcept
+{
+    auto used = counter.load(std::memory_order_relaxed);
+    for (;;) {
+        if (used > maximum || amount > maximum - used) return false;
+        if (counter.compare_exchange_weak(
+                used, used + amount, std::memory_order_acq_rel,
+                std::memory_order_relaxed))
+            return true;
+    }
+}
+
+void release_bytes(
+    std::atomic<std::size_t>& counter, const std::size_t amount) noexcept
+{
+    counter.fetch_sub(amount, std::memory_order_acq_rel);
+}
+
+class AtomicByteReservation final {
+public:
+    AtomicByteReservation(
+        std::atomic<std::size_t>& counter, const std::size_t amount,
+        const std::size_t maximum) noexcept
+        : counter_(&counter), amount_(amount), active_(
+              try_reserve_bytes(counter, amount, maximum)) {}
+    AtomicByteReservation(const AtomicByteReservation&) = delete;
+    AtomicByteReservation& operator=(const AtomicByteReservation&) = delete;
+    ~AtomicByteReservation()
+    {
+        if (active_) release_bytes(*counter_, amount_);
+    }
+
+    [[nodiscard]] bool acquired() const noexcept { return active_; }
+    void consume() noexcept { active_ = false; }
+
+private:
+    std::atomic<std::size_t>* counter_{};
+    std::size_t amount_{};
+    bool active_{};
+};
 
 [[nodiscard]] std::optional<std::vector<std::string>> decode_pointer(
     const std::string_view pointer, const ConfigHostLimits& limits) noexcept
@@ -357,10 +414,13 @@ struct ConfigHost::Impl final {
         }
         value_reads.fetch_add(1, std::memory_order_relaxed);
         const JsonValue* selected = find_path(snapshot->values, *path);
-        JsonValue output = selected ? *selected :
-            (arguments[1] ? std::get<JsonValue>(arguments[1]->storage()) : JsonValue());
+        const JsonValue null_value;
+        const JsonValue& source = selected ? *selected :
+            (arguments[1]
+                 ? std::get<JsonValue>(arguments[1]->storage())
+                 : null_value);
         JsonMetrics metrics;
-        const auto validation = validate_json(output, limits.json, metrics);
+        const auto validation = validate_json(source, limits.json, metrics);
         if (validation != JsonValidationError::None) {
             value_reads.fetch_sub(1, std::memory_order_acq_rel);
             read_operations.fetch_sub(1, std::memory_order_acq_rel);
@@ -369,19 +429,25 @@ struct ConfigHost::Impl final {
                 : failure(HostErrorCode::Internal,
                           "pinned config snapshot contains invalid JSON");
         }
-        auto used = read_bytes.load(std::memory_order_relaxed);
-        for (;;) {
-            if (metrics.total_bytes > limits.max_total_read_bytes -
-                    std::min(used, limits.max_total_read_bytes)) {
-                value_reads.fetch_sub(1, std::memory_order_acq_rel);
-                read_operations.fetch_sub(1, std::memory_order_acq_rel);
-                return budget("config aggregate read byte budget exceeded", "external_memory");
-            }
-            if (read_bytes.compare_exchange_weak(
-                    used, used + metrics.total_bytes,
-                    std::memory_order_acq_rel, std::memory_order_relaxed)) break;
+        AtomicByteReservation reservation{
+            read_bytes, metrics.total_bytes, limits.max_total_read_bytes};
+        if (!reservation.acquired()) {
+            value_reads.fetch_sub(1, std::memory_order_acq_rel);
+            read_operations.fetch_sub(1, std::memory_order_acq_rel);
+            return budget(
+                "config aggregate read byte budget exceeded", "external_memory");
         }
-        return HostResult::success(HostValue(std::move(output)));
+        try {
+            auto result = HostResult::success(HostValue(JsonValue(source)));
+            reservation.consume();
+            return result;
+        } catch (...) {
+            value_reads.fetch_sub(1, std::memory_order_acq_rel);
+            read_operations.fetch_sub(1, std::memory_order_acq_rel);
+            return failure(
+                HostErrorCode::Internal,
+                "config read copy failed internally");
+        }
     }
 
     [[nodiscard]] HostResult transact(
@@ -394,8 +460,8 @@ struct ConfigHost::Impl final {
             return invalid("invalid config transact arguments");
         const auto expected = std::get<std::int64_t>(arguments[0]->storage());
         if (expected < 0) return invalid("config expected revision must be non-negative");
-        const auto& entries = std::get<JsonObject>(
-            std::get<JsonValue>(arguments[1]->storage()).value());
+        const auto& patch_value = std::get<JsonValue>(arguments[1]->storage());
+        const auto& entries = std::get<JsonObject>(patch_value.value());
         if (entries.empty() || entries.size() > limits.max_patch_entries)
             return invalid("config patch entry count is invalid");
 
@@ -407,11 +473,32 @@ struct ConfigHost::Impl final {
         if (context.deadline_exceeded()) return deadline();
         if (context.cancelled()) return cancelled();
 
-        std::vector<ConfigPatchEntry> patch;
+        JsonMetrics patch_metrics;
+        const auto validation = validate_json(
+            patch_value, limits.json, patch_metrics, &context,
+            limits.cooperative_check_interval);
+        if (validation == JsonValidationError::DeadlineExceeded) return deadline();
+        if (validation == JsonValidationError::Cancelled) return cancelled();
+        if (validation != JsonValidationError::None)
+            return is_limit_error(validation)
+                ? budget("config patch JSON budget exceeded", "external_memory")
+                : invalid("config patch contains invalid JSON");
+
+        AtomicByteReservation reservation{
+            write_bytes, patch_metrics.total_bytes,
+            limits.max_total_write_bytes};
+        if (!reservation.acquired())
+            return budget(
+                "config aggregate write byte budget exceeded", "external_memory");
+
+        struct ParsedPatchEntry final {
+            std::vector<std::string> path;
+            const JsonValue* value{};
+        };
+        std::vector<ParsedPatchEntry> parsed;
         try {
-            patch.reserve(entries.size());
+            parsed.reserve(entries.size());
             std::size_t checked{};
-            std::size_t patch_bytes{};
             for (const auto& [pointer, value] : entries) {
                 if (++checked % limits.cooperative_check_interval == 0) {
                     if (context.deadline_exceeded()) return deadline();
@@ -419,74 +506,86 @@ struct ConfigHost::Impl final {
                 }
                 auto path = decode_pointer(pointer, limits);
                 if (!path) return invalid("config patch path is not canonical");
-                JsonMetrics metrics;
-                const auto validation = validate_json(value, limits.json, metrics);
-                if (validation != JsonValidationError::None)
-                    return is_limit_error(validation)
-                        ? budget("config patch JSON budget exceeded", "external_memory")
-                        : invalid("config patch contains invalid JSON");
-                if (pointer.size() > limits.max_total_write_bytes ||
-                    metrics.total_bytes > limits.max_total_write_bytes - pointer.size() ||
-                    pointer.size() + metrics.total_bytes >
-                        limits.max_total_write_bytes -
-                            std::min(patch_bytes, limits.max_total_write_bytes))
-                    return budget("config patch byte budget exceeded", "external_memory");
-                patch_bytes += pointer.size() + metrics.total_bytes;
-                patch.push_back({std::move(*path), value});
+                parsed.push_back({std::move(*path), &value});
             }
-            std::sort(patch.begin(), patch.end(), [](const auto& left, const auto& right) {
+            std::sort(parsed.begin(), parsed.end(), [](const auto& left, const auto& right) {
                 return left.path < right.path;
             });
-            for (std::size_t index = 1; index < patch.size(); ++index) {
-                if (path_prefix(patch[index - 1].path, patch[index].path))
+            for (std::size_t index = 1; index < parsed.size(); ++index) {
+                if (path_prefix(parsed[index - 1].path, parsed[index].path))
                     return invalid("config patch paths overlap");
-            }
-            auto used = write_bytes.load(std::memory_order_relaxed);
-            for (;;) {
-                if (patch_bytes > limits.max_total_write_bytes -
-                        std::min(used, limits.max_total_write_bytes))
-                    return budget("config aggregate write byte budget exceeded", "external_memory");
-                if (write_bytes.compare_exchange_weak(
-                        used, used + patch_bytes,
-                        std::memory_order_acq_rel, std::memory_order_relaxed)) break;
             }
         } catch (...) {
             return failure(HostErrorCode::Internal,
                            "config patch validation failed internally");
         }
 
-        if (context.deadline_exceeded()) return deadline();
-        if (context.cancelled()) return cancelled();
+        std::vector<ConfigPatchEntry> patch;
+        try {
+            patch.reserve(parsed.size());
+            for (const auto& entry : parsed)
+                patch.push_back({entry.path, *entry.value});
+        } catch (...) {
+            return failure(
+                HostErrorCode::Internal,
+                "config patch copy failed internally");
+        }
+
+        if (context.deadline_exceeded()) {
+            return deadline();
+        }
+        if (context.cancelled()) {
+            return cancelled();
+        }
         ConfigPortTransactionResult result;
         try {
+            reservation.consume();
             result = port->transact(
                 {expected, std::move(patch), context.cancellation});
         } catch (...) {
             return failure(HostErrorCode::Internal,
-                           "config persistence adapter failed internally");
+                           "config persistence adapter failed internally", false,
+                           HostEffectState::Unknown);
         }
         if (const auto* commit = std::get_if<ConfigCommit>(&result)) {
+            const auto config_id_bytes = snapshot->identity.config_id.size();
+            const auto commit_identity_overflow =
+                commit->snapshot_id.size() > limits.max_identity_bytes ||
+                config_id_bytes > limits.max_identity_bytes -
+                    std::min(commit->snapshot_id.size(), limits.max_identity_bytes);
             if (commit->revision <= expected || commit->revision < 0 ||
                 commit->snapshot_id.empty() ||
-                commit->snapshot_id.size() > limits.max_identity_bytes ||
+                commit_identity_overflow ||
                 !valid_utf8(commit->snapshot_id) ||
                 commit->snapshot_id == snapshot->identity.snapshot_id)
                 return failure(HostErrorCode::Internal,
-                               "config persistence adapter returned an invalid commit");
+                               "config persistence adapter returned an invalid commit",
+                               false, HostEffectState::Committed);
             transaction_commits.fetch_add(1, std::memory_order_relaxed);
             return HostResult::success(HostValue(commit_value(*commit)));
         }
         const auto error = std::get<ConfigPortError>(result);
         if (!valid_effect(error.effect_state))
             return failure(HostErrorCode::Internal,
-                           "config persistence adapter returned an invalid effect state");
+                           "config persistence adapter returned an invalid effect state",
+                           false, HostEffectState::Unknown);
         switch (error.code) {
             case ConfigPortErrorCode::Conflict:
+                if (error.effect_state != HostEffectState::NotStarted)
+                    return failure(
+                        HostErrorCode::Internal,
+                        "config persistence adapter returned an unsafe conflict",
+                        false, error.effect_state);
                 transaction_conflicts.fetch_add(1, std::memory_order_relaxed);
                 return failure(HostErrorCode::ConfigConflict,
                                "config revision conflict", false,
                                HostEffectState::NotStarted);
             case ConfigPortErrorCode::InvalidPatch:
+                if (error.effect_state != HostEffectState::NotStarted)
+                    return failure(
+                        HostErrorCode::Internal,
+                        "config persistence adapter returned an unsafe validation result",
+                        false, error.effect_state);
                 return failure(HostErrorCode::InvalidArgument,
                                "config patch failed application validation", false,
                                HostEffectState::NotStarted);
@@ -504,7 +603,8 @@ struct ConfigHost::Impl final {
                                error.effect_state);
         }
         return failure(HostErrorCode::Internal,
-                       "config persistence returned an unknown status");
+                       "config persistence returned an unknown status", false,
+                       error.effect_state);
     }
 
     std::shared_ptr<const ConfigHostSnapshot> snapshot;
