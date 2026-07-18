@@ -44,7 +44,7 @@ struct ServiceRuntimeRepositoryOpenResult;
 class ServiceRuntimeRepositoryOwner final {
 public:
     explicit ServiceRuntimeRepositoryOwner(
-        std::shared_ptr<const runtime::repository::RuntimeRepositorySnapshot> pin);
+        std::shared_ptr<const ::baas::runtime::repository::RuntimeRepositorySnapshot> pin);
     ~ServiceRuntimeRepositoryOwner();
 
     ServiceRuntimeRepositoryOwner(const ServiceRuntimeRepositoryOwner&) = delete;
@@ -52,23 +52,23 @@ public:
 
     [[nodiscard]] ServiceRuntimeRepositoryPhase phase() const noexcept;
     [[nodiscard]] const std::string& generation() const noexcept;
-    [[nodiscard]] std::shared_ptr<const runtime::repository::RuntimeRepositorySnapshot>
+    [[nodiscard]] std::shared_ptr<const ::baas::runtime::repository::RuntimeRepositorySnapshot>
         pin() const noexcept;
-    [[nodiscard]] std::shared_ptr<const runtime::repository::RuntimeRepositoryReadBundle>
-        open_read_bundle(runtime::repository::RuntimeRepositoryReadLimits limits = {},
+    [[nodiscard]] std::shared_ptr<const ::baas::runtime::repository::RuntimeRepositoryReadBundle>
+        open_read_bundle(::baas::runtime::repository::RuntimeRepositoryReadLimits limits = {},
                          std::stop_token stop_token = {}) const;
-    [[nodiscard]] std::shared_ptr<const runtime::script::
+    [[nodiscard]] std::shared_ptr<const ::baas::runtime::script::
         RuntimeScriptRepositoryTrustEvidence> script_trust_evidence() const noexcept;
 
 private:
     ServiceRuntimeRepositoryOwner(
-        std::shared_ptr<const runtime::repository::RuntimeRepositorySnapshot> pin,
-        std::shared_ptr<const runtime::script::RuntimeScriptRepositoryTrustEvidence>
+        std::shared_ptr<const ::baas::runtime::repository::RuntimeRepositorySnapshot> pin,
+        std::shared_ptr<const ::baas::runtime::script::RuntimeScriptRepositoryTrustEvidence>
             script_trust_evidence);
 
-    std::shared_ptr<const runtime::repository::RuntimeRepositorySnapshot> pin_;
+    std::shared_ptr<const ::baas::runtime::repository::RuntimeRepositorySnapshot> pin_;
     std::string generation_;
-    std::shared_ptr<const runtime::script::RuntimeScriptRepositoryTrustEvidence>
+    std::shared_ptr<const ::baas::runtime::script::RuntimeScriptRepositoryTrustEvidence>
         script_trust_evidence_;
 
     friend ServiceRuntimeRepositoryOpenResult open_service_runtime_repository_owner(

@@ -47,6 +47,11 @@ setup `4`, composition `5`, HTTP start `6`, readiness `7`, and internal `8`.
 - real `status`, `add_config*`, `copy_config`, `remove_config*`, `export_config`,
   and `import_config` registrations,
   `TriggerDispatcher`, `TriggerExecutor`, and `TriggerHandlerFactory`;
+- when and only when an embedding owner supplies
+  `ServiceApplicationDependencies::production_runtime_script_provider`,
+  `ProductionRuntimeScriptTaskFactory`, `RuntimeScriptTaskBackend`,
+  `RuntimeTaskOwner`, `ProductionRuntimeTaskControl`, and all five runtime
+  task Trigger descriptor groups;
 - file auth storage, system clock, system random, and sodium password deriver;
 - `ProductionHttpHost` on the exact CLI port.
 
@@ -66,6 +71,16 @@ The Pipe listener factory is not yet a complete application dependency. Any
 parsed `--pipe-name` therefore returns exit `3` before signal ownership,
 auth/config file creation, executor threads, or socket binding. This is a
 fail-closed boundary, not a claim that Pipe works.
+
+The native script composition is explicitly opt-in. The ordinary
+`BAAS_service` CLI, including the process launched by the existing Tauri
+integration, calls the dependency-free overload and registers no runtime task
+commands. It does not invent a config snapshot, repository, device, or
+provider. An embedding WebUI owner may pass the complete production provider;
+that provider must pin the user-owned config and immutable runtime-repository
+capabilities at task execution time. Resource files, scripts, and user config
+therefore remain external dynamic data and are never compiled into the
+executable.
 
 Runtime repository ownership is independent of `FileResourceStore` and
 `ServiceRuntimeProviderBridge`. A missing pointer or a valid activation for a
@@ -90,11 +105,13 @@ ready snapshot; `/health` then returns `200`.
 
 The main thread waits for the first immutable shutdown reason. HTTP
 `POST /shutdown` only publishes intent. Teardown withdraws readiness, calls
-`ProductionHttpHost::stop()`, stops the remote backend and its ADB/session
-owners, joins the runtime resource watcher and resets the Provider initialized
-flag, calls `TriggerExecutor::shutdown()`, and finally
-`ServiceSignalOwner::stop()`. Failures publish failed readiness and use the same
-reverse release sequence.
+`ProductionHttpHost::stop()`, drains `TriggerExecutor` so no prepare/claim
+window remains, closes `RuntimeTaskOwner` admission and cooperatively joins
+all native tasks while their provider/device pins are alive, stops the remote
+backend and its ADB/session owners, joins the runtime resource watcher and
+resets the Provider initialized flag, and finally stops the signal owner.
+Concurrent `stop()` calls are idempotent. Failures publish failed readiness
+and use the same release sequence.
 
 Auth state lives below `<project-root>/config`. Production storage keeps an
 exclusive installation lock, rejects a concurrent second owner, and preserves
@@ -126,10 +143,18 @@ Startup also reads and validates the user, event, switch, and static initializer
 documents through the retained resources capability before constructing the mutable
 user resource store. These documents remain external runtime data and are never
 compiled into `BAAS_service`.
+The separate `BAAS_service_production_runtime_path_tests` exercises the real
+Trigger ingress/dispatcher/executor path through the production factory,
+backend, owner, and control with synthetic pinned repositories and providers.
+It covers absent opt-in, successful script/log execution, provider failure,
+deadline, duplicate config admission, keyed cancellation, and concurrent
+application shutdown.
 Separate CTest entries execute
 the actual binary for `--help` and `--version`. CI provisions pinned
-cpp-httplib, libsodium, nlohmann-json, and miniz recipes, builds the bounded ZIP
-codec test, and runs Debug and Release on Windows, Linux, and macOS.
+cpp-httplib, libsodium, nlohmann-json, miniz, and OpenCV recipes, builds the
+bounded ZIP codec test, and runs Debug and Release on Windows, Linux, and
+macOS.
 
 This slice does not claim Pipe composition, packaged Tauri runtime resources,
-or an Android service executable.
+or an Android service executable. The production control and its dependency
+closure are nevertheless compile-checked for both supported Android ABIs.

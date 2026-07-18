@@ -50,9 +50,9 @@ enum class RuntimeRepositoryTrustedPlanError : std::uint8_t {
     RuntimeRepositoryTrustedPlanError error) noexcept;
 
 class VerifiedRuntimeRepositoryPlan final
-    : public runtime::repository::RuntimeRepositoryUpdatePlanProvider {
+    : public ::baas::runtime::repository::RuntimeRepositoryUpdatePlanProvider {
 public:
-  [[nodiscard]] runtime::repository::RuntimeRepositoryUpdatePlan
+  [[nodiscard]] ::baas::runtime::repository::RuntimeRepositoryUpdatePlan
   trusted_plan() const override;
 
   [[nodiscard]] const std::string &target_generation() const noexcept;
@@ -63,12 +63,12 @@ public:
 
 private:
   VerifiedRuntimeRepositoryPlan(
-      runtime::repository::RuntimeRepositoryUpdatePlan plan,
+      ::baas::runtime::repository::RuntimeRepositoryUpdatePlan plan,
       std::string target_generation, std::uint64_t sequence,
       std::uint64_t not_before_unix, std::uint64_t expires_unix,
       std::string payload_sha256) noexcept;
 
-  runtime::repository::RuntimeRepositoryUpdatePlan plan_;
+  ::baas::runtime::repository::RuntimeRepositoryUpdatePlan plan_;
   std::string target_generation_;
   std::uint64_t sequence_{};
   std::uint64_t not_before_unix_{};

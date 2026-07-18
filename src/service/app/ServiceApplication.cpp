@@ -5,7 +5,9 @@
 #include "service/app/ConfigurationTriggerRegistration.h"
 #include "service/app/ProductionProviderBackend.h"
 #include "service/app/ProductionRemoteBackend.h"
+#include "service/app/ProductionRuntimeTaskControl.h"
 #include "service/app/RuntimeConfigurationDefaults.h"
+#include "service/app/RuntimeTaskTriggerRegistration.h"
 #include "service/app/ServiceRuntimeProviderBridge.h"
 #include "service/app/ServiceRuntimeRepositoryOwner.h"
 #include "service/app/StatusTriggerRegistration.h"
@@ -13,6 +15,7 @@
 #include "service/channels/TriggerHandler.h"
 #include "service/health/HealthReadiness.h"
 #include "service/http/ProductionHttpHost.h"
+#include "service/runtime/ProductionRuntimeScriptTaskFactory.h"
 #include "service/trigger/TriggerDispatch.h"
 #include "service/websocket/BusinessSessionFactory.h"
 
@@ -130,10 +133,12 @@ public:
     std::shared_ptr<ProductionProviderBackend> provider;
     std::shared_ptr<adapters::FileResourceStore> resources;
     std::unique_ptr<ServiceRuntimeRepositoryOwner> runtime_repository;
-    std::shared_ptr<const runtime::repository::RuntimeRepositoryReadBundle>
+    std::shared_ptr<const ::baas::runtime::repository::RuntimeRepositoryReadBundle>
         runtime_repository_read_bundle;
     std::unique_ptr<ServiceRuntimeProviderBridge> runtime_provider;
     std::shared_ptr<ProductionRemoteBackend> remote_backend;
+    std::shared_ptr<service_runtime::RuntimeTaskOwner> runtime_task_owner;
+    std::shared_ptr<RuntimeTaskControl> runtime_task_control;
     std::shared_ptr<trigger::TriggerExecutor> executor;
     std::shared_ptr<channels::TriggerHandlerFactory> trigger_factory;
     std::unique_ptr<http::ProductionHttpHost> host;
@@ -176,7 +181,8 @@ ServiceApplication::~ServiceApplication()
 }
 
 ServiceApplicationOpenResult ServiceApplication::open(
-    ServiceRunOptions options) noexcept
+    ServiceRunOptions options,
+    ServiceApplicationDependencies dependencies) noexcept
 {
     // Pipe listener composition is not complete. This is deliberately the
     // first branch: no signal mask, lock file, worker, or socket is touched.
@@ -215,7 +221,7 @@ ServiceApplicationOpenResult ServiceApplication::open(
         }
         return {nullptr, error, {}};
     }
-    std::shared_ptr<const runtime::repository::RuntimeRepositoryReadBundle>
+    std::shared_ptr<const ::baas::runtime::repository::RuntimeRepositoryReadBundle>
         runtime_repository_read_bundle;
     std::shared_ptr<const adapters::ConfigurationDefaults>
         configuration_defaults;
@@ -230,9 +236,9 @@ ServiceApplicationOpenResult ServiceApplication::open(
         }
         configuration_defaults = load_runtime_configuration_defaults(
             runtime_repository_read_bundle->resources(), resource_limits);
-    } catch (const runtime::repository::RuntimeRepositoryReadError& error) {
+    } catch (const ::baas::runtime::repository::RuntimeRepositoryReadError& error) {
         const auto application_error = error.code()
-                == runtime::repository::RuntimeRepositoryReadErrorCode::resource_exhausted
+                == ::baas::runtime::repository::RuntimeRepositoryReadErrorCode::resource_exhausted
             ? ServiceApplicationError::internal_failure
             : ServiceApplicationError::runtime_repository_invalid;
         return {nullptr, application_error, {}};
@@ -314,6 +320,31 @@ ServiceApplicationOpenResult ServiceApplication::open(
         for (auto& item : configuration.registrations) {
             registrations.push_back(std::move(item));
         }
+        if (dependencies.production_runtime_script_provider) {
+            auto factory = service_runtime::
+                make_production_runtime_script_task_factory(
+                    std::move(
+                        dependencies.production_runtime_script_provider));
+            auto backend = service_runtime::make_runtime_script_task_backend(
+                std::move(factory), dependencies.runtime_script_backend);
+            impl->runtime_task_owner =
+                std::make_shared<service_runtime::RuntimeTaskOwner>(
+                    std::move(backend), dependencies.runtime_task_owner);
+            impl->runtime_task_control =
+                make_production_runtime_task_control(
+                    impl->runtime_task_owner);
+            auto runtime_tasks = make_runtime_task_trigger_registrations(
+                impl->runtime_task_control);
+            if (!runtime_tasks) {
+                return {
+                    nullptr,
+                    ServiceApplicationError::trigger_registration_failed,
+                    {}};
+            }
+            for (auto& item : runtime_tasks.registrations) {
+                registrations.push_back(std::move(item));
+            }
+        }
         auto dispatch = trigger::TriggerDispatcher::create(std::move(registrations));
         if (!dispatch) {
             return {nullptr, ServiceApplicationError::trigger_dispatch_failed, {}};
@@ -335,25 +366,25 @@ ServiceApplicationOpenResult ServiceApplication::open(
         config.remote = websocket::RemoteChannelPolicy::desktop_only;
         config.host.port = impl->options.port;
 
-        http::ProductionHttpHostDependencies dependencies;
-        dependencies.authentication.storage = auth::make_file_auth_storage(
+        http::ProductionHttpHostDependencies http_dependencies;
+        http_dependencies.authentication.storage = auth::make_file_auth_storage(
             impl->options.project_root);
-        dependencies.authentication.clock = auth::make_system_auth_clock();
-        dependencies.authentication.random = auth::make_system_auth_random();
-        dependencies.authentication.password_deriver =
+        http_dependencies.authentication.clock = auth::make_system_auth_clock();
+        http_dependencies.authentication.random = auth::make_system_auth_random();
+        http_dependencies.authentication.password_deriver =
             auth::make_sodium_password_deriver();
-        dependencies.provider_backend = impl->provider;
-        dependencies.resource_store = impl->resources;
-        dependencies.trigger = impl->trigger_factory;
+        http_dependencies.provider_backend = impl->provider;
+        http_dependencies.resource_store = impl->resources;
+        http_dependencies.trigger = impl->trigger_factory;
 #if defined(__ANDROID__)
-        dependencies.remote = nullptr;
+        http_dependencies.remote = nullptr;
 #else
-        dependencies.remote = std::make_shared<channels::RemoteHandlerFactory>(
+        http_dependencies.remote = std::make_shared<channels::RemoteHandlerFactory>(
             impl->remote_backend);
 #endif
 
         auto opened = http::open_production_http_host(
-            std::move(config), std::move(dependencies));
+            std::move(config), std::move(http_dependencies));
         if (!opened) {
             const auto error = opened.error
                     == http::ProductionHttpHostOpenError::authentication_failed
@@ -482,9 +513,14 @@ void ServiceApplication::stop() noexcept
         }
     }
     if (impl_->host) impl_->host->stop();
+    // Trigger handlers retain RuntimeTaskControl. Drain their prepare/claim
+    // windows before closing task admission, then cooperatively stop and join
+    // every native runtime worker while its provider/device dependencies are
+    // still alive.
+    if (impl_->executor) impl_->executor->shutdown();
+    if (impl_->runtime_task_owner) impl_->runtime_task_owner->shutdown();
     if (impl_->remote_backend) impl_->remote_backend->stop();
     if (impl_->runtime_provider) impl_->runtime_provider->stop();
-    if (impl_->executor) impl_->executor->shutdown();
     if (impl_->signal_owner) impl_->signal_owner->stop();
     impl_->ready.store(false, std::memory_order_release);
     impl_->transport_started.store(false, std::memory_order_release);
@@ -506,10 +542,18 @@ ServiceApplication::trigger_executor() const noexcept
     return impl_ ? impl_->executor : nullptr;
 }
 
-std::shared_ptr<const runtime::repository::RuntimeRepositoryReadBundle>
+std::shared_ptr<const ::baas::runtime::repository::RuntimeRepositoryReadBundle>
 ServiceApplication::runtime_repository_read_bundle() const noexcept
 {
     return impl_ ? impl_->runtime_repository_read_bundle : nullptr;
+}
+
+std::optional<service_runtime::RuntimeTaskSnapshot>
+ServiceApplication::runtime_task_snapshot(
+    const std::string_view config_id) const
+{
+    if (!impl_ || !impl_->runtime_task_owner) return std::nullopt;
+    return impl_->runtime_task_owner->snapshot(config_id);
 }
 
 int run_service_application(
