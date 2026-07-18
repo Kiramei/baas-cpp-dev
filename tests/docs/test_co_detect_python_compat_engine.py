@@ -1,0 +1,148 @@
+from pathlib import Path
+import re
+import unittest
+
+
+ROOT = Path(__file__).resolve().parents[2]
+
+
+class CoDetectPythonCompatEngineContractTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.doc = (
+            ROOT / "docs/script-runtime/CO_DETECT_PYTHON_COMPAT_ENGINE.md"
+        ).read_text(encoding="utf-8")
+        cls.workflow = (
+            ROOT / ".github/workflows/foundation-runtime.yml"
+        ).read_text(encoding="utf-8")
+
+    def test_legacy_projection_is_explicitly_not_parity(self) -> None:
+        for token in (
+            "Why the legacy engine is not parity",
+            "legacy.appear_then_click/v1",
+            "cannot claim Python parity",
+            "default 20-second stuck timeout",
+            "loading call is not active",
+            "never be described as parity",
+            "co_detect.python-compat/v1",
+        ):
+            self.assertIn(token, self.doc)
+
+    def test_strict_payload_schema_and_profile_source_are_closed(self) -> None:
+        for token in (
+            "duplicate object names",
+            "unknown fields are\nrejected",
+            "device.server-and-locale/v1",
+            "profile_source",
+            "foreground_check",
+            "duplicate_click_window_ms",
+            "after_failed_cycles",
+            "post_wait_screenshot_intervals",
+            "CN, JP, Global_en-us, Global_zh-tw, Global_ko-kr",
+            "Caller options, scripts, browser",
+            "Feature IDs are resolved only from the pinned\nsupport bundle",
+        ):
+            self.assertIn(token, self.doc)
+
+    def test_execution_priority_is_total_and_deterministic(self) -> None:
+        ordered = (
+            "Poll the earlier context/call deadline",
+            "capture one screenshot",
+            "run the foreground check",
+            "loading.all_rgb",
+            "Test `ends.rgb`",
+            "Test `ends.image`",
+            "Test `reactions.rgb`",
+            "test `reactions.rgb_profiled`",
+            "test `reactions.image`",
+            "test `reactions.image_profiled`",
+            "test `popups.rgb`",
+            "test `popups.profiled_image`",
+            "Apply duplicate-click suppression",
+            "increment the failed count",
+        )
+        positions = [self.doc.index(token) for token in ordered]
+        self.assertEqual(positions, sorted(positions))
+        self.assertIn("first tentative click\ntherefore happens on failure 11", self.doc)
+
+    def test_deadline_cancel_effect_and_foreground_semantics_are_bound(self) -> None:
+        for token in (
+            "deadline wins",
+            "HOST004_DEADLINE_EXCEEDED",
+            "details.deadline_scope=context",
+            "details.deadline_scope=call",
+            "HOST003_CANCELLED",
+            "No cancellation or timeout path produces a successful `end`",
+            '["capture", "vision", "input", "wait", "foreground_check"]',
+            "not_started",
+            "committed",
+            "unknown",
+            "HOST006_UNAVAILABLE",
+            "unavailable_reason=foreground_package_mismatch",
+        ):
+            self.assertIn(token, self.doc)
+
+    def test_support_bundle_ids_counts_and_external_ownership_are_exact(self) -> None:
+        self.assertIn("procedure-support/navigation.to-main-page/v1", self.doc)
+        self.assertIn("procedure-support/group.open/v1", self.doc)
+        self.assertIn("77 logical members", self.doc)
+        self.assertIn("25 logical members", self.doc)
+        self.assertIn("external resources repository", self.doc)
+        self.assertIn("fake images", self.doc)
+
+        navigation = re.search(
+            r"The `navigation\.to_main_page` image-template IDs are:\s+"
+            r"```text\s+(.*?)\s+```",
+            self.doc,
+            re.DOTALL,
+        )
+        group = re.search(
+            r"The `group\.open` image-template IDs are:\s+"
+            r"```text\s+(.*?)\s+```",
+            self.doc,
+            re.DOTALL,
+        )
+        self.assertIsNotNone(navigation)
+        self.assertIsNotNone(group)
+        navigation_ids = navigation.group(1).splitlines()
+        group_ids = group.group(1).splitlines()
+        self.assertEqual(len(navigation_ids), 69)
+        self.assertEqual(len(group_ids), 18)
+        self.assertEqual(len(set(navigation_ids)), 69)
+        self.assertEqual(len(set(group_ids)), 18)
+        for resource_id in (*navigation_ids, *group_ids):
+            self.assertRegex(resource_id, r"^[a-z0-9._/-]+$")
+
+    def test_terminals_and_known_baseline_defects_are_recorded(self) -> None:
+        for token in (
+            '"source": "main_page", "id": "main_page"',
+            '"source": "group_sign-up-reward", "id": "group_sign-up-reward"',
+            '"source": "group_menu", "id": "group_menu"',
+            '"source": "group_join-club", "id": "group_join-club"',
+            "draw-card-point-exchange-to-stone-piece-notice",
+            "Fail-to-convert-errorResponse.png",
+            "Failed-to-receive-Platform-Steam-GetEntitlementsAsJsonArray",
+            "attendance-reward.png",
+            "`group_join-club` crop entry commented out",
+        ):
+            self.assertIn(token, self.doc)
+
+    def test_production_definitions_are_gated_on_real_adapter_resources_and_digests(self) -> None:
+        for token in (
+            "engine adapter, external resource bundles",
+            "real resource digests",
+            "Nothing in this document authorizes a placeholder",
+            "production definitions are forbidden",
+            "Empty\n`resources`, fake digests, placeholder definitions",
+            "golden traces",
+        ):
+            self.assertIn(token, self.doc)
+
+    def test_foundation_path_filter_covers_doc_and_test(self) -> None:
+        doc_path = "docs/script-runtime/CO_DETECT_PYTHON_COMPAT_ENGINE.md"
+        self.assertEqual(self.workflow.count(doc_path), 2)
+        self.assertGreaterEqual(self.workflow.count("tests/docs/**"), 2)
+
+
+if __name__ == "__main__":
+    unittest.main()
