@@ -72,16 +72,23 @@ struct ProcedureExecutorError {
 class ProcedureExecutorOutcome final {
 public:
     [[nodiscard]] static ProcedureExecutorOutcome success(std::string terminal_id);
+    [[nodiscard]] static ProcedureExecutorOutcome success(
+        std::string terminal_id, runtime::JsonObject payload);
     [[nodiscard]] static ProcedureExecutorOutcome failure(ProcedureExecutorError error);
 
     [[nodiscard]] bool ok() const noexcept;
     [[nodiscard]] const std::string& terminal_id() const;
+    [[nodiscard]] const runtime::JsonObject& payload() const;
     [[nodiscard]] const ProcedureExecutorError& error() const;
 
 private:
+    struct Success final {
+        std::string terminal_id;
+        runtime::JsonObject payload;
+    };
     explicit ProcedureExecutorOutcome(
-        std::variant<std::string, ProcedureExecutorError> value);
-    std::variant<std::string, ProcedureExecutorError> value_;
+        std::variant<Success, ProcedureExecutorError> value);
+    std::variant<Success, ProcedureExecutorError> value_;
 };
 
 class ProcedureExecutionRequest final {
@@ -196,6 +203,11 @@ struct ProcedureHostLimits {
     std::size_t max_option_nodes{16'384};
     std::size_t max_option_bytes{1U * 1024U * 1024U};
     std::size_t max_option_work{65'536};
+    std::size_t max_result_depth{32};
+    std::size_t max_result_nodes{16'384};
+    std::size_t max_result_string_bytes{1U * 1024U * 1024U};
+    std::size_t max_result_total_bytes{4U * 1024U * 1024U};
+    std::size_t max_result_validation_work{65'536};
     std::size_t max_calls{1'000'000};
 };
 
@@ -249,6 +261,8 @@ struct ProcedureHostRuntime {
 namespace testing {
 inline constexpr std::size_t queued_acquisition_allocation_checkpoints = 6;
 void fail_queued_acquisition_at_allocation(std::size_t checkpoint) noexcept;
+inline constexpr std::size_t result_processing_allocation_checkpoints = 3;
+void fail_result_processing_at_allocation(std::size_t checkpoint) noexcept;
 }  // namespace testing
 #endif
 

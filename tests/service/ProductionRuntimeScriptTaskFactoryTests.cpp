@@ -170,7 +170,8 @@ std::string procedure_entry(
     const std::string_view id,
     const std::string_view path,
     const std::string_view resource_id,
-    const std::string_view definition)
+    const std::string_view definition,
+    const std::string_view result_schema = {})
 {
     return R"({"id":")" + std::string{id}
         + R"(","definition":{"path":")" + std::string{path}
@@ -178,13 +179,19 @@ std::string procedure_entry(
         + std::to_string(definition.size()) + R"(,"sha256":")"
         + sha256(definition)
         + R"("},"terminals":[{"source":"rgb-hit","id":"done"}],"effects":["capture","vision","input","wait","foreground_check"],"resources":[")"
-        + std::string{resource_id} + R"("]})";
+        + std::string{resource_id} + R"("])"
+        + (result_schema.empty()
+              ? std::string{} : R"(,"result":)" + std::string{result_schema})
+        + "}";
 }
 
 std::string procedure_manifest(
     const std::string_view main_definition,
-    const std::string_view other_definition)
+    const std::string_view other_definition,
+    const bool structured_legacy = false)
 {
+    constexpr std::string_view result_schema =
+        R"([{"name":"plan","required":true,"type":"array","items":{"type":"object","fields":[{"name":"item_id","required":true,"type":"string"},{"name":"quantity","required":true,"type":"integer"}]}},{"name":"balance","required":true,"type":"object","fields":[{"name":"credits","required":true,"type":"integer"},{"name":"gems","required":false,"type":"integer"}]},{"name":"formatted_text","required":true,"type":"string"}])";
     return R"({"schema":"baas.procedures/v1","entries":[)"
         + procedure_entry(
             "navigation.other", "procedures/navigation.other.json",
@@ -193,7 +200,8 @@ std::string procedure_manifest(
         + procedure_entry(
             "navigation.to-main-page",
             "procedures/navigation.to-main-page.json",
-            "procedure-support/navigation.to-main-page/v1", main_definition)
+            "procedure-support/navigation.to-main-page/v1", main_definition,
+            structured_legacy ? result_schema : std::string_view{})
         + "]}";
 }
 
@@ -207,9 +215,15 @@ public:
         const bool legacy_procedure = false)
     {
         const std::string first = procedure
-            ? std::string{
+            ? (legacy_procedure ? std::string{
                 "import \"baas/procedure\" as procedure;\n"
-                "fn run() { return procedure.run(\"navigation.to-main-page\").end == \"done\"; }\n"}
+                "fn run() { let result = procedure.run(\"navigation.to-main-page\"); "
+                "return result.end == \"done\" and result.plan[0].item_id == \"activity-report\" "
+                "and result.plan[0].quantity == 3 and result.balance.credits == 1250 "
+                "and result.formatted_text == \"3 activity reports\"; }\n"}
+              : std::string{
+                "import \"baas/procedure\" as procedure;\n"
+                "fn run() { return procedure.run(\"navigation.to-main-page\").end == \"done\"; }\n"})
             : std::string{
                 "import \"baas/log\" as log;\n"
                 "fn run() { log.emit(\"info\", \"one\"); return "}
@@ -268,7 +282,8 @@ public:
             const auto other_definition = procedure_definition();
             scripts.push_back({"baas.procedures.json",
                                procedure_manifest(
-                                   definition, other_definition)});
+                                   definition, other_definition,
+                                   legacy_procedure)});
             scripts.push_back({"procedures/navigation.other.json",
                                other_definition});
             scripts.push_back({"procedures/navigation.to-main-page.json",
@@ -582,10 +597,22 @@ public:
     }
 
     [[nodiscard]] script_host::ProcedureExecutorOutcome execute(
-        const script_host::ProcedureExecutionRequest&) override
+        const script_host::ProcedureExecutionRequest& request) override
     {
         ++counters_->legacy_executions;
-        return script_host::ProcedureExecutorOutcome::success("done");
+        if (!request.procedure() || request.procedure()->result_schema().size() != 3)
+            return script_host::ProcedureExecutorOutcome::failure({
+                script_host::ProcedureExecutorErrorCode::Internal, false,
+                script_runtime::HostEffectState::NotStarted});
+        return script_host::ProcedureExecutorOutcome::success(
+            "done", script_runtime::JsonObject{
+                {"plan", script_runtime::JsonValue(script_runtime::JsonArray{
+                    script_runtime::JsonValue(script_runtime::JsonObject{
+                        {"item_id", script_runtime::JsonValue("activity-report")},
+                        {"quantity", script_runtime::JsonValue(std::int64_t{3})}})})},
+                {"balance", script_runtime::JsonValue(script_runtime::JsonObject{
+                    {"credits", script_runtime::JsonValue(std::int64_t{1250})}})},
+                {"formatted_text", script_runtime::JsonValue("3 activity reports")}});
     }
 
 private:
@@ -833,6 +860,12 @@ void test_activation_supported_legacy_executor_extension_is_reachable()
               && counters->legacy_executions == 1,
           "the extension seam must be reachable for the activation-supported"
           " legacy engine only");
+    if (terminal.exit_code != 0 || counters->legacy_executor_calls != 1 ||
+        counters->legacy_executions != 1)
+        std::cerr << "legacy structured diagnostic: exit="
+                  << terminal.exit_code.value_or(-999)
+                  << " factory=" << counters->legacy_executor_calls.load()
+                  << " execute=" << counters->legacy_executions.load() << '\n';
 }
 
 void test_runtime_retains_pins_and_never_rereads_provider()

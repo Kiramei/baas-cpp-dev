@@ -8,6 +8,7 @@
 #include <cstdlib>
 #include <functional>
 #include <iostream>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <new>
@@ -78,13 +79,33 @@ host::ProcedureDescriptorInput descriptor(
         host::ProcedureEffect::Capture, host::ProcedureEffect::Vision,
         host::ProcedureEffect::Input, host::ProcedureEffect::Wait,
         host::ProcedureEffect::ForegroundCheck},
-    std::vector<std::string> resource_ids = {"image/group/menu"})
+    std::vector<std::string> resource_ids = {"image/group/menu"},
+    std::vector<host::ProcedureResultFieldSchema> result_schema = {})
 {
     host::ProcedureDescriptorInput result{
         std::move(id), std::move(terminals), std::move(effects),
         std::move(resource_ids), resources::sha256_hex(*bytes("legacy.test-implementation/v1")), {}};
+    result.result_schema = std::move(result_schema);
     result.sha256 = host::procedure_descriptor_sha256(result);
     return result;
+}
+
+std::vector<host::ProcedureResultFieldSchema> shop_result_schema()
+{
+    using Type = host::ProcedureResultJsonType;
+    return {
+        {"plan", true, Type::Array,
+         {{"", true, Type::Object,
+           {{"item_id", true, Type::String, {}},
+            {"quantity", true, Type::Integer, {}}}}}},
+        {"balance", true, Type::Object,
+         {{"credits", true, Type::Integer, {}},
+          {"gems", false, Type::Integer, {}}}},
+        {"formatted_text", false, Type::String, {}},
+        {"available", false, Type::Boolean, {}},
+        {"score", false, Type::Float, {}},
+        {"note", false, Type::Null, {}},
+    };
 }
 
 std::shared_ptr<const host::ProcedureSnapshot> procedure_snapshot(
@@ -188,6 +209,15 @@ std::optional<std::string> result_end(const runtime::HostResult& result)
     return std::get<std::string>(object[0].second.value());
 }
 
+const runtime::JsonObject* result_object(const runtime::HostResult& result)
+{
+    if (!result.ok() || result.value().type() != runtime::HostValueType::Json)
+        return nullptr;
+    const auto& json = std::get<runtime::JsonValue>(result.value().storage());
+    if (json.kind() != runtime::JsonKind::Object) return nullptr;
+    return &std::get<runtime::JsonObject>(json.value());
+}
+
 std::optional<std::string> detail_string(
     const runtime::HostResult& result, const std::string_view key)
 {
@@ -284,6 +314,36 @@ void test_snapshot_validation_identity_and_ownership()
     expect_snapshot_error(host::ProcedureSnapshotErrorCode::DuplicateResource, [&] {
         (void)host::procedure_descriptor_sha256(duplicate_resource);
     }, "duplicate resources must be rejected as set aliases");
+    auto schema_descriptor = descriptor(
+        "shop", {"planned"}, {}, {}, shop_result_schema());
+    const auto schema_digest = schema_descriptor.sha256;
+    auto changed_schema = schema_descriptor;
+    changed_schema.result_schema[1].children[1].required = true;
+    changed_schema.sha256 = host::procedure_descriptor_sha256(changed_schema);
+    check(schema_digest != changed_schema.sha256 &&
+              host::ProcedureSnapshot::build({schema_descriptor}, resources)->snapshot_id() !=
+              host::ProcedureSnapshot::build({changed_schema}, resources)->snapshot_id(),
+          "required/optional nested result schema drift must change descriptor and snapshot identity");
+    auto duplicate_result = schema_descriptor;
+    duplicate_result.result_schema.push_back(duplicate_result.result_schema.front());
+    expect_snapshot_error(host::ProcedureSnapshotErrorCode::DuplicateResultField, [&] {
+        (void)host::procedure_descriptor_sha256(duplicate_result);
+    }, "duplicate result fields must be rejected before digesting");
+    auto reserved_result = schema_descriptor;
+    reserved_result.result_schema.front().name = "end";
+    expect_snapshot_error(host::ProcedureSnapshotErrorCode::ReservedResultField, [&] {
+        (void)host::procedure_descriptor_sha256(reserved_result);
+    }, "executor payload schemas must never reserve or forge end");
+    auto malformed_array = schema_descriptor;
+    malformed_array.result_schema.front().children.clear();
+    expect_snapshot_error(host::ProcedureSnapshotErrorCode::InvalidResultSchema, [&] {
+        (void)host::procedure_descriptor_sha256(malformed_array);
+    }, "array result schemas must declare exactly one item schema");
+    auto schema_limits = host::ProcedureSnapshotLimits{};
+    schema_limits.max_result_schema_nodes_per_procedure = 2;
+    expect_snapshot_error(host::ProcedureSnapshotErrorCode::ResultSchemaLimitExceeded, [&] {
+        (void)host::procedure_descriptor_sha256(schema_descriptor, schema_limits);
+    }, "result schema publication must have an independent node limit");
     auto missing_resource = descriptor();
     missing_resource.resource_ids = {"image/group/missing"};
     missing_resource.sha256 = host::procedure_descriptor_sha256(missing_resource);
@@ -310,6 +370,159 @@ void test_snapshot_validation_identity_and_ownership()
     expect_snapshot_error(host::ProcedureSnapshotErrorCode::WorkLimitExceeded, [&] {
         (void)host::ProcedureSnapshot::build({descriptor()}, resources, limits);
     }, "snapshot validation work must be bounded");
+}
+
+void test_structured_result_schema_limits_and_precedence()
+{
+    using Type = host::ProcedureResultJsonType;
+    auto shop = descriptor("shop", {"planned"}, {}, {}, shop_result_schema());
+    auto snapshot = host::ProcedureSnapshot::build({shop}, resource_snapshot());
+    const runtime::JsonObject payload{
+        {"plan", runtime::JsonValue(runtime::JsonArray{
+            runtime::JsonValue(runtime::JsonObject{
+                {"item_id", runtime::JsonValue("activity-report")},
+                {"quantity", runtime::JsonValue(std::int64_t{3})}}),
+            runtime::JsonValue(runtime::JsonObject{
+                {"item_id", runtime::JsonValue("enhancement-stone")},
+                {"quantity", runtime::JsonValue(std::int64_t{1})}})})},
+        {"balance", runtime::JsonValue(runtime::JsonObject{
+            {"credits", runtime::JsonValue(std::int64_t{1250})}})},
+        {"formatted_text", runtime::JsonValue("2 items / 4 purchases")},
+    };
+    auto coordinator = host::PhysicalDeviceCoordinator::create();
+    const auto make_owner = [&](runtime::JsonObject result_payload,
+                                host::ProcedureHostLimits limits = {}) {
+        return host::make_procedure_host_runtime(
+            snapshot, "emulator-5556",
+            std::make_shared<LambdaExecutor>(
+                [result_payload = std::move(result_payload)](
+                    const host::ProcedureExecutionRequest&) {
+                    return host::ProcedureExecutorOutcome::success(
+                        "planned", result_payload);
+                }), coordinator, limits);
+    };
+    const auto valid = invoke(make_owner(payload), arguments("shop"));
+    const auto* object = result_object(valid);
+    check(object && object->size() == 4 && object->front().first == "end" &&
+              object->front().second == runtime::JsonValue("planned") &&
+              (*object)[1].first == "plan" && (*object)[2].first == "balance" &&
+              (*object)[3].first == "formatted_text",
+          "structured success must preserve nested shop data after immutable end");
+
+    const auto terminal_only = host::make_procedure_host_runtime(
+        host::ProcedureSnapshot::build(
+            {descriptor("empty", {"done"}, {}, {})}, resource_snapshot()),
+        "emulator-5556",
+        std::make_shared<LambdaExecutor>([](const host::ProcedureExecutionRequest&) {
+            return host::ProcedureExecutorOutcome::success("done");
+        }), coordinator);
+    check(result_end(invoke(terminal_only, arguments("empty"))) == "done",
+          "empty schema and success(terminal) must retain terminal-only compatibility");
+
+    const auto expect_invalid = [&](runtime::JsonObject invalid,
+                                    const std::string_view message) {
+        const auto result = invoke(make_owner(std::move(invalid)), arguments("shop"));
+        check(result.has_error() &&
+                  result.error().code == runtime::HostErrorCode::Internal &&
+                  result.error().effect_state == runtime::HostEffectState::NotStarted,
+              message);
+    };
+    auto unknown = payload;
+    unknown.emplace_back("surprise", runtime::JsonValue(true));
+    expect_invalid(std::move(unknown), "unknown structured result fields must fail closed");
+    auto missing = payload;
+    missing.erase(missing.begin() + 1);
+    expect_invalid(std::move(missing), "missing required structured fields must fail closed");
+    auto wrong_type = payload;
+    wrong_type[1].second = runtime::JsonValue("1250");
+    expect_invalid(std::move(wrong_type), "structured result JSON type mismatches must fail closed");
+    auto duplicate = payload;
+    duplicate.insert(duplicate.begin() + 1, duplicate.front());
+    expect_invalid(std::move(duplicate), "duplicate structured fields must fail closed");
+    auto forged_end = payload;
+    forged_end.insert(forged_end.begin(), {"end", runtime::JsonValue("forged")});
+    expect_invalid(std::move(forged_end), "executor payload must never override end");
+    auto reordered = payload;
+    std::swap(reordered[0], reordered[1]);
+    expect_invalid(std::move(reordered), "payload field order must match the immutable schema");
+    auto non_finite = payload;
+    non_finite.emplace_back(
+        "score", runtime::JsonValue(std::numeric_limits<double>::infinity()));
+    expect_invalid(std::move(non_finite),
+                   "non-finite floats are not JSON-safe structured results");
+
+    auto small = host::ProcedureHostLimits{};
+    small.max_result_string_bytes = 8;
+    auto limited = invoke(make_owner(payload, small), arguments("shop"));
+    check(limited.has_error() &&
+              limited.error().code == runtime::HostErrorCode::BudgetExceeded &&
+              detail_string(limited, "budget_scope") == "host_operation",
+          "result strings must have an independent bounded budget");
+    small = {};
+    small.max_result_nodes = 3;
+    limited = invoke(make_owner(payload, small), arguments("shop"));
+    check(limited.has_error() &&
+              limited.error().code == runtime::HostErrorCode::BudgetExceeded,
+          "result nodes must have an independent bounded budget");
+    small = {};
+    small.max_result_total_bytes = 16;
+    limited = invoke(make_owner(payload, small), arguments("shop"));
+    check(limited.has_error() &&
+              limited.error().code == runtime::HostErrorCode::BudgetExceeded,
+          "result total logical bytes must have an independent bounded budget");
+    small = {};
+    small.max_result_validation_work = 3;
+    limited = invoke(make_owner(payload, small), arguments("shop"));
+    check(limited.has_error() &&
+              limited.error().code == runtime::HostErrorCode::BudgetExceeded,
+          "result validation work must have an independent bounded budget");
+
+    for (std::size_t checkpoint = 1;
+         checkpoint <= host::testing::result_processing_allocation_checkpoints;
+         ++checkpoint) {
+        host::testing::fail_result_processing_at_allocation(checkpoint);
+        const auto failed = invoke(make_owner(payload), arguments("shop"));
+        check(failed.has_error() &&
+                  failed.error().code == runtime::HostErrorCode::BudgetExceeded &&
+                  !failed.error().retryable &&
+                  detail_string(failed, "budget_scope") == "external_memory",
+              "every result publication allocation failure must fail closed without ABI unwind");
+    }
+
+    auto both = std::make_shared<Probe>();
+    auto precedence_owner = host::make_procedure_host_runtime(
+        snapshot, "emulator-5556",
+        std::make_shared<LambdaExecutor>([both, payload](
+            const host::ProcedureExecutionRequest&) {
+            both->cancel = true;
+            both->deadline = true;
+            return host::ProcedureExecutorOutcome::success("planned", payload);
+        }), coordinator);
+    const auto precedence = invoke(
+        precedence_owner, arguments("shop"), both);
+    check(precedence.has_error() &&
+              precedence.error().code == runtime::HostErrorCode::DeadlineExceeded,
+          "structured success postflight must retain deadline-over-cancel precedence");
+
+    auto deep_schema = std::vector<host::ProcedureResultFieldSchema>{
+        {"root", true, Type::Object,
+         {{"child", true, Type::Object,
+           {{"text", true, Type::String, {}}}}}}};
+    auto deep = descriptor("deep", {"done"}, {}, {}, std::move(deep_schema));
+    auto deep_snapshot = host::ProcedureSnapshot::build({deep}, resource_snapshot());
+    auto deep_owner = host::make_procedure_host_runtime(
+        deep_snapshot, "emulator-5556",
+        std::make_shared<LambdaExecutor>([](const host::ProcedureExecutionRequest&) {
+            return host::ProcedureExecutorOutcome::success("done", runtime::JsonObject{
+                {"root", runtime::JsonValue(runtime::JsonObject{
+                    {"child", runtime::JsonValue(runtime::JsonObject{
+                        {"text", runtime::JsonValue("ok")}})}})}});
+        }), coordinator, host::ProcedureHostLimits{
+            .max_result_depth = 2});
+    limited = invoke(deep_owner, arguments("deep"));
+    check(limited.has_error() &&
+              limited.error().code == runtime::HostErrorCode::BudgetExceeded,
+          "nested structured result depth must be independently bounded");
 }
 
 void test_metadata_success_options_and_lifetime()
@@ -1221,6 +1434,7 @@ int main(const int argc, char** argv)
         else if (selected == "cancel") test_cancellation_deadline_and_exception_safety();
         else if (selected == "stress") test_stress_repeated_serialization();
         else if (selected == "golden") test_real_evaluator_mock_procedure_log_golden_runner();
+        else if (selected == "structured") test_structured_result_schema_limits_and_precedence();
         else return EXIT_FAILURE;
         return failures == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
     }
@@ -1235,6 +1449,7 @@ int main(const int argc, char** argv)
     test_cancellation_deadline_and_exception_safety();
     test_stress_repeated_serialization();
     test_real_evaluator_mock_procedure_log_golden_runner();
+    test_structured_result_schema_limits_and_precedence();
     if (failures != 0) return EXIT_FAILURE;
     std::cout << "procedure Host foundation tests passed\n";
     return EXIT_SUCCESS;

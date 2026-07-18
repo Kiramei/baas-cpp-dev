@@ -8,8 +8,32 @@ pending.
 `host.procedure.run.v1` binding specified by
 `host-capabilities.v1.json`. Scripts supply an exact logical `procedure_id` and
 an optional ordered map. Omission is the deterministic empty map. Success is
-exactly `{end: string}` in that field order; an executor terminal not declared
-by the immutable descriptor fails closed.
+an ordered object beginning with the Host-owned `{end: string}` followed by the
+executor payload fields declared by that procedure's immutable result schema.
+An empty schema and `ProcedureExecutorOutcome::success(terminal)` retain the
+historical terminal-only object. An undeclared terminal or payload mismatch
+fails closed, and executor data can never replace or duplicate `end`.
+
+## Descriptor-owned structured results
+
+`ProcedureDescriptorInput::result_schema` recursively declares ordered object
+fields and array item shapes using JSON `null`, `boolean`, `integer`, `float`,
+`string`, `array`, and `object` types. Every named field is explicitly required
+or optional. Publication rejects unknown schema keys in the production manifest,
+duplicate or noncanonical field names, the reserved name `end`, malformed array
+items, primitive children, excessive depth/nodes/strings/work, and digest drift.
+The descriptor canonical domain is `baas.procedure.descriptor/v3`; requiredness,
+field order, types, and complete nested shape therefore contribute to the
+descriptor SHA and immutable snapshot identity.
+
+The Host independently validates every returned payload. Unknown or duplicate
+fields, missing required fields, schema-order drift, type mismatches, non-finite
+floats, and attempts to forge `end` are adapter failures. Result depth, nodes,
+string bytes, total logical bytes, and validation work each have separate
+limits from input options. Allocation failure is contained as non-retryable
+`HOST005_BUDGET_EXCEEDED`; no adapter or result-processing exception crosses the
+Host ABI. Effect-trace invalidity remains first, and deadline then cancellation
+postflight is repeated after bounded result processing before success publishes.
 
 ## Immutable activation boundary
 
@@ -22,9 +46,10 @@ duplicates, terminal order, effect/resource sets, SHA-256 descriptors, bounded
 work, and the presence of every logical resource in the exact external
 snapshot. Snapshot identity includes that resource snapshot identity, so a
 resource generation cannot be substituted after activation. Descriptor
-canonical domain v2 additionally binds `implementation_sha256`; production
+canonical domain v3 additionally binds `implementation_sha256` and the result schema; production
 activation derives it from the engine, complete definition-file digest, and
-ordered source-to-terminal mapping. Definition-only changes therefore cannot
+ordered source-to-terminal mapping under `baas.procedure.implementation/v2`.
+Definition-only changes therefore cannot
 reuse a stale snapshot identity. See `RUNTIME_PROCEDURE_ACTIVATION.md`.
 
 The injected `ProcedureExecutor` receives the owned snapshot, immutable
@@ -101,7 +126,9 @@ identity, strict malformed input, success/error mapping, lifetime, same-device
 serialization, different-device concurrency, cancellation/deadline points,
 same-thread and propagated cross-thread reentry, multi-waiter FIFO order,
 queued admission allocation recovery, shutdown, exception/allocation failure,
-and 64 repeated concurrency runs.
+64 repeated concurrency runs, nested shop plan/balance/formatted-text results,
+strict schema failures, independent result limits, injected allocation failures,
+and structured-result deadline/cancellation precedence.
 Script evaluator tests cover the foreground discriminator through the language
 Error envelope.
 

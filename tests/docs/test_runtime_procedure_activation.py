@@ -35,12 +35,16 @@ class RuntimeProcedureActivationContractTests(unittest.TestCase):
         self.assertIn("resources->generation() != scripts.generation()", self.source)
         self.assertIn("plan.procedure_ids()", self.source)
 
-    def test_definition_and_terminal_mapping_bind_descriptor_v2(self):
+    def test_definition_terminal_mapping_and_result_schema_bind_descriptor_v3(self):
         snapshot_source = (ROOT / "src/script/host/ProcedureSnapshot.cpp").read_text(encoding="utf-8")
-        self.assertIn("baas.procedure.descriptor/v2", snapshot_source)
+        self.assertIn("baas.procedure.descriptor/v3", snapshot_source)
         self.assertIn("baas.procedure.snapshot/v2", snapshot_source)
         self.assertIn("implementation_sha256", self.source)
         self.assertIn("terminal.source", self.source)
+        self.assertIn("entry.result_schema", self.source)
+        self.assertIn("result_schema()", self.header)
+        for token in ("required", "optional", "items", "formatted_text"):
+            self.assertIn(token, self.doc)
 
     def test_split_targets_and_foundation_closure_are_wired(self):
         self.assertIn("BAAS_script_procedure_snapshot", self.cmake)
@@ -61,6 +65,7 @@ class RuntimeProcedureActivationContractTests(unittest.TestCase):
             "RPA005_GENERATION_MISMATCH", "RPA018_WORK_LIMIT_EXCEEDED",
             "RPA027_DEFINITION_DIGEST_MISMATCH", "RPA032_CANCELLED",
             "RPA033_RESOURCE_EXHAUSTED",
+            "RPA035_RESULT_SCHEMA_LIMIT_EXCEEDED",
         ):
             self.assertIn(token, self.source)
 

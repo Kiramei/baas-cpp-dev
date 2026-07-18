@@ -33,7 +33,31 @@ comments, no duplicate keys) and has exactly these fields:
         { "source": "exists", "id": "already_joined" }
       ],
       "effects": ["capture", "vision", "input", "wait"],
-      "resources": ["image/group/menu"]
+      "resources": ["image/group/menu"],
+      "result": [
+        {
+          "name": "plan",
+          "required": true,
+          "type": "array",
+          "items": {
+            "type": "object",
+            "fields": [
+              {"name": "item_id", "required": true, "type": "string"},
+              {"name": "quantity", "required": true, "type": "integer"}
+            ]
+          }
+        },
+        {
+          "name": "balance",
+          "required": true,
+          "type": "object",
+          "fields": [
+            {"name": "credits", "required": true, "type": "integer"},
+            {"name": "gems", "required": false, "type": "integer"}
+          ]
+        },
+        {"name": "formatted_text", "required": false, "type": "string"}
+      ]
     }
   ]
 }
@@ -45,6 +69,13 @@ depth/nodes, and validation work are bounded. Procedure/path duplicates and ASCI
 collisions fail closed. Definition paths are canonical lowercase logical repository paths
 under `procedures/`; they are matched against the pinned repository tree entry by exact
 path, size, and digest before reading.
+
+`result` is optional for terminal-only compatibility. When present it is an
+ordered array of exact field objects. Object nodes use ordered `fields`; array
+nodes use one exact `items` schema. Primitive nodes admit neither. Names are
+canonical lowercase identifiers, `end` is reserved to the Host, and duplicates,
+unknown fields, missing required schema members, invalid JSON types, depth/node
+overflow, string overflow, and validation-work exhaustion all reject activation.
 
 Only the sorted `RuntimeScriptExecutionPlan::procedure_ids()` closure is read and retained.
 The global manifest can describe other procedures, but an unrequested definition is never
@@ -68,10 +99,14 @@ the repository or rely on a native path.
 ## Identity and publication
 
 `ProcedureDescriptorInput::implementation_sha256` binds the engine ID, complete definition
-file SHA-256, and ordered source-to-logical-terminal mapping. The descriptor canonical
-domain is `baas.procedure.descriptor/v2`; the snapshot domain is
+file SHA-256, ordered source-to-logical-terminal mapping, and the complete
+ordered result schema under canonical domain `baas.procedure.implementation/v2`.
+The descriptor canonical domain is
+`baas.procedure.descriptor/v3`; the snapshot domain is
 `baas.procedure.snapshot/v2`. Therefore changing only definition bytes or only terminal
 mapping order changes both `ProcedureSnapshot::snapshot_id()` and the activation identity.
+Changing only result field order, requiredness, type, or nested shape also changes
+the implementation digest, descriptor digest, snapshot identity, and activation identity.
 
 The activation identity additionally binds its generation, scripts commit, resources
 commit, and procedure snapshot identity. `RuntimeProcedureActivation` and individual

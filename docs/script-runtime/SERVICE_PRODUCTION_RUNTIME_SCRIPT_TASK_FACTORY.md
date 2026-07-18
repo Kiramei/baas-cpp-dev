@@ -41,6 +41,16 @@ unknown or future engines fail closed during activation. Extension identity
 must cover the exact `config_id`, config snapshot id, and repository commits;
 matching snapshot labels from different configs are not interchangeable.
 
+The activation-owned result schema is visible through the exact immutable
+`ProcedureDescriptor` received by each request-local executor. Production
+executors return `ProcedureExecutorOutcome::success(terminal, payload)`; the
+dispatcher preserves that structured payload unchanged into `ProcedureHost`,
+which validates and publishes it to the real evaluator. The production suite
+exercises a legacy extension returning a nested shop purchase plan, remaining
+balance, and formatted text, then has BAAS Script read those fields. This is a
+production factory/activation/dispatcher/evaluator path, not a test-only Host
+hook. Terminal-only co-detect executors remain source compatible.
+
 ## Execution and cleanup
 
 Tasks execute in plan order. Success requires the entry export to return the

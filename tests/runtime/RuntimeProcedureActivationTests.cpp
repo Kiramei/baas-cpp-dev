@@ -155,6 +155,7 @@ struct ProcedureSpec final {
     std::string terminals;
     std::string effects;
     std::string resource_ids;
+    std::string result_schema;
 };
 
 [[nodiscard]] std::vector<ProcedureSpec> valid_specs(
@@ -182,7 +183,8 @@ struct ProcedureSpec final {
             item.path + R"(","size":)" + std::to_string(item.definition.size()) +
             R"(,"sha256":")" + sha256(item.definition) + R"("},"terminals":)" +
             item.terminals + R"(,"effects":)" + item.effects + R"(,"resources":)" +
-            item.resource_ids + '}';
+            item.resource_ids + (item.result_schema.empty()
+                ? std::string{} : R"(,"result":)" + item.result_schema) + '}';
     }
     return result + "]}";
 }
@@ -387,6 +389,77 @@ void test_identity_binds_definition_and_terminal_mapping() {
     check(one && three && one.activation->snapshot()->snapshot_id() !=
                               three.activation->snapshot()->snapshot_id(),
           "ordered source-to-terminal changes must alter ProcedureSnapshot identity");
+}
+
+void test_ordered_result_schema_activation_and_identity() {
+    constexpr std::string_view shop_schema =
+        R"([{"name":"plan","required":true,"type":"array","items":{"type":"object","fields":[{"name":"item_id","required":true,"type":"string"},{"name":"quantity","required":true,"type":"integer"}]}},{"name":"balance","required":true,"type":"object","fields":[{"name":"credits","required":true,"type":"integer"},{"name":"gems","required":false,"type":"integer"}]},{"name":"formatted_text","required":false,"type":"string"}])";
+    auto specs = valid_specs();
+    specs[0].result_schema = shop_schema;
+    RepositoryFixture fixture{procedure_files(specs)};
+    const auto loaded = load(fixture);
+    const auto descriptor = loaded
+        ? loaded.activation->snapshot()->resolve("group/menu") : nullptr;
+    const auto definition = loaded
+        ? loaded.activation->resolve_definition("group/menu") : nullptr;
+    check(loaded && descriptor && definition &&
+              descriptor->result_schema().size() == 3 &&
+              descriptor->result_schema()[0].name == "plan" &&
+              descriptor->result_schema()[0].type ==
+                  baas::script::host::ProcedureResultJsonType::Array &&
+              descriptor->result_schema()[0].children.size() == 1 &&
+              descriptor->result_schema()[0].children[0].children.size() == 2 &&
+              descriptor->result_schema()[1].children[1].name == "gems" &&
+              !descriptor->result_schema()[1].children[1].required &&
+              std::ranges::equal(
+                  definition->result_schema(), descriptor->result_schema()),
+          "production activation and definition must retain the ordered nested result schema");
+
+    auto changed = specs;
+    auto& changed_text = changed[0].result_schema;
+    const auto optional = changed_text.find(
+        R"("name":"gems","required":false)");
+    changed_text.replace(optional, std::string_view{
+        R"("name":"gems","required":false)"}.size(),
+        R"("name":"gems","required":true)");
+    RepositoryFixture drift_fixture{procedure_files(changed)};
+    const auto drift = load(drift_fixture);
+    check(loaded && drift &&
+              loaded.activation->snapshot()->snapshot_id() !=
+                  drift.activation->snapshot()->snapshot_id() &&
+              loaded.activation->activation_id() != drift.activation->activation_id() &&
+              definition->implementation_sha256() !=
+                  drift.activation->resolve_definition("group/menu")
+                      ->implementation_sha256(),
+          "result schema drift must alter implementation, descriptor snapshot, and activation identity");
+
+    const std::vector<std::string> invalid_schemas{
+        R"([{"name":"end","required":true,"type":"string"}])",
+        R"([{"name":"value","required":true,"type":"string"},{"name":"value","required":false,"type":"string"}])",
+        R"([{"name":"value","type":"string"}])",
+        R"([{"name":"value","required":true,"type":"number"}])",
+        R"([{"name":"value","required":true,"type":"string","extra":true}])",
+        R"([{"name":"values","required":true,"type":"array"}])",
+    };
+    for (const auto& invalid_schema : invalid_schemas) {
+        auto invalid = valid_specs();
+        invalid[0].result_schema = invalid_schema;
+        RepositoryFixture invalid_fixture{procedure_files(invalid)};
+        expect_error(load(invalid_fixture),
+                     procedure::RuntimeProcedureActivationError::invalid_manifest,
+                     "unknown, missing, duplicate, reserved, and malformed result schemas must fail closed");
+    }
+
+    auto limits = procedure::RuntimeProcedureActivationLimits{};
+    limits.max_result_schema_nodes_per_procedure = 2;
+    expect_error(load(fixture, limits),
+                 procedure::RuntimeProcedureActivationError::result_schema_limit_exceeded,
+                 "production result schema node count must be independently bounded");
+    limits = {};
+    limits.max_result_schema_depth = 2;
+    expect_error(load(fixture, limits),
+                 procedure::RuntimeProcedureActivationError::result_schema_limit_exceeded,
+                 "production result schema nesting must be independently bounded");
 }
 
 void test_provenance_and_closure_fail_closed() {
@@ -600,6 +673,7 @@ int main() {
     test_success_closure_and_owned_lifetime();
     test_co_detect_engine_is_an_activated_production_engine();
     test_identity_binds_definition_and_terminal_mapping();
+    test_ordered_result_schema_activation_and_identity();
     test_provenance_and_closure_fail_closed();
     test_strict_manifests_definitions_and_paths();
     test_resource_digest_limits_cancellation_and_oom();

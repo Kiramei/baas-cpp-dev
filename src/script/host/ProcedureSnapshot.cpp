@@ -14,8 +14,27 @@ namespace {
 {
     return limits.max_procedures != 0 && limits.max_terminals_per_procedure != 0 &&
         limits.max_effects_per_procedure != 0 && limits.max_resources_per_procedure != 0 &&
+        limits.max_result_schema_nodes_per_procedure != 0 &&
+        limits.max_result_schema_depth != 0 && limits.max_result_schema_depth <= 256 &&
         limits.max_string_bytes != 0 && limits.max_total_string_bytes != 0 &&
         limits.max_validation_work != 0 && limits.max_effects_per_procedure <= 5;
+}
+
+[[nodiscard]] bool valid_result_type(const ProcedureResultJsonType type) noexcept
+{
+    return type >= ProcedureResultJsonType::Null &&
+        type <= ProcedureResultJsonType::Object;
+}
+
+[[nodiscard]] bool valid_result_field_name(
+    const std::string_view value, const std::size_t max_bytes) noexcept
+{
+    if (value.empty() || value.size() > max_bytes ||
+        !(value.front() >= 'a' && value.front() <= 'z')) return false;
+    return std::all_of(value.begin(), value.end(), [](const char character) {
+        return (character >= 'a' && character <= 'z') ||
+            (character >= '0' && character <= '9') || character == '_';
+    });
 }
 
 [[nodiscard]] bool lowercase_ascii_path(
@@ -79,6 +98,87 @@ struct CanonicalDescriptor {
     std::size_t work{};
 };
 
+void preflight_result_fields(
+    const std::vector<ProcedureResultFieldSchema>& fields,
+    const ProcedureSnapshotLimits& limits, const std::size_t depth,
+    const bool array_item, std::size_t& nodes, std::size_t& string_bytes,
+    std::size_t& work)
+{
+    if (depth > limits.max_result_schema_depth)
+        throw ProcedureSnapshotError(
+            ProcedureSnapshotErrorCode::ResultSchemaLimitExceeded,
+            "procedure result schema depth exceeded");
+    for (std::size_t field_index{}; field_index < fields.size(); ++field_index) {
+        const auto& field = fields[field_index];
+        if (++nodes > limits.max_result_schema_nodes_per_procedure)
+            throw ProcedureSnapshotError(
+                ProcedureSnapshotErrorCode::ResultSchemaLimitExceeded,
+                "procedure result schema node limit exceeded");
+        if (++work > limits.max_validation_work)
+            throw ProcedureSnapshotError(
+                ProcedureSnapshotErrorCode::WorkLimitExceeded,
+                "procedure descriptor validation work exceeded");
+        if (field.name.size() > limits.max_string_bytes ||
+            field.name.size() > limits.max_total_string_bytes -
+                std::min(string_bytes, limits.max_total_string_bytes))
+            throw ProcedureSnapshotError(
+                ProcedureSnapshotErrorCode::StringLimitExceeded,
+                "procedure result schema string budget exceeded");
+        string_bytes += field.name.size();
+        if (array_item) {
+            if (!field.name.empty() || !field.required)
+                throw ProcedureSnapshotError(
+                    ProcedureSnapshotErrorCode::InvalidResultSchema,
+                    "array item schema must be unnamed and required");
+        } else {
+            if (!valid_result_field_name(field.name, limits.max_string_bytes))
+                throw ProcedureSnapshotError(
+                    ProcedureSnapshotErrorCode::InvalidResultSchema,
+                    "procedure result field name is not canonical");
+            if (field.name == "end")
+                throw ProcedureSnapshotError(
+                    ProcedureSnapshotErrorCode::ReservedResultField,
+                    "procedure result field uses reserved name end");
+            for (std::size_t previous{}; previous < field_index; ++previous) {
+                if (++work > limits.max_validation_work)
+                    throw ProcedureSnapshotError(
+                        ProcedureSnapshotErrorCode::WorkLimitExceeded,
+                        "procedure descriptor validation work exceeded");
+                if (fields[previous].name == field.name)
+                    throw ProcedureSnapshotError(
+                        ProcedureSnapshotErrorCode::DuplicateResultField,
+                        "duplicate procedure result field");
+            }
+        }
+        if (!valid_result_type(field.type))
+            throw ProcedureSnapshotError(
+                ProcedureSnapshotErrorCode::InvalidResultSchema,
+                "procedure result field has invalid JSON type");
+        switch (field.type) {
+            case ProcedureResultJsonType::Object:
+                preflight_result_fields(
+                    field.children, limits, depth + 1, false,
+                    nodes, string_bytes, work);
+                break;
+            case ProcedureResultJsonType::Array:
+                if (field.children.size() != 1)
+                    throw ProcedureSnapshotError(
+                        ProcedureSnapshotErrorCode::InvalidResultSchema,
+                        "array result schema must declare exactly one item schema");
+                preflight_result_fields(
+                    field.children, limits, depth + 1, true,
+                    nodes, string_bytes, work);
+                break;
+            default:
+                if (!field.children.empty())
+                    throw ProcedureSnapshotError(
+                        ProcedureSnapshotErrorCode::InvalidResultSchema,
+                        "primitive result schema cannot have children");
+                break;
+        }
+    }
+}
+
 [[nodiscard]] CanonicalDescriptor canonicalize(
     const ProcedureDescriptorInput& source, const ProcedureSnapshotLimits& limits,
     const bool check_digest)
@@ -119,6 +219,10 @@ struct CanonicalDescriptor {
     for (const auto& resource : source.resource_ids) preflight_string(resource);
     preflight_string(source.implementation_sha256);
     if (check_digest) preflight_string(source.sha256);
+    std::size_t result_nodes{};
+    preflight_result_fields(
+        source.result_schema, limits, 1, false, result_nodes,
+        preflight_bytes, preflight_work);
 
     // Copy only after every attacker-controlled cardinality and string byte
     // count is known to fit the publication limits.
@@ -183,7 +287,7 @@ struct CanonicalDescriptor {
 [[nodiscard]] std::string digest_canonical(const ProcedureDescriptorInput& value)
 {
     std::string material;
-    add_length_prefixed(material, "baas.procedure.descriptor/v2");
+    add_length_prefixed(material, "baas.procedure.descriptor/v3");
     add_length_prefixed(material, value.procedure_id);
     add_length_prefixed(material, value.implementation_sha256);
     add_length_prefixed(material, std::to_string(value.terminal_ids.size()));
@@ -193,6 +297,16 @@ struct CanonicalDescriptor {
         add_length_prefixed(material, procedure_effect_name(effect));
     add_length_prefixed(material, std::to_string(value.resource_ids.size()));
     for (const auto& resource : value.resource_ids) add_length_prefixed(material, resource);
+    const auto add_schema = [&](const auto& self,
+                                const ProcedureResultFieldSchema& field) -> void {
+        add_length_prefixed(material, field.name);
+        add_length_prefixed(material, field.required ? "required" : "optional");
+        add_length_prefixed(material, procedure_result_json_type_name(field.type));
+        add_length_prefixed(material, std::to_string(field.children.size()));
+        for (const auto& child : field.children) self(self, child);
+    };
+    add_length_prefixed(material, std::to_string(value.result_schema.size()));
+    for (const auto& field : value.result_schema) add_schema(add_schema, field);
     return resources::sha256_hex(std::as_bytes(std::span(material)));
 }
 
@@ -214,6 +328,21 @@ std::string_view procedure_effect_name(const ProcedureEffect effect) noexcept
         case ProcedureEffect::Input: return "input";
         case ProcedureEffect::Wait: return "wait";
         case ProcedureEffect::ForegroundCheck: return "foreground_check";
+    }
+    return "invalid";
+}
+
+std::string_view procedure_result_json_type_name(
+    const ProcedureResultJsonType type) noexcept
+{
+    switch (type) {
+        case ProcedureResultJsonType::Null: return "null";
+        case ProcedureResultJsonType::Boolean: return "boolean";
+        case ProcedureResultJsonType::Integer: return "integer";
+        case ProcedureResultJsonType::Float: return "float";
+        case ProcedureResultJsonType::String: return "string";
+        case ProcedureResultJsonType::Array: return "array";
+        case ProcedureResultJsonType::Object: return "object";
     }
     return "invalid";
 }
@@ -243,6 +372,10 @@ std::string_view procedure_snapshot_error_code_name(
         case DuplicateResource: return "PRC018_DUPLICATE_RESOURCE";
         case ResourceNotFound: return "PRC019_RESOURCE_NOT_FOUND";
         case ResourceSnapshotAbsent: return "PRC020_RESOURCE_SNAPSHOT_ABSENT";
+        case ResultSchemaLimitExceeded: return "PRC021_RESULT_SCHEMA_LIMIT_EXCEEDED";
+        case InvalidResultSchema: return "PRC022_INVALID_RESULT_SCHEMA";
+        case DuplicateResultField: return "PRC023_DUPLICATE_RESULT_FIELD";
+        case ReservedResultField: return "PRC024_RESERVED_RESULT_FIELD";
     }
     return "PRC000_UNKNOWN";
 }
@@ -301,6 +434,12 @@ std::span<const ProcedureEffect> ProcedureDescriptor::declared_effects() const n
 std::span<const std::string> ProcedureDescriptor::resource_ids() const noexcept
 {
     return input_.resource_ids;
+}
+
+std::span<const ProcedureResultFieldSchema>
+ProcedureDescriptor::result_schema() const noexcept
+{
+    return input_.result_schema;
 }
 
 const std::string& ProcedureDescriptor::sha256() const noexcept { return input_.sha256; }
