@@ -63,11 +63,12 @@ class RuntimeResourceSnapshotLoaderContractTests(unittest.TestCase):
         self.assertIn(
             "-DBUILD_RUNTIME_RESOURCE_SNAPSHOT_LOADER=ON", self.foundation_ci
         )
-        self.assertIn(
-            "BAAS_runtime_repository_updater BAAS_service_runtime_task_owner\n"
-            "          BAAS_runtime_resource_snapshot_loader\n",
-            self.foundation_ci,
-        )
+        for target in (
+            "BAAS_runtime_repository_updater",
+            "BAAS_service_runtime_task_owner",
+            "BAAS_runtime_resource_snapshot_loader",
+        ):
+            self.assertIn(target, self.foundation_ci)
         self.assertIn(
             "docs/script-runtime/RUNTIME_RESOURCE_SNAPSHOT_LOADER.md",
             self.foundation_ci,

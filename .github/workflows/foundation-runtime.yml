@@ -14,6 +14,8 @@ on:
       - 'CMakePresets.json'
       - 'cmake/**'
       - 'deploy/conan/recipes/baas-nlohmann-json/**'
+      - 'deploy/conan/recipes/baas-libgit2/**'
+      - 'deploy/conan/recipes/baas-cpp-httplib/**'
       - 'deploy/conan/recipes/baas-miniz/**'
       - 'deploy/conan/recipes/baas-opencv/**'
       - 'deploy/conan/recipes/baas-spdlog/**'
@@ -47,6 +49,7 @@ on:
       - 'include/device/screenshot/ScreenshotInterval.h'
       - 'apps/script_check/**'
       - 'apps/script_run/**'
+      - 'apps/baas-runtime-publisher/**'
       - 'tests/script/**'
       - 'tests/resources/**'
       - 'include/service/**'
@@ -122,6 +125,7 @@ on:
       - 'docs/script-runtime/RUNTIME_RESOURCE_SNAPSHOT_LOADER.md'
       - 'docs/script-runtime/RUNTIME_PROCEDURE_ACTIVATION.md'
       - 'docs/script-runtime/CO_DETECT_PYTHON_COMPAT_ENGINE.md'
+      - 'docs/script-runtime/GROUP_RESOURCE_PUBLICATION.md'
       - 'docs/script-runtime/LEGACY_PROCEDURE_EXECUTION.md'
       - 'docs/script-runtime/SERVICE_RUNTIME_TASK_STATUS_JSON.md'
   pull_request:
@@ -137,6 +141,8 @@ on:
       - 'CMakePresets.json'
       - 'cmake/**'
       - 'deploy/conan/recipes/baas-nlohmann-json/**'
+      - 'deploy/conan/recipes/baas-libgit2/**'
+      - 'deploy/conan/recipes/baas-cpp-httplib/**'
       - 'deploy/conan/recipes/baas-miniz/**'
       - 'deploy/conan/recipes/baas-opencv/**'
       - 'deploy/conan/recipes/baas-spdlog/**'
@@ -170,6 +176,7 @@ on:
       - 'include/device/screenshot/ScreenshotInterval.h'
       - 'apps/script_check/**'
       - 'apps/script_run/**'
+      - 'apps/baas-runtime-publisher/**'
       - 'tests/script/**'
       - 'tests/resources/**'
       - 'include/service/**'
@@ -245,6 +252,7 @@ on:
       - 'docs/script-runtime/RUNTIME_RESOURCE_SNAPSHOT_LOADER.md'
       - 'docs/script-runtime/RUNTIME_PROCEDURE_ACTIVATION.md'
       - 'docs/script-runtime/CO_DETECT_PYTHON_COMPAT_ENGINE.md'
+      - 'docs/script-runtime/GROUP_RESOURCE_PUBLICATION.md'
       - 'docs/script-runtime/LEGACY_PROCEDURE_EXECUTION.md'
       - 'docs/script-runtime/SERVICE_RUNTIME_TASK_STATUS_JSON.md'
 
@@ -364,6 +372,12 @@ jobs:
           -s:h build_type=${{ matrix.build_type }} -s:b build_type=Release
           ${{ matrix.conan_settings }} --build=missing --no-remote
 
+      - name: Build pinned libgit2 recipe
+        run: >-
+          conan create deploy/conan/recipes/baas-libgit2
+          -s:h build_type=${{ matrix.build_type }} -s:b build_type=Release
+          ${{ matrix.conan_settings }} --build=missing --no-remote
+
       - name: Build pinned OpenCV recipe
         run: >-
           conan create deploy/conan/recipes/baas-opencv
@@ -386,6 +400,7 @@ jobs:
         run: >-
           conan install --requires=baas-nlohmann-json/3.11.3
           --requires=baas-miniz/3.1.2 --requires=baas-opencv/4.13.0
+          --requires=baas-libgit2/1.9.3
           --requires=baas-spdlog/1.15.3
           --requires=baas-simdutf/6.2.0
           -of build/conan/co-detect-support-bundle
@@ -399,6 +414,7 @@ jobs:
           "-DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}/build/conan/co-detect-support-bundle/conan_toolchain.cmake"
           -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
           -DBUILD_TESTING=ON -DBUILD_RUNTIME_CO_DETECT_SUPPORT_BUNDLE_TESTS=ON
+          -DBUILD_RUNTIME_GROUP_PUBLICATION_COMPILER_TESTS=ON
           -DBUILD_RUNTIME_CO_DETECT_PRODUCTION_ADAPTER_TESTS=ON
           -DBUILD_SERVICE_PRODUCTION_RUNTIME_SCRIPT_TASK_FACTORY_TESTS=ON
           -DBUILD_RUNTIME_BAAS_CONNECTION_CO_DETECT_PORT_TESTS=ON
@@ -411,6 +427,8 @@ jobs:
           cmake --build build/co-detect-support-bundle
           --config ${{ matrix.build_type }} --parallel 4
           --target BAAS_runtime_co_detect_support_bundle_tests
+          BAAS_runtime_group_publication_compiler_tests
+          baas-runtime-publisher
           BAAS_runtime_co_detect_production_adapter_tests
           BAAS_service_production_runtime_script_task_factory_tests
           BAAS_runtime_baas_connection_co_detect_port_tests
@@ -454,6 +472,8 @@ jobs:
         run: |
           conan create deploy/conan/recipes/baas-nlohmann-json -s:h build_type=Release -s:b build_type=Release --build=missing --no-remote
           conan create deploy/conan/recipes/baas-miniz -s:h build_type=Release -s:b build_type=Release --build=missing --no-remote
+          conan create deploy/conan/recipes/baas-cpp-httplib -s:h build_type=Release -s:b build_type=Release --build=missing
+          conan create deploy/conan/recipes/baas-libgit2 -s:h build_type=Release -s:b build_type=Release --build=missing --no-remote
           conan create deploy/conan/recipes/baas-opencv -s:h build_type=Release -s:b build_type=Release --build=missing --no-remote
           conan create deploy/conan/recipes/baas-spdlog -s:h build_type=Release -s:b build_type=Release --build=missing --no-remote
           conan create deploy/conan/recipes/baas-simdutf -s:h build_type=Release -s:b build_type=Release --build=missing --no-remote
@@ -462,6 +482,7 @@ jobs:
         run: >-
           conan install --requires=baas-nlohmann-json/3.11.3
           --requires=baas-miniz/3.1.2 --requires=baas-opencv/4.13.0
+          --requires=baas-libgit2/1.9.3
           --requires=baas-spdlog/1.15.3
           --requires=baas-simdutf/6.2.0
           -of build/conan/co-detect-support-bundle
@@ -474,6 +495,7 @@ jobs:
           "-DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}/build/conan/co-detect-support-bundle/conan_toolchain.cmake"
           -DCMAKE_BUILD_TYPE=Release
           -DBUILD_TESTING=ON -DBUILD_RUNTIME_CO_DETECT_SUPPORT_BUNDLE_TESTS=ON
+          -DBUILD_RUNTIME_GROUP_PUBLICATION_COMPILER_TESTS=ON
           -DBUILD_RUNTIME_CO_DETECT_PRODUCTION_ADAPTER_TESTS=ON
           -DBUILD_SERVICE_PRODUCTION_RUNTIME_SCRIPT_TASK_FACTORY_TESTS=ON
           -DBUILD_RUNTIME_BAAS_CONNECTION_CO_DETECT_PORT_TESTS=ON
@@ -486,6 +508,8 @@ jobs:
           cmake --build build/co-detect-support-bundle
           --config Release --parallel 4
           --target BAAS_runtime_co_detect_support_bundle_tests
+          BAAS_runtime_group_publication_compiler_tests
+          baas-runtime-publisher
           BAAS_runtime_co_detect_production_adapter_tests
           BAAS_service_production_runtime_script_task_factory_tests
           BAAS_runtime_baas_connection_co_detect_port_tests
@@ -559,6 +583,25 @@ jobs:
           --build=missing
           --no-remote
 
+      - name: Cross-build pinned cpp-httplib and OpenSSL closure
+        shell: bash
+        run: >-
+          conan create deploy/conan/recipes/baas-cpp-httplib
+          -pr:h=deploy/conan/profiles/${{ matrix.profile }}
+          -pr:b=default
+          -c:h "tools.android:ndk_path=${ANDROID_NDK_HOME}"
+          --build=missing
+
+      - name: Cross-build pinned libgit2 recipe offline
+        shell: bash
+        run: >-
+          conan create deploy/conan/recipes/baas-libgit2
+          -pr:h=deploy/conan/profiles/${{ matrix.profile }}
+          -pr:b=default
+          -c:h "tools.android:ndk_path=${ANDROID_NDK_HOME}"
+          --build=missing
+          --no-remote
+
       - name: Cross-build pinned OpenCV recipe
         shell: bash
         run: >-
@@ -594,6 +637,7 @@ jobs:
         run: >-
           conan install --requires=baas-nlohmann-json/3.11.3
           --requires=baas-miniz/3.1.2
+          --requires=baas-libgit2/1.9.3
           --requires=baas-opencv/4.13.0
           --requires=baas-spdlog/1.15.3
           --requires=baas-simdutf/6.2.0
@@ -614,6 +658,7 @@ jobs:
           "-DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}/build/conan/foundation-android-${{ matrix.abi }}/conan_toolchain.cmake"
           -DCMAKE_BUILD_TYPE=Release
           -DBUILD_RUNTIME_REPOSITORY_UPDATER=ON
+          -DBUILD_RUNTIME_GROUP_PUBLICATION_COMPILER=ON
           -DBUILD_RUNTIME_RESOURCE_SNAPSHOT_LOADER=ON
           -DBUILD_SERVICE_RUNTIME_TASK_OWNER=ON
           -DBUILD_SERVICE_RUNTIME_SCRIPT_TASK_BACKEND=ON
@@ -645,6 +690,7 @@ jobs:
           --config Release
           --parallel 4
           --target BAAS_runtime_repository_updater BAAS_service_runtime_task_owner
+          BAAS_runtime_group_publication_compiler
           BAAS_runtime_resource_snapshot_loader
           BAAS_service_runtime_script_task_backend
           BAAS_runtime_script_package_loader

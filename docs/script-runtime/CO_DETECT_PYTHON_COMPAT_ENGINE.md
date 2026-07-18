@@ -457,8 +457,12 @@ No native resource path or ambient registry is accepted.
 
 ### `navigation.to_main_page` closure
 
-The support bundle has 77 logical members: one feature graph, seven RGB
-definitions, and 69 image-template members. Its non-image IDs are:
+The audited cross-profile union closure has at most 77 logical identities: one
+feature graph, seven RGB definitions, and 69 image-template identities. This is
+not a per-locale member count. Real locale bundles contain only the exact
+crop-metadata/PNG intersection: CN 64, JP 56, Global_en-us 61,
+Global_zh-tw 58, and Global_ko-kr 57 members, including the graph. Its
+non-image IDs are:
 
 ```text
 feature/navigation.to-main-page
@@ -545,8 +549,11 @@ golden-trace comparison. An abbreviated example is not a production definition.
 
 ### `group.open` closure
 
-The support bundle has 25 logical members: one feature graph, six RGB
-definitions, and 18 image-template members. Its terminals and effects are:
+The audited cross-profile union closure has at most 25 logical identities: one
+feature graph, six RGB definitions, and 18 image-template identities. This is
+not a per-locale member count. Real locale bundles contain CN 16, JP 12,
+Global_en-us 17, Global_zh-tw 14, and Global_ko-kr 13 members, including the
+graph. Its terminals and effects are:
 
 ```json
 {
@@ -642,7 +649,10 @@ or adding these procedures to a real `baas.procedures.json`:
 1. Review and integrate the implemented `BAASConnectionCoDetectOwner` concrete
    `CoDetectProductionDevicePort` binding with the live application owner; the
    binding contains no ambient resources or mutable retargeting.
-2. Publish real locale support bundles from the external resources repository.
+2. Publish real locale support bundles from the external resources repository
+   by feeding its independently reviewed production lock to
+   `baas-runtime-publisher`; the compiler exists, but the external lock and
+   generated dynamic data are not stored in `baas-cpp-dev`.
 3. Compute and verify every real bundle/member size and SHA-256 digest.
 4. Run Python-versus-C++ golden traces for success terminals, popup priority,
    timeout, cancellation, tentative clicks, loading, and foreground mismatch.
