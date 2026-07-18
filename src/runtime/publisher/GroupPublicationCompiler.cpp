@@ -1010,16 +1010,16 @@ void verify_png_source(
     }
     if (width < 2 || height < 2)
         fail(PublicationErrorCode::placeholder_forbidden, "PNG template is too small");
-    bool varied{};
+    bool visible_rgb_varied{};
     for (std::size_t pixel = 1; pixel < static_cast<std::size_t>(width) * height; ++pixel)
-        varied = varied || !std::equal(
-            pixels.begin(), pixels.begin() + channels,
+        visible_rgb_varied = visible_rgb_varied || !std::equal(
+            pixels.begin(), pixels.begin() + 3,
             pixels.begin() + static_cast<std::ptrdiff_t>(pixel * channels));
     bool all_transparent = channels == 4;
     if (channels == 4)
         for (std::size_t index = 3; index < pixels.size(); index += 4)
             all_transparent = all_transparent && pixels[index] == 0;
-    if (!varied || all_transparent)
+    if (!visible_rgb_varied || all_transparent)
         fail(PublicationErrorCode::placeholder_forbidden, "PNG template is blank");
 }
 

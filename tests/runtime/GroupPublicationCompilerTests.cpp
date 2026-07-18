@@ -161,7 +161,7 @@ void png_chunk(
 
 [[nodiscard]] std::vector<std::byte> png(
     const std::uint32_t width, const std::uint32_t height, const bool varied = true,
-    const bool alpha = false)
+    const bool alpha = false, const bool alpha_varied = false)
 {
     std::vector<std::byte> output{
         std::byte{0x89}, std::byte{'P'}, std::byte{'N'}, std::byte{'G'},
@@ -183,7 +183,8 @@ void png_chunk(
             raw[offset + 2U + column * channels] =
                 varied ? static_cast<unsigned char>(20U + column) : 42U;
             raw[offset + 3U + column * channels] = varied ? 30U : 42U;
-            if (alpha) raw[offset + 4U + column * channels] = 255U;
+            if (alpha) raw[offset + 4U + column * channels] = alpha_varied
+                ? static_cast<unsigned char>(1U + (row + column) % 254U) : 255U;
         }
     }
     mz_ulong compressed_size = mz_compressBound(static_cast<mz_ulong>(raw.size()));
@@ -243,11 +244,15 @@ public:
             "    'blank': (0, 0, 2, 2),\n"
             "    'rgb-boundary': (0, 0, 2, 2),\n"
             "    'rgba-boundary': (0, 0, 2, 2),\n"
+            "    'alpha-only-variation': (0, 0, 2, 2),\n"
             "    'stored-oversized': (0, 0, 2, 2),\n"
             "    'oversized': (0, 0, 2, 2),\n"
             "    # 'missing': (0, 0, 2, 2),\n";
         for (std::size_t index = 0; index < 49; ++index)
             crop_metadata += "    'budget-" + std::to_string(index) +
+                "': (0, 0, 2, 2),\n";
+        for (std::size_t index = 0; index < 40; ++index)
+            crop_metadata += "    'rgba-budget-" + std::to_string(index) +
                 "': (0, 0, 2, 2),\n";
         crop_metadata += "}\n";
         sources_ = {
@@ -258,6 +263,8 @@ public:
             {"src/images/JP/main_page/blank.png", png(2, 2, false), {}},
             {"src/images/JP/main_page/rgb-boundary.png", png(1280, 720), {}},
             {"src/images/JP/main_page/rgba-boundary.png", png(1280, 720, true, true), {}},
+            {"src/images/JP/main_page/alpha-only-variation.png",
+             png(2, 2, false, true, true), {}},
             {"src/images/JP/main_page/stored-oversized.png",
              std::vector<std::byte>(4U * 1024U * 1024U + 1U), {}},
             {"src/images/JP/main_page/oversized.png", png(1400, 1000), {}},
@@ -271,6 +278,9 @@ public:
         for (std::size_t index = 0; index < 49; ++index)
             sources_.push_back({"src/images/JP/main_page/budget-" +
                 std::to_string(index) + ".png", png(1280, 720), {}});
+        for (std::size_t index = 0; index < 40; ++index)
+            sources_.push_back({"src/images/JP/main_page/rgba-budget-" +
+                std::to_string(index) + ".png", png(1280, 720, true, true), {}});
         git_repository* raw_repository{};
         const auto root = path_.path().string();
         if (git_repository_init(&raw_repository, root.c_str(), 0) < 0)
@@ -699,6 +709,15 @@ void test_lock_and_source_negatives()
         blank_lock, git.path()); }, publisher::PublicationErrorCode::placeholder_forbidden,
         "same-size blank placeholder must fail");
 
+    auto alpha_only = lock_json(
+        git, "src/images/JP/main_page/alpha-only-variation.png",
+        "main_page_alpha-only-variation", "src/images/JP/x_y_range/main_page.py",
+        Json::array({0, 0, 2, 2}));
+    auto alpha_only_lock = parse(alpha_only);
+    expect_error([&] { publisher::verify_group_publication_sources(
+        alpha_only_lock, git.path()); }, publisher::PublicationErrorCode::placeholder_forbidden,
+        "alpha-only variation must not make constant visible RGB a real template");
+
     auto oversized_png = lock_json(
         git, "src/images/JP/main_page/oversized.png", "main_page_oversized",
         "src/images/JP/x_y_range/main_page.py", Json::array({0, 0, 2, 2}));
@@ -730,12 +749,44 @@ void test_lock_and_source_negatives()
         publisher::verify_group_publication_sources(boundary_lock, git.path());
     }
 
+    auto rgba_cumulative = valid;
+    constexpr std::uint64_t decoded_limit = 128ULL * 1024ULL * 1024ULL;
+    constexpr std::uint64_t boundary_rgb_bytes = 1'280ULL * 720ULL * 3ULL;
+    constexpr std::uint64_t boundary_rgba_scanlines = 720ULL * (1'280ULL * 4ULL + 1ULL);
+    static_assert(40ULL * boundary_rgb_bytes < decoded_limit);
+    static_assert(40ULL * boundary_rgba_scanlines > decoded_limit);
+    Json rgba_cumulative_members = Json::array({
+        valid["bundles"][0]["members"][0], valid["bundles"][0]["members"][1]});
+    std::vector<Json> rgba_cumulative_images;
+    const auto crop_source = source_json(
+        git.source("src/images/JP/x_y_range/main_page.py"));
+    for (std::size_t index = 0; index < 40; ++index) {
+        const auto name = "rgba-budget-" + std::to_string(index);
+        const auto feature = "main_page_" + name;
+        rgba_cumulative_images.push_back(Json{
+            {"id", "image/" + feature}, {"kind", "png-template"},
+            {"feature", feature},
+            {"source", source_json(git.source(
+                "src/images/JP/main_page/" + name + ".png"))},
+            {"crop_source", crop_source}, {"crop", Json::array({0, 0, 2, 2})},
+            {"threshold_milli", 800}, {"mean_rgb_tolerance", 20}});
+    }
+    std::ranges::sort(rgba_cumulative_images, {}, [](const Json& member) {
+        return member.at("id").get<std::string>();
+    });
+    for (auto& member : rgba_cumulative_images)
+        rgba_cumulative_members.push_back(std::move(member));
+    rgba_cumulative["bundles"][0]["member_count"] = rgba_cumulative_members.size();
+    rgba_cumulative["bundles"][0]["members"] = std::move(rgba_cumulative_members);
+    auto rgba_cumulative_lock = parse(rgba_cumulative);
+    publisher::verify_group_publication_sources(rgba_cumulative_lock, git.path());
+
     auto cumulative = valid;
+    static_assert(48ULL * boundary_rgb_bytes < decoded_limit);
+    static_assert(49ULL * boundary_rgb_bytes > decoded_limit);
     Json cumulative_members = Json::array({
         valid["bundles"][0]["members"][0], valid["bundles"][0]["members"][1]});
     std::vector<Json> cumulative_images;
-    const auto crop_source = source_json(
-        git.source("src/images/JP/x_y_range/main_page.py"));
     for (std::size_t index = 0; index < 49; ++index) {
         const auto name = "budget-" + std::to_string(index);
         const auto feature = "main_page_" + name;

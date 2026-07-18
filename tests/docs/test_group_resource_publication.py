@@ -140,6 +140,8 @@ class GroupResourcePublicationContractTests(unittest.TestCase):
         self.assertIn("cumulative decoded PNG work over 128 MiB", tests)
         self.assertIn("stored PNG over the fixed 4 MiB limit", tests)
         self.assertIn("rgba-boundary", tests)
+        self.assertIn("alpha-only variation", tests)
+        self.assertIn("rgba_cumulative", tests)
         self.assertIn("deterministic final-component replacement race", tests)
 
 
