@@ -304,6 +304,62 @@ class CoDetectPythonCompatEngineContractTests(unittest.TestCase):
         ):
             self.assertNotIn(forbidden, implementation)
 
+    def test_production_session_view_is_immutable_pathless_and_ci_gated(self) -> None:
+        implementation_paths = (
+            "include/runtime/procedure/CoDetectProductionAdapter.h",
+            "src/runtime/procedure/CoDetectProductionAdapter.cpp",
+            "tests/runtime/CoDetectProductionAdapterFixture.cpp",
+            "tests/runtime/CoDetectProductionAdapterTests.cpp",
+            "cmake/RuntimeCoDetectProductionAdapter.cmake",
+        )
+        for path in implementation_paths:
+            self.assertTrue((ROOT / path).is_file(), path)
+        for token in (
+            "Immutable production session and feature view",
+            "Reconnect, device switch, or profile change creates a new token",
+            "copies\ncaptured/cache rows into packed immutable storage",
+            "bounded OpenCV `TM_CCOEFF_NORMED`",
+            "Missing features return `false`",
+            "concrete application `CoDetectProductionDevicePort`",
+        ):
+            self.assertIn(token, self.doc)
+        cmake = (ROOT / "CMakeLists.txt").read_text(encoding="utf-8")
+        for token in (
+            "BUILD_RUNTIME_CO_DETECT_PRODUCTION_ADAPTER",
+            "BUILD_RUNTIME_CO_DETECT_PRODUCTION_ADAPTER_TESTS",
+            "cmake/RuntimeCoDetectProductionAdapter.cmake",
+        ):
+            self.assertIn(token, cmake)
+        for token in (
+            "-DBUILD_RUNTIME_CO_DETECT_PRODUCTION_ADAPTER_TESTS=ON",
+            "-DBUILD_RUNTIME_CO_DETECT_PRODUCTION_ADAPTER=ON",
+            "BAAS_runtime_co_detect_production_adapter_tests",
+            "BAAS_runtime_co_detect_production_adapter",
+        ):
+            self.assertIn(token, self.workflow)
+        header = (ROOT / implementation_paths[0]).read_text(encoding="utf-8")
+        source = (ROOT / implementation_paths[1]).read_text(encoding="utf-8")
+        executor_header = (
+            ROOT / "include/runtime/procedure/CoDetectPythonCompatExecutor.h"
+        ).read_text(encoding="utf-8")
+        executor_source = (
+            ROOT / "src/runtime/procedure/CoDetectPythonCompatExecutor.cpp"
+        ).read_text(encoding="utf-8")
+        self.assertIn("class CoDetectProductionDevicePort", header)
+        self.assertIn("make_activated_co_detect_production_executor", header)
+        self.assertIn("identity_valid() const noexcept", executor_header)
+        self.assertIn("!session_.identity_valid() || !features_.identity_valid()", executor_source)
+        for forbidden in (
+            "BAASConnection",
+            "BAASConfig",
+            "RESOURCE_DIR",
+            "BAAS_FETCH_RESOURCES",
+            "std::filesystem",
+            "getenv(",
+            "set_runtime_",
+        ):
+            self.assertNotIn(forbidden, header + source)
+
 
 if __name__ == "__main__":
     unittest.main()
