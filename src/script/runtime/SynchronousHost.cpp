@@ -1813,7 +1813,7 @@ HostResult invoke_host_callback(
             return HostResult::boundary_failure(HostResult::BoundaryFailure::CallbackException);
         if (context.deadline_exceeded())
             return HostResult::failure({
-                HostErrorCode::DeadlineExceeded, "Host call deadline exceeded", true,
+                HostErrorCode::DeadlineExceeded, "Host call deadline exceeded", false,
                 HostEffectState::NotStarted,
                 JsonValue(JsonObject{{"deadline_scope", JsonValue("call")}})});
         if (context.cancelled())

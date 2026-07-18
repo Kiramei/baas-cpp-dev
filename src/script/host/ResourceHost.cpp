@@ -64,7 +64,7 @@ struct HandleKeyHash {
 [[nodiscard]] HostResult deadline()
 {
     return HostResult::failure({HostErrorCode::DeadlineExceeded,
-                                "resource read deadline exceeded", true,
+                                "resource read deadline exceeded", false,
                                 HostEffectState::NotStarted, deadline_detail()});
 }
 

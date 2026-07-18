@@ -251,6 +251,7 @@ void test_budget_and_cancellation_fail_closed()
         direct.bindings->limits(), direct.handles.get());
     check(deadline.has_error() &&
               deadline.error().code == runtime::HostErrorCode::DeadlineExceeded &&
+              !deadline.error().retryable &&
               direct.host->stats().read_bytes == 0,
           "expired cooperative read must perform no byte work");
     (void)heap.close_host_handle(published.as_heap_ref());

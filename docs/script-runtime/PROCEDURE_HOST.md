@@ -62,10 +62,20 @@ the coordinator, so later same-device calls cannot inherit a poisoned queue.
 The executor must cooperatively poll during its own bounded work. Host
 postflight checks prevent a late success from outranking a deadline or
 cancellation. Effect reporting records `not_started`, `committed`, or `unknown`
-without allocating. Undeclared effects and terminals fail closed as
+without allocating. Each operation must report `Began` before `Committed` or
+`Unknown`; a committed operation may be followed by another `Began` for the same
+effect, while `Unknown` is permanently conservative. Duplicate `Began`, a
+terminal report without an active operation, and every report after `Unknown`
+invalidate the trace. Undeclared effects and terminals fail closed as
 `HOST014_INTERNAL`; exceptions never cross the Host callback boundary. The
 executor call is synchronous: adapters must join helper work and must not retain
 the request or reporter beyond `execute()`.
+
+Executor `BudgetExceeded` and `ResourceNotFound` preserve the adapter's typed
+`retryable` value. `ResourceExhausted` is distinct in the executor ABI and maps
+to `HOST005_BUDGET_EXCEEDED` with `retryable=false` and
+`details.budget_scope=external_memory`; adapters must not throw `bad_alloc` to
+forge this business result.
 
 ## Foreground mismatch
 
