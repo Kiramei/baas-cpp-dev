@@ -432,6 +432,8 @@ class CoDetectPythonCompatEngineContractTests(unittest.TestCase):
             ".github/workflows/foundation-runtime.yml",
             "CMakeLists.txt",
             "cmake/**",
+            "deploy/conan/recipes/baas-spdlog/**",
+            "deploy/conan/recipes/baas-simdutf/**",
             "deploy/conan/profiles/dependency-versions-default",
             "include/**",
             "src/device/**",
@@ -449,6 +451,11 @@ class CoDetectPythonCompatEngineContractTests(unittest.TestCase):
                 closure_paths <= self.workflow_event_paths[event],
                 f"{event}.paths misses {sorted(closure_paths - self.workflow_event_paths[event])}",
             )
+            for recipe_path in (
+                "deploy/conan/recipes/baas-spdlog/**",
+                "deploy/conan/recipes/baas-simdutf/**",
+            ):
+                self.assertIn(recipe_path, self.workflow_event_paths[event])
         header = (ROOT / implementation_paths[0]).read_text(encoding="utf-8")
         owner = (ROOT / implementation_paths[1]).read_text(encoding="utf-8")
         backend = (ROOT / implementation_paths[2]).read_text(encoding="utf-8")
