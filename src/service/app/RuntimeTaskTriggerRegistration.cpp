@@ -166,6 +166,9 @@ void stage_cancelled(trigger::TriggerResponseSink& sink)
         case conflict: return "runtime_task_conflict";
         case capacity: return "runtime_task_control_capacity";
         case unavailable: return "runtime_task_control_unavailable";
+        case cancelled: return "cancelled";
+        case deadline: return "runtime_task_prepare_deadline";
+        case repository_mismatch: return "runtime_task_repository_mismatch";
         case internal_error: return "runtime_task_internal_error";
     }
     return "runtime_task_internal_error";
@@ -185,6 +188,10 @@ void invoke_prepared(
         return;
     }
     if (!prepared) {
+        if (prepared.error == RuntimeTaskControlError::cancelled) {
+            stage_cancelled(sink);
+            return;
+        }
         stage_error(
             sink, wire_error(prepared.error == RuntimeTaskControlError::none
                                  ? RuntimeTaskControlError::internal_error
@@ -248,6 +255,9 @@ std::string_view runtime_task_control_error_name(
         case conflict: return "conflict";
         case capacity: return "capacity";
         case unavailable: return "unavailable";
+        case cancelled: return "cancelled";
+        case deadline: return "deadline";
+        case repository_mismatch: return "repository_mismatch";
         case internal_error: return "internal_error";
     }
     return "unknown";
@@ -322,7 +332,8 @@ RuntimeTaskTriggerRegistrationResult make_runtime_task_trigger_registrations(
                     return stage_error(sink, invalid_payload_error);
                 }
                 invoke_prepared(sink, limits, [&] {
-                    return control->prepare_start_task(*config_id, parsed.task);
+                    return control->prepare_start_task(
+                        *config_id, parsed.task, stop);
                 });
             },
         });
@@ -341,7 +352,7 @@ RuntimeTaskTriggerRegistrationResult make_runtime_task_trigger_registrations(
                 // normalization because it also owns the runtime task catalog.
                 invoke_prepared(sink, limits, [&] {
                     return control->prepare_start_task(
-                        *config_id, request.command());
+                        *config_id, request.command(), stop);
                 });
             },
         });

@@ -13,6 +13,17 @@ on:
       - 'CMakeLists.txt'
       - 'CMakePresets.json'
       - 'cmake/**'
+      - 'deploy/conan/recipes/baas-nlohmann-json/**'
+      - 'deploy/conan/recipes/baas-libgit2/**'
+      - 'deploy/conan/recipes/baas-cpp-httplib/**'
+      - 'deploy/conan/recipes/baas-miniz/**'
+      - 'deploy/conan/recipes/baas-opencv/**'
+      - 'deploy/conan/recipes/baas-spdlog/**'
+      - 'deploy/conan/recipes/baas-simdutf/**'
+      - 'deploy/conan/profiles/dependency-versions-default'
+      - 'deploy/conan/profiles/android-clang-arm64-v8a-release'
+      - 'deploy/conan/profiles/android-clang-x86_64-release'
+      - 'include/**'
       - 'include/script/**'
       - 'src/script/**'
       - 'include/resources/**'
@@ -20,8 +31,25 @@ on:
       - 'include/runtime/**'
       - 'src/runtime/**'
       - 'tests/runtime/**'
+      - 'include/procedure/**'
+      - 'src/procedure/**'
+      - 'tests/procedure/**'
+      - 'src/device/**'
+      - 'include/BAAS.h'
+      - 'src/BAAS.cpp'
+      - 'include/device/BAASConnection.h'
+      - 'include/device/BAASConnectionAttr.h'
+      - 'include/device/ExactBackendLifetime.h'
+      - 'include/device/control/BAASControl.h'
+      - 'src/device/BAASConnection.cpp'
+      - 'src/device/BAASConnectionAttr.cpp'
+      - 'src/device/control/BAASControl.cpp'
+      - 'include/device/screenshot/BAASScreenshot.h'
+      - 'src/device/screenshot/BAASScreenshot.cpp'
+      - 'include/device/screenshot/ScreenshotInterval.h'
       - 'apps/script_check/**'
       - 'apps/script_run/**'
+      - 'apps/baas-runtime-publisher/**'
       - 'tests/script/**'
       - 'tests/resources/**'
       - 'include/service/**'
@@ -46,7 +74,10 @@ on:
       - 'docs/script-runtime/ERRORS_AND_CLEANUP.md'
       - 'docs/script-runtime/ASYNC_TASKS.md'
       - 'docs/script-runtime/HOST_CAPABILITY_CONTRACTS.md'
+      - 'docs/script-runtime/CONFIG_HOST.md'
       - 'docs/script-runtime/LOG_HOST.md'
+      - 'docs/script-runtime/PROCEDURE_HOST.md'
+      - 'docs/script-runtime/HOST_RUNTIME_COMPOSITION.md'
       - 'docs/script-runtime/CONFORMANCE_RUNNER.md'
       - 'docs/script-runtime/host-capabilities.v1.json'
       - 'docs/script-runtime/PACKAGE_VERSIONING.md'
@@ -60,6 +91,7 @@ on:
       - 'docs/script-runtime/evidence/platform_smoke_prerequisites.windows.json'
       - 'docs/DEVELOPMENT_ENVIRONMENT.md'
       - 'docs/script-runtime/PYTHON_GOLDEN_TRACES.md'
+      - 'docs/script-runtime/PYTHON_AUTOMATION_MIGRATION_PLAN.md'
       - 'docs/script-runtime/evidence/python-golden-traces.json'
       - 'docs/script-runtime/PYTHON_SERVICE_PERFORMANCE_BASELINE.md'
       - 'docs/script-runtime/evidence/python-service-performance-baseline.json'
@@ -86,6 +118,17 @@ on:
       - 'docs/script-runtime/SERVICE_ADB_DISCOVERY_TRIGGER.md'
       - 'docs/script-runtime/SERVICE_CONFIGURATION_TRIGGERS.md'
       - 'docs/script-runtime/SERVICE_RUNTIME_TASK_OWNER.md'
+      - 'docs/script-runtime/SERVICE_RUNTIME_SCRIPT_TASK_BACKEND.md'
+      - 'docs/script-runtime/SERVICE_PRODUCTION_RUNTIME_SCRIPT_TASK_FACTORY.md'
+      - 'docs/script-runtime/RUNTIME_SCRIPT_PACKAGE_LOADER.md'
+      - 'docs/script-runtime/RUNTIME_SCRIPT_CATALOG.md'
+      - 'docs/script-runtime/RUNTIME_SCRIPT_EXECUTION_PLAN.md'
+      - 'docs/script-runtime/RUNTIME_RESOURCE_SNAPSHOT_LOADER.md'
+      - 'docs/script-runtime/RUNTIME_PROCEDURE_ACTIVATION.md'
+      - 'docs/script-runtime/CO_DETECT_PYTHON_COMPAT_ENGINE.md'
+      - 'docs/script-runtime/GROUP_RESOURCE_PUBLICATION.md'
+      - 'docs/script-runtime/LEGACY_PROCEDURE_EXECUTION.md'
+      - 'docs/script-runtime/SERVICE_RUNTIME_TASK_STATUS_JSON.md'
   pull_request:
     branches:
       - main
@@ -98,6 +141,17 @@ on:
       - 'CMakeLists.txt'
       - 'CMakePresets.json'
       - 'cmake/**'
+      - 'deploy/conan/recipes/baas-nlohmann-json/**'
+      - 'deploy/conan/recipes/baas-libgit2/**'
+      - 'deploy/conan/recipes/baas-cpp-httplib/**'
+      - 'deploy/conan/recipes/baas-miniz/**'
+      - 'deploy/conan/recipes/baas-opencv/**'
+      - 'deploy/conan/recipes/baas-spdlog/**'
+      - 'deploy/conan/recipes/baas-simdutf/**'
+      - 'deploy/conan/profiles/dependency-versions-default'
+      - 'deploy/conan/profiles/android-clang-arm64-v8a-release'
+      - 'deploy/conan/profiles/android-clang-x86_64-release'
+      - 'include/**'
       - 'include/script/**'
       - 'src/script/**'
       - 'include/resources/**'
@@ -105,8 +159,25 @@ on:
       - 'include/runtime/**'
       - 'src/runtime/**'
       - 'tests/runtime/**'
+      - 'include/procedure/**'
+      - 'src/procedure/**'
+      - 'tests/procedure/**'
+      - 'src/device/**'
+      - 'include/BAAS.h'
+      - 'src/BAAS.cpp'
+      - 'include/device/BAASConnection.h'
+      - 'include/device/BAASConnectionAttr.h'
+      - 'include/device/ExactBackendLifetime.h'
+      - 'include/device/control/BAASControl.h'
+      - 'src/device/BAASConnection.cpp'
+      - 'src/device/BAASConnectionAttr.cpp'
+      - 'src/device/control/BAASControl.cpp'
+      - 'include/device/screenshot/BAASScreenshot.h'
+      - 'src/device/screenshot/BAASScreenshot.cpp'
+      - 'include/device/screenshot/ScreenshotInterval.h'
       - 'apps/script_check/**'
       - 'apps/script_run/**'
+      - 'apps/baas-runtime-publisher/**'
       - 'tests/script/**'
       - 'tests/resources/**'
       - 'include/service/**'
@@ -131,7 +202,10 @@ on:
       - 'docs/script-runtime/ERRORS_AND_CLEANUP.md'
       - 'docs/script-runtime/ASYNC_TASKS.md'
       - 'docs/script-runtime/HOST_CAPABILITY_CONTRACTS.md'
+      - 'docs/script-runtime/CONFIG_HOST.md'
       - 'docs/script-runtime/LOG_HOST.md'
+      - 'docs/script-runtime/PROCEDURE_HOST.md'
+      - 'docs/script-runtime/HOST_RUNTIME_COMPOSITION.md'
       - 'docs/script-runtime/CONFORMANCE_RUNNER.md'
       - 'docs/script-runtime/host-capabilities.v1.json'
       - 'docs/script-runtime/PACKAGE_VERSIONING.md'
@@ -145,6 +219,7 @@ on:
       - 'docs/script-runtime/evidence/platform_smoke_prerequisites.windows.json'
       - 'docs/DEVELOPMENT_ENVIRONMENT.md'
       - 'docs/script-runtime/PYTHON_GOLDEN_TRACES.md'
+      - 'docs/script-runtime/PYTHON_AUTOMATION_MIGRATION_PLAN.md'
       - 'docs/script-runtime/evidence/python-golden-traces.json'
       - 'docs/script-runtime/PYTHON_SERVICE_PERFORMANCE_BASELINE.md'
       - 'docs/script-runtime/evidence/python-service-performance-baseline.json'
@@ -171,6 +246,17 @@ on:
       - 'docs/script-runtime/SERVICE_ADB_DISCOVERY_TRIGGER.md'
       - 'docs/script-runtime/SERVICE_CONFIGURATION_TRIGGERS.md'
       - 'docs/script-runtime/SERVICE_RUNTIME_TASK_OWNER.md'
+      - 'docs/script-runtime/SERVICE_RUNTIME_SCRIPT_TASK_BACKEND.md'
+      - 'docs/script-runtime/SERVICE_PRODUCTION_RUNTIME_SCRIPT_TASK_FACTORY.md'
+      - 'docs/script-runtime/RUNTIME_SCRIPT_PACKAGE_LOADER.md'
+      - 'docs/script-runtime/RUNTIME_SCRIPT_CATALOG.md'
+      - 'docs/script-runtime/RUNTIME_SCRIPT_EXECUTION_PLAN.md'
+      - 'docs/script-runtime/RUNTIME_RESOURCE_SNAPSHOT_LOADER.md'
+      - 'docs/script-runtime/RUNTIME_PROCEDURE_ACTIVATION.md'
+      - 'docs/script-runtime/CO_DETECT_PYTHON_COMPAT_ENGINE.md'
+      - 'docs/script-runtime/GROUP_RESOURCE_PUBLICATION.md'
+      - 'docs/script-runtime/LEGACY_PROCEDURE_EXECUTION.md'
+      - 'docs/script-runtime/SERVICE_RUNTIME_TASK_STATUS_JSON.md'
 
 permissions:
   contents: read
@@ -203,8 +289,7 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
-      - name: Set up Python for service vectors
-        if: matrix.build_type == 'Debug'
+      - name: Set up Python for service vectors and pinned dependencies
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
@@ -212,6 +297,25 @@ jobs:
       - name: Install service-vector dependencies
         if: matrix.build_type == 'Debug'
         run: python -m pip install --disable-pip-version-check cryptography PyNaCl PyYAML==6.0.3
+
+      - name: Install pinned Conan client
+        run: python -m pip install --disable-pip-version-check conan==2.30.0
+
+      - name: Detect host profile
+        run: conan profile detect --force
+
+      - name: Build pinned nlohmann-json recipe
+        run: >-
+          conan create deploy/conan/recipes/baas-nlohmann-json
+          -s:h build_type=${{ matrix.build_type }} -s:b build_type=Release
+          --build=missing --no-remote
+
+      - name: Generate foundation dependency graph
+        run: >-
+          conan install --requires=baas-nlohmann-json/3.11.3
+          -of build/conan/foundation
+          -s:h build_type=${{ matrix.build_type }} -s:b build_type=Release
+          -g CMakeDeps -g CMakeToolchain --build=missing --no-remote
 
       - name: Report bundled toolchain
         run: |
@@ -221,10 +325,10 @@ jobs:
       # No -G is intentional: official Windows images select their installed
       # Visual Studio generator; Ubuntu/macOS select bundled Unix Makefiles.
       - name: Configure foundation targets
-        run: cmake -S . -B build/foundation -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} -DBUILD_TESTING=ON -DBUILD_SCRIPT_TESTS=ON -DBUILD_SCRIPT_TOOLS=ON -DBUILD_RESOURCE_CORE_TESTS=ON -DBUILD_RUNTIME_REPOSITORY_TESTS=ON -DBUILD_RUNTIME_REPOSITORY_UPDATER_TESTS=ON -DBUILD_SCRIPT_RESOURCE_HOST_TESTS=ON -DBUILD_SERVICE_PROTOCOL_TESTS=ON -DBUILD_SERVICE_TRIGGER_CATALOG_TESTS=ON -DBUILD_SERVICE_TRIGGER_DISPATCH_TESTS=ON -DBUILD_SERVICE_TRIGGER_EXECUTOR_TESTS=ON -DBUILD_SERVICE_RUNTIME_TASK_OWNER_TESTS=ON -DBUILD_SERVICE_PIPE_HOST_TESTS=ON -DBUILD_SERVICE_TRIGGER_PIPE_CHANNEL_TESTS=ON -DBUILD_SERVICE_ROUTER_TESTS=ON -DBUILD_SERVICE_ORIGIN_POLICY_TESTS=ON -DBUILD_SERVICE_ADB_DISCOVERY_TRIGGER_TESTS=ON -DBUILD_SERVICE_ADB_TRANSPORT_TESTS=ON -DBUILD_SERVICE_ADB_SYNC_TESTS=ON -DBUILD_SERVICE_COMMAND_LINE_TESTS=ON -DBUILD_SERVICE_SHUTDOWN_COORDINATOR_TESTS=ON -DBUILD_SERVICE_STATUS_TRIGGER_TESTS=ON -DBUILD_APP_BAAS=OFF -DBUILD_APP_ISA=OFF -DBUILD_BAAS_OCR=OFF -DBUILD_BAAS_AW_CHECKER=OFF -DBUILD_BAAS_NMS_BENCHMARK=OFF -DBAAS_FETCH_RESOURCES=OFF
+        run: cmake -S . -B build/foundation "-DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}/build/conan/foundation/conan_toolchain.cmake" -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} -DBUILD_TESTING=ON -DBUILD_SCRIPT_TESTS=ON -DBUILD_SCRIPT_TOOLS=ON -DBUILD_RESOURCE_CORE_TESTS=ON -DBUILD_RUNTIME_REPOSITORY_TESTS=ON -DBUILD_RUNTIME_REPOSITORY_UPDATER_TESTS=ON -DBUILD_RUNTIME_RESOURCE_SNAPSHOT_LOADER_TESTS=ON -DBUILD_RUNTIME_SCRIPT_PACKAGE_LOADER_TESTS=ON -DBUILD_RUNTIME_SCRIPT_CATALOG_TESTS=ON -DBUILD_RUNTIME_SCRIPT_EXECUTION_PLAN_TESTS=ON -DBUILD_RUNTIME_PROCEDURE_ACTIVATION_TESTS=ON -DBUILD_RUNTIME_CO_DETECT_DEFINITION_MODEL_TESTS=ON -DBUILD_RUNTIME_CO_DETECT_EXECUTOR_TESTS=ON -DBUILD_LEGACY_PROCEDURE_EXECUTION_TESTS=ON -DBUILD_LEGACY_PROCEDURE_DEFINITION_TESTS=ON -DBUILD_SCRIPT_RESOURCE_HOST_TESTS=ON -DBUILD_SCRIPT_PROCEDURE_HOST_TESTS=ON -DBUILD_SCRIPT_CONFIG_HOST_TESTS=ON -DBUILD_SCRIPT_HOST_RUNTIME_COMPOSITION_TESTS=ON -DBUILD_SERVICE_PROTOCOL_TESTS=ON -DBUILD_SERVICE_TRIGGER_CATALOG_TESTS=ON -DBUILD_SERVICE_TRIGGER_DISPATCH_TESTS=ON -DBUILD_SERVICE_TRIGGER_EXECUTOR_TESTS=ON -DBUILD_SERVICE_RUNTIME_TASK_OWNER_TESTS=ON -DBUILD_SERVICE_RUNTIME_SCRIPT_TASK_BACKEND_TESTS=ON -DBUILD_SERVICE_RUNTIME_TASK_STATUS_JSON_TESTS=ON -DBUILD_SERVICE_PIPE_HOST_TESTS=ON -DBUILD_SERVICE_TRIGGER_PIPE_CHANNEL_TESTS=ON -DBUILD_SERVICE_ROUTER_TESTS=ON -DBUILD_SERVICE_ORIGIN_POLICY_TESTS=ON -DBUILD_SERVICE_ADB_DISCOVERY_TRIGGER_TESTS=ON -DBUILD_SERVICE_ADB_TRANSPORT_TESTS=ON -DBUILD_SERVICE_ADB_SYNC_TESTS=ON -DBUILD_SERVICE_COMMAND_LINE_TESTS=ON -DBUILD_SERVICE_SHUTDOWN_COORDINATOR_TESTS=ON -DBUILD_SERVICE_STATUS_TRIGGER_TESTS=ON -DBUILD_APP_BAAS=OFF -DBUILD_APP_ISA=OFF -DBUILD_BAAS_OCR=OFF -DBUILD_BAAS_AW_CHECKER=OFF -DBUILD_BAAS_NMS_BENCHMARK=OFF -DBAAS_FETCH_RESOURCES=OFF
 
       - name: Build foundation tests
-        run: cmake --build build/foundation --config ${{ matrix.build_type }} --parallel 4 --target BAAS_script_check BAAS_script_run BAAS_resource_snapshot_tests BAAS_runtime_repository_tests BAAS_runtime_repository_updater_tests BAAS_script_resource_host_tests BAAS_script_lexer_tests BAAS_script_parser_tests BAAS_script_semantic_tests BAAS_script_executor_tests BAAS_script_value_heap_tests BAAS_script_structured_error_heap_tests BAAS_script_error_envelope_tests BAAS_script_environment_tests BAAS_script_error_translation_tests BAAS_script_syntax_check_tests BAAS_script_json_bridge_tests BAAS_script_module_specifier_tests BAAS_script_module_graph_tests BAAS_script_host_registry_tests BAAS_script_sync_evaluator_tests BAAS_script_sync_host_tests BAAS_script_sync_host_evaluator_tests BAAS_script_typed_host_handle_tests BAAS_script_log_host_tests BAAS_service_pipe_framing_tests BAAS_service_pipe_host_tests BAAS_service_trigger_pipe_channel_tests BAAS_service_trigger_session_tests BAAS_service_trigger_egress_tests BAAS_service_trigger_envelope_tests BAAS_service_trigger_ingress_tests BAAS_service_trigger_catalog_tests BAAS_service_trigger_dispatch_tests BAAS_service_trigger_executor_tests BAAS_service_runtime_task_owner_tests BAAS_service_router_tests BAAS_service_health_foundation_tests BAAS_service_origin_policy_tests BAAS_service_adb_discovery_trigger_tests BAAS_service_adb_transport_tests BAAS_service_adb_sync_tests BAAS_service_command_line_tests BAAS_service_shutdown_coordinator_tests BAAS_service_status_trigger_tests
+        run: cmake --build build/foundation --config ${{ matrix.build_type }} --parallel 4 --target BAAS_script_check BAAS_script_run BAAS_resource_snapshot_tests BAAS_runtime_repository_tests BAAS_runtime_repository_updater_tests BAAS_runtime_resource_snapshot_loader_tests BAAS_runtime_script_package_loader_tests BAAS_runtime_script_catalog_tests BAAS_runtime_script_execution_plan_tests BAAS_runtime_procedure_activation_tests BAAS_runtime_co_detect_definition_model_tests BAAS_runtime_co_detect_executor_tests BAAS_legacy_procedure_execution_tests BAAS_legacy_procedure_definition_tests BAAS_script_resource_host_tests BAAS_script_procedure_host_tests BAAS_script_config_host_tests BAAS_script_host_runtime_composition_tests BAAS_script_lexer_tests BAAS_script_parser_tests BAAS_script_semantic_tests BAAS_script_executor_tests BAAS_script_value_heap_tests BAAS_script_structured_error_heap_tests BAAS_script_error_envelope_tests BAAS_script_environment_tests BAAS_script_error_translation_tests BAAS_script_syntax_check_tests BAAS_script_json_bridge_tests BAAS_script_module_specifier_tests BAAS_script_module_graph_tests BAAS_script_host_registry_tests BAAS_script_sync_evaluator_tests BAAS_script_sync_host_tests BAAS_script_sync_host_evaluator_tests BAAS_script_typed_host_handle_tests BAAS_script_log_host_tests BAAS_service_pipe_framing_tests BAAS_service_pipe_host_tests BAAS_service_trigger_pipe_channel_tests BAAS_service_trigger_session_tests BAAS_service_trigger_egress_tests BAAS_service_trigger_envelope_tests BAAS_service_trigger_ingress_tests BAAS_service_trigger_catalog_tests BAAS_service_trigger_dispatch_tests BAAS_service_trigger_executor_tests BAAS_service_runtime_task_owner_tests BAAS_service_runtime_script_task_backend_tests BAAS_service_runtime_task_status_json_tests BAAS_service_router_tests BAAS_service_health_foundation_tests BAAS_service_origin_policy_tests BAAS_service_adb_discovery_trigger_tests BAAS_service_adb_transport_tests BAAS_service_adb_sync_tests BAAS_service_command_line_tests BAAS_service_shutdown_coordinator_tests BAAS_service_status_trigger_tests
 
       - name: Run foundation tests
         run: ctest --test-dir build/foundation --build-config ${{ matrix.build_type }} --output-on-failure --timeout 120
@@ -245,16 +349,240 @@ jobs:
         if: matrix.build_type == 'Debug'
         run: python -B -m unittest discover -s tests/docs -p "test_*.py" -v
 
-  android-runtime-repository:
-    name: Android foundation ${{ matrix.abi }} / Release
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
+  co-detect-support-bundle-windows:
+    name: Co-detect support bundle / Windows / ${{ matrix.build_type }}
+    runs-on: windows-latest
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
-        abi:
-          - arm64-v8a
-          - x86_64
+        include:
+          - build_type: Debug
+            conan_settings: '-s:h compiler.runtime_type=Debug'
+          - build_type: Release
+            conan_settings: '-s:h compiler.runtime_type=Release'
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install pinned Conan client
+        run: python -m pip install --disable-pip-version-check conan==2.30.0
+
+      - name: Detect host profile
+        run: conan profile detect --force
+
+      - name: Build pinned nlohmann-json recipe
+        run: >-
+          conan create deploy/conan/recipes/baas-nlohmann-json
+          -s:h build_type=${{ matrix.build_type }} -s:b build_type=Release
+          ${{ matrix.conan_settings }} --build=missing --no-remote
+
+      - name: Build pinned miniz recipe
+        run: >-
+          conan create deploy/conan/recipes/baas-miniz
+          -s:h build_type=${{ matrix.build_type }} -s:b build_type=Release
+          ${{ matrix.conan_settings }} --build=missing --no-remote
+
+      - name: Build pinned libgit2 recipe
+        run: >-
+          conan create deploy/conan/recipes/baas-libgit2
+          -s:h build_type=${{ matrix.build_type }} -s:b build_type=Release
+          ${{ matrix.conan_settings }} --build=missing --no-remote
+
+      - name: Build pinned OpenCV recipe
+        run: >-
+          conan create deploy/conan/recipes/baas-opencv
+          -s:h build_type=${{ matrix.build_type }} -s:b build_type=Release
+          ${{ matrix.conan_settings }} --build=missing --no-remote
+
+      - name: Build pinned spdlog recipe
+        run: >-
+          conan create deploy/conan/recipes/baas-spdlog
+          -s:h build_type=${{ matrix.build_type }} -s:b build_type=Release
+          ${{ matrix.conan_settings }} --build=missing --no-remote
+
+      - name: Build pinned simdutf recipe
+        run: >-
+          conan create deploy/conan/recipes/baas-simdutf
+          -s:h build_type=${{ matrix.build_type }} -s:b build_type=Release
+          ${{ matrix.conan_settings }} --build=missing --no-remote
+
+      - name: Generate support-bundle dependencies
+        run: >-
+          conan install --requires=baas-nlohmann-json/3.11.3
+          --requires=baas-miniz/3.1.2 --requires=baas-opencv/4.13.0
+          --requires=baas-libgit2/1.9.3
+          --requires=baas-spdlog/1.15.3
+          --requires=baas-simdutf/6.2.0
+          -of build/conan/co-detect-support-bundle
+          -s:h build_type=${{ matrix.build_type }} -s:b build_type=Release
+          ${{ matrix.conan_settings }}
+          -g CMakeDeps -g CMakeToolchain --build=missing --no-remote
+
+      - name: Configure support-bundle tests
+        run: >-
+          cmake -S . -B build/co-detect-support-bundle
+          "-DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}/build/conan/co-detect-support-bundle/conan_toolchain.cmake"
+          -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
+          -DBUILD_TESTING=ON -DBUILD_RUNTIME_CO_DETECT_SUPPORT_BUNDLE_TESTS=ON
+          -DBUILD_RUNTIME_GROUP_PUBLICATION_COMPILER_TESTS=ON
+          -DBUILD_RUNTIME_CO_DETECT_PRODUCTION_ADAPTER_TESTS=ON
+          -DBUILD_SERVICE_PRODUCTION_RUNTIME_SCRIPT_TASK_FACTORY_TESTS=ON
+          -DBUILD_SERVICE_PRODUCTION_RUNTIME_TASK_CONTROL=ON
+          -DBUILD_RUNTIME_BAAS_CONNECTION_CO_DETECT_PORT_TESTS=ON
+          -DBUILD_APP_BAAS=OFF -DBUILD_APP_ISA=OFF -DBUILD_BAAS_OCR=OFF
+          -DBUILD_BAAS_AW_CHECKER=OFF -DBUILD_BAAS_NMS_BENCHMARK=OFF
+          -DBAAS_FETCH_RESOURCES=OFF
+
+      - name: Build support-bundle tests
+        run: >-
+          cmake --build build/co-detect-support-bundle
+          --config ${{ matrix.build_type }} --parallel 4
+          --target BAAS_runtime_co_detect_support_bundle_tests
+          BAAS_runtime_group_publication_compiler_tests
+          baas-runtime-publisher
+          BAAS_runtime_co_detect_production_adapter_tests
+          BAAS_service_production_runtime_script_task_factory_tests
+          BAAS_service_production_runtime_task_control
+          BAAS_runtime_baas_connection_co_detect_port_tests
+
+      - name: Run support-bundle tests
+        shell: cmd
+        run: |
+          call build\conan\co-detect-support-bundle\conanrun.bat
+          ctest --test-dir build/co-detect-support-bundle --build-config ${{ matrix.build_type }} --output-on-failure --timeout 120
+
+  co-detect-support-bundle-unix:
+    name: Co-detect support bundle / ${{ matrix.os }} / Release
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - macos-latest
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Check out frozen Python publication baseline
+        if: matrix.os == 'ubuntu-latest'
+        uses: actions/checkout@v4
+        with:
+          repository: Kiramei/baas-dev
+          ref: b8cc64705feb0067aba349892031a450d1bf8083
+          path: build/baas-python-baseline
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install pinned Conan client
+        run: python -m pip install --disable-pip-version-check conan==2.30.0
+
+      - name: Detect host profile
+        run: conan profile detect --force
+
+      - name: Build pinned support-bundle recipes
+        run: |
+          conan create deploy/conan/recipes/baas-nlohmann-json -s:h build_type=Release -s:b build_type=Release --build=missing --no-remote
+          conan create deploy/conan/recipes/baas-miniz -s:h build_type=Release -s:b build_type=Release --build=missing --no-remote
+          conan create deploy/conan/recipes/baas-cpp-httplib -s:h build_type=Release -s:b build_type=Release --build=missing
+          conan create deploy/conan/recipes/baas-libgit2 -s:h build_type=Release -s:b build_type=Release --build=missing --no-remote
+          conan create deploy/conan/recipes/baas-opencv -s:h build_type=Release -s:b build_type=Release --build=missing --no-remote
+          conan create deploy/conan/recipes/baas-spdlog -s:h build_type=Release -s:b build_type=Release --build=missing --no-remote
+          conan create deploy/conan/recipes/baas-simdutf -s:h build_type=Release -s:b build_type=Release --build=missing --no-remote
+
+      - name: Generate support-bundle dependencies
+        run: >-
+          conan install --requires=baas-nlohmann-json/3.11.3
+          --requires=baas-miniz/3.1.2 --requires=baas-opencv/4.13.0
+          --requires=baas-libgit2/1.9.3
+          --requires=baas-spdlog/1.15.3
+          --requires=baas-simdutf/6.2.0
+          -of build/conan/co-detect-support-bundle
+          -s:h build_type=Release -s:b build_type=Release
+          -g CMakeDeps -g CMakeToolchain --build=missing --no-remote
+
+      - name: Configure support-bundle compile-link gate
+        run: >-
+          cmake -S . -B build/co-detect-support-bundle
+          "-DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}/build/conan/co-detect-support-bundle/conan_toolchain.cmake"
+          -DCMAKE_BUILD_TYPE=Release
+          -DBUILD_TESTING=ON -DBUILD_RUNTIME_CO_DETECT_SUPPORT_BUNDLE_TESTS=ON
+          -DBUILD_RUNTIME_GROUP_PUBLICATION_COMPILER_TESTS=ON
+          -DBUILD_RUNTIME_CO_DETECT_PRODUCTION_ADAPTER_TESTS=ON
+          -DBUILD_SERVICE_PRODUCTION_RUNTIME_SCRIPT_TASK_FACTORY_TESTS=ON
+          -DBUILD_SERVICE_PRODUCTION_RUNTIME_TASK_CONTROL=ON
+          -DBUILD_RUNTIME_BAAS_CONNECTION_CO_DETECT_PORT_TESTS=ON
+          -DBUILD_APP_BAAS=OFF -DBUILD_APP_ISA=OFF -DBUILD_BAAS_OCR=OFF
+          -DBUILD_BAAS_AW_CHECKER=OFF -DBUILD_BAAS_NMS_BENCHMARK=OFF
+          -DBAAS_FETCH_RESOURCES=OFF
+
+      - name: Compile and link support-bundle test executable
+        run: >-
+          cmake --build build/co-detect-support-bundle
+          --config Release --parallel 4
+          --target BAAS_runtime_co_detect_support_bundle_tests
+          BAAS_runtime_group_publication_compiler_tests
+          baas-runtime-publisher
+          BAAS_runtime_co_detect_production_adapter_tests
+          BAAS_service_production_runtime_script_task_factory_tests
+          BAAS_service_production_runtime_task_control
+          BAAS_runtime_baas_connection_co_detect_port_tests
+
+      - name: Run support-bundle tests with the Conan runtime environment
+        run: |
+          . build/conan/co-detect-support-bundle/conanrun.sh
+          ctest --test-dir build/co-detect-support-bundle --build-config Release --output-on-failure --timeout 120
+
+      - name: Verify all frozen real group publication variants
+        if: matrix.os == 'ubuntu-latest'
+        shell: bash
+        run: |
+          set -euo pipefail
+          . build/conan/co-detect-support-bundle/conanrun.sh
+          lock="${RUNNER_TEMP}/baas.group-publication.lock.json"
+          output="${RUNNER_TEMP}/baas-group-publication"
+          python tests/runtime/generate_group_publication_b8cc_lock.py \
+            --repository build/baas-python-baseline --output "${lock}"
+          publisher=build/co-detect-support-bundle/bin/baas-runtime-publisher
+          tests=build/co-detect-support-bundle/bin/BAAS_runtime_group_publication_compiler_tests
+          "${publisher}" verify-source --repository build/baas-python-baseline --lock "${lock}"
+          "${publisher}" check-reproducible --repository build/baas-python-baseline --lock "${lock}"
+          "${publisher}" compile-group --repository build/baas-python-baseline --lock "${lock}" --output "${output}"
+          "${publisher}" verify-publication --repository build/baas-python-baseline --lock "${lock}" --output "${output}"
+          "${tests}" --real-repository build/baas-python-baseline --lock "${lock}"
+
+  android-runtime-repository:
+    name: Android foundation ${{ matrix.abi }} / Release
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - abi: arm64-v8a
+            profile: android-clang-arm64-v8a-release
+          - abi: x86_64
+            profile: android-clang-x86_64-release
 
     steps:
       - name: Check out source
@@ -281,17 +609,127 @@ jobs:
           test -d "${android_sdk}/ndk/29.0.13846066"
           echo "ANDROID_NDK_HOME=${android_sdk}/ndk/29.0.13846066" >> "$GITHUB_ENV"
 
+      - name: Install pinned Conan client
+        run: python -m pip install --disable-pip-version-check conan==2.30.0
+
+      - name: Detect build profile
+        run: conan profile detect --force
+
+      - name: Cross-build pinned nlohmann-json recipe
+        shell: bash
+        run: >-
+          conan create deploy/conan/recipes/baas-nlohmann-json
+          -pr:h=deploy/conan/profiles/${{ matrix.profile }}
+          -pr:b=default
+          -c:h "tools.android:ndk_path=${ANDROID_NDK_HOME}"
+          --build=missing
+          --no-remote
+
+      - name: Cross-build pinned miniz recipe
+        shell: bash
+        run: >-
+          conan create deploy/conan/recipes/baas-miniz
+          -pr:h=deploy/conan/profiles/${{ matrix.profile }}
+          -pr:b=default
+          -c:h "tools.android:ndk_path=${ANDROID_NDK_HOME}"
+          --build=missing
+          --no-remote
+
+      - name: Cross-build pinned cpp-httplib and OpenSSL closure
+        shell: bash
+        run: >-
+          conan create deploy/conan/recipes/baas-cpp-httplib
+          -pr:h=deploy/conan/profiles/${{ matrix.profile }}
+          -pr:b=default
+          -c:h "tools.android:ndk_path=${ANDROID_NDK_HOME}"
+          --build=missing
+
+      - name: Cross-build pinned libgit2 recipe offline
+        shell: bash
+        run: >-
+          conan create deploy/conan/recipes/baas-libgit2
+          -pr:h=deploy/conan/profiles/${{ matrix.profile }}
+          -pr:b=default
+          -c:h "tools.android:ndk_path=${ANDROID_NDK_HOME}"
+          --build=missing
+          --no-remote
+
+      - name: Cross-build pinned OpenCV recipe
+        shell: bash
+        run: >-
+          conan create deploy/conan/recipes/baas-opencv
+          -pr:h=deploy/conan/profiles/${{ matrix.profile }}
+          -pr:b=default
+          -c:h "tools.android:ndk_path=${ANDROID_NDK_HOME}"
+          --build=missing
+          --no-remote
+
+      - name: Cross-build pinned spdlog recipe
+        shell: bash
+        run: >-
+          conan create deploy/conan/recipes/baas-spdlog
+          -pr:h=deploy/conan/profiles/${{ matrix.profile }}
+          -pr:b=default
+          -c:h "tools.android:ndk_path=${ANDROID_NDK_HOME}"
+          --build=missing
+          --no-remote
+
+      - name: Cross-build pinned simdutf recipe
+        shell: bash
+        run: >-
+          conan create deploy/conan/recipes/baas-simdutf
+          -pr:h=deploy/conan/profiles/${{ matrix.profile }}
+          -pr:b=default
+          -c:h "tools.android:ndk_path=${ANDROID_NDK_HOME}"
+          --build=missing
+          --no-remote
+
+      - name: Generate Android foundation dependency
+        shell: bash
+        run: >-
+          conan install --requires=baas-nlohmann-json/3.11.3
+          --requires=baas-miniz/3.1.2
+          --requires=baas-libgit2/1.9.3
+          --requires=baas-opencv/4.13.0
+          --requires=baas-spdlog/1.15.3
+          --requires=baas-simdutf/6.2.0
+          -of build/conan/foundation-android-${{ matrix.abi }}
+          -pr:h=deploy/conan/profiles/${{ matrix.profile }}
+          -pr:b=default
+          -c:h "tools.android:ndk_path=${ANDROID_NDK_HOME}"
+          -g CMakeDeps
+          -g CMakeToolchain
+          --build=missing
+          --no-remote
+
       - name: Configure Android updater
         shell: bash
         run: >-
           cmake -S . -B build/runtime-repository-android-${{ matrix.abi }}
           -G Ninja
-          "-DCMAKE_TOOLCHAIN_FILE=${ANDROID_NDK_HOME}/build/cmake/android.toolchain.cmake"
-          -DANDROID_ABI=${{ matrix.abi }}
-          -DANDROID_PLATFORM=android-26
+          "-DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}/build/conan/foundation-android-${{ matrix.abi }}/conan_toolchain.cmake"
           -DCMAKE_BUILD_TYPE=Release
           -DBUILD_RUNTIME_REPOSITORY_UPDATER=ON
+          -DBUILD_RUNTIME_GROUP_PUBLICATION_COMPILER=ON
+          -DBUILD_RUNTIME_RESOURCE_SNAPSHOT_LOADER=ON
           -DBUILD_SERVICE_RUNTIME_TASK_OWNER=ON
+          -DBUILD_SERVICE_RUNTIME_SCRIPT_TASK_BACKEND=ON
+          -DBUILD_RUNTIME_SCRIPT_PACKAGE_LOADER=ON
+          -DBUILD_RUNTIME_SCRIPT_CATALOG=ON
+          -DBUILD_RUNTIME_SCRIPT_EXECUTION_PLAN=ON
+          -DBUILD_RUNTIME_PROCEDURE_ACTIVATION=ON
+          -DBUILD_RUNTIME_CO_DETECT_DEFINITION_MODEL=ON
+          -DBUILD_RUNTIME_CO_DETECT_EXECUTOR=ON
+          -DBUILD_RUNTIME_CO_DETECT_SUPPORT_BUNDLE=ON
+          -DBUILD_RUNTIME_CO_DETECT_PRODUCTION_ADAPTER=ON
+          -DBUILD_SERVICE_PRODUCTION_RUNTIME_SCRIPT_TASK_FACTORY=ON
+          -DBUILD_SERVICE_PRODUCTION_RUNTIME_TASK_CONTROL=ON
+          -DBUILD_RUNTIME_BAAS_CONNECTION_CO_DETECT_PORT=ON
+          -DBUILD_LEGACY_PROCEDURE_EXECUTION=ON
+          -DBUILD_SCRIPT_PROCEDURE_HOST=ON
+          -DBUILD_SCRIPT_CONFIG_HOST=ON
+          -DBUILD_SCRIPT_HOST_RUNTIME_COMPOSITION=ON
+          -DBUILD_SERVICE_RUNTIME_TASK_STATUS_JSON=ON
           -DBUILD_APP_BAAS=OFF
           -DBUILD_APP_ISA=OFF
           -DBUILD_BAAS_OCR=OFF
@@ -306,3 +744,23 @@ jobs:
           --config Release
           --parallel 4
           --target BAAS_runtime_repository_updater BAAS_service_runtime_task_owner
+          BAAS_runtime_group_publication_compiler
+          BAAS_runtime_group_publication_compiler_link_probe
+          BAAS_runtime_resource_snapshot_loader
+          BAAS_service_runtime_script_task_backend
+          BAAS_runtime_script_package_loader
+          BAAS_runtime_script_catalog
+          BAAS_runtime_script_execution_plan
+          BAAS_runtime_procedure_activation
+          BAAS_runtime_co_detect_definition_model
+          BAAS_runtime_co_detect_executor
+          BAAS_runtime_co_detect_support_bundle
+          BAAS_runtime_co_detect_production_adapter
+          BAAS_service_production_runtime_script_task_factory
+          BAAS_service_production_runtime_task_control
+          BAAS_runtime_baas_connection_co_detect_port
+          BAAS_legacy_procedure_execution
+          BAAS_script_procedure_host
+          BAAS_script_config_host
+          BAAS_script_host_runtime_composition
+          BAAS_service_runtime_task_status_json

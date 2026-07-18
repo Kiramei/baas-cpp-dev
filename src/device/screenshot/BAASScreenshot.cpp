@@ -3,6 +3,8 @@
 //
 
 #include "device/screenshot/BAASScreenshot.h"
+#include "device/ExactBackendLifetime.h"
+#include "device/screenshot/ScreenshotInterval.h"
 
 #include "config/BAASStaticConfig.h"
 #include "device/screenshot/AdbScreenshot.h"
@@ -46,6 +48,11 @@ BAASScreenshot::BAASScreenshot(
     set_interval(interval);
 }
 
+BAASScreenshot::~BAASScreenshot() noexcept
+{
+    destroy_screenshot_instance(true);
+}
+
 void BAASScreenshot::init()
 {
     screenshot_instance->init();
@@ -58,6 +65,16 @@ void BAASScreenshot::screenshot(cv::Mat& img)
     last_screenshot_time = BAASChronoUtil::getCurrentTimeMS();
 }
 
+void BAASScreenshot::screenshot_controlled(
+    cv::Mat& img, const std::function<void()>& checkpoint)
+{
+    ensure_interval_controlled(checkpoint);
+    checkpoint();
+    screenshot_instance->screenshot(img);
+    last_screenshot_time = BAASChronoUtil::getCurrentTimeMS();
+    checkpoint();
+}
+
 void BAASScreenshot::immediate_screenshot(cv::Mat& img)
 {
     screenshot_instance->screenshot(img);
@@ -65,21 +82,41 @@ void BAASScreenshot::immediate_screenshot(cv::Mat& img)
 
 void BAASScreenshot::ensure_interval() const
 {
-    long long current_time = BAASChronoUtil::getCurrentTimeMS();
-    int difference = interval - int(current_time - last_screenshot_time);
+    const auto current_time = BAASChronoUtil::getCurrentTimeMS();
+    const auto elapsed = current_time - last_screenshot_time;
+    const auto difference = screenshot_interval_remaining_ms(interval, elapsed);
     if (difference > 0) {
         BAASChronoUtil::sleepMS(difference);
     }
 }
 
+void BAASScreenshot::ensure_interval_controlled(
+    const std::function<void()>& checkpoint) const
+{
+    const auto current_time = BAASChronoUtil::getCurrentTimeMS();
+    const auto elapsed = current_time - last_screenshot_time;
+    const auto difference = screenshot_interval_remaining_ms(interval, elapsed);
+    wait_screenshot_interval_slices(
+        difference,
+        [](const int slice) { BAASChronoUtil::sleepMS(slice); },
+        checkpoint);
+}
+
 void BAASScreenshot::set_interval(const double value) noexcept
 {
-    interval = int(value * 1000);
-    if (interval < 0) {
-        logger->BAASWarn("Interval should be positive, set to default value 0.3");
-        interval = 300;
+    if (!valid_screenshot_interval_seconds(value)) {
+        try {
+            logger->BAASWarn(
+                "Interval must be finite, non-negative, and fit milliseconds; using 0.3");
+        } catch (...) {
+        }
     }
-    logger->BAASInfo("Screenshot interval set to " + std::to_string(interval) + "ms");
+    interval = normalize_screenshot_interval_ms(value);
+    try {
+        logger->BAASInfo(
+            "Screenshot interval set to " + std::to_string(interval) + "ms");
+    } catch (...) {
+    }
 }
 
 void BAASScreenshot::exit()
@@ -107,31 +144,59 @@ void BAASScreenshot::set_screenshot_method(
         return;
     }
 
-    if (screenshot_instance != nullptr) {
-        if (exit) {
-            logger->BAASInfo("Exiting current screenshot method : [" + screenshot_method + "]");
-            screenshot_instance->exit();
-        }
-        delete screenshot_instance;
-    }
-
     logger->BAASInfo("Screenshot method : [ " + method + " ]");
-    screenshot_method = method;
+    const auto install = [this, &method, exit]<class Backend>(
+                             std::unique_ptr<Backend> owned) {
+        std::string next_method{method};
+        destroy_screenshot_instance(exit);
+        screenshot_method.swap(next_method);
+        screenshot_instance = owned.release();
+    };
     if (method == "scrcpy") {
-        screenshot_instance = new ScrcpyScreenshot(connection);
+        install(detail::make_initialized_backend<ScrcpyScreenshot>(
+            [](ScrcpyScreenshot& backend) { backend.init(); }, connection));
+        return;
     }
     else if (method == "adb") {
-        screenshot_instance = new AdbScreenshot(connection);
+        install(detail::make_initialized_backend<AdbScreenshot>(
+            [](AdbScreenshot& backend) { backend.init(); }, connection));
+        return;
     }
 #ifdef _WIN32
     else if (method == "nemu") {
-        screenshot_instance = new NemuScreenshot(connection);
+        install(detail::make_initialized_backend<NemuScreenshot>(
+            [](NemuScreenshot& backend) { backend.init(); }, connection));
+        return;
     }
     else if (method == "ldopengl") {
-        screenshot_instance = new LDOpenGLScreenshot(connection);
+        install(detail::make_initialized_backend<LDOpenGLScreenshot>(
+            [](LDOpenGLScreenshot& backend) { backend.init(); }, connection));
+        return;
     }
 #endif // _WIN32
-    init();
+}
+
+void BAASScreenshot::destroy_screenshot_instance(const bool call_exit) noexcept
+{
+    if (screenshot_instance == nullptr) return;
+    if (call_exit) {
+        try {
+            screenshot_instance->exit();
+        } catch (...) {
+        }
+    }
+    if (screenshot_method == "scrcpy") {
+        detail::delete_exact_backend<ScrcpyScreenshot>(screenshot_instance);
+    } else if (screenshot_method == "adb") {
+        detail::delete_exact_backend<AdbScreenshot>(screenshot_instance);
+    }
+#ifdef _WIN32
+    else if (screenshot_method == "nemu") {
+        detail::delete_exact_backend<NemuScreenshot>(screenshot_instance);
+    } else if (screenshot_method == "ldopengl") {
+        detail::delete_exact_backend<LDOpenGLScreenshot>(screenshot_instance);
+    }
+#endif // _WIN32
 }
 
 double BAASScreenshot::get_screen_ratio()

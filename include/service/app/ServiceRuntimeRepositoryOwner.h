@@ -1,6 +1,8 @@
 #pragma once
 
 #include "runtime/repository/RuntimeRepositorySnapshot.h"
+#include "runtime/script/RuntimeScriptRepositoryTrustEvidence.h"
+#include "service/app/RuntimeRepositoryTrustedPlanState.h"
 
 #include <filesystem>
 #include <memory>
@@ -20,6 +22,9 @@ enum class ServiceRuntimeRepositoryOpenError {
     invalid_expected_generation,
     generation_mismatch,
     invalid_activation,
+    trusted_state_invalid,
+    trusted_state_generation_mismatch,
+    trusted_state_pending_recovery,
     internal_error,
 };
 
@@ -28,13 +33,18 @@ enum class ServiceRuntimeRepositoryOpenError {
 [[nodiscard]] std::string_view service_runtime_repository_open_error_name(
     ServiceRuntimeRepositoryOpenError error) noexcept;
 
+struct ServiceRuntimeRepositoryOpenResult;
+
 // Owns the immutable runtime-repository generation selected during service
 // composition. It deliberately has no reload operation: every consumer that
 // retains pin() observes one complete generation for the service lifetime.
+// Only the native open factory can attach script trust evidence; constructing
+// an owner from a snapshot alone remains useful for non-production embedding
+// but never grants script execution trust.
 class ServiceRuntimeRepositoryOwner final {
 public:
     explicit ServiceRuntimeRepositoryOwner(
-        std::shared_ptr<const runtime::repository::RuntimeRepositorySnapshot> pin);
+        std::shared_ptr<const ::baas::runtime::repository::RuntimeRepositorySnapshot> pin);
     ~ServiceRuntimeRepositoryOwner();
 
     ServiceRuntimeRepositoryOwner(const ServiceRuntimeRepositoryOwner&) = delete;
@@ -42,20 +52,34 @@ public:
 
     [[nodiscard]] ServiceRuntimeRepositoryPhase phase() const noexcept;
     [[nodiscard]] const std::string& generation() const noexcept;
-    [[nodiscard]] std::shared_ptr<const runtime::repository::RuntimeRepositorySnapshot>
+    [[nodiscard]] std::shared_ptr<const ::baas::runtime::repository::RuntimeRepositorySnapshot>
         pin() const noexcept;
-    [[nodiscard]] std::shared_ptr<const runtime::repository::RuntimeRepositoryReadBundle>
-        open_read_bundle(runtime::repository::RuntimeRepositoryReadLimits limits = {},
+    [[nodiscard]] std::shared_ptr<const ::baas::runtime::repository::RuntimeRepositoryReadBundle>
+        open_read_bundle(::baas::runtime::repository::RuntimeRepositoryReadLimits limits = {},
                          std::stop_token stop_token = {}) const;
+    [[nodiscard]] std::shared_ptr<const ::baas::runtime::script::
+        RuntimeScriptRepositoryTrustEvidence> script_trust_evidence() const noexcept;
 
 private:
-    std::shared_ptr<const runtime::repository::RuntimeRepositorySnapshot> pin_;
+    ServiceRuntimeRepositoryOwner(
+        std::shared_ptr<const ::baas::runtime::repository::RuntimeRepositorySnapshot> pin,
+        std::shared_ptr<const ::baas::runtime::script::RuntimeScriptRepositoryTrustEvidence>
+            script_trust_evidence);
+
+    std::shared_ptr<const ::baas::runtime::repository::RuntimeRepositorySnapshot> pin_;
     std::string generation_;
+    std::shared_ptr<const ::baas::runtime::script::RuntimeScriptRepositoryTrustEvidence>
+        script_trust_evidence_;
+
+    friend ServiceRuntimeRepositoryOpenResult open_service_runtime_repository_owner(
+        const std::filesystem::path&, std::string_view) noexcept;
 };
 
 struct ServiceRuntimeRepositoryOpenResult {
     std::unique_ptr<ServiceRuntimeRepositoryOwner> owner;
     ServiceRuntimeRepositoryOpenError error{ServiceRuntimeRepositoryOpenError::none};
+    RuntimeRepositoryTrustedPlanStateError trusted_state_error{
+        RuntimeRepositoryTrustedPlanStateError::none};
 
     [[nodiscard]] explicit operator bool() const noexcept
     {

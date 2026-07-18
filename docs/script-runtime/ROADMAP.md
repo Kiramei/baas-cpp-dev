@@ -103,7 +103,7 @@ Draft contract evidence: `PACKAGE_VERSIONING.md` defines independent language,
 host API, manifest, and package versions plus detached signatures, capability
 resolution, immutable cache snapshots, atomic activation, and rollback gates.
 `VALUE_SEMANTICS.md` defines the normative value, numeric, equality,
-collection, mutability, heap-isolation, JSON, budget, and RT001-RT023 contract;
+collection, mutability, heap-isolation, JSON, budget, and RT001-RT024 contract;
 its required clauses and implementation anchors are checked in Foundation CI.
 `CONTROL_FLOW_AND_MODULES.md` defines source-order lexical bindings, closure
 capture, recursion/control transfer, deterministic module loading/isolation,
@@ -162,7 +162,7 @@ implementation remains pending.
   bytes/typed handles/async/strands, and the remaining real Host adapters remain
   pending.
 - [~] Implement structured exceptions, stack traces, cancellation, and limits.
-  The total allocation-free RT001-RT023 language-code/catchability mapping is
+  The total allocation-free RT001-RT024 language-code/catchability mapping is
   implemented from the stable `LanguageErrorCode` table, semantic analysis
   enforces ERR-015 cleanup-body restrictions with `SEM009`, and `ValueHeap`
   publishes immutable, budgeted Error records with source/frame/cause/
@@ -238,12 +238,21 @@ pending.
   the fixed-key structured JSON bridge into `BAAS_APP`. Live package activation,
   real execution-context identity propagation, service log streaming, Python
   parity, and Tauri end-to-end display remain pending; see `LOG_HOST.md`.
-- [ ] Bind configuration, schema validation, and persistence.
+- [~] Bind configuration, schema validation, and persistence. The request-local
+  `ConfigHost` foundation now pins immutable reads, exposes typed JSON-safe
+  lookup, and delegates expected-revision atomic transactions to a narrow
+  application port. Production persistence/Tauri wiring and Python parity remain
+  pending; see `CONFIG_HOST.md`.
 - [ ] Bind resource lookup, image loading, and versioned manifests.
 - [ ] Bind screenshot acquisition and image processing.
 - [ ] Bind OCR lifecycle and inference operations.
 - [ ] Bind device discovery, ADB/scrcpy/Nemu capture, input, and lifecycle.
-- [ ] Bind feature matching and procedures.
+- [~] Bind feature matching and procedures. The snapshot-owned
+  `baas/procedure.run` Host foundation now has immutable logical descriptors,
+  exact external-resource identity, typed effect/error reporting, and a shared
+  physical-device strand with Windows/Android evidence. The legacy automation
+  adapter, task-backend composition, converted packages, and parity remain
+  pending; see `PROCEDURE_HOST.md`.
 - [ ] Bind scheduling, workflow state, retries, deadlines, and cancellation.
 - [~] Add host capability permissions and thread-safety declarations. Catalog
   declarations and the immutable pre-activation capability gate exist; adapter

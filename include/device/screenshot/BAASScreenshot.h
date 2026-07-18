@@ -7,6 +7,7 @@
 
 #include <set>
 #include <string>
+#include <functional>
 
 #include "device/screenshot/BaseScreenshot.h"
 
@@ -22,15 +23,28 @@ public:
             const double interval = 0.3
     );
 
+    ~BAASScreenshot() noexcept;
+
+    BAASScreenshot(const BAASScreenshot&) = delete;
+    BAASScreenshot& operator=(const BAASScreenshot&) = delete;
+    BAASScreenshot(BAASScreenshot&&) = delete;
+    BAASScreenshot& operator=(BAASScreenshot&&) = delete;
+
     void init();
 
     void set_interval(double value) noexcept;
 
     void screenshot(cv::Mat& img);
 
+    void screenshot_controlled(
+        cv::Mat& img, const std::function<void()>& checkpoint);
+
     void immediate_screenshot(cv::Mat& img);
 
     void ensure_interval() const;
+
+    void ensure_interval_controlled(
+        const std::function<void()>& checkpoint) const;
 
     void exit();
 
@@ -50,7 +64,9 @@ public:
 
 private:
 
-    BaseScreenshot* screenshot_instance;
+    void destroy_screenshot_instance(bool call_exit) noexcept;
+
+    BaseScreenshot* screenshot_instance{};
 
     std::string screenshot_method;
 

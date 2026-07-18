@@ -6,6 +6,8 @@
 #include "service/app/ProductionProviderBackend.h"
 #include "service/app/ProductionRemoteBackend.h"
 #include "service/app/RuntimeConfigurationDefaults.h"
+#include "service/app/RuntimeTaskStatusJson.h"
+#include "service/app/RuntimeTaskTriggerRegistration.h"
 #include "service/app/ServiceRuntimeProviderBridge.h"
 #include "service/app/ServiceRuntimeRepositoryOwner.h"
 #include "service/app/StatusTriggerRegistration.h"
@@ -23,6 +25,8 @@
 #include <string>
 #include <utility>
 #include <vector>
+
+#include <nlohmann/json.hpp>
 
 namespace baas::service::app {
 namespace {
@@ -60,11 +64,40 @@ namespace {
 
 [[nodiscard]] StatusSourceResult provider_status(
     const std::shared_ptr<ProductionProviderBackend>& provider,
+    const std::shared_ptr<service_runtime::RuntimeTaskOwner>& runtime_owner,
     const std::stop_token stop)
 {
     if (stop.stop_requested()) return {{}, StatusSourceError::cancelled};
     auto result = provider->status(stop);
-    if (result) return {std::move(*result.value), StatusSourceError::none};
+    if (result) {
+        if (!runtime_owner) {
+            return {std::move(*result.value), StatusSourceError::none};
+        }
+        const auto runtime = encode_runtime_task_status_json(
+            runtime_owner->snapshots());
+        if (!runtime) {
+            return {{}, runtime.error == RuntimeTaskStatusJsonError::capacity
+                    || runtime.error
+                        == RuntimeTaskStatusJsonError::resource_exhausted
+                    ? StatusSourceError::capacity
+                    : StatusSourceError::unavailable};
+        }
+        try {
+            auto base = nlohmann::ordered_json::parse(*result.value);
+            auto native = nlohmann::ordered_json::parse(runtime.json);
+            if (!base.is_object() || !native.is_object()) {
+                return {{}, StatusSourceError::unavailable};
+            }
+            for (auto& [config_id, status] : native.items()) {
+                base[config_id] = std::move(status);
+            }
+            return {base.dump(), StatusSourceError::none};
+        } catch (const std::bad_alloc&) {
+            return {{}, StatusSourceError::capacity};
+        } catch (...) {
+            return {{}, StatusSourceError::unavailable};
+        }
+    }
     if (stop.stop_requested()) return {{}, StatusSourceError::cancelled};
     if (result.error == channels::ProviderBackendError::capacity) {
         return {{}, StatusSourceError::capacity};
@@ -130,10 +163,12 @@ public:
     std::shared_ptr<ProductionProviderBackend> provider;
     std::shared_ptr<adapters::FileResourceStore> resources;
     std::unique_ptr<ServiceRuntimeRepositoryOwner> runtime_repository;
-    std::shared_ptr<const runtime::repository::RuntimeRepositoryReadBundle>
+    std::shared_ptr<const ::baas::runtime::repository::RuntimeRepositoryReadBundle>
         runtime_repository_read_bundle;
     std::unique_ptr<ServiceRuntimeProviderBridge> runtime_provider;
     std::shared_ptr<ProductionRemoteBackend> remote_backend;
+    std::shared_ptr<service_runtime::RuntimeTaskOwner> runtime_task_owner;
+    std::shared_ptr<RuntimeTaskControl> runtime_task_control;
     std::shared_ptr<trigger::TriggerExecutor> executor;
     std::shared_ptr<channels::TriggerHandlerFactory> trigger_factory;
     std::unique_ptr<http::ProductionHttpHost> host;
@@ -176,7 +211,8 @@ ServiceApplication::~ServiceApplication()
 }
 
 ServiceApplicationOpenResult ServiceApplication::open(
-    ServiceRunOptions options) noexcept
+    ServiceRunOptions options,
+    ServiceApplicationDependencies dependencies) noexcept
 {
     // Pipe listener composition is not complete. This is deliberately the
     // first branch: no signal mask, lock file, worker, or socket is touched.
@@ -200,9 +236,13 @@ ServiceApplicationOpenResult ServiceApplication::open(
                 error = ServiceApplicationError::invalid_options;
                 break;
             case ServiceRuntimeRepositoryOpenError::generation_mismatch:
+            case ServiceRuntimeRepositoryOpenError::
+                trusted_state_generation_mismatch:
                 error = ServiceApplicationError::runtime_repository_generation_mismatch;
                 break;
             case ServiceRuntimeRepositoryOpenError::invalid_activation:
+            case ServiceRuntimeRepositoryOpenError::trusted_state_invalid:
+            case ServiceRuntimeRepositoryOpenError::trusted_state_pending_recovery:
                 error = ServiceApplicationError::runtime_repository_invalid;
                 break;
             case ServiceRuntimeRepositoryOpenError::none:
@@ -211,7 +251,7 @@ ServiceApplicationOpenResult ServiceApplication::open(
         }
         return {nullptr, error, {}};
     }
-    std::shared_ptr<const runtime::repository::RuntimeRepositoryReadBundle>
+    std::shared_ptr<const ::baas::runtime::repository::RuntimeRepositoryReadBundle>
         runtime_repository_read_bundle;
     std::shared_ptr<const adapters::ConfigurationDefaults>
         configuration_defaults;
@@ -226,9 +266,9 @@ ServiceApplicationOpenResult ServiceApplication::open(
         }
         configuration_defaults = load_runtime_configuration_defaults(
             runtime_repository_read_bundle->resources(), resource_limits);
-    } catch (const runtime::repository::RuntimeRepositoryReadError& error) {
+    } catch (const ::baas::runtime::repository::RuntimeRepositoryReadError& error) {
         const auto application_error = error.code()
-                == runtime::repository::RuntimeRepositoryReadErrorCode::resource_exhausted
+                == ::baas::runtime::repository::RuntimeRepositoryReadErrorCode::resource_exhausted
             ? ServiceApplicationError::internal_failure
             : ServiceApplicationError::runtime_repository_invalid;
         return {nullptr, application_error, {}};
@@ -286,9 +326,22 @@ ServiceApplicationOpenResult ServiceApplication::open(
             std::move(remote_dependencies));
 #endif
 
+        if (dependencies.runtime_task_composition_factory) {
+            auto runtime_tasks =
+                dependencies.runtime_task_composition_factory->compose(
+                    impl->runtime_repository_read_bundle);
+            if (!runtime_tasks) {
+                return {nullptr, ServiceApplicationError::composition_failed, {}};
+            }
+            impl->runtime_task_owner = std::move(runtime_tasks.owner);
+            impl->runtime_task_control = std::move(runtime_tasks.control);
+        }
+
         auto registration = make_status_trigger_registration(
-            StatusSourceCallback{[provider = impl->provider](const std::stop_token stop) {
-                return provider_status(provider, stop);
+            StatusSourceCallback{[provider = impl->provider,
+                                  runtime_owner = impl->runtime_task_owner](
+                                     const std::stop_token stop) {
+                return provider_status(provider, runtime_owner, stop);
             }});
         if (!registration) {
             return {nullptr, ServiceApplicationError::trigger_registration_failed, {}};
@@ -309,6 +362,19 @@ ServiceApplicationOpenResult ServiceApplication::open(
         }
         for (auto& item : configuration.registrations) {
             registrations.push_back(std::move(item));
+        }
+        if (impl->runtime_task_control) {
+            auto runtime_tasks = make_runtime_task_trigger_registrations(
+                impl->runtime_task_control);
+            if (!runtime_tasks) {
+                return {
+                    nullptr,
+                    ServiceApplicationError::trigger_registration_failed,
+                    {}};
+            }
+            for (auto& item : runtime_tasks.registrations) {
+                registrations.push_back(std::move(item));
+            }
         }
         auto dispatch = trigger::TriggerDispatcher::create(std::move(registrations));
         if (!dispatch) {
@@ -331,25 +397,25 @@ ServiceApplicationOpenResult ServiceApplication::open(
         config.remote = websocket::RemoteChannelPolicy::desktop_only;
         config.host.port = impl->options.port;
 
-        http::ProductionHttpHostDependencies dependencies;
-        dependencies.authentication.storage = auth::make_file_auth_storage(
+        http::ProductionHttpHostDependencies http_dependencies;
+        http_dependencies.authentication.storage = auth::make_file_auth_storage(
             impl->options.project_root);
-        dependencies.authentication.clock = auth::make_system_auth_clock();
-        dependencies.authentication.random = auth::make_system_auth_random();
-        dependencies.authentication.password_deriver =
+        http_dependencies.authentication.clock = auth::make_system_auth_clock();
+        http_dependencies.authentication.random = auth::make_system_auth_random();
+        http_dependencies.authentication.password_deriver =
             auth::make_sodium_password_deriver();
-        dependencies.provider_backend = impl->provider;
-        dependencies.resource_store = impl->resources;
-        dependencies.trigger = impl->trigger_factory;
+        http_dependencies.provider_backend = impl->provider;
+        http_dependencies.resource_store = impl->resources;
+        http_dependencies.trigger = impl->trigger_factory;
 #if defined(__ANDROID__)
-        dependencies.remote = nullptr;
+        http_dependencies.remote = nullptr;
 #else
-        dependencies.remote = std::make_shared<channels::RemoteHandlerFactory>(
+        http_dependencies.remote = std::make_shared<channels::RemoteHandlerFactory>(
             impl->remote_backend);
 #endif
 
         auto opened = http::open_production_http_host(
-            std::move(config), std::move(dependencies));
+            std::move(config), std::move(http_dependencies));
         if (!opened) {
             const auto error = opened.error
                     == http::ProductionHttpHostOpenError::authentication_failed
@@ -478,9 +544,14 @@ void ServiceApplication::stop() noexcept
         }
     }
     if (impl_->host) impl_->host->stop();
+    // Trigger handlers retain RuntimeTaskControl. Drain their prepare/claim
+    // windows before closing task admission, then cooperatively stop and join
+    // every native runtime worker while its provider/device dependencies are
+    // still alive.
+    if (impl_->executor) impl_->executor->shutdown();
+    if (impl_->runtime_task_owner) impl_->runtime_task_owner->shutdown();
     if (impl_->remote_backend) impl_->remote_backend->stop();
     if (impl_->runtime_provider) impl_->runtime_provider->stop();
-    if (impl_->executor) impl_->executor->shutdown();
     if (impl_->signal_owner) impl_->signal_owner->stop();
     impl_->ready.store(false, std::memory_order_release);
     impl_->transport_started.store(false, std::memory_order_release);
@@ -502,10 +573,18 @@ ServiceApplication::trigger_executor() const noexcept
     return impl_ ? impl_->executor : nullptr;
 }
 
-std::shared_ptr<const runtime::repository::RuntimeRepositoryReadBundle>
+std::shared_ptr<const ::baas::runtime::repository::RuntimeRepositoryReadBundle>
 ServiceApplication::runtime_repository_read_bundle() const noexcept
 {
     return impl_ ? impl_->runtime_repository_read_bundle : nullptr;
+}
+
+std::optional<service_runtime::RuntimeTaskSnapshot>
+ServiceApplication::runtime_task_snapshot(
+    const std::string_view config_id) const
+{
+    if (!impl_ || !impl_->runtime_task_owner) return std::nullopt;
+    return impl_->runtime_task_owner->snapshot(config_id);
 }
 
 int run_service_application(

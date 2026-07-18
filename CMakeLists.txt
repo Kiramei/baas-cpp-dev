@@ -96,14 +96,48 @@ option(BUILD_SCHEDULER_POLICY   "Build the pure scheduler policy/parser" OFF)
 option(BUILD_SCHEDULER_POLICY_TESTS "Build deterministic scheduler policy tests" OFF)
 option(BUILD_RESOURCE_CORE      "Build immutable resource snapshot core" OFF)
 option(BUILD_RESOURCE_CORE_TESTS "Build immutable resource snapshot tests" OFF)
+option(BUILD_RUNTIME_RESOURCE_SNAPSHOT_LOADER "Build pinned runtime resource snapshot loader" OFF)
+option(BUILD_RUNTIME_RESOURCE_SNAPSHOT_LOADER_TESTS "Build pinned runtime resource snapshot loader tests" OFF)
 option(BUILD_RUNTIME_REPOSITORY "Build read-only runtime repository activation" OFF)
 option(BUILD_RUNTIME_REPOSITORY_TESTS "Build runtime repository activation tests" OFF)
 option(BUILD_RUNTIME_REPOSITORY_UPDATER "Build the transport-independent runtime repository updater" OFF)
 option(BUILD_RUNTIME_REPOSITORY_UPDATER_TESTS "Build runtime repository updater tests" OFF)
 option(BUILD_RUNTIME_REPOSITORY_GIT2 "Build the optional libgit2 repository dependency boundary" OFF)
 option(BUILD_RUNTIME_REPOSITORY_GIT2_TESTS "Build real optional libgit2 repository backend tests" OFF)
+option(BUILD_RUNTIME_GROUP_PUBLICATION_COMPILER "Build deterministic group resource publication compiler" OFF)
+option(BUILD_RUNTIME_GROUP_PUBLICATION_COMPILER_TESTS "Build group publication compiler tests" OFF)
+option(BUILD_RUNTIME_SCRIPT_PACKAGE_LOADER "Build pathless BAAS Script package discovery from a runtime repository" OFF)
+option(BUILD_RUNTIME_SCRIPT_PACKAGE_LOADER_TESTS "Build runtime BAAS Script package loader tests" OFF)
+option(BUILD_RUNTIME_SCRIPT_CATALOG "Build the immutable runtime BAAS Script task catalog" OFF)
+option(BUILD_RUNTIME_SCRIPT_CATALOG_TESTS "Build runtime BAAS Script catalog tests" OFF)
+option(BUILD_RUNTIME_SCRIPT_EXECUTION_PLAN "Build immutable runtime BAAS Script execution plans" OFF)
+option(BUILD_RUNTIME_SCRIPT_EXECUTION_PLAN_TESTS "Build runtime BAAS Script execution plan tests" OFF)
+option(BUILD_SCRIPT_PROCEDURE_SNAPSHOT "Build immutable procedure descriptor snapshots" OFF)
+option(BUILD_RUNTIME_PROCEDURE_ACTIVATION "Build generation-bound runtime procedure activation" OFF)
+option(BUILD_RUNTIME_PROCEDURE_ACTIVATION_TESTS "Build runtime procedure activation tests" OFF)
+option(BUILD_RUNTIME_CO_DETECT_DEFINITION_MODEL "Build strict immutable co-detect definition model" OFF)
+option(BUILD_RUNTIME_CO_DETECT_DEFINITION_MODEL_TESTS "Build co-detect definition model tests" OFF)
+option(BUILD_RUNTIME_CO_DETECT_EXECUTOR "Build pure C++ co-detect procedure executor" OFF)
+option(BUILD_RUNTIME_CO_DETECT_EXECUTOR_TESTS "Build deterministic co-detect executor tests" OFF)
+option(BUILD_RUNTIME_CO_DETECT_SUPPORT_BUNDLE "Build verified co-detect locale support bundle loader" OFF)
+option(BUILD_RUNTIME_CO_DETECT_SUPPORT_BUNDLE_TESTS "Build co-detect support bundle loader tests" OFF)
+option(BUILD_RUNTIME_CO_DETECT_PRODUCTION_ADAPTER "Build pinned production co-detect device and feature adapter" OFF)
+option(BUILD_RUNTIME_CO_DETECT_PRODUCTION_ADAPTER_TESTS "Build pinned production co-detect adapter tests" OFF)
+option(BUILD_RUNTIME_BAAS_CONNECTION_CO_DETECT_PORT "Build BAASConnection production co-detect device port" OFF)
+option(BUILD_RUNTIME_BAAS_CONNECTION_CO_DETECT_PORT_TESTS "Build BAASConnection co-detect device port tests" OFF)
+option(BUILD_RUNTIME_BAAS_CONNECTION_CO_DETECT_LINK_CLOSURE "Final-link the production co-detect backend with the resource-free legacy BAAS core" OFF)
+option(BUILD_LEGACY_PROCEDURE_EXECUTION "Build pure legacy procedure typed/control/effect seam" OFF)
+option(BUILD_LEGACY_PROCEDURE_EXECUTION_TESTS "Build legacy procedure execution seam tests" OFF)
+option(BUILD_LEGACY_PROCEDURE_DEFINITION_VALIDATION "Build strict direct legacy procedure definition validation" OFF)
+option(BUILD_LEGACY_PROCEDURE_DEFINITION_TESTS "Build direct legacy procedure definition validation tests" OFF)
 option(BUILD_SCRIPT_RESOURCE_HOST "Build baas/resource script Host adapter" OFF)
 option(BUILD_SCRIPT_RESOURCE_HOST_TESTS "Build baas/resource script Host tests" OFF)
+option(BUILD_SCRIPT_CONFIG_HOST "Build request-local baas/config script Host" OFF)
+option(BUILD_SCRIPT_CONFIG_HOST_TESTS "Build request-local baas/config Host tests" OFF)
+option(BUILD_SCRIPT_PROCEDURE_HOST "Build snapshot-owned baas/procedure script Host" OFF)
+option(BUILD_SCRIPT_PROCEDURE_HOST_TESTS "Build snapshot-owned baas/procedure Host tests" OFF)
+option(BUILD_SCRIPT_HOST_RUNTIME_COMPOSITION "Build immutable script Host runtime composition" OFF)
+option(BUILD_SCRIPT_HOST_RUNTIME_COMPOSITION_TESTS "Build script Host runtime composition tests" OFF)
 option(BUILD_SERVICE_PROTOCOL   "Build the standalone BAAS service protocol library" OFF)
 option(BUILD_SERVICE_PROTOCOL_TESTS "Build native tests for the BAAS service protocol" OFF)
 option(BUILD_SERVICE_TRIGGER_CATALOG "Build the transport-independent trigger command catalog" OFF)
@@ -120,6 +154,12 @@ option(BUILD_SERVICE_TRIGGER_EXECUTOR "Build the bounded trigger execution owner
 option(BUILD_SERVICE_TRIGGER_EXECUTOR_TESTS "Build native tests for trigger execution ownership" OFF)
 option(BUILD_SERVICE_RUNTIME_TASK_OWNER "Build the service-owned runtime task lifecycle" OFF)
 option(BUILD_SERVICE_RUNTIME_TASK_OWNER_TESTS "Build runtime task lifecycle tests" OFF)
+option(BUILD_SERVICE_RUNTIME_SCRIPT_TASK_BACKEND "Build the explicit native script RuntimeTaskBackend" OFF)
+option(BUILD_SERVICE_RUNTIME_SCRIPT_TASK_BACKEND_TESTS "Build native script RuntimeTaskBackend tests" OFF)
+option(BUILD_SERVICE_PRODUCTION_RUNTIME_SCRIPT_TASK_FACTORY "Build the pinned production BAAS Script task factory" OFF)
+option(BUILD_SERVICE_PRODUCTION_RUNTIME_SCRIPT_TASK_FACTORY_TESTS "Build pinned production BAAS Script task factory tests" OFF)
+option(BUILD_SERVICE_RUNTIME_TASK_STATUS_JSON "Build runtime task status JSON serialization" OFF)
+option(BUILD_SERVICE_RUNTIME_TASK_STATUS_JSON_TESTS "Build runtime task status JSON tests" OFF)
 option(BUILD_SERVICE_ROUTER     "Build the transport-independent BAAS service router" OFF)
 option(BUILD_SERVICE_ROUTER_TESTS "Build native tests for the BAAS service router" OFF)
 option(BUILD_SERVICE_ORIGIN_POLICY "Build the standalone HTTP Origin/CORS policy" OFF)
@@ -177,6 +217,7 @@ option(BUILD_SERVICE_ADB_DISCOVERY_TRIGGER_TESTS "Build deterministic detect_adb
 option(BUILD_SERVICE_CONFIGURATION_TRIGGERS "Build production configuration trigger registrations" OFF)
 option(BUILD_SERVICE_CONFIGURATION_TRIGGER_TESTS "Build configuration trigger production tests" OFF)
 option(BUILD_SERVICE_RUNTIME_TASK_TRIGGERS "Build scheduler/task trigger registrations" OFF)
+option(BUILD_SERVICE_PRODUCTION_RUNTIME_TASK_CONTROL "Build the production RuntimeTaskOwner Trigger control" OFF)
 option(BUILD_SERVICE_RUNTIME_TASK_TRIGGER_TESTS "Build scheduler/task trigger registration tests" OFF)
 option(BUILD_SERVICE_COMMAND_LINE "Build the bounded service command-line contract" OFF)
 option(BUILD_SERVICE_COMMAND_LINE_TESTS "Build deterministic service command-line tests" OFF)
@@ -226,6 +267,9 @@ if(BUILD_SERVICE_APP)
     set(BUILD_SERVICE_STATUS_TRIGGER ON CACHE BOOL "Build the production status trigger registration" FORCE)
     set(BUILD_SERVICE_ADB_DISCOVERY_TRIGGER ON CACHE BOOL "Build the production detect_adb trigger registration" FORCE)
     set(BUILD_SERVICE_CONFIGURATION_TRIGGERS ON CACHE BOOL "Build production configuration trigger registrations" FORCE)
+    set(BUILD_SERVICE_RUNTIME_TASK_TRIGGERS ON CACHE BOOL "Build scheduler/task trigger registrations" FORCE)
+    set(BUILD_SERVICE_RUNTIME_TASK_OWNER ON CACHE BOOL "Build the service-owned runtime task lifecycle" FORCE)
+    set(BUILD_SERVICE_RUNTIME_TASK_STATUS_JSON ON CACHE BOOL "Build native runtime task status encoding" FORCE)
 endif()
 
 if(BUILD_SERVICE_RUNTIME_CONFIGURATION_DEFAULTS AND NOT BUILD_RUNTIME_REPOSITORY)
@@ -305,6 +349,70 @@ if(BUILD_RESOURCE_CORE_TESTS AND NOT BUILD_RESOURCE_CORE)
     set(BUILD_RESOURCE_CORE ON CACHE BOOL "Build immutable resource snapshot core" FORCE)
 endif()
 
+if(BUILD_RUNTIME_CO_DETECT_PRODUCTION_ADAPTER_TESTS)
+    set(BUILD_RUNTIME_CO_DETECT_PRODUCTION_ADAPTER ON CACHE BOOL
+        "Build pinned production co-detect device and feature adapter" FORCE)
+endif()
+
+if(BUILD_RUNTIME_BAAS_CONNECTION_CO_DETECT_PORT_TESTS)
+    set(BUILD_RUNTIME_BAAS_CONNECTION_CO_DETECT_PORT ON CACHE BOOL
+        "Build BAASConnection production co-detect device port" FORCE)
+endif()
+
+if(BUILD_RUNTIME_BAAS_CONNECTION_CO_DETECT_LINK_CLOSURE)
+    if(TARGET_OS_NAME STREQUAL "Android")
+        message(FATAL_ERROR
+            "The full legacy BAAS core link-closure probe is desktop-only; Android builds validate the production adapter archive for each ABI")
+    endif()
+    set(BUILD_RUNTIME_BAAS_CONNECTION_CO_DETECT_PORT ON CACHE BOOL
+        "Build BAASConnection production co-detect device port" FORCE)
+endif()
+
+if(BUILD_RUNTIME_BAAS_CONNECTION_CO_DETECT_PORT)
+    set(BUILD_RUNTIME_CO_DETECT_PRODUCTION_ADAPTER ON CACHE BOOL
+        "Build pinned production co-detect device and feature adapter" FORCE)
+endif()
+
+if(BUILD_RUNTIME_CO_DETECT_PRODUCTION_ADAPTER)
+    set(BUILD_RUNTIME_CO_DETECT_SUPPORT_BUNDLE ON CACHE BOOL
+        "Build verified co-detect locale support bundle loader" FORCE)
+    set(BUILD_RUNTIME_CO_DETECT_EXECUTOR ON CACHE BOOL
+        "Build pure C++ co-detect procedure executor" FORCE)
+endif()
+
+if(BUILD_RUNTIME_GROUP_PUBLICATION_COMPILER_TESTS)
+    set(BUILD_RUNTIME_GROUP_PUBLICATION_COMPILER ON CACHE BOOL
+        "Build deterministic group resource publication compiler" FORCE)
+    set(BUILD_RUNTIME_CO_DETECT_SUPPORT_BUNDLE ON CACHE BOOL
+        "Build verified co-detect locale support bundle loader" FORCE)
+endif()
+
+if(BUILD_RUNTIME_CO_DETECT_SUPPORT_BUNDLE_TESTS)
+    set(BUILD_RUNTIME_CO_DETECT_SUPPORT_BUNDLE ON CACHE BOOL
+        "Build verified co-detect locale support bundle loader" FORCE)
+endif()
+
+if(BUILD_RUNTIME_CO_DETECT_SUPPORT_BUNDLE)
+    set(BUILD_RUNTIME_RESOURCE_SNAPSHOT_LOADER ON CACHE BOOL
+        "Build pinned runtime resource snapshot loader" FORCE)
+    set(BUILD_RUNTIME_CO_DETECT_DEFINITION_MODEL ON CACHE BOOL
+        "Build strict immutable co-detect definition model" FORCE)
+endif()
+
+if(BUILD_RUNTIME_RESOURCE_SNAPSHOT_LOADER_TESTS)
+    set(BUILD_RUNTIME_RESOURCE_SNAPSHOT_LOADER ON CACHE BOOL
+        "Build pinned runtime resource snapshot loader" FORCE)
+    set(BUILD_RUNTIME_REPOSITORY_TESTS ON CACHE BOOL
+        "Build runtime repository activation tests" FORCE)
+endif()
+
+if(BUILD_RUNTIME_RESOURCE_SNAPSHOT_LOADER)
+    set(BUILD_RUNTIME_REPOSITORY ON CACHE BOOL
+        "Build read-only runtime repository activation" FORCE)
+    set(BUILD_RESOURCE_CORE ON CACHE BOOL
+        "Build immutable resource snapshot core" FORCE)
+endif()
+
 if(BUILD_RUNTIME_REPOSITORY_TESTS AND NOT BUILD_RUNTIME_REPOSITORY)
     set(BUILD_RUNTIME_REPOSITORY ON CACHE BOOL "Build read-only runtime repository activation" FORCE)
 endif()
@@ -317,12 +425,127 @@ if(BUILD_RUNTIME_REPOSITORY_GIT2_TESTS AND NOT BUILD_RUNTIME_REPOSITORY_GIT2)
     set(BUILD_RUNTIME_REPOSITORY_GIT2 ON CACHE BOOL "Build the optional libgit2 repository backend" FORCE)
 endif()
 
+if(BUILD_RUNTIME_GROUP_PUBLICATION_COMPILER)
+    set(BUILD_RESOURCE_CORE ON CACHE BOOL "Build immutable resource snapshot core" FORCE)
+endif()
+
 if(BUILD_RUNTIME_REPOSITORY_GIT2 AND NOT BUILD_RUNTIME_REPOSITORY_UPDATER)
     set(BUILD_RUNTIME_REPOSITORY_UPDATER ON CACHE BOOL "Build the transport-independent runtime repository updater" FORCE)
 endif()
 
 if(BUILD_RUNTIME_REPOSITORY_UPDATER AND NOT BUILD_RUNTIME_REPOSITORY)
     set(BUILD_RUNTIME_REPOSITORY ON CACHE BOOL "Build read-only runtime repository activation" FORCE)
+endif()
+
+if(BUILD_RUNTIME_SCRIPT_EXECUTION_PLAN_TESTS)
+    set(BUILD_RUNTIME_SCRIPT_EXECUTION_PLAN ON CACHE BOOL
+        "Build immutable runtime BAAS Script execution plans" FORCE)
+    set(BUILD_RUNTIME_REPOSITORY_TESTS ON CACHE BOOL
+        "Build runtime repository activation tests" FORCE)
+    set(BUILD_RESOURCE_CORE ON CACHE BOOL
+        "Build immutable resource snapshot core" FORCE)
+endif()
+
+if(BUILD_RUNTIME_SCRIPT_EXECUTION_PLAN)
+    set(BUILD_RUNTIME_SCRIPT_CATALOG ON CACHE BOOL
+        "Build the immutable runtime BAAS Script task catalog" FORCE)
+    set(BUILD_RUNTIME_SCRIPT_PACKAGE_LOADER ON CACHE BOOL
+        "Build pathless BAAS Script package discovery from a runtime repository" FORCE)
+endif()
+
+if(BUILD_RUNTIME_CO_DETECT_EXECUTOR_TESTS)
+    set(BUILD_RUNTIME_CO_DETECT_EXECUTOR ON CACHE BOOL
+        "Build pure C++ co-detect procedure executor" FORCE)
+endif()
+
+if(BUILD_RUNTIME_CO_DETECT_EXECUTOR)
+    set(BUILD_RUNTIME_CO_DETECT_DEFINITION_MODEL ON CACHE BOOL
+        "Build strict immutable co-detect definition model" FORCE)
+    set(BUILD_SCRIPT_PROCEDURE_HOST ON CACHE BOOL
+        "Build snapshot-owned baas/procedure script Host" FORCE)
+    set(BUILD_RUNTIME_PROCEDURE_ACTIVATION ON CACHE BOOL
+        "Build generation-bound runtime procedure activation" FORCE)
+endif()
+
+if(BUILD_RUNTIME_PROCEDURE_ACTIVATION_TESTS)
+    set(BUILD_RUNTIME_PROCEDURE_ACTIVATION ON CACHE BOOL
+        "Build generation-bound runtime procedure activation" FORCE)
+    set(BUILD_RUNTIME_REPOSITORY_TESTS ON CACHE BOOL
+        "Build runtime repository activation tests" FORCE)
+endif()
+
+if(BUILD_RUNTIME_PROCEDURE_ACTIVATION)
+    set(BUILD_RUNTIME_RESOURCE_SNAPSHOT_LOADER ON CACHE BOOL
+        "Build pinned runtime resource snapshot loader" FORCE)
+    set(BUILD_RUNTIME_SCRIPT_EXECUTION_PLAN ON CACHE BOOL
+        "Build immutable runtime BAAS Script execution plans" FORCE)
+    set(BUILD_SCRIPT_PROCEDURE_SNAPSHOT ON CACHE BOOL
+        "Build immutable procedure descriptor snapshots" FORCE)
+    # This block follows the individual dependency propagators above, so keep
+    # the complete production closure explicit for direct Android builds.
+    set(BUILD_RUNTIME_REPOSITORY ON CACHE BOOL
+        "Build read-only runtime repository activation" FORCE)
+    set(BUILD_RESOURCE_CORE ON CACHE BOOL
+        "Build immutable resource snapshot core" FORCE)
+    set(BUILD_RUNTIME_SCRIPT_CATALOG ON CACHE BOOL
+        "Build the immutable runtime BAAS Script task catalog" FORCE)
+    set(BUILD_RUNTIME_SCRIPT_PACKAGE_LOADER ON CACHE BOOL
+        "Build pathless BAAS Script package discovery from a runtime repository" FORCE)
+    set(BUILD_SCRIPT_RUNTIME ON CACHE BOOL
+        "Build the standalone BAAS script runtime" FORCE)
+endif()
+
+if(BUILD_RUNTIME_CO_DETECT_DEFINITION_MODEL_TESTS)
+    set(BUILD_RUNTIME_CO_DETECT_DEFINITION_MODEL ON CACHE BOOL
+        "Build strict immutable co-detect definition model" FORCE)
+endif()
+
+if(BUILD_RUNTIME_CO_DETECT_DEFINITION_MODEL)
+    set(BUILD_RESOURCE_CORE ON CACHE BOOL
+        "Build immutable resource snapshot core" FORCE)
+endif()
+
+if(BUILD_LEGACY_PROCEDURE_EXECUTION_TESTS AND NOT BUILD_LEGACY_PROCEDURE_EXECUTION)
+    set(BUILD_LEGACY_PROCEDURE_EXECUTION ON CACHE BOOL
+        "Build pure legacy procedure typed/control/effect seam" FORCE)
+endif()
+
+if(BUILD_LEGACY_PROCEDURE_DEFINITION_TESTS AND NOT BUILD_LEGACY_PROCEDURE_DEFINITION_VALIDATION)
+    set(BUILD_LEGACY_PROCEDURE_DEFINITION_VALIDATION ON CACHE BOOL
+        "Build strict direct legacy procedure definition validation" FORCE)
+endif()
+
+if(BUILD_RUNTIME_SCRIPT_PACKAGE_LOADER_TESTS)
+    set(BUILD_RUNTIME_SCRIPT_PACKAGE_LOADER ON CACHE BOOL
+        "Build pathless BAAS Script package discovery from a runtime repository" FORCE)
+    set(BUILD_RUNTIME_REPOSITORY_TESTS ON CACHE BOOL
+        "Build runtime repository activation tests" FORCE)
+    # Test fixtures use the repository-independent SHA-256 helper to construct
+    # real, verified temporary manifests at runtime.
+    set(BUILD_RESOURCE_CORE ON CACHE BOOL "Build immutable resource snapshot core" FORCE)
+endif()
+
+if(BUILD_RUNTIME_SCRIPT_PACKAGE_LOADER)
+    set(BUILD_RUNTIME_REPOSITORY ON CACHE BOOL
+        "Build read-only runtime repository activation" FORCE)
+    set(BUILD_SCRIPT_RUNTIME ON CACHE BOOL
+        "Build the standalone BAAS script runtime" FORCE)
+endif()
+
+if(BUILD_RUNTIME_SCRIPT_CATALOG_TESTS)
+    set(BUILD_RUNTIME_SCRIPT_CATALOG ON CACHE BOOL
+        "Build the immutable runtime BAAS Script task catalog" FORCE)
+    set(BUILD_RUNTIME_REPOSITORY_TESTS ON CACHE BOOL
+        "Build runtime repository activation tests" FORCE)
+    set(BUILD_RESOURCE_CORE ON CACHE BOOL
+        "Build immutable resource snapshot core" FORCE)
+endif()
+
+if(BUILD_RUNTIME_SCRIPT_CATALOG)
+    set(BUILD_RUNTIME_REPOSITORY ON CACHE BOOL
+        "Build read-only runtime repository activation" FORCE)
+    set(BUILD_SCRIPT_RUNTIME ON CACHE BOOL
+        "Build the standalone BAAS script runtime" FORCE)
 endif()
 
 if(BUILD_SCRIPT_RESOURCE_HOST_TESTS AND NOT BUILD_SCRIPT_RESOURCE_HOST)
@@ -332,6 +555,47 @@ endif()
 if(BUILD_SCRIPT_RESOURCE_HOST)
     set(BUILD_RESOURCE_CORE ON CACHE BOOL "Build immutable resource snapshot core" FORCE)
     set(BUILD_SCRIPT_RUNTIME ON CACHE BOOL "Build the standalone BAAS script runtime" FORCE)
+endif()
+
+if(BUILD_SCRIPT_CONFIG_HOST_TESTS AND NOT BUILD_SCRIPT_CONFIG_HOST)
+    set(BUILD_SCRIPT_CONFIG_HOST ON CACHE BOOL
+        "Build request-local baas/config script Host" FORCE)
+endif()
+
+if(BUILD_SCRIPT_CONFIG_HOST_TESTS AND NOT BUILD_SCRIPT_HOST_RUNTIME_COMPOSITION)
+    set(BUILD_SCRIPT_HOST_RUNTIME_COMPOSITION ON CACHE BOOL
+        "Build composed Host runtime foundation" FORCE)
+endif()
+
+if(BUILD_SCRIPT_CONFIG_HOST AND NOT BUILD_SCRIPT_RUNTIME)
+    set(BUILD_SCRIPT_RUNTIME ON CACHE BOOL
+        "Build the standalone BAAS script runtime" FORCE)
+endif()
+
+if(BUILD_SCRIPT_PROCEDURE_HOST_TESTS AND NOT BUILD_SCRIPT_PROCEDURE_HOST)
+    set(BUILD_SCRIPT_PROCEDURE_HOST ON CACHE BOOL
+        "Build snapshot-owned baas/procedure script Host" FORCE)
+endif()
+
+if(BUILD_SCRIPT_PROCEDURE_HOST)
+    set(BUILD_SCRIPT_PROCEDURE_SNAPSHOT ON CACHE BOOL
+        "Build immutable procedure descriptor snapshots" FORCE)
+    set(BUILD_SCRIPT_RUNTIME ON CACHE BOOL "Build the standalone BAAS script runtime" FORCE)
+endif()
+
+if(BUILD_SCRIPT_HOST_RUNTIME_COMPOSITION_TESTS
+   AND NOT BUILD_SCRIPT_HOST_RUNTIME_COMPOSITION)
+    set(BUILD_SCRIPT_HOST_RUNTIME_COMPOSITION ON CACHE BOOL
+        "Build immutable script Host runtime composition" FORCE)
+endif()
+
+if(BUILD_SCRIPT_HOST_RUNTIME_COMPOSITION AND NOT BUILD_SCRIPT_RUNTIME)
+    set(BUILD_SCRIPT_RUNTIME ON CACHE BOOL
+        "Build the standalone BAAS script runtime" FORCE)
+endif()
+
+if(BUILD_SCRIPT_PROCEDURE_SNAPSHOT)
+    set(BUILD_RESOURCE_CORE ON CACHE BOOL "Build immutable resource snapshot core" FORCE)
 endif()
 
 if(BUILD_SERVICE_PROTOCOL_TESTS AND NOT BUILD_SERVICE_PROTOCOL)
@@ -535,6 +799,15 @@ if(BUILD_SERVICE_RUNTIME_TASK_TRIGGERS AND NOT BUILD_SERVICE_TRIGGER_DISPATCH)
     set(BUILD_SERVICE_TRIGGER_DISPATCH ON CACHE BOOL "Build the transport-independent trigger dispatcher" FORCE)
 endif()
 
+if(BUILD_SERVICE_PRODUCTION_RUNTIME_TASK_CONTROL)
+    set(BUILD_SERVICE_RUNTIME_TASK_TRIGGERS ON CACHE BOOL
+        "Build scheduler/task trigger registrations" FORCE)
+    set(BUILD_SERVICE_RUNTIME_TASK_OWNER ON CACHE BOOL
+        "Build the service-owned runtime task lifecycle" FORCE)
+    set(BUILD_SERVICE_PRODUCTION_RUNTIME_SCRIPT_TASK_FACTORY ON CACHE BOOL
+        "Build the pinned production BAAS Script task factory" FORCE)
+endif()
+
 if(BUILD_SERVICE_RUNTIME_TASK_TRIGGER_TESTS AND NOT BUILD_SERVICE_TRIGGER_EXECUTOR)
     set(BUILD_SERVICE_TRIGGER_EXECUTOR ON CACHE BOOL "Build the bounded trigger execution owner" FORCE)
 endif()
@@ -626,6 +899,63 @@ if(BUILD_SERVICE_TRIGGER_EXECUTOR AND NOT BUILD_SERVICE_TRIGGER_CATALOG)
 endif()
 
 if(BUILD_SERVICE_RUNTIME_TASK_OWNER_TESTS
+   AND NOT BUILD_SERVICE_RUNTIME_TASK_OWNER)
+    set(BUILD_SERVICE_RUNTIME_TASK_OWNER ON CACHE BOOL
+        "Build the service-owned runtime task lifecycle" FORCE)
+endif()
+
+if(BUILD_SERVICE_RUNTIME_SCRIPT_TASK_BACKEND_TESTS
+   AND NOT BUILD_SERVICE_RUNTIME_SCRIPT_TASK_BACKEND)
+    set(BUILD_SERVICE_RUNTIME_SCRIPT_TASK_BACKEND ON CACHE BOOL
+        "Build the explicit native script RuntimeTaskBackend" FORCE)
+endif()
+
+if(BUILD_SERVICE_RUNTIME_SCRIPT_TASK_BACKEND
+   AND NOT BUILD_SERVICE_RUNTIME_TASK_OWNER)
+    set(BUILD_SERVICE_RUNTIME_TASK_OWNER ON CACHE BOOL
+        "Build the service-owned runtime task lifecycle" FORCE)
+endif()
+
+if(BUILD_SERVICE_PRODUCTION_RUNTIME_SCRIPT_TASK_FACTORY_TESTS
+   AND NOT BUILD_SERVICE_PRODUCTION_RUNTIME_SCRIPT_TASK_FACTORY)
+    set(BUILD_SERVICE_PRODUCTION_RUNTIME_SCRIPT_TASK_FACTORY ON CACHE BOOL
+        "Build the pinned production BAAS Script task factory" FORCE)
+endif()
+
+if(BUILD_SERVICE_PRODUCTION_RUNTIME_SCRIPT_TASK_FACTORY)
+    foreach(required_option
+            BUILD_SERVICE_RUNTIME_SCRIPT_TASK_BACKEND
+            BUILD_SERVICE_RUNTIME_TASK_OWNER
+            BUILD_RESOURCE_CORE
+            BUILD_RUNTIME_REPOSITORY
+            BUILD_RUNTIME_RESOURCE_SNAPSHOT_LOADER
+            BUILD_SCRIPT_RUNTIME
+            BUILD_RUNTIME_SCRIPT_PACKAGE_LOADER
+            BUILD_RUNTIME_SCRIPT_CATALOG
+            BUILD_RUNTIME_SCRIPT_EXECUTION_PLAN
+            BUILD_SCRIPT_PROCEDURE_SNAPSHOT
+            BUILD_RUNTIME_PROCEDURE_ACTIVATION
+            BUILD_RUNTIME_CO_DETECT_DEFINITION_MODEL
+            BUILD_RUNTIME_CO_DETECT_EXECUTOR
+            BUILD_RUNTIME_CO_DETECT_SUPPORT_BUNDLE
+            BUILD_RUNTIME_CO_DETECT_PRODUCTION_ADAPTER
+            BUILD_SCRIPT_RESOURCE_HOST
+            BUILD_SCRIPT_PROCEDURE_HOST
+            BUILD_SCRIPT_HOST_RUNTIME_COMPOSITION)
+        if(NOT ${required_option})
+            set(${required_option} ON CACHE BOOL
+                "Production BAAS Script task factory dependency" FORCE)
+        endif()
+    endforeach()
+endif()
+
+if(BUILD_SERVICE_RUNTIME_TASK_STATUS_JSON_TESTS
+   AND NOT BUILD_SERVICE_RUNTIME_TASK_STATUS_JSON)
+    set(BUILD_SERVICE_RUNTIME_TASK_STATUS_JSON ON CACHE BOOL
+        "Build runtime task status JSON serialization" FORCE)
+endif()
+
+if(BUILD_SERVICE_RUNTIME_TASK_STATUS_JSON
    AND NOT BUILD_SERVICE_RUNTIME_TASK_OWNER)
     set(BUILD_SERVICE_RUNTIME_TASK_OWNER ON CACHE BOOL
         "Build the service-owned runtime task lifecycle" FORCE)
@@ -737,18 +1067,42 @@ endif()
 if(BUILD_SERVICE_SYNC_HANDLER OR BUILD_SERVICE_REMOTE_HANDLER
    OR BUILD_SERVICE_FILE_RESOURCE_STORE
    OR BUILD_SERVICE_RUNTIME_CONFIGURATION_DEFAULTS
+   OR BUILD_SERVICE_RUNTIME_REPOSITORY_OWNER
    OR BUILD_SERVICE_RUNTIME_REPOSITORY_PLAN
    OR BUILD_SERVICE_RUNTIME_TASK_TRIGGERS
-   OR BUILD_SCHEDULER_POLICY)
+   OR BUILD_RUNTIME_RESOURCE_SNAPSHOT_LOADER
+   OR BUILD_RUNTIME_PROCEDURE_ACTIVATION
+   OR BUILD_RUNTIME_CO_DETECT_DEFINITION_MODEL
+   OR BUILD_RUNTIME_CO_DETECT_SUPPORT_BUNDLE
+   OR BUILD_SCHEDULER_POLICY
+   OR BUILD_LEGACY_PROCEDURE_DEFINITION_VALIDATION
+   OR BUILD_RUNTIME_GROUP_PUBLICATION_COMPILER)
     baas_request_dependencies(nlohmann_json)
 endif()
 
-if(BUILD_SERVICE_FILE_RESOURCE_STORE)
+if(BUILD_SERVICE_FILE_RESOURCE_STORE OR BUILD_RUNTIME_CO_DETECT_SUPPORT_BUNDLE
+   OR BUILD_RUNTIME_GROUP_PUBLICATION_COMPILER)
     baas_request_dependencies(miniz)
+endif()
+
+if(BUILD_RUNTIME_CO_DETECT_SUPPORT_BUNDLE)
+    baas_request_dependencies(opencv)
+endif()
+
+if(BUILD_RUNTIME_BAAS_CONNECTION_CO_DETECT_PORT)
+    baas_request_dependencies(spdlog simdutf)
+endif()
+
+if(BUILD_RUNTIME_BAAS_CONNECTION_CO_DETECT_LINK_CLOSURE)
+    baas_request_dependencies(opencv onnxruntime ffmpeg nlohmann_json spdlog simdutf)
 endif()
 
 if(BUILD_RUNTIME_REPOSITORY_GIT2)
     baas_request_dependencies(libgit2 miniz cpp_httplib)
+endif()
+
+if(BUILD_RUNTIME_GROUP_PUBLICATION_COMPILER)
+    baas_request_dependencies(libgit2 miniz nlohmann_json)
 endif()
 
 baas_load_requested_dependencies()
@@ -777,6 +1131,11 @@ file(
 list(FILTER BAAS_CORE_SOURCES EXCLUDE REGEX "/src/script/.*\\.cpp$")
 list(FILTER BAAS_CORE_SOURCES EXCLUDE REGEX "/src/scheduler/.*\\.cpp$")
 list(FILTER BAAS_CORE_SOURCES EXCLUDE REGEX "/src/runtime/repository/.*\\.cpp$")
+list(FILTER BAAS_CORE_SOURCES EXCLUDE REGEX "/src/runtime/script/.*\\.cpp$")
+list(FILTER BAAS_CORE_SOURCES EXCLUDE REGEX "/src/runtime/procedure/.*\\.cpp$")
+list(FILTER BAAS_CORE_SOURCES EXCLUDE REGEX "/src/runtime/json/.*\\.cpp$")
+list(FILTER BAAS_CORE_SOURCES EXCLUDE REGEX "/src/runtime/resources/.*\\.cpp$")
+list(FILTER BAAS_CORE_SOURCES EXCLUDE REGEX "/src/runtime/publisher/.*\\.cpp$")
 list(FILTER BAAS_CORE_SOURCES EXCLUDE REGEX "/src/service/.*\\.cpp$")
 
 if(TARGET_OS_NAME STREQUAL "Windows")
@@ -818,6 +1177,10 @@ if(BUILD_RUNTIME_REPOSITORY)
     include("${CMAKE_CURRENT_LIST_DIR}/cmake/RuntimeRepository.cmake")
 endif()
 
+if(BUILD_RUNTIME_RESOURCE_SNAPSHOT_LOADER)
+    include("${CMAKE_CURRENT_LIST_DIR}/cmake/RuntimeResourceSnapshotLoader.cmake")
+endif()
+
 if(BUILD_RUNTIME_REPOSITORY_UPDATER)
     include("${CMAKE_CURRENT_LIST_DIR}/cmake/RuntimeRepositoryUpdater.cmake")
 endif()
@@ -830,8 +1193,78 @@ if(BUILD_SCRIPT_RUNTIME)
     include("${CMAKE_CURRENT_LIST_DIR}/cmake/ScriptRuntime.cmake")
 endif()
 
+if(BUILD_RUNTIME_SCRIPT_PACKAGE_LOADER)
+    include("${CMAKE_CURRENT_LIST_DIR}/cmake/RuntimeScriptPackageLoader.cmake")
+endif()
+
+if(BUILD_RUNTIME_SCRIPT_CATALOG)
+    include("${CMAKE_CURRENT_LIST_DIR}/cmake/RuntimeScriptCatalog.cmake")
+endif()
+
+if(BUILD_RUNTIME_SCRIPT_EXECUTION_PLAN)
+    include("${CMAKE_CURRENT_LIST_DIR}/cmake/RuntimeScriptExecutionPlan.cmake")
+endif()
+
+if(BUILD_SCRIPT_PROCEDURE_SNAPSHOT)
+    include("${CMAKE_CURRENT_LIST_DIR}/cmake/ScriptProcedureSnapshot.cmake")
+endif()
+
+if(BUILD_RUNTIME_PROCEDURE_ACTIVATION OR BUILD_RUNTIME_CO_DETECT_DEFINITION_MODEL
+   OR BUILD_RUNTIME_CO_DETECT_SUPPORT_BUNDLE
+   OR BUILD_RUNTIME_GROUP_PUBLICATION_COMPILER)
+    include("${CMAKE_CURRENT_LIST_DIR}/cmake/RuntimeStrictJson.cmake")
+endif()
+
+if(BUILD_RUNTIME_CO_DETECT_DEFINITION_MODEL)
+    include("${CMAKE_CURRENT_LIST_DIR}/cmake/RuntimeCoDetectDefinitionModel.cmake")
+endif()
+
+if(BUILD_RUNTIME_CO_DETECT_SUPPORT_BUNDLE)
+    include("${CMAKE_CURRENT_LIST_DIR}/cmake/RuntimeCoDetectSupportBundle.cmake")
+endif()
+
+if(BUILD_RUNTIME_GROUP_PUBLICATION_COMPILER)
+    include("${CMAKE_CURRENT_LIST_DIR}/cmake/RuntimeGroupPublicationCompiler.cmake")
+endif()
+
+if(BUILD_RUNTIME_PROCEDURE_ACTIVATION)
+    include("${CMAKE_CURRENT_LIST_DIR}/cmake/RuntimeProcedureActivation.cmake")
+endif()
+
+if(BUILD_LEGACY_PROCEDURE_EXECUTION)
+    include("${CMAKE_CURRENT_LIST_DIR}/cmake/LegacyProcedureExecution.cmake")
+endif()
+
+if(BUILD_LEGACY_PROCEDURE_DEFINITION_VALIDATION)
+    include("${CMAKE_CURRENT_LIST_DIR}/cmake/LegacyProcedureDefinitionValidation.cmake")
+endif()
+
 if(BUILD_SCRIPT_RESOURCE_HOST)
     include("${CMAKE_CURRENT_LIST_DIR}/cmake/ScriptResourceHost.cmake")
+endif()
+
+if(BUILD_SCRIPT_CONFIG_HOST)
+    include("${CMAKE_CURRENT_LIST_DIR}/cmake/ScriptConfigHost.cmake")
+endif()
+
+if(BUILD_SCRIPT_PROCEDURE_HOST)
+    include("${CMAKE_CURRENT_LIST_DIR}/cmake/ScriptProcedureHost.cmake")
+endif()
+
+if(BUILD_SCRIPT_HOST_RUNTIME_COMPOSITION)
+    include("${CMAKE_CURRENT_LIST_DIR}/cmake/ScriptHostRuntimeComposition.cmake")
+endif()
+
+if(BUILD_RUNTIME_CO_DETECT_EXECUTOR)
+    include("${CMAKE_CURRENT_LIST_DIR}/cmake/RuntimeCoDetectExecutor.cmake")
+endif()
+
+if(BUILD_RUNTIME_CO_DETECT_PRODUCTION_ADAPTER)
+    include("${CMAKE_CURRENT_LIST_DIR}/cmake/RuntimeCoDetectProductionAdapter.cmake")
+endif()
+
+if(BUILD_RUNTIME_BAAS_CONNECTION_CO_DETECT_PORT)
+    include("${CMAKE_CURRENT_LIST_DIR}/cmake/RuntimeBAASConnectionCoDetectPort.cmake")
 endif()
 
 if(BUILD_SCHEDULER_POLICY)
@@ -862,6 +1295,18 @@ if(BUILD_SERVICE_RUNTIME_TASK_OWNER)
     include("${CMAKE_CURRENT_LIST_DIR}/cmake/ServiceRuntimeTaskOwner.cmake")
 endif()
 
+if(BUILD_SERVICE_RUNTIME_SCRIPT_TASK_BACKEND)
+    include("${CMAKE_CURRENT_LIST_DIR}/cmake/ServiceRuntimeScriptTaskBackend.cmake")
+endif()
+
+if(BUILD_SERVICE_PRODUCTION_RUNTIME_SCRIPT_TASK_FACTORY)
+    include("${CMAKE_CURRENT_LIST_DIR}/cmake/ServiceProductionRuntimeScriptTaskFactory.cmake")
+endif()
+
+if(BUILD_SERVICE_RUNTIME_TASK_STATUS_JSON)
+    include("${CMAKE_CURRENT_LIST_DIR}/cmake/ServiceRuntimeTaskStatusJson.cmake")
+endif()
+
 if(BUILD_SERVICE_TRIGGER_PIPE_CHANNEL)
     include("${CMAKE_CURRENT_LIST_DIR}/cmake/ServiceTriggerPipeChannel.cmake")
 endif()
@@ -880,6 +1325,10 @@ endif()
 
 if(BUILD_SERVICE_RUNTIME_TASK_TRIGGERS)
     include("${CMAKE_CURRENT_LIST_DIR}/cmake/ServiceRuntimeTaskTriggers.cmake")
+endif()
+
+if(BUILD_SERVICE_PRODUCTION_RUNTIME_TASK_CONTROL)
+    include("${CMAKE_CURRENT_LIST_DIR}/cmake/ServiceProductionRuntimeTaskControl.cmake")
 endif()
 
 if(BUILD_SERVICE_ROUTER)

@@ -918,7 +918,7 @@ bool HostReleaseDispatcher::dispatch_one(Heap& heap) noexcept
             }
         };
 
-        const auto lease = heap.lease_host_release();
+        const auto lease = heap.lease_host_release_for_dispatcher();
         if (!lease) return dispatch_unpublished();
         const auto metadata = Impl::metadata_for(lease->record);
         HostHandleValue handle(metadata, HostHandleTransferKind::BorrowedReference);
@@ -944,12 +944,12 @@ bool HostReleaseDispatcher::dispatch_one(Heap& heap) noexcept
         }
         if (rejected) {
             ++impl_->stats.rejected_records;
-            (void)heap.defer_host_release(lease->lease_id);
+            (void)heap.defer_host_release_for_dispatcher(lease->lease_id);
             return dispatch_unpublished();
         }
         if (pinned) {
             ++impl_->stats.retried;
-            (void)heap.defer_host_release(lease->lease_id);
+            (void)heap.defer_host_release_for_dispatcher(lease->lease_id);
             return dispatch_unpublished();
         }
 
@@ -970,7 +970,7 @@ bool HostReleaseDispatcher::dispatch_one(Heap& heap) noexcept
                         live->release_state =
                             Impl::LiveHandle::ReleaseState::ReleaseQueued;
                 }
-                (void)heap.defer_host_release(lease->lease_id);
+                (void)heap.defer_host_release_for_dispatcher(lease->lease_id);
                 return dispatch_unpublished();
             }
             bool state_valid{};
@@ -984,14 +984,14 @@ bool HostReleaseDispatcher::dispatch_one(Heap& heap) noexcept
             }
             if (!state_valid) {
                 ++impl_->stats.rejected_records;
-                (void)heap.defer_host_release(lease->lease_id);
+                (void)heap.defer_host_release_for_dispatcher(lease->lease_id);
                 return dispatch_unpublished();
             }
         }
 
-        if (!heap.acknowledge_host_release(lease->lease_id)) {
+        if (!heap.acknowledge_host_release_for_dispatcher(lease->lease_id)) {
             ++impl_->stats.retried;
-            (void)heap.defer_host_release(lease->lease_id);
+            (void)heap.defer_host_release_for_dispatcher(lease->lease_id);
             return dispatch_unpublished();
         }
         {
@@ -1210,6 +1210,10 @@ bool HostReleaseDispatcher::detach_context_for_destruction(Heap& heap) noexcept
 {
     if (!impl_->attached || heap.identity() != impl_->context_id)
         return false;
+    // Refuse before changing dispatcher admission. The Heap repeats this
+    // check at the destructive boundary, so evaluator callbacks cannot turn a
+    // rejected re-entrant teardown into a half-closed dispatcher.
+    if (heap.evaluator_boundary_active()) return false;
     {
         const std::scoped_lock lock(impl_->control_mutex);
         if (impl_->context_detached) return true;
@@ -1499,6 +1503,11 @@ const SynchronousNativeBinding* SynchronousNativeBindingSet::find(
             return binding.binding_id < id;
         });
     return found != bindings_.end() && found->binding_id == binding_id ? &*found : nullptr;
+}
+
+std::vector<SynchronousNativeBinding> SynchronousNativeBindingSet::bindings() const
+{
+    return bindings_;
 }
 
 HostErrorTranslation translate_host_error(const HostError& error) noexcept
@@ -1809,7 +1818,7 @@ HostResult invoke_host_callback(
             return HostResult::boundary_failure(HostResult::BoundaryFailure::CallbackException);
         if (context.deadline_exceeded())
             return HostResult::failure({
-                HostErrorCode::DeadlineExceeded, "Host call deadline exceeded", true,
+                HostErrorCode::DeadlineExceeded, "Host call deadline exceeded", false,
                 HostEffectState::NotStarted,
                 JsonValue(JsonObject{{"deadline_scope", JsonValue("call")}})});
         if (context.cancelled())

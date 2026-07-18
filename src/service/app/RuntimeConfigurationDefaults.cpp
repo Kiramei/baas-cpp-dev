@@ -20,7 +20,7 @@ namespace {
 using Json = nlohmann::json;
 
 [[nodiscard]] std::string read_text(
-    const runtime::repository::RuntimeRepositoryReadView& resources,
+    const ::baas::runtime::repository::RuntimeRepositoryReadView& resources,
     const std::string_view path,
     const std::uintmax_t limit)
 {
@@ -214,7 +214,7 @@ void validate_static(const Json& value)
 
 std::shared_ptr<const adapters::ConfigurationDefaults>
 load_runtime_configuration_defaults(
-    const runtime::repository::RuntimeRepositoryReadView& resources,
+    const ::baas::runtime::repository::RuntimeRepositoryReadView& resources,
     const channels::ResourceStoreLimits& consumer_limits)
 {
     if (consumer_limits.max_json_bytes == 0

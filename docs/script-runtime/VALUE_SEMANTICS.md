@@ -240,6 +240,14 @@ or another reachable cell. Collection reclaims unreachable cycles. Reuse of a
 slot increments its generation, and access through an obsolete generation MUST
 fail as `RT003_STALE_REFERENCE`. Teardown invalidates the heap and later heap
 operations MUST fail as `RT015_HEAP_TORN_DOWN`.
+While an evaluator owns an active public execution boundary, including its
+post-execution Host release drain, an attempted Heap teardown or legacy release
+queue ownership drain MUST fail as `RT024_HEAP_BUSY` before changing any cell,
+lease, queue, cursor, ledger, or Host dispatcher admission. Public release
+lease, acknowledge, retry, and defer operations MUST likewise fail without
+state change; the owning dispatcher retains friend-only access to complete its
+exact in-flight release. The owning evaluator may tear down the Heap only after
+that boundary has returned.
 
 Allocation and collection may occur during mutation. The runtime MUST root
 inputs and intermediates across those points. A failed append, map update,
@@ -394,6 +402,7 @@ error contract:
 | `RT021_JSON_BYTE_LIMIT_EXCEEDED` | bridge logical total bytes or overflow |
 | `RT022_JSON_WORK_LIMIT_EXCEEDED` | bridge node/edge work limit |
 | `RT023_JSON_DUPLICATE_KEY` | repeated in-memory JSON object key |
+| `RT024_HEAP_BUSY` | destructive Heap ownership operation during a protected evaluator boundary |
 
 Implementations MUST preserve these exact spellings in
 `runtime_error_code_name`. Adding a new stable error requires a new number; an
@@ -428,7 +437,7 @@ boundary: it emits only the fixed ERR-003 schema and is not a general
 
 `tests/docs/test_value_semantics_spec.py` uses only the Python standard library
 and MUST verify the complete VAL-001 through VAL-018 clause set, the runtime
-type inventory, the exact RT001 through RT023 names, default heap/bridge limits,
+type inventory, the exact RT001 through RT024 names, default heap/bridge limits,
 the grammar linkage, the ROADMAP checkbox, and Foundation runtime CI wiring.
 The C++ `ValueHeapTests` and `JsonBridgeTests` remain the executable behavioral
 evidence for implemented runtime paths.

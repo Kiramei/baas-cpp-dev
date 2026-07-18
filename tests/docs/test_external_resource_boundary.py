@@ -18,6 +18,10 @@ LEGACY_OPTIONS = (
     "BUILD_BAAS_AW_CHECKER",
 )
 
+RESOURCE_FREE_AUXILIARY_OPTION = (
+    "BUILD_RUNTIME_BAAS_CONNECTION_CO_DETECT_LINK_CLOSURE"
+)
+
 
 def _extract_configure_commands(path: pathlib.Path) -> list[str]:
     lines = path.read_text(encoding="utf-8").splitlines()
@@ -148,13 +152,33 @@ class ExternalResourceBoundaryTests(unittest.TestCase):
         for path, active_option in workflows.items():
             commands = _extract_configure_commands(path)
             self.assertTrue(commands, path.name)
+            auxiliary_commands = 0
             for command in commands:
+                if f"-D{RESOURCE_FREE_AUXILIARY_OPTION}=ON" in command:
+                    self.assertEqual(
+                        path.name,
+                        "baas_app.yaml",
+                        "resource-free BAAS link closure belongs to the BAAS workflow",
+                    )
+                    auxiliary_commands += 1
+                    for option in LEGACY_OPTIONS:
+                        self.assertIn(f"-D{option}=OFF", command, path.name)
+                    self.assertIn("-DBAAS_FETCH_RESOURCES=OFF", command, path.name)
+                    continue
                 self.assertIn(f"-D{active_option}=", command, path.name)
                 self.assertNotIn(f"-D{active_option}=OFF", command, path.name)
                 for option in LEGACY_OPTIONS:
                     if option != active_option:
                         self.assertIn(f"-D{option}=OFF", command, path.name)
                 self.assertIn("-DBAAS_FETCH_RESOURCES=ON", command, path.name)
+            if path.name == "baas_app.yaml":
+                self.assertEqual(
+                    auxiliary_commands,
+                    1,
+                    "BAAS workflow must retain exactly one resource-free final-link gate",
+                )
+            else:
+                self.assertEqual(auxiliary_commands, 0, path.name)
 
         presets = json.loads((ROOT / "CMakePresets.json").read_text(encoding="utf-8"))
         isa_checked = False

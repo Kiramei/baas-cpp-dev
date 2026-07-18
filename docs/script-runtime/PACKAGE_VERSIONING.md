@@ -37,6 +37,18 @@ The package root contains:
 - `baas.package.sig`: detached signature over the exact manifest file bytes;
 - the modules and resources named by the manifest.
 
+When a package is carried inside the signed runtime scripts repository, the
+runtime catalog provides an explicit canonical `package_root` and requires the
+manifest entry to be exactly `<package_root>/baas.package.json`. All manifest
+module/resource paths remain relative to that root. Repository-bundled
+activation may use native trust evidence from the signed repository update plan
+instead of the standalone detached package signature only when that evidence
+binds the exact generation and scripts commit and the read capability verifies
+the signed tree manifest plus every payload digest. A bare read view or browser
+request is not trust evidence. Standalone artifacts still require
+`baas.package.sig`; an implementation that supports only repository-bundled
+mode must reject, not ignore, detached signatures.
+
 The signature is detached deliberately. No JSON canonicalization is required,
 and reformatting the manifest invalidates the signature. The signature file is
 bounded UTF-8 JSON with exactly these schema-1 fields:
@@ -121,6 +133,37 @@ Duplicate JSON keys, duplicate logical paths, Windows case-fold collisions,
 non-NFC path spellings, absolute paths, drive prefixes, `.`/`..` segments,
 backslashes, NULs, symlinks, hard links, device files, and archive entries not
 listed in the manifest are rejected.
+
+## Manifest schema 2 procedure closure
+
+Schema 2 has the exact schema-1 field set plus one required top-level field:
+
+```json
+{
+  "manifest_schema": 2,
+  "procedures": ["group/menu", "group/reward"]
+}
+```
+
+The shortened example shows only the changed fields; all schema-1 fields remain
+required. `procedures` is the package's complete procedure requirement closure.
+Each entry is a nonempty canonical lowercase ASCII logical ID. IDs are unique,
+ASCII case aliases are rejected, and the runtime independently bounds count,
+string bytes, aggregate strings, and validation work. Activation canonicalizes
+the closure to a sorted immutable set, independent of manifest order.
+
+A schema-2 package declaring and importing `baas/procedure` must provide a
+nonempty closure. A package without that Host requirement must provide an empty
+closure. This prevents an array from silently granting Host privilege and
+prevents `baas/procedure` from exposing an unbounded implicit namespace.
+Schema 1 remains supported for packages that do not declare `baas/procedure`;
+schema-1 packages that do declare it fail closed with the stable execution-plan
+error `RSE028_PROCEDURE_REQUIREMENTS_MISSING` and must migrate to schema 2.
+
+The IDs are requirements, not procedure definitions or proof of definition
+identity. A later activation stage binds only this closure to separately pinned,
+digest-verified procedure definitions and includes their bytes and provenance in
+the immutable runtime snapshot.
 
 ## Capability and host-module resolution
 

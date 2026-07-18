@@ -25,6 +25,24 @@
 #include <vector>
 
 namespace baas::script::runtime {
+
+// Internal RAII capability used by evaluator entry points. Heap teardown is a
+// public legacy API, so the Heap itself must enforce this boundary rather than
+// relying only on evaluator re-entry flags.
+class EvaluatorHeapBoundary final {
+public:
+    explicit EvaluatorHeapBoundary(Heap& heap) noexcept : heap_(&heap)
+    {
+        heap_->enter_evaluator_boundary();
+    }
+    ~EvaluatorHeapBoundary() { heap_->leave_evaluator_boundary(); }
+
+    EvaluatorHeapBoundary(const EvaluatorHeapBoundary&) = delete;
+    EvaluatorHeapBoundary& operator=(const EvaluatorHeapBoundary&) = delete;
+
+private:
+    Heap* heap_;
+};
 namespace {
 
 using namespace ast;
@@ -272,17 +290,21 @@ struct SynchronousEvaluator::Impl {
         Value value{Value::null()};
     };
 
+    struct ExecutionSafetyClaims {
+        const char* memory;
+        const char* stack;
+        const char* cleanup;
+        const char* task;
+    };
+
     struct StackGuard {
         Impl* evaluator;
         explicit StackGuard(Impl& evaluator, const SourceSpan span) : evaluator(&evaluator)
         {
-            evaluator.charge_step(span);
-            if (evaluator.value_stack_depth >= evaluator.limits.max_value_stack) {
-                evaluator.fail(
-                    LanguageErrorCode::StackLimitExceeded,
-                    "synchronous evaluator value stack limit exceeded",
-                    span);
-            }
+            ExecutionSafetyClaims claims{};
+            if (evaluator.value_stack_depth >= evaluator.limits.max_value_stack)
+                claims.stack = "synchronous evaluator value stack limit exceeded";
+            evaluator.charge_step(span, claims);
             ++evaluator.value_stack_depth;
             evaluator.stats.peak_value_stack = std::max(
                 evaluator.stats.peak_value_stack, evaluator.value_stack_depth);
@@ -293,28 +315,25 @@ struct SynchronousEvaluator::Impl {
     struct CallGuard {
         Impl* evaluator;
         bool cleanup{};
-        explicit CallGuard(Impl& evaluator, const SourceSpan span)
+        explicit CallGuard(
+            Impl& evaluator, const SourceSpan span,
+            ExecutionSafetyClaims claims = {})
             : evaluator(&evaluator), cleanup(evaluator.cleanup_depth != 0)
         {
             if (cleanup) {
-                if (evaluator.cleanup_call_depth >= evaluator.limits.max_cleanup_call_depth) {
-                    evaluator.fail(
-                        LanguageErrorCode::CleanupLimitExceeded,
-                        "synchronous evaluator cleanup call depth limit exceeded",
-                        span);
-                }
+                if (evaluator.cleanup_call_depth >= evaluator.limits.max_cleanup_call_depth)
+                    claims.cleanup =
+                        "synchronous evaluator cleanup call depth limit exceeded";
+                evaluator.check_execution_safe_point(span, claims);
                 ++evaluator.cleanup_call_depth;
                 evaluator.stats.peak_cleanup_call_depth = std::max(
                     evaluator.stats.peak_cleanup_call_depth,
                     evaluator.cleanup_call_depth);
                 return;
             }
-            if (evaluator.call_depth >= evaluator.limits.max_call_depth) {
-                evaluator.fail(
-                    LanguageErrorCode::StackLimitExceeded,
-                    "synchronous evaluator call depth limit exceeded",
-                    span);
-            }
+            if (evaluator.call_depth >= evaluator.limits.max_call_depth)
+                claims.stack = "synchronous evaluator call depth limit exceeded";
+            evaluator.check_execution_safe_point(span, claims);
             ++evaluator.call_depth;
             evaluator.stats.peak_call_depth = std::max(
                 evaluator.stats.peak_call_depth, evaluator.call_depth);
@@ -360,6 +379,7 @@ struct SynchronousEvaluator::Impl {
     std::vector<NativeFunctionRecord> native_functions;
     std::map<std::string, HostModuleRecord, std::less<>> host_modules;
     std::optional<SynchronousHostOptions> host_options;
+    std::shared_ptr<const HostCancellationProbe> cancellation;
     std::map<std::string, std::size_t, std::less<>> host_budget_limits;
     std::map<std::string, std::size_t, std::less<>> host_budget_used;
     EvaluationStats stats;
@@ -371,9 +391,12 @@ struct SynchronousEvaluator::Impl {
     std::size_t host_registry_validation_work{};
     std::vector<ActiveFrame> active_frames;
     std::vector<Activation> activations;
+    Heap::RootId invocation_result_root{};
+    Heap::RootId invocation_staging_root{};
     std::thread::id owner_thread{std::this_thread::get_id()};
     bool host_call_active{};
     bool execution_active{};
+    bool public_boundary_active{};
     bool closed{};
     std::size_t cleanup_depth{};
     std::size_t cleanup_call_depth{};
@@ -384,12 +407,24 @@ struct SynchronousEvaluator::Impl {
         HeapLimits heap_limits,
         const SemanticOptions semantic_options,
         const NfcPredicate is_nfc,
-        std::optional<SynchronousHostOptions> synchronous_host_options)
+        std::optional<SynchronousHostOptions> synchronous_host_options,
+        std::shared_ptr<const HostCancellationProbe> execution_cancellation)
         : limits(evaluator_limits), heap(heap_limits, is_nfc),
-          host_options(std::move(synchronous_host_options)), nfc(is_nfc)
+          host_options(std::move(synchronous_host_options)),
+          cancellation(host_options && host_options->cancellation
+              ? host_options->cancellation : std::move(execution_cancellation)),
+          nfc(is_nfc)
     {
         validate_limits();
         compile_modules(std::move(sources), semantic_options, is_nfc);
+        // Admission happens during evaluator construction so publishing an
+        // entry-function result never needs to allocate after script effects
+        // have already committed.
+        invocation_result_root = heap.add_root(Value::null());
+        // A distinct pre-admitted root protects the prospective result across
+        // the final cancellation/deadline probe without replacing the last
+        // successfully published result.
+        invocation_staging_root = heap.add_root(Value::null());
         configure_host();
     }
 
@@ -407,7 +442,7 @@ struct SynchronousEvaluator::Impl {
     [[nodiscard]] bool close() noexcept
     {
         if (std::this_thread::get_id() != owner_thread || execution_active ||
-            host_call_active)
+            public_boundary_active || host_call_active)
             return false;
         closed = true;
         if (host_options && host_options->handles)
@@ -599,7 +634,8 @@ struct SynchronousEvaluator::Impl {
             if (declared_status && host_error.details
                 && host_error.details->kind() == JsonKind::Object
                 && (host_error.code == HostErrorCode::DeadlineExceeded
-                    || host_error.code == HostErrorCode::BudgetExceeded)) {
+                    || host_error.code == HostErrorCode::BudgetExceeded
+                    || host_error.code == HostErrorCode::Unavailable)) {
                 const auto& entries = std::get<JsonObject>(host_error.details->value());
                 const auto bridge_limits = effective_host_json_limits(
                     host_options->bindings->limits());
@@ -607,13 +643,17 @@ struct SynchronousEvaluator::Impl {
                 for (const auto& [name, value] : entries) {
                     const auto expected_name = host_error.code == HostErrorCode::DeadlineExceeded
                         ? std::string_view("deadline_scope")
-                        : std::string_view("budget_scope");
+                        : host_error.code == HostErrorCode::BudgetExceeded
+                            ? std::string_view("budget_scope")
+                            : std::string_view("unavailable_reason");
                     if (name != expected_name || value.kind() != JsonKind::String) continue;
                     const auto& discriminator = std::get<std::string>(value.value());
                     const auto allowed = host_error.code == HostErrorCode::DeadlineExceeded
                         ? discriminator == "context" || discriminator == "call"
-                        : discriminator == "external_memory"
-                            || discriminator == "host_operation";
+                        : host_error.code == HostErrorCode::BudgetExceeded
+                            ? discriminator == "external_memory"
+                                || discriminator == "host_operation"
+                            : discriminator == "foreground_package_mismatch";
                     if (allowed) allowlisted.emplace_back(name, value);
                 }
                 if (!allowlisted.empty()) {
@@ -829,37 +869,85 @@ struct SynchronousEvaluator::Impl {
             options.handles->attach_context(heap);
     }
 
-    void charge_step(const SourceSpan span)
+    void charge_step(
+        const SourceSpan span, ExecutionSafetyClaims claims = {})
     {
         if (cleanup_depth != 0) {
-            if (stats.cleanup_steps >= limits.max_cleanup_steps) {
-                fail(
-                    LanguageErrorCode::CleanupLimitExceeded,
-                    "synchronous evaluator cleanup step limit exceeded",
-                    span);
-            }
+            if (stats.cleanup_steps >= limits.max_cleanup_steps)
+                claims.cleanup =
+                    "synchronous evaluator cleanup step limit exceeded";
+            check_execution_safe_point(span, claims);
             ++stats.cleanup_steps;
             return;
         }
-        if (stats.steps >= limits.max_steps) {
+        check_execution_safe_point(span, claims, true);
+        ++stats.steps;
+    }
+
+    void check_execution_safe_point(
+        const SourceSpan span,
+        const ExecutionSafetyClaims claims = {},
+        const bool instruction_requested = false)
+    {
+        // Callers provide every safety claim already knowable at this exact
+        // boundary. External observations are collected before selecting the
+        // ASY-013 winner, while ERR-013 cleanup masks only those observations.
+        const bool deadline = cleanup_depth == 0 && cancellation
+            && cancellation->deadline_exceeded();
+        const bool cancelled = cleanup_depth == 0 && cancellation
+            && cancellation->cancelled();
+        if (claims.memory != nullptr) {
+            fail(LanguageErrorCode::MemoryLimitExceeded, claims.memory, span);
+        }
+        if (claims.stack != nullptr) {
+            fail(LanguageErrorCode::StackLimitExceeded, claims.stack, span);
+        }
+        if (instruction_requested && stats.steps >= limits.max_steps) {
             fail(
                 LanguageErrorCode::InstructionLimitExceeded,
                 "synchronous evaluator step limit exceeded",
                 span);
         }
-        ++stats.steps;
+        if (claims.cleanup != nullptr) {
+            fail(LanguageErrorCode::CleanupLimitExceeded, claims.cleanup, span);
+        }
+        if (claims.task != nullptr) {
+            fail(LanguageErrorCode::TaskLimitExceeded, claims.task, span);
+        }
+        if (deadline) {
+            fail(
+                LanguageErrorCode::DeadlineExceeded,
+                "synchronous evaluator deadline exceeded",
+                span);
+        }
+        if (cancelled) {
+            fail(
+                LanguageErrorCode::Cancelled,
+                "synchronous evaluator cancellation requested",
+                span);
+        }
+    }
+
+    [[nodiscard]] std::shared_ptr<const HostCancellationProbe>
+    host_cancellation_for_current_phase() const noexcept
+    {
+        // ERR-013 cleanup is uninterruptible by the external context probe.
+        // Passing an empty capability also masks cooperative polling inside
+        // the callback; conversion, per-binding Host budgets, cleanup steps,
+        // and cleanup call depth remain independently bounded.
+        if (cleanup_depth != 0) return {};
+        return host_options ? host_options->cancellation : nullptr;
     }
 
     void charge_collection(const std::size_t amount, const SourceSpan span)
     {
-        if (amount > limits.max_container_elements
+        const bool exhausted = amount > limits.max_container_elements
             || amount > limits.max_collection_work
-            || stats.collection_work > limits.max_collection_work - amount) {
-            fail(
-                LanguageErrorCode::MemoryLimitExceeded,
-                "synchronous evaluator collection budget exceeded",
-                span);
-        }
+            || stats.collection_work > limits.max_collection_work - amount;
+        ExecutionSafetyClaims claims{};
+        if (exhausted)
+            claims.memory = "synchronous evaluator collection budget exceeded";
+        check_execution_safe_point(span, claims);
         stats.collection_work += amount;
     }
 
@@ -1269,6 +1357,7 @@ struct SynchronousEvaluator::Impl {
 
     [[nodiscard]] Value initialize_module(const std::string& id, const SourceSpan import_span)
     {
+        check_execution_safe_point(import_span);
         const auto found = modules.find(id);
         if (found == modules.end()) {
             fail(
@@ -1347,6 +1436,16 @@ struct SynchronousEvaluator::Impl {
             ++stats.initialized_modules;
             return module.namespace_value;
         } catch (const ScriptUnwind& unwind) {
+            const auto interruption =
+                heap.error_metadata_view(unwind.error.as_heap_ref()).code;
+            if (interruption == LanguageErrorCode::Cancelled
+                || interruption == LanguageErrorCode::DeadlineExceeded) {
+                // External context outcomes are execution-attempt results, not
+                // deterministic module failures. InitializationTransaction
+                // rolls every active nested module back to Uninitialized so a
+                // later execute() can retry against the same immutable source.
+                throw;
+            }
             Heap::RootId failure_root{};
             try {
                 failure_root = heap.add_root(unwind.error);
@@ -1553,6 +1652,17 @@ struct SynchronousEvaluator::Impl {
         if (host_call_active)
             boundary_fail(LanguageErrorCode::HostUnavailable,
                           "Host callback re-entry into the evaluator is forbidden");
+        if (execution_active)
+            boundary_fail(LanguageErrorCode::HostUnavailable,
+                          "synchronous evaluator execution re-entry is forbidden");
+        struct ExecutionGuard {
+            Impl& evaluator;
+            explicit ExecutionGuard(Impl& value) : evaluator(value)
+            {
+                evaluator.execution_active = true;
+            }
+            ~ExecutionGuard() { evaluator.execution_active = false; }
+        } execution(*this);
         ModuleSpecifier specifier;
         try {
             specifier = validate_module_specifier(entry, nfc);
@@ -1564,16 +1674,10 @@ struct SynchronousEvaluator::Impl {
             boundary_fail(LanguageErrorCode::HostUnavailable,
                           "Host modules cannot be evaluator entries");
         }
-        struct ExecutionGuard {
-            Impl& evaluator;
-            explicit ExecutionGuard(Impl& evaluator) : evaluator(evaluator)
-            {
-                evaluator.execution_active = true;
-            }
-            ~ExecutionGuard() { evaluator.execution_active = false; }
-        } execution(*this);
         try {
+            check_execution_safe_point({});
             const auto value = initialize_module(specifier.canonical_id, {});
+            check_execution_safe_point({});
             return {value, stats};
         } catch (const ScriptUnwind& unwind) {
             const auto& metadata = heap.error_metadata_view(unwind.error.as_heap_ref());
@@ -1581,6 +1685,121 @@ struct SynchronousEvaluator::Impl {
             const auto message = metadata.message;
             const auto module = metadata.source ? metadata.source->module : current_module;
             const auto span = metadata.source ? metadata.source->span : SourceSpan{};
+            const auto envelope = structured_error_envelope(unwind.error);
+            throw EvaluationError(
+                code, message, module, span, stats.steps, envelope);
+        }
+    }
+
+    [[nodiscard]] EvaluationInvocationResult invoke_export(
+        const std::string_view entry, const std::string_view export_name)
+    {
+        const auto boundary_fail = [&](const LanguageErrorCode code,
+                                       std::string message) -> void {
+            throw EvaluationError(
+                code, std::move(message), current_module, {}, stats.steps);
+        };
+        if (std::this_thread::get_id() != owner_thread)
+            boundary_fail(LanguageErrorCode::HostUnavailable,
+                          "synchronous evaluator called from a non-owning thread");
+        if (host_call_active)
+            boundary_fail(LanguageErrorCode::HostUnavailable,
+                          "Host callback re-entry into the evaluator is forbidden");
+        if (execution_active)
+            boundary_fail(LanguageErrorCode::HostUnavailable,
+                          "synchronous evaluator execution re-entry is forbidden");
+        struct ExecutionGuard {
+            Impl& evaluator;
+            explicit ExecutionGuard(Impl& value) : evaluator(value)
+            {
+                evaluator.execution_active = true;
+            }
+            ~ExecutionGuard() { evaluator.execution_active = false; }
+        } execution(*this);
+        ModuleSpecifier specifier;
+        try {
+            specifier = validate_module_specifier(entry, nfc);
+        } catch (const ModuleSpecifierError&) {
+            boundary_fail(LanguageErrorCode::ImportSpecifierInvalid,
+                          "entry module id is not canonical");
+        }
+        if (specifier.kind != ModuleKind::Package)
+            boundary_fail(LanguageErrorCode::HostUnavailable,
+                          "Host modules cannot be evaluator entries");
+        struct StagingGuard final {
+            Impl& evaluator;
+            bool staged{};
+
+            explicit StagingGuard(Impl& value) noexcept : evaluator(value) {}
+
+            void stage(const Value value)
+            {
+                if (!evaluator.heap.update_root(
+                        evaluator.invocation_staging_root, value)) {
+                    evaluator.fail(
+                        LanguageErrorCode::InternalInvariant,
+                        "entry invocation staging root is absent");
+                }
+                staged = true;
+            }
+
+            void publish(const Value value)
+            {
+                if (!evaluator.heap.update_root(
+                        evaluator.invocation_result_root, value)) {
+                    evaluator.fail(
+                        LanguageErrorCode::InternalInvariant,
+                        "entry invocation result root is absent");
+                }
+                clear();
+            }
+
+            void clear()
+            {
+                if (!staged) return;
+                if (!evaluator.heap.update_root(
+                        evaluator.invocation_staging_root, Value::null())) {
+                    evaluator.fail(
+                        LanguageErrorCode::InternalInvariant,
+                        "entry invocation staging root is absent");
+                }
+                staged = false;
+            }
+
+            ~StagingGuard()
+            {
+                if (!staged) return;
+                try {
+                    if (!evaluator.heap.update_root(
+                            evaluator.invocation_staging_root, Value::null()))
+                        std::terminate();
+                } catch (...) {
+                    std::terminate();
+                }
+            }
+        } staging(*this);
+        try {
+            check_execution_safe_point({});
+            static_cast<void>(initialize_module(specifier.canonical_id, {}));
+            const auto callee = module_export(
+                specifier.canonical_id, export_name);
+            const std::vector<CallArgument> arguments;
+            const auto result = invoke(callee, arguments, {}, {});
+            staging.stage(result);
+            check_execution_safe_point({});
+            staging.publish(result);
+            return {result, stats};
+        } catch (const ScriptUnwind& unwind) {
+            const auto& metadata =
+                heap.error_metadata_view(unwind.error.as_heap_ref());
+            const auto code = metadata.code;
+            const auto message = metadata.message;
+            const auto module = metadata.source
+                ? metadata.source->module
+                : current_module;
+            const auto span = metadata.source
+                ? metadata.source->span
+                : SourceSpan{};
             const auto envelope = structured_error_envelope(unwind.error);
             throw EvaluationError(
                 code, message, module, span, stats.steps, envelope);
@@ -2449,18 +2668,22 @@ Value SynchronousEvaluator::Impl::invoke_native(
                  "required Host argument is missing", span);
     }
 
-    if (stats.host_calls >= host_options->limits.max_host_calls)
-        fail(LanguageErrorCode::TaskLimitExceeded,
-             "synchronous Host call limit exceeded", span);
     const auto configured_budget = host_budget_limits.find(contract.budget_scope);
     const auto budget_limit = configured_budget == host_budget_limits.end()
         ? host_options->limits.max_host_calls
         : configured_budget->second;
+    const auto existing_budget = host_budget_used.find(contract.budget_scope);
+    const auto budget_used = existing_budget == host_budget_used.end()
+        ? 0U : existing_budget->second;
+    ExecutionSafetyClaims call_claims{};
+    if (stats.host_calls >= host_options->limits.max_host_calls)
+        call_claims.task = "synchronous Host call limit exceeded";
+    else if (budget_used >= budget_limit)
+        call_claims.task = "Host operation budget exceeded";
+    CallGuard call_guard(*this, span, call_claims);
+
     auto [budget, inserted] = host_budget_used.try_emplace(contract.budget_scope, 0);
     (void)inserted;
-    if (budget->second >= budget_limit)
-        fail(LanguageErrorCode::TaskLimitExceeded,
-             "Host operation budget exceeded", span);
     ++budget->second;
     struct BudgetReservation {
         std::size_t* used;
@@ -2468,7 +2691,6 @@ Value SynchronousEvaluator::Impl::invoke_native(
         ~BudgetReservation() { if (!committed) --*used; }
     } reservation{&budget->second};
 
-    CallGuard call_guard(*this, span);
     auto roots = heap.root_scope();
     HostArguments converted(parameters.size());
     HostValueMetrics aggregate;
@@ -2570,8 +2792,9 @@ Value SynchronousEvaluator::Impl::invoke_native(
     } reentry_guard(host_call_active);
     auto result = invoke_host_callback(
         *function.binding,
-        {function.module, function.export_name, function.binding->binding_id,
-         function.selected_version, stats.host_calls, host_options->cancellation},
+         {function.module, function.export_name, function.binding->binding_id,
+          function.selected_version, stats.host_calls,
+          host_cancellation_for_current_phase(), {}},
         converted,
         host_options->bindings->limits(),
         host_options->handles.get());
@@ -3088,10 +3311,11 @@ SynchronousEvaluator::SynchronousEvaluator(
     const EvaluatorLimits limits,
     const HeapLimits heap_limits,
     const SemanticOptions semantic_options,
-    const NfcPredicate is_nfc)
+    const NfcPredicate is_nfc,
+    std::shared_ptr<const HostCancellationProbe> cancellation)
     : impl_(create_impl(
           std::move(modules), limits, heap_limits, semantic_options, is_nfc,
-          std::nullopt))
+          std::nullopt, std::move(cancellation)))
 {
 }
 
@@ -3104,7 +3328,7 @@ SynchronousEvaluator::SynchronousEvaluator(
     const NfcPredicate is_nfc)
     : impl_(create_impl(
           std::move(modules), limits, heap_limits, semantic_options, is_nfc,
-          std::move(host_options)))
+          std::move(host_options), {}))
 {
 }
 
@@ -3114,12 +3338,13 @@ SynchronousEvaluator::Impl* SynchronousEvaluator::create_impl(
     const HeapLimits heap_limits,
     const SemanticOptions semantic_options,
     const NfcPredicate is_nfc,
-    std::optional<SynchronousHostOptions> host_options)
+    std::optional<SynchronousHostOptions> host_options,
+    std::shared_ptr<const HostCancellationProbe> cancellation)
 {
     try {
         return new Impl(
             std::move(modules), limits, heap_limits, semantic_options, is_nfc,
-            std::move(host_options));
+            std::move(host_options), std::move(cancellation));
     } catch (const EvaluationCompileError&) {
         throw;
     } catch (const EvaluationError&) {
@@ -3170,6 +3395,20 @@ EvaluationResult SynchronousEvaluator::execute(const std::string_view entry_modu
         throw EvaluationError(
             LanguageErrorCode::HostUnavailable,
             "evaluator is closed", {}, {}, impl_->stats.steps);
+    if (impl_->public_boundary_active)
+        throw EvaluationError(
+            LanguageErrorCode::HostUnavailable,
+            "synchronous evaluator public-boundary re-entry is forbidden",
+            {}, {}, impl_->stats.steps);
+    EvaluatorHeapBoundary heap_boundary{impl_->heap};
+    struct BoundaryGuard final {
+        Impl* impl;
+        explicit BoundaryGuard(Impl* value) noexcept : impl(value)
+        {
+            impl->public_boundary_active = true;
+        }
+        ~BoundaryGuard() { impl->public_boundary_active = false; }
+    } boundary{impl_};
     struct ReleaseDrain final {
         Impl* impl;
         ~ReleaseDrain() { impl->drain_host_releases(); }
@@ -3210,6 +3449,74 @@ EvaluationResult SynchronousEvaluator::execute(const std::string_view entry_modu
         throw EvaluationError(
             LanguageErrorCode::InternalInvariant,
             "unknown evaluator execution failure",
+            impl_->current_module,
+            {},
+            impl_->stats.steps);
+    }
+}
+
+EvaluationInvocationResult SynchronousEvaluator::invoke_export(
+    const std::string_view entry_module,
+    const std::string_view export_name)
+{
+    if (impl_->closed)
+        throw EvaluationError(
+            LanguageErrorCode::HostUnavailable,
+            "evaluator is closed", {}, {}, impl_->stats.steps);
+    if (impl_->public_boundary_active)
+        throw EvaluationError(
+            LanguageErrorCode::HostUnavailable,
+            "synchronous evaluator public-boundary re-entry is forbidden",
+            {}, {}, impl_->stats.steps);
+    EvaluatorHeapBoundary heap_boundary{impl_->heap};
+    struct BoundaryGuard final {
+        Impl* impl;
+        explicit BoundaryGuard(Impl* value) noexcept : impl(value)
+        {
+            impl->public_boundary_active = true;
+        }
+        ~BoundaryGuard() { impl->public_boundary_active = false; }
+    } boundary{impl_};
+    struct ReleaseDrain final {
+        Impl* impl;
+        ~ReleaseDrain() { impl->drain_host_releases(); }
+    } release_drain{impl_};
+    try {
+        return impl_->invoke_export(entry_module, export_name);
+    } catch (const EvaluationError&) {
+        throw;
+    } catch (const RuntimeError& error) {
+        throw EvaluationError(
+            translate_runtime_error_code(error.code()).code,
+            error.what(),
+            impl_->current_module,
+            {},
+            impl_->stats.steps);
+    } catch (const std::bad_alloc&) {
+        throw EvaluationError(
+            LanguageErrorCode::MemoryLimitExceeded,
+            "entry export invocation allocation failed",
+            impl_->current_module,
+            {},
+            impl_->stats.steps);
+    } catch (const std::length_error&) {
+        throw EvaluationError(
+            LanguageErrorCode::MemoryLimitExceeded,
+            "entry export invocation container bound exceeded",
+            impl_->current_module,
+            {},
+            impl_->stats.steps);
+    } catch (const std::exception&) {
+        throw EvaluationError(
+            LanguageErrorCode::InternalInvariant,
+            "unexpected entry export invocation failure",
+            impl_->current_module,
+            {},
+            impl_->stats.steps);
+    } catch (...) {
+        throw EvaluationError(
+            LanguageErrorCode::InternalInvariant,
+            "unknown entry export invocation failure",
             impl_->current_module,
             {},
             impl_->stats.steps);

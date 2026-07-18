@@ -30,6 +30,16 @@ class ServiceAdbTransportDocumentationTests(unittest.TestCase):
             workflow.count("docs/script-runtime/SERVICE_ADB_TRANSPORT.md"), 2
         )
 
+    def test_android_service_compile_closure_uses_the_posix_protocol_header(self) -> None:
+        source = (ROOT / "src/service/adb/ServiceAdbTransport.cpp").read_text()
+        workflow = (ROOT / ".github/workflows/service-application.yml").read_text()
+        self.assertIn("#include <netinet/in.h>", source)
+        self.assertIn("hints.ai_protocol = IPPROTO_TCP;", source)
+        self.assertEqual(workflow.count("- 'src/service/**'"), 2)
+        self.assertIn("android-clang-arm64-v8a-release", workflow)
+        self.assertIn("android-clang-x86_64-release", workflow)
+        self.assertIn("BAAS_service_application", workflow)
+
 
 if __name__ == "__main__":
     unittest.main()

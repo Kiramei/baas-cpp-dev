@@ -27,6 +27,13 @@ public:
             BAASConnection* connection
     );
 
+    ~BAASControl() noexcept;
+
+    BAASControl(const BAASControl&) = delete;
+    BAASControl& operator=(const BAASControl&) = delete;
+    BAASControl(BAASControl&&) = delete;
+    BAASControl& operator=(BAASControl&&) = delete;
+
     void init();
 
     void click(
@@ -125,6 +132,8 @@ public:
 
 private:
 
+    void destroy_control(bool call_exit) noexcept;
+
     BAASLogger* logger;
 
     double ratio;
@@ -135,7 +144,7 @@ private:
 
     static const std::set<std::string> available_methods;
 
-    BaseControl* control;
+    BaseControl* control{};
 };
 
 BAAS_NAMESPACE_END

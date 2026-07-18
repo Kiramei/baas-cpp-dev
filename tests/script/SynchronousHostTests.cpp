@@ -156,6 +156,7 @@ void test_result_runtime_error_translation()
              RuntimeErrorCode::StaleReference,
              RuntimeErrorCode::CellKindMismatch,
              RuntimeErrorCode::HeapTornDown,
+             RuntimeErrorCode::HeapBusy,
              RuntimeErrorCode::IndexOutOfRange,
              RuntimeErrorCode::ReleaseQueueLimitExceeded}) {
         check(translate_host_result_runtime_error(code) ==
@@ -407,6 +408,7 @@ void test_preflight_and_cooperative_cancellation()
         cooperative, context, arguments, {});
     check(deadline.has_error() &&
               deadline.error().code == HostErrorCode::DeadlineExceeded && calls == 1 &&
+              !deadline.error().retryable &&
               translate_host_error(deadline.error()).code == LanguageErrorCode::Timeout,
           "call deadline must take deterministic precedence and retain its scope detail");
 }

@@ -68,6 +68,9 @@ if(BUILD_SERVICE_RUNTIME_TASK_OWNER_TESTS)
             COMMAND BAAS_service_runtime_task_owner_tests
     )
     set_tests_properties(
-            BAAS_service_runtime_task_owner_tests PROPERTIES TIMEOUT 30
+            BAAS_service_runtime_task_owner_tests
+            PROPERTIES
+            TIMEOUT 30
+            LABELS "service;runtime-task-reservations"
     )
 endif()

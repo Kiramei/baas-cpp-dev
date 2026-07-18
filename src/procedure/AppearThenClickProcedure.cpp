@@ -36,8 +36,10 @@ BAAS_NAMESPACE_BEGIN
 
 AppearThenClickProcedure::AppearThenClickProcedure(
         BAAS* baas,
-        const BAASConfig& possible_features
-) : BaseProcedure(baas, possible_features)
+        const BAASConfig& possible_features,
+        const LegacyProcedureExecutionControl* execution_control,
+        LegacyProcedureEffectObserver* effect_observer
+) : BaseProcedure(baas, possible_features, execution_control, effect_observer)
 {
     json end = possible_feature.getJson("ends");
 
@@ -76,10 +78,16 @@ void AppearThenClickProcedure::implement(
     last_appeared_time = start_time;
     last_tentative_click_time = start_time;
 
-    while (baas->is_running()) {
+    while (true) {
+        checkpoint();
 
         if (!skip_first_screenshot) {
-            baas->update_screenshot_array();
+            auto capture = effect_scope(LegacyProcedureEffect::Capture);
+            if (!capture.began()) throw RuntimeError("Legacy procedure effect observer rejected capture");
+            checkpoint();
+            baas->update_screenshot_array_controlled([this] { checkpoint(); });
+            checkpoint();
+            if (!capture.commit()) throw RuntimeError("Legacy procedure effect observer rejected capture commit");
             baas->reset_all_feature();
 //            wait_loading();
         }
@@ -105,13 +113,24 @@ void AppearThenClickProcedure::implement(
         }
 
         if (enable_tentative_click && (this_round_start_time - last_tentative_click_time >= tentative_click_stuck_time)) {
+            checkpoint();
+            auto input = effect_scope(LegacyProcedureEffect::Input);
+            if (!input.began()) throw RuntimeError("Legacy procedure effect observer rejected input");
             baas->click(tentative_click_x, tentative_click_y, 1, 1, 5, 0.0, 0.0, 0.0, "Tentative Click");
+            checkpoint();
+            if (!input.commit()) throw RuntimeError("Legacy procedure effect observer rejected input commit");
             last_tentative_click_time = BAASChronoUtil::getCurrentTimeMS();
         }
 
         for (const auto & end_feature_name : end_feature_names) {
             current_comparing_feature_name = end_feature_name;
-            if (baas->feature_appear(current_comparing_feature_name, temp_output, show_log)) {
+            checkpoint();
+            auto vision = effect_scope(LegacyProcedureEffect::Vision);
+            if (!vision.began()) throw RuntimeError("Legacy procedure effect observer rejected vision");
+            const auto appeared = baas->feature_appear(current_comparing_feature_name, temp_output, show_log);
+            checkpoint();
+            if (!vision.commit()) throw RuntimeError("Legacy procedure effect observer rejected vision commit");
+            if (appeared) {
                 logger->BAASInfo("End [ " + current_comparing_feature_name + " ]. ");
                 output.insert("end", current_comparing_feature_name);
                 return;
@@ -120,7 +139,13 @@ void AppearThenClickProcedure::implement(
 
         for (int i = 0; i < possibles.size(); i++) {
             current_comparing_feature_name = possibles_feature_names[i];
-            if (baas->feature_appear(current_comparing_feature_name, temp_output, show_log)) {
+            checkpoint();
+            auto vision = effect_scope(LegacyProcedureEffect::Vision);
+            if (!vision.began()) throw RuntimeError("Legacy procedure effect observer rejected vision");
+            const auto appeared = baas->feature_appear(current_comparing_feature_name, temp_output, show_log);
+            checkpoint();
+            if (!vision.commit()) throw RuntimeError("Legacy procedure effect observer rejected vision commit");
+            if (appeared) {
                 logger->BAASInfo("Feature [ " + possibles_feature_names[i] + " ] appeared. ");
                 last_appeared_feature_name = possibles_feature_names[i];
                 last_appeared_time = BAASChronoUtil::getCurrentTimeMS();
@@ -136,22 +161,39 @@ void AppearThenClickProcedure::implement(
 void AppearThenClickProcedure::wait_loading()
 {
     long long t_loading;
-    baas->update_screenshot_array();
+    checkpoint();
+    {
+        auto capture = effect_scope(LegacyProcedureEffect::Capture);
+        if (!capture.began()) throw RuntimeError("Legacy procedure effect observer rejected capture");
+        baas->update_screenshot_array_controlled([this] { checkpoint(); });
+        checkpoint();
+        if (!capture.commit()) throw RuntimeError("Legacy procedure effect observer rejected capture commit");
+    }
     long long start = BAASChronoUtil::getCurrentTimeMS();
     string zero, ld;
-    while (baas->is_running()) {
-        if (BAASFeature::reset_then_feature_appear(baas, "common_loading_appear")) {
+    while (true) {
+        checkpoint();
+        auto vision = effect_scope(LegacyProcedureEffect::Vision);
+        if (!vision.began()) throw RuntimeError("Legacy procedure effect observer rejected vision");
+        const auto loading = BAASFeature::reset_then_feature_appear(baas, "common_loading_appear");
+        checkpoint();
+        if (!vision.commit()) throw RuntimeError("Legacy procedure effect observer rejected vision commit");
+        if (loading) {
             t_loading = BAASChronoUtil::getCurrentTimeMS() - start;
             ld = to_string(t_loading);
-            zero = string(6 - ld.length(), ' ');
-            if (ld.length() <= 6)
-                zero += ld;
+            zero.clear();
+            if (ld.length() < 6) zero.assign(6 - ld.length(), ' ');
+            zero += ld;
             logger->BAASInfo("Loading :" + zero + "ms");
             if (t_loading >= 20000 && baas->get_screenshot()->get_interval() < 1) {
                 logger->BAASInfo("Loading too long, add screenshot interval to 1s.");
                 baas->get_screenshot()->set_interval(1);
             }
-            baas->update_screenshot_array();
+            auto capture = effect_scope(LegacyProcedureEffect::Capture);
+            if (!capture.began()) throw RuntimeError("Legacy procedure effect observer rejected capture");
+            baas->update_screenshot_array_controlled([this] { checkpoint(); });
+            checkpoint();
+            if (!capture.commit()) throw RuntimeError("Legacy procedure effect observer rejected capture commit");
         } else break;
     }
 }
@@ -175,17 +217,19 @@ void AppearThenClickProcedure::solve_feature_action_click(int index)
         (int(BAASChronoUtil::getCurrentTimeMS() - last_clicked_time) < param.interval))
         return;
 
-    baas->click(
-            param.x,
-            param.y,
-            param.count,
-            param.type,
-            param.offset,
-            param.click_interval,
-            param.pre_wait,
-            param.post_wait,
-            param.description
-    );
+    bounded_wait(param.pre_wait);
+    for (int click_index = 0; click_index < param.count; ++click_index) {
+        checkpoint();
+        auto input = effect_scope(LegacyProcedureEffect::Input);
+        if (!input.began()) throw RuntimeError("Legacy procedure effect observer rejected input");
+        baas->click(
+                param.x, param.y, 1, param.type, param.offset,
+                0.0, 0.0, 0.0, param.description);
+        checkpoint();
+        if (!input.commit()) throw RuntimeError("Legacy procedure effect observer rejected input commit");
+        if (click_index + 1 < param.count) bounded_wait(param.click_interval);
+    }
+    bounded_wait(param.post_wait);
 
     insert_last_clicked_queue(last_appeared_feature_name);  // this clicked
     pop_last_clicked_queue(max_click);                      // pop last clicked and check max click
@@ -242,7 +286,7 @@ void AppearThenClickProcedure::insert_last_clicked_queue(string &feature_name)
     }
 }
 
-void AppearThenClickProcedure::clear_resource()
+void AppearThenClickProcedure::clear_resource() noexcept
 {
     clear_possibles();
     pop_last_clicked_queue(0);

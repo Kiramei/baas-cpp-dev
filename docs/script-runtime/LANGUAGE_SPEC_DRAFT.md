@@ -253,7 +253,7 @@ errors, budgets, threading, and parity ownership for the Phase 1 surface are in
 | Module | Responsibility |
 | --- | --- |
 | `baas/log` | scoped structured logs and progress events |
-| `baas/clock` | injected time, sleep, deadlines |
+| `baas/clock` | injected wall/monotonic readings for deterministic time access |
 | `baas/random` | injected deterministic jitter/randomness |
 | `baas/config` | immutable snapshots and atomic validated transactions |
 | `baas/resource` | locale/activity-aware immutable resources and hashes |
@@ -261,6 +261,7 @@ errors, budgets, threading, and parity ownership for the Phase 1 surface are in
 | `baas/device` | capture, click/swipe/long-click/scroll, app lifecycle |
 | `baas/vision` | RGB/template/search helpers and ordered detect/reaction |
 | `baas/ocr` | model lifecycle and OCR variants/options |
+| `baas/procedure` | logical-ID composite device automation on the device/context strand |
 | `baas/task` | capability-free structured concurrency and language Task operations |
 | `baas/scheduler` | capability-scoped automation registration, dispatch, and scheduling |
 | `baas/service` | bounded symbolic in-process service events and requests |

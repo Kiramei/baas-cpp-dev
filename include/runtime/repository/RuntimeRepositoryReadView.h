@@ -63,6 +63,7 @@ public:
 
     [[nodiscard]] const std::string& generation() const noexcept;
     [[nodiscard]] const std::string& repository_id() const noexcept;
+    [[nodiscard]] const std::string& commit() const noexcept;
     [[nodiscard]] std::span<const RuntimeRepositoryReadEntry> entries() const noexcept;
     [[nodiscard]] std::vector<std::byte> read(
         std::string_view logical_path,

@@ -50,6 +50,19 @@ class ServiceApplicationContractTests(unittest.TestCase):
         ):
             self.assertIn(anchor, self.source)
 
+    def test_default_application_keeps_production_runtime_heavy_closure_opt_in(self) -> None:
+        application_target = self.cmake[: self.cmake.index(
+            "if(TARGET BAAS_service_production_runtime_task_control)"
+        )]
+        self.assertNotIn(
+            "BAAS_service_production_runtime_script_task_factory", application_target
+        )
+        self.assertNotIn(
+            "BAAS_service_production_runtime_task_control", application_target
+        )
+        self.assertIn("runtime_task_composition_factory", self.header)
+        self.assertIn("runtime_task_composition_factory->compose", self.source)
+
     def test_executable_contract_and_pipe_boundary_are_owned(self) -> None:
         self.assertIn("int wmain", self.main)
         self.assertIn("int main", self.main)
@@ -110,9 +123,71 @@ class ServiceApplicationContractTests(unittest.TestCase):
             "'deploy/conan/recipes/baas-libsodium/**'",
             "'deploy/conan/recipes/baas-cpp-httplib/**'",
             "'deploy/conan/recipes/baas-nlohmann-json/**'",
+            "'tests/conan/baas-opencv-sibling-scope/**'",
         ):
             self.assertEqual(self.workflow.count(path), 2)
         self.assertNotIn("'cmake/Service*.cmake'", self.workflow)
+
+    def test_opencv_sibling_scope_smoke_is_a_host_matrix_gate(self) -> None:
+        smoke = self.workflow[
+            self.workflow.index(
+                "- name: Configure OpenCV sibling-scope package smoke"
+            ) : self.workflow.index("- name: Configure hook-free production application")
+        ]
+        self.assertIn("tests/conan/baas-opencv-sibling-scope", smoke)
+        self.assertIn("build/conan/service-application/conan_toolchain.cmake", smoke)
+        self.assertIn("matrix.build_type", smoke)
+        self.assertIn("cmake --build build/baas-opencv-sibling-scope", smoke)
+        self.assertIn("ctest --test-dir build/baas-opencv-sibling-scope", smoke)
+
+    def test_android_ci_explicitly_enables_every_built_production_runtime_target(self) -> None:
+        configure = self.workflow[
+            self.workflow.index("- name: Configure Android service composition") :
+            self.workflow.index("- name: Cross-build Android service composition")
+        ]
+        build = self.workflow[
+            self.workflow.index("- name: Cross-build Android service composition") :
+        ]
+        for option in (
+            "-DBUILD_SERVICE_PRODUCTION_RUNTIME_SCRIPT_TASK_FACTORY=ON",
+            "-DBUILD_SERVICE_PRODUCTION_RUNTIME_TASK_CONTROL=ON",
+        ):
+            self.assertIn(option, configure)
+        for target in (
+            "BAAS_service_production_runtime_script_task_factory",
+            "BAAS_service_production_runtime_task_control",
+        ):
+            self.assertIn(target, build)
+
+    def test_default_lightweight_ci_build_has_no_opencv_injected(self) -> None:
+        dependencies = self.workflow[
+            self.workflow.index(
+                "- name: Generate default lightweight application dependencies"
+            ) : self.workflow.index(
+                "- name: Configure default lightweight application without OpenCV"
+            )
+        ]
+        configure = self.workflow[
+            self.workflow.index(
+                "- name: Configure default lightweight application without OpenCV"
+            ) : self.workflow.index(
+                "- name: Build default lightweight application"
+            )
+        ]
+        build = self.workflow[
+            self.workflow.index("- name: Build default lightweight application") :
+            self.workflow.index("- name: Build pinned OpenCV recipe")
+        ]
+        self.assertNotIn("opencv", dependencies.lower())
+        self.assertIn("-DBUILD_SERVICE_APP=ON", configure)
+        for option in (
+            "-DBUILD_SERVICE_PRODUCTION_RUNTIME_SCRIPT_TASK_FACTORY=OFF",
+            "-DBUILD_SERVICE_PRODUCTION_RUNTIME_TASK_CONTROL=OFF",
+            "-DBAAS_FETCH_RESOURCES=OFF",
+        ):
+            self.assertIn(option, configure)
+        for target in ("BAAS_service", "BAAS_service_application"):
+            self.assertIn(target, build)
 
 
 if __name__ == "__main__":

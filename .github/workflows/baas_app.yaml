@@ -20,14 +20,41 @@ on:
       - 'cmake/BAASDependency.cmake'
       - 'cmake/BAASConanRuntime.cmake'
       - 'cmake/BAASTarget.cmake'
+      - 'cmake/LegacyProcedureExecution.cmake'
+      - 'cmake/LegacyProcedureDefinitionValidation.cmake'
+      - 'cmake/RuntimeBAASConnectionCoDetectPort.cmake'
       - 'deploy/conan/**'
       - 'resources.lock.json'
       - 'scripts/fetch_resources.py'
       - 'tests/docs/test_baas_app_ci.py'
+      - 'tests/docs/test_legacy_procedure_execution.py'
+      - 'tests/procedure/**'
       - 'tests/docs/test_external_resource_boundary.py'
       - 'tests/build/external_resource_boundary/**'
       - 'apps/BAAS/**'
       - 'apps/ISA/**'
+      # The resource-free final-link probe compiles BAAS_CORE_SOURCES, so its
+      # workflow trigger must cover the same complete legacy core closure.
+      - 'include/**'
+      - 'src/**'
+      - 'include/BAAS.h'
+      - 'include/device/ExactBackendLifetime.h'
+      - 'include/device/BAASConnection.h'
+      - 'include/device/BAASConnectionAttr.h'
+      - 'include/device/control/BAASControl.h'
+      - 'include/procedure/**'
+      - 'include/runtime/procedure/BAASConnectionCoDetectPort.h'
+      - 'include/device/screenshot/BAASScreenshot.h'
+      - 'include/device/screenshot/ScreenshotInterval.h'
+      - 'src/BAAS.cpp'
+      - 'src/device/control/BAASControl.cpp'
+      - 'src/device/BAASConnection.cpp'
+      - 'src/device/BAASConnectionAttr.cpp'
+      - 'src/procedure/**'
+      - 'src/runtime/procedure/BAASApplicationCoDetectBackend.cpp'
+      - 'src/runtime/procedure/BAASConnectionCoDetectPort.cpp'
+      - 'tests/runtime/BAASApplicationCoDetectBackendLinkClosure.cpp'
+      - 'src/device/screenshot/BAASScreenshot.cpp'
       - 'resource/**'
       - 'cmake/Version.cmake'
   pull_request:
@@ -117,10 +144,15 @@ jobs:
         id: cmake_build
         run: |
           Write-Output "::group::Generate CUDA ${{ matrix.BAAS_APP_USE_CUDA }}"
-          cmake -S . -B "build/conan-windows-msvc-release-baas${{ matrix.BUILD_SUFFIX }}" "-DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}/baas/build/conan/windows-msvc-release-baas${{ matrix.BUILD_SUFFIX }}/generators/conan_toolchain.cmake" -DBUILD_APP_BAAS=${{ env.BUILD_APP_BAAS }} -DBUILD_APP_ISA=OFF -DBUILD_BAAS_OCR=OFF -DBUILD_BAAS_AW_CHECKER=OFF -DBAAS_APP_USE_CUDA=${{ matrix.BAAS_APP_USE_CUDA }} -DBAAS_FETCH_RESOURCES=ON -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} -G Ninja
+          cmake -S . -B "build/conan-windows-msvc-release-baas${{ matrix.BUILD_SUFFIX }}" "-DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}/baas/build/conan/windows-msvc-release-baas${{ matrix.BUILD_SUFFIX }}/generators/conan_toolchain.cmake" -DBUILD_APP_BAAS=${{ env.BUILD_APP_BAAS }} -DBUILD_LEGACY_PROCEDURE_EXECUTION_TESTS=ON -DBUILD_LEGACY_PROCEDURE_DEFINITION_TESTS=ON -DBUILD_APP_ISA=OFF -DBUILD_BAAS_OCR=OFF -DBUILD_BAAS_AW_CHECKER=OFF -DBAAS_APP_USE_CUDA=${{ matrix.BAAS_APP_USE_CUDA }} -DBAAS_FETCH_RESOURCES=ON -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} -G Ninja
           Write-Output "::endgroup::"
           Write-Output "::group::Build"
-          cmake --build "build/conan-windows-msvc-release-baas${{ matrix.BUILD_SUFFIX }}" --config Release --parallel 4 --target BAAS_APP
+          cmake --build "build/conan-windows-msvc-release-baas${{ matrix.BUILD_SUFFIX }}" --config Release --parallel 4 --target BAAS_APP BAAS_legacy_procedure_execution_tests BAAS_legacy_procedure_definition_tests
+          ctest --test-dir "build/conan-windows-msvc-release-baas${{ matrix.BUILD_SUFFIX }}" --build-config Release -R "BAAS_legacy_procedure_(execution|definition)_tests" --output-on-failure
+          Write-Output "::group::Build resource-free BAAS connection co-detect final-link closure"
+          cmake -S . -B "build/baas-connection-codetect-link${{ matrix.BUILD_SUFFIX }}" "-DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}/baas/build/conan/windows-msvc-release-baas${{ matrix.BUILD_SUFFIX }}/generators/conan_toolchain.cmake" -DBUILD_APP_BAAS=OFF -DBUILD_APP_ISA=OFF -DBUILD_BAAS_OCR=OFF -DBUILD_BAAS_AW_CHECKER=OFF -DBUILD_BAAS_NMS_BENCHMARK=OFF -DBUILD_RUNTIME_BAAS_CONNECTION_CO_DETECT_LINK_CLOSURE=ON -DBAAS_FETCH_RESOURCES=OFF -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} -G Ninja
+          cmake --build "build/baas-connection-codetect-link${{ matrix.BUILD_SUFFIX }}" --config Release --parallel 4 --target BAAS_runtime_baas_connection_co_detect_link_closure
+          Write-Output "::endgroup::"
           Write-Output "::endgroup::"
 
       - name: Save Version To Env

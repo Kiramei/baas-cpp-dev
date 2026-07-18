@@ -7,6 +7,7 @@
 #include <memory>
 #include <string>
 #include <string_view>
+#include <stop_token>
 #include <utility>
 #include <vector>
 
@@ -34,6 +35,9 @@ enum class RuntimeTaskControlError : std::uint8_t {
     conflict,
     capacity,
     unavailable,
+    cancelled,
+    deadline,
+    repository_mismatch,
     internal_error,
 };
 
@@ -101,7 +105,8 @@ public:
     [[nodiscard]] virtual RuntimeTaskPrepareResult prepare_stop_scheduler(
         std::string_view config_id) = 0;
     [[nodiscard]] virtual RuntimeTaskPrepareResult prepare_start_task(
-        std::string_view config_id, std::string_view requested_task) = 0;
+        std::string_view config_id, std::string_view requested_task,
+        std::stop_token stop_token = {}) = 0;
     [[nodiscard]] virtual RuntimeTaskPrepareResult prepare_stop_all_tasks() = 0;
 };
 
