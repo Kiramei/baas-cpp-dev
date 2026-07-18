@@ -16,6 +16,9 @@ on:
       - 'deploy/conan/recipes/baas-nlohmann-json/**'
       - 'deploy/conan/recipes/baas-miniz/**'
       - 'deploy/conan/recipes/baas-opencv/**'
+      - 'deploy/conan/recipes/baas-spdlog/**'
+      - 'deploy/conan/recipes/baas-simdutf/**'
+      - 'deploy/conan/profiles/dependency-versions-default'
       - 'deploy/conan/profiles/android-clang-arm64-v8a-release'
       - 'deploy/conan/profiles/android-clang-x86_64-release'
       - 'include/script/**'
@@ -28,7 +31,17 @@ on:
       - 'include/procedure/**'
       - 'src/procedure/**'
       - 'tests/procedure/**'
+      - 'include/BAAS.h'
+      - 'src/BAAS.cpp'
+      - 'include/device/BAASConnection.h'
+      - 'include/device/BAASConnectionAttr.h'
       - 'include/device/ExactBackendLifetime.h'
+      - 'include/device/control/BAASControl.h'
+      - 'src/device/BAASConnection.cpp'
+      - 'src/device/BAASConnectionAttr.cpp'
+      - 'src/device/control/BAASControl.cpp'
+      - 'include/device/screenshot/BAASScreenshot.h'
+      - 'src/device/screenshot/BAASScreenshot.cpp'
       - 'include/device/screenshot/ScreenshotInterval.h'
       - 'apps/script_check/**'
       - 'apps/script_run/**'
@@ -338,10 +351,24 @@ jobs:
           -s:h build_type=${{ matrix.build_type }} -s:b build_type=Release
           ${{ matrix.conan_settings }} --build=missing --no-remote
 
+      - name: Build pinned spdlog recipe
+        run: >-
+          conan create deploy/conan/recipes/baas-spdlog
+          -s:h build_type=${{ matrix.build_type }} -s:b build_type=Release
+          ${{ matrix.conan_settings }} --build=missing --no-remote
+
+      - name: Build pinned simdutf recipe
+        run: >-
+          conan create deploy/conan/recipes/baas-simdutf
+          -s:h build_type=${{ matrix.build_type }} -s:b build_type=Release
+          ${{ matrix.conan_settings }} --build=missing --no-remote
+
       - name: Generate support-bundle dependencies
         run: >-
           conan install --requires=baas-nlohmann-json/3.11.3
           --requires=baas-miniz/3.1.2 --requires=baas-opencv/4.13.0
+          --requires=baas-spdlog/1.15.3
+          --requires=baas-simdutf/6.2.0
           -of build/conan/co-detect-support-bundle
           -s:h build_type=${{ matrix.build_type }} -s:b build_type=Release
           ${{ matrix.conan_settings }}
@@ -354,6 +381,7 @@ jobs:
           -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
           -DBUILD_TESTING=ON -DBUILD_RUNTIME_CO_DETECT_SUPPORT_BUNDLE_TESTS=ON
           -DBUILD_RUNTIME_CO_DETECT_PRODUCTION_ADAPTER_TESTS=ON
+          -DBUILD_RUNTIME_BAAS_CONNECTION_CO_DETECT_PORT_TESTS=ON
           -DBUILD_APP_BAAS=OFF -DBUILD_APP_ISA=OFF -DBUILD_BAAS_OCR=OFF
           -DBUILD_BAAS_AW_CHECKER=OFF -DBUILD_BAAS_NMS_BENCHMARK=OFF
           -DBAAS_FETCH_RESOURCES=OFF
@@ -364,6 +392,7 @@ jobs:
           --config ${{ matrix.build_type }} --parallel 4
           --target BAAS_runtime_co_detect_support_bundle_tests
           BAAS_runtime_co_detect_production_adapter_tests
+          BAAS_runtime_baas_connection_co_detect_port_tests
 
       - name: Run support-bundle tests
         shell: cmd
@@ -405,11 +434,15 @@ jobs:
           conan create deploy/conan/recipes/baas-nlohmann-json -s:h build_type=Release -s:b build_type=Release --build=missing --no-remote
           conan create deploy/conan/recipes/baas-miniz -s:h build_type=Release -s:b build_type=Release --build=missing --no-remote
           conan create deploy/conan/recipes/baas-opencv -s:h build_type=Release -s:b build_type=Release --build=missing --no-remote
+          conan create deploy/conan/recipes/baas-spdlog -s:h build_type=Release -s:b build_type=Release --build=missing --no-remote
+          conan create deploy/conan/recipes/baas-simdutf -s:h build_type=Release -s:b build_type=Release --build=missing --no-remote
 
       - name: Generate support-bundle dependencies
         run: >-
           conan install --requires=baas-nlohmann-json/3.11.3
           --requires=baas-miniz/3.1.2 --requires=baas-opencv/4.13.0
+          --requires=baas-spdlog/1.15.3
+          --requires=baas-simdutf/6.2.0
           -of build/conan/co-detect-support-bundle
           -s:h build_type=Release -s:b build_type=Release
           -g CMakeDeps -g CMakeToolchain --build=missing --no-remote
@@ -421,6 +454,7 @@ jobs:
           -DCMAKE_BUILD_TYPE=Release
           -DBUILD_TESTING=ON -DBUILD_RUNTIME_CO_DETECT_SUPPORT_BUNDLE_TESTS=ON
           -DBUILD_RUNTIME_CO_DETECT_PRODUCTION_ADAPTER_TESTS=ON
+          -DBUILD_RUNTIME_BAAS_CONNECTION_CO_DETECT_PORT_TESTS=ON
           -DBUILD_APP_BAAS=OFF -DBUILD_APP_ISA=OFF -DBUILD_BAAS_OCR=OFF
           -DBUILD_BAAS_AW_CHECKER=OFF -DBUILD_BAAS_NMS_BENCHMARK=OFF
           -DBAAS_FETCH_RESOURCES=OFF
@@ -431,6 +465,7 @@ jobs:
           --config Release --parallel 4
           --target BAAS_runtime_co_detect_support_bundle_tests
           BAAS_runtime_co_detect_production_adapter_tests
+          BAAS_runtime_baas_connection_co_detect_port_tests
 
       - name: Run support-bundle tests with the Conan runtime environment
         run: |
@@ -511,12 +546,34 @@ jobs:
           --build=missing
           --no-remote
 
+      - name: Cross-build pinned spdlog recipe
+        shell: bash
+        run: >-
+          conan create deploy/conan/recipes/baas-spdlog
+          -pr:h=deploy/conan/profiles/${{ matrix.profile }}
+          -pr:b=default
+          -c:h "tools.android:ndk_path=${ANDROID_NDK_HOME}"
+          --build=missing
+          --no-remote
+
+      - name: Cross-build pinned simdutf recipe
+        shell: bash
+        run: >-
+          conan create deploy/conan/recipes/baas-simdutf
+          -pr:h=deploy/conan/profiles/${{ matrix.profile }}
+          -pr:b=default
+          -c:h "tools.android:ndk_path=${ANDROID_NDK_HOME}"
+          --build=missing
+          --no-remote
+
       - name: Generate Android foundation dependency
         shell: bash
         run: >-
           conan install --requires=baas-nlohmann-json/3.11.3
           --requires=baas-miniz/3.1.2
           --requires=baas-opencv/4.13.0
+          --requires=baas-spdlog/1.15.3
+          --requires=baas-simdutf/6.2.0
           -of build/conan/foundation-android-${{ matrix.abi }}
           -pr:h=deploy/conan/profiles/${{ matrix.profile }}
           -pr:b=default
@@ -545,6 +602,7 @@ jobs:
           -DBUILD_RUNTIME_CO_DETECT_EXECUTOR=ON
           -DBUILD_RUNTIME_CO_DETECT_SUPPORT_BUNDLE=ON
           -DBUILD_RUNTIME_CO_DETECT_PRODUCTION_ADAPTER=ON
+          -DBUILD_RUNTIME_BAAS_CONNECTION_CO_DETECT_PORT=ON
           -DBUILD_LEGACY_PROCEDURE_EXECUTION=ON
           -DBUILD_SCRIPT_PROCEDURE_HOST=ON
           -DBUILD_SCRIPT_HOST_RUNTIME_COMPOSITION=ON
@@ -573,6 +631,7 @@ jobs:
           BAAS_runtime_co_detect_executor
           BAAS_runtime_co_detect_support_bundle
           BAAS_runtime_co_detect_production_adapter
+          BAAS_runtime_baas_connection_co_detect_port
           BAAS_legacy_procedure_execution
           BAAS_script_procedure_host
           BAAS_script_host_runtime_composition

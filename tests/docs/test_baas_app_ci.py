@@ -30,6 +30,16 @@ class BaasAppCiTests(unittest.TestCase):
         self.assertIn("BAAS_APP_USE_CUDA=${{ matrix.BAAS_APP_USE_CUDA }}", self.workflow)
         self.assertIn("--target BAAS_APP", self.workflow)
         self.assertIn(
+            "--target BAAS_runtime_baas_connection_co_detect_link_closure",
+            self.workflow,
+        )
+        self.assertIn(
+            "-DBUILD_RUNTIME_BAAS_CONNECTION_CO_DETECT_LINK_CLOSURE=ON",
+            self.workflow,
+        )
+        self.assertIn("-DBUILD_APP_BAAS=OFF", self.workflow)
+        self.assertIn("-DBAAS_FETCH_RESOURCES=OFF", self.workflow)
+        self.assertIn(
             "baas-app-bin-windows-x64-CUDA-${{ matrix.BAAS_APP_USE_CUDA }}",
             self.workflow,
         )
@@ -51,6 +61,13 @@ class BaasAppCiTests(unittest.TestCase):
             "cmake/BAASTarget.cmake",
             "deploy/conan/**",
             "tests/docs/test_baas_app_ci.py",
+            "cmake/RuntimeBAASConnectionCoDetectPort.cmake",
+            "include/runtime/procedure/BAASConnectionCoDetectPort.h",
+            "src/runtime/procedure/BAASApplicationCoDetectBackend.cpp",
+            "src/runtime/procedure/BAASConnectionCoDetectPort.cpp",
+            "tests/runtime/BAASApplicationCoDetectBackendLinkClosure.cpp",
+            "include/**",
+            "src/**",
         ):
             self.assertIn(f"- '{path}'", self.workflow)
 
@@ -60,10 +77,14 @@ class BaasAppCiTests(unittest.TestCase):
             "cmake/LegacyProcedureDefinitionValidation.cmake",
             "include/BAAS.h",
             "include/device/ExactBackendLifetime.h",
+            "include/device/BAASConnection.h",
+            "include/device/BAASConnectionAttr.h",
             "include/device/control/BAASControl.h",
             "include/procedure/**",
             "src/BAAS.cpp",
             "src/device/control/BAASControl.cpp",
+            "src/device/BAASConnection.cpp",
+            "src/device/BAASConnectionAttr.cpp",
             "src/procedure/**",
             "include/device/screenshot/BAASScreenshot.h",
             "include/device/screenshot/ScreenshotInterval.h",

@@ -369,6 +369,83 @@ class CoDetectPythonCompatEngineContractTests(unittest.TestCase):
         ):
             self.assertNotIn(forbidden, header + source)
 
+    def test_baas_connection_port_is_owned_bounded_and_ci_gated(self) -> None:
+        implementation_paths = (
+            "include/runtime/procedure/BAASConnectionCoDetectPort.h",
+            "src/runtime/procedure/BAASConnectionCoDetectPort.cpp",
+            "src/runtime/procedure/BAASApplicationCoDetectBackend.cpp",
+            "tests/runtime/BAASConnectionCoDetectPortTests.cpp",
+            "tests/runtime/BAASApplicationCoDetectBackendLinkClosure.cpp",
+            "cmake/RuntimeBAASConnectionCoDetectPort.cmake",
+        )
+        for path in implementation_paths:
+            self.assertTrue((ROOT / path).is_file(), path)
+        for token in (
+            "BAASConnection production port",
+            "already-created, shared `BAAS`",
+            "strictly greater non-zero epoch",
+            "old port returns no current identity",
+            "at most 50 ms",
+            "exactly 1280x720 packed BGR8",
+            "exactly 2,764,800 bytes",
+            "does not expose a cross-consumer operation mutex",
+            "BAAS_runtime_baas_connection_co_detect_link_closure",
+            "complete dependency graph",
+            "BAAS_FETCH_RESOURCES=OFF",
+        ):
+            self.assertIn(token, self.doc)
+        cmake = (ROOT / "CMakeLists.txt").read_text(encoding="utf-8")
+        workflow = self.workflow
+        for token in (
+            "BUILD_RUNTIME_BAAS_CONNECTION_CO_DETECT_PORT",
+            "BUILD_RUNTIME_BAAS_CONNECTION_CO_DETECT_PORT_TESTS",
+            "cmake/RuntimeBAASConnectionCoDetectPort.cmake",
+        ):
+            self.assertIn(token, cmake)
+        for token in (
+            "-DBUILD_RUNTIME_BAAS_CONNECTION_CO_DETECT_PORT_TESTS=ON",
+            "-DBUILD_RUNTIME_BAAS_CONNECTION_CO_DETECT_PORT=ON",
+            "BAAS_runtime_baas_connection_co_detect_port_tests",
+            "BAAS_runtime_baas_connection_co_detect_port",
+            "deploy/conan/recipes/baas-spdlog/**",
+            "deploy/conan/recipes/baas-simdutf/**",
+            "include/device/BAASConnection.h",
+            "src/device/BAASConnection.cpp",
+        ):
+            self.assertIn(token, workflow)
+        header = (ROOT / implementation_paths[0]).read_text(encoding="utf-8")
+        owner = (ROOT / implementation_paths[1]).read_text(encoding="utf-8")
+        backend = (ROOT / implementation_paths[2]).read_text(encoding="utf-8")
+        link_closure = (ROOT / implementation_paths[4]).read_text(encoding="utf-8")
+        port_cmake = (ROOT / implementation_paths[5]).read_text(encoding="utf-8")
+        self.assertIn("class BAASConnectionCoDetectOwner final", header)
+        self.assertIn("make_baas_application_co_detect_backend", header)
+        self.assertIn("session_epoch <= last_epoch_", owner)
+        self.assertIn("previous->operation_mutex", owner)
+        self.assertIn("maximum_wait_slice_ms = 50U", owner)
+        self.assertIn("baas_connection_co_detect_frame_bytes", owner)
+        for token in (
+            "application_->update_screenshot_array_controlled",
+            "application_->click",
+            "connection_->current_app",
+            "cv::INTER_AREA",
+            "connection_->get_serial() == device_id_",
+        ):
+            self.assertIn(token, backend)
+        self.assertIn("make_baas_application_co_detect_backend({})", link_closure)
+        self.assertIn(
+            "BAAS_runtime_baas_connection_co_detect_link_closure", port_cmake
+        )
+        for forbidden in (
+            "BAASUserConfig",
+            "BAASConfig",
+            "RESOURCE_DIR",
+            "BAAS_FETCH_RESOURCES",
+            "std::filesystem",
+            "getenv(",
+        ):
+            self.assertNotIn(forbidden, header + owner + backend)
+
 
 if __name__ == "__main__":
     unittest.main()

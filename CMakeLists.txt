@@ -121,6 +121,9 @@ option(BUILD_RUNTIME_CO_DETECT_SUPPORT_BUNDLE "Build verified co-detect locale s
 option(BUILD_RUNTIME_CO_DETECT_SUPPORT_BUNDLE_TESTS "Build co-detect support bundle loader tests" OFF)
 option(BUILD_RUNTIME_CO_DETECT_PRODUCTION_ADAPTER "Build pinned production co-detect device and feature adapter" OFF)
 option(BUILD_RUNTIME_CO_DETECT_PRODUCTION_ADAPTER_TESTS "Build pinned production co-detect adapter tests" OFF)
+option(BUILD_RUNTIME_BAAS_CONNECTION_CO_DETECT_PORT "Build BAASConnection production co-detect device port" OFF)
+option(BUILD_RUNTIME_BAAS_CONNECTION_CO_DETECT_PORT_TESTS "Build BAASConnection co-detect device port tests" OFF)
+option(BUILD_RUNTIME_BAAS_CONNECTION_CO_DETECT_LINK_CLOSURE "Final-link the production co-detect backend with the resource-free legacy BAAS core" OFF)
 option(BUILD_LEGACY_PROCEDURE_EXECUTION "Build pure legacy procedure typed/control/effect seam" OFF)
 option(BUILD_LEGACY_PROCEDURE_EXECUTION_TESTS "Build legacy procedure execution seam tests" OFF)
 option(BUILD_LEGACY_PROCEDURE_DEFINITION_VALIDATION "Build strict direct legacy procedure definition validation" OFF)
@@ -337,6 +340,25 @@ if(BUILD_RESOURCE_CORE_TESTS AND NOT BUILD_RESOURCE_CORE)
 endif()
 
 if(BUILD_RUNTIME_CO_DETECT_PRODUCTION_ADAPTER_TESTS)
+    set(BUILD_RUNTIME_CO_DETECT_PRODUCTION_ADAPTER ON CACHE BOOL
+        "Build pinned production co-detect device and feature adapter" FORCE)
+endif()
+
+if(BUILD_RUNTIME_BAAS_CONNECTION_CO_DETECT_PORT_TESTS)
+    set(BUILD_RUNTIME_BAAS_CONNECTION_CO_DETECT_PORT ON CACHE BOOL
+        "Build BAASConnection production co-detect device port" FORCE)
+endif()
+
+if(BUILD_RUNTIME_BAAS_CONNECTION_CO_DETECT_LINK_CLOSURE)
+    if(TARGET_OS_NAME STREQUAL "Android")
+        message(FATAL_ERROR
+            "The full legacy BAAS core link-closure probe is desktop-only; Android builds validate the production adapter archive for each ABI")
+    endif()
+    set(BUILD_RUNTIME_BAAS_CONNECTION_CO_DETECT_PORT ON CACHE BOOL
+        "Build BAASConnection production co-detect device port" FORCE)
+endif()
+
+if(BUILD_RUNTIME_BAAS_CONNECTION_CO_DETECT_PORT)
     set(BUILD_RUNTIME_CO_DETECT_PRODUCTION_ADAPTER ON CACHE BOOL
         "Build pinned production co-detect device and feature adapter" FORCE)
 endif()
@@ -987,6 +1009,14 @@ if(BUILD_RUNTIME_CO_DETECT_SUPPORT_BUNDLE)
     baas_request_dependencies(opencv)
 endif()
 
+if(BUILD_RUNTIME_BAAS_CONNECTION_CO_DETECT_PORT)
+    baas_request_dependencies(spdlog simdutf)
+endif()
+
+if(BUILD_RUNTIME_BAAS_CONNECTION_CO_DETECT_LINK_CLOSURE)
+    baas_request_dependencies(opencv onnxruntime ffmpeg nlohmann_json spdlog simdutf)
+endif()
+
 if(BUILD_RUNTIME_REPOSITORY_GIT2)
     baas_request_dependencies(libgit2 miniz cpp_httplib)
 endif()
@@ -1137,6 +1167,10 @@ endif()
 
 if(BUILD_RUNTIME_CO_DETECT_PRODUCTION_ADAPTER)
     include("${CMAKE_CURRENT_LIST_DIR}/cmake/RuntimeCoDetectProductionAdapter.cmake")
+endif()
+
+if(BUILD_RUNTIME_BAAS_CONNECTION_CO_DETECT_PORT)
+    include("${CMAKE_CURRENT_LIST_DIR}/cmake/RuntimeBAASConnectionCoDetectPort.cmake")
 endif()
 
 if(BUILD_SCHEDULER_POLICY)

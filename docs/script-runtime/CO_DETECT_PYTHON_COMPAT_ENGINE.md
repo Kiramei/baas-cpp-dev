@@ -2,9 +2,10 @@
 
 Status: strict immutable definition parsing/model implemented; the pure C++
 execution state machine and bounded generation-bound support-bundle loader are
-also implemented. The immutable production device-session/feature adapter is implemented
-behind a narrow injected device port. A concrete application engine adapter, externally published real
-locale bundles, real resource digests, and production procedure definitions do not exist yet.
+also implemented. The immutable production device-session/feature adapter and
+BAASConnection-backed application port are implemented behind narrow injected
+boundaries. The remaining production gate is the live-composed engine adapter, externally published real
+locale bundles, real resource digests, and production procedure definitions; none exists yet.
 Nothing in this document authorizes a placeholder `baas.procedures.json` entry.
 
 This contract freezes the required migration boundary for
@@ -272,6 +273,60 @@ then reads the single `TM_CCOEFF_NORMED` result and requires it to be strictly g
 than the threshold; definition call threshold/RGB values override the bundle defaults. Missing features return `false`.
 OpenCV work is not mid-call interruptible, but both sides are identity/control-polled
 and frame/crop/template dimensions are hard bounded.
+
+### BAASConnection production port
+
+`BAASConnectionCoDetectOwner` is the concrete lifecycle owner for the legacy C++
+device stack. The embedding application injects an already-created, shared `BAAS`
+instance; the adapter binds only its public `BAASConnection`, `BAASScreenshot`, and
+`BAASControl` capabilities. It never constructs an application from a config name,
+reads a config/resource/script path, or consults an ambient current repository.
+This is the concrete application `CoDetectProductionDevicePort` implementation;
+live composition remains gated separately below.
+
+The production factory is not validated by a compile-only archive. The
+`BAAS_runtime_baas_connection_co_detect_link_closure` executable links the real
+resource-free `BAAS_CORE_SOURCES` legacy core and its complete dependency graph. Its
+`main` calls the production factory, so the final link must resolve every `BAAS`,
+`BAASConnection`, `BAASScreenshot`, and `BAASControl` method used by the backend.
+The null application is rejected before any device, resource, or config operation.
+This target neither includes the legacy application resource CMake nor copies or
+embeds a resource/config payload. The BAAS application workflow configures it in a
+separate `BUILD_APP_BAAS=OFF`, `BAAS_FETCH_RESOURCES=OFF` build tree against both
+existing BAAS App Conan package profiles (CPU-provisioned and CUDA-provisioned).
+The probe itself is backend-agnostic and does not claim to execute a CUDA path.
+
+The production backend freezes the exact connection, screenshot, and control object
+addresses plus serial, package, server, and language. The server/language pair must
+map exactly to the requested `CN`, `JP`, `Global_en-us`, `Global_zh-tw`, or
+`Global_ko-kr` profile. An in-place connection/config switch therefore makes the
+backend invalid. A caller performing an intentional reconnect or configuration
+switch calls `activate()` with the replacement application/backend and a strictly greater non-zero epoch.
+Activation creates a new port and shared immutable token;
+the old port returns no current identity and can never target the replacement.
+
+Capture, click, and foreground operations serialize against replacement. An effect
+that has already linearized finishes before the old token is withdrawn; after token
+withdrawal no old-port effect reaches the legacy backend. Waits use at most 50 ms
+slices, are capped at 3,840,000 ms, and are explicitly woken by replacement or
+invalidation. Control and identity are checked before and after each operation and
+at screenshot/wait checkpoints.
+
+The live screenshot is normalized to exactly 1280x720 packed BGR8. Input screenshots
+must be three-channel 16:9 images no larger than 7680x4320; resizing uses OpenCV
+`INTER_AREA`. The published row stride is exactly 3840 bytes and the immutable owned
+payload is exactly 2,764,800 bytes. Latest-frame publication accepts only that shape,
+byte count, and the exact owner token. Click coordinates use the inclusive Python
+clamp range (`0..1280`, `0..720`) and are sent through `BAASControl` without random
+offset; its existing
+screen ratio conversion remains authoritative. Foreground checks compare the live
+package only with the package frozen at activation and do not expose package names.
+
+The concrete backend currently requires the embedding owner to give it exclusive
+device-operation ownership for the duration of a runtime lease because the legacy
+`BAAS` public API does not expose a cross-consumer operation mutex. Application
+composition must create/rebind this owner whenever it replaces a `BAAS` instance;
+silently mutating the same instance is detected and fails closed, not adopted.
 
 ## Deadline, cancellation, and effect semantics
 
@@ -571,8 +626,9 @@ with copied, empty, or mismatched assets:
 The following are all mandatory before generating production definition files
 or adding these procedures to a real `baas.procedures.json`:
 
-1. Implement and review the concrete application `CoDetectProductionDevicePort`
-   binding to the live device owner without ambient resources or mutable retargeting.
+1. Review and integrate the implemented `BAASConnectionCoDetectOwner` concrete
+   `CoDetectProductionDevicePort` binding with the live application owner; the
+   binding contains no ambient resources or mutable retargeting.
 2. Publish real locale support bundles from the external resources repository.
 3. Compute and verify every real bundle/member size and SHA-256 digest.
 4. Run Python-versus-C++ golden traces for success terminals, popup priority,
