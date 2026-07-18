@@ -635,6 +635,31 @@ void test_validation_terminal_and_error_mapping()
                   mapped.error().retryable == typed.expected_retryable,
               "every typed executor error must map to its exact public Host code");
     }
+
+    auto context_deadline = make_owner([](const host::ProcedureExecutionRequest&) {
+        return host::ProcedureExecutorOutcome::failure({
+            host::ProcedureExecutorErrorCode::DeadlineExceeded, false,
+            runtime::HostEffectState::NotStarted,
+            host::ProcedureDeadlineScope::Context});
+    });
+    const auto context_deadline_result = invoke(context_deadline, arguments());
+    check(context_deadline_result.has_error() &&
+              detail_string(context_deadline_result, "deadline_scope") == "context",
+          "executor context deadline must preserve its public scope");
+
+    auto missing_frame = make_owner([](const host::ProcedureExecutionRequest&) {
+        return host::ProcedureExecutorOutcome::failure({
+            host::ProcedureExecutorErrorCode::Unavailable, true,
+            runtime::HostEffectState::NotStarted,
+            host::ProcedureDeadlineScope::Call,
+            host::ProcedureUnavailableReason::RecentFrameUnavailable});
+    });
+    const auto missing_frame_result = invoke(missing_frame, arguments());
+    check(missing_frame_result.has_error() &&
+              missing_frame_result.error().code == runtime::HostErrorCode::Unavailable &&
+              detail_string(missing_frame_result, "unavailable_reason") ==
+                  "recent_frame_unavailable",
+          "missing shared frame must preserve its public unavailable reason");
 }
 
 void test_same_device_serialization_and_wait_cancellation()

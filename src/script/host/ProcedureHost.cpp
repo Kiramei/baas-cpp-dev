@@ -83,10 +83,14 @@ void queued_acquisition_allocation_checkpoint(
                  effect_state);
 }
 
-[[nodiscard]] HostResult deadline(const HostEffectState effect_state)
+[[nodiscard]] HostResult deadline(
+    const HostEffectState effect_state,
+    const ProcedureDeadlineScope scope = ProcedureDeadlineScope::Context)
 {
     return error(HostErrorCode::DeadlineExceeded, "procedure deadline exceeded", false,
-                 effect_state, detail("deadline_scope", "call"));
+                 effect_state, detail("deadline_scope",
+                                      scope == ProcedureDeadlineScope::Context
+                                          ? "context" : "call"));
 }
 
 [[nodiscard]] bool valid_host_limits(const ProcedureHostLimits& limits) noexcept
@@ -266,7 +270,8 @@ private:
             return error(HostErrorCode::InvalidArgument,
                          "procedure executor rejected the request", false, effect);
         case ProcedureExecutorErrorCode::Cancelled: return cancelled(effect);
-        case ProcedureExecutorErrorCode::DeadlineExceeded: return deadline(effect);
+        case ProcedureExecutorErrorCode::DeadlineExceeded:
+            return deadline(effect, supplied.deadline_scope);
         case ProcedureExecutorErrorCode::BudgetExceeded:
             return error(HostErrorCode::BudgetExceeded,
                          "procedure executor budget exceeded", supplied.retryable, effect,
@@ -276,6 +281,12 @@ private:
                          "procedure executor resource exhausted", false, effect,
                          detail("budget_scope", "external_memory"));
         case ProcedureExecutorErrorCode::Unavailable:
+            if (supplied.unavailable_reason ==
+                ProcedureUnavailableReason::RecentFrameUnavailable)
+                return error(HostErrorCode::Unavailable,
+                             "recent device frame is unavailable",
+                             supplied.retryable, effect,
+                             detail("unavailable_reason", "recent_frame_unavailable"));
             return error(HostErrorCode::Unavailable,
                          "procedure executor unavailable", supplied.retryable, effect);
         case ProcedureExecutorErrorCode::ForegroundPackageMismatch:

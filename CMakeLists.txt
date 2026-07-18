@@ -115,6 +115,8 @@ option(BUILD_RUNTIME_PROCEDURE_ACTIVATION "Build generation-bound runtime proced
 option(BUILD_RUNTIME_PROCEDURE_ACTIVATION_TESTS "Build runtime procedure activation tests" OFF)
 option(BUILD_RUNTIME_CO_DETECT_DEFINITION_MODEL "Build strict immutable co-detect definition model" OFF)
 option(BUILD_RUNTIME_CO_DETECT_DEFINITION_MODEL_TESTS "Build co-detect definition model tests" OFF)
+option(BUILD_RUNTIME_CO_DETECT_EXECUTOR "Build pure C++ co-detect procedure executor" OFF)
+option(BUILD_RUNTIME_CO_DETECT_EXECUTOR_TESTS "Build deterministic co-detect executor tests" OFF)
 option(BUILD_LEGACY_PROCEDURE_EXECUTION "Build pure legacy procedure typed/control/effect seam" OFF)
 option(BUILD_LEGACY_PROCEDURE_EXECUTION_TESTS "Build legacy procedure execution seam tests" OFF)
 option(BUILD_LEGACY_PROCEDURE_DEFINITION_VALIDATION "Build strict direct legacy procedure definition validation" OFF)
@@ -376,6 +378,20 @@ if(BUILD_RUNTIME_SCRIPT_EXECUTION_PLAN)
         "Build the immutable runtime BAAS Script task catalog" FORCE)
     set(BUILD_RUNTIME_SCRIPT_PACKAGE_LOADER ON CACHE BOOL
         "Build pathless BAAS Script package discovery from a runtime repository" FORCE)
+endif()
+
+if(BUILD_RUNTIME_CO_DETECT_EXECUTOR_TESTS)
+    set(BUILD_RUNTIME_CO_DETECT_EXECUTOR ON CACHE BOOL
+        "Build pure C++ co-detect procedure executor" FORCE)
+endif()
+
+if(BUILD_RUNTIME_CO_DETECT_EXECUTOR)
+    set(BUILD_RUNTIME_CO_DETECT_DEFINITION_MODEL ON CACHE BOOL
+        "Build strict immutable co-detect definition model" FORCE)
+    set(BUILD_SCRIPT_PROCEDURE_HOST ON CACHE BOOL
+        "Build snapshot-owned baas/procedure script Host" FORCE)
+    set(BUILD_RUNTIME_PROCEDURE_ACTIVATION ON CACHE BOOL
+        "Build generation-bound runtime procedure activation" FORCE)
 endif()
 
 if(BUILD_RUNTIME_PROCEDURE_ACTIVATION_TESTS)
@@ -1061,6 +1077,10 @@ endif()
 
 if(BUILD_SCRIPT_HOST_RUNTIME_COMPOSITION)
     include("${CMAKE_CURRENT_LIST_DIR}/cmake/ScriptHostRuntimeComposition.cmake")
+endif()
+
+if(BUILD_RUNTIME_CO_DETECT_EXECUTOR)
+    include("${CMAKE_CURRENT_LIST_DIR}/cmake/RuntimeCoDetectExecutor.cmake")
 endif()
 
 if(BUILD_SCHEDULER_POLICY)
