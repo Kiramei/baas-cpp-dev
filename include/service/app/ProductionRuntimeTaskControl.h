@@ -1,6 +1,8 @@
 #pragma once
 
 #include "service/app/RuntimeTaskTriggerRegistration.h"
+#include "service/app/ServiceApplication.h"
+#include "service/runtime/ProductionRuntimeScriptTaskFactory.h"
 #include "service/runtime/RuntimeTaskOwner.h"
 
 #include <memory>
@@ -15,7 +17,10 @@ namespace baas::service::app {
 class ProductionRuntimeTaskControl final : public RuntimeTaskControl {
 public:
     explicit ProductionRuntimeTaskControl(
-        std::shared_ptr<runtime::RuntimeTaskOwner> owner);
+        std::shared_ptr<runtime::RuntimeTaskOwner> owner,
+        std::shared_ptr<const runtime::RuntimeScriptTaskRuntimeFactory> factory,
+        runtime::RuntimeScriptTaskRepositoryBinding repository,
+        runtime::RuntimeScriptTaskBackendOptions options = {});
     ~ProductionRuntimeTaskControl() override;
 
     ProductionRuntimeTaskControl(const ProductionRuntimeTaskControl&) = delete;
@@ -28,15 +33,21 @@ public:
         std::string_view config_id) override;
     [[nodiscard]] RuntimeTaskPrepareResult prepare_start_task(
         std::string_view config_id,
-        std::string_view requested_task) override;
+        std::string_view requested_task,
+        std::stop_token stop_token = {}) override;
     [[nodiscard]] RuntimeTaskPrepareResult prepare_stop_all_tasks() override;
 
 private:
     std::shared_ptr<runtime::RuntimeTaskOwner> owner_;
+    std::shared_ptr<const runtime::RuntimeScriptTaskRuntimeFactory> factory_;
+    runtime::RuntimeScriptTaskRepositoryBinding repository_;
+    runtime::RuntimeScriptTaskBackendOptions options_;
 };
 
-[[nodiscard]] std::shared_ptr<RuntimeTaskControl>
-make_production_runtime_task_control(
-    std::shared_ptr<runtime::RuntimeTaskOwner> owner);
+[[nodiscard]] std::shared_ptr<ServiceRuntimeTaskCompositionFactory>
+make_production_runtime_task_composition_factory(
+    std::shared_ptr<const runtime::ProductionRuntimeScriptTaskProvider> provider,
+    runtime::RuntimeScriptTaskBackendOptions backend_options = {},
+    runtime::RuntimeTaskLimits owner_limits = {});
 
 }  // namespace baas::service::app

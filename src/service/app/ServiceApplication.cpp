@@ -5,8 +5,8 @@
 #include "service/app/ConfigurationTriggerRegistration.h"
 #include "service/app/ProductionProviderBackend.h"
 #include "service/app/ProductionRemoteBackend.h"
-#include "service/app/ProductionRuntimeTaskControl.h"
 #include "service/app/RuntimeConfigurationDefaults.h"
+#include "service/app/RuntimeTaskStatusJson.h"
 #include "service/app/RuntimeTaskTriggerRegistration.h"
 #include "service/app/ServiceRuntimeProviderBridge.h"
 #include "service/app/ServiceRuntimeRepositoryOwner.h"
@@ -15,7 +15,6 @@
 #include "service/channels/TriggerHandler.h"
 #include "service/health/HealthReadiness.h"
 #include "service/http/ProductionHttpHost.h"
-#include "service/runtime/ProductionRuntimeScriptTaskFactory.h"
 #include "service/trigger/TriggerDispatch.h"
 #include "service/websocket/BusinessSessionFactory.h"
 
@@ -26,6 +25,8 @@
 #include <string>
 #include <utility>
 #include <vector>
+
+#include <nlohmann/json.hpp>
 
 namespace baas::service::app {
 namespace {
@@ -63,11 +64,40 @@ namespace {
 
 [[nodiscard]] StatusSourceResult provider_status(
     const std::shared_ptr<ProductionProviderBackend>& provider,
+    const std::shared_ptr<service_runtime::RuntimeTaskOwner>& runtime_owner,
     const std::stop_token stop)
 {
     if (stop.stop_requested()) return {{}, StatusSourceError::cancelled};
     auto result = provider->status(stop);
-    if (result) return {std::move(*result.value), StatusSourceError::none};
+    if (result) {
+        if (!runtime_owner) {
+            return {std::move(*result.value), StatusSourceError::none};
+        }
+        const auto runtime = encode_runtime_task_status_json(
+            runtime_owner->snapshots());
+        if (!runtime) {
+            return {{}, runtime.error == RuntimeTaskStatusJsonError::capacity
+                    || runtime.error
+                        == RuntimeTaskStatusJsonError::resource_exhausted
+                    ? StatusSourceError::capacity
+                    : StatusSourceError::unavailable};
+        }
+        try {
+            auto base = nlohmann::ordered_json::parse(*result.value);
+            auto native = nlohmann::ordered_json::parse(runtime.json);
+            if (!base.is_object() || !native.is_object()) {
+                return {{}, StatusSourceError::unavailable};
+            }
+            for (auto& [config_id, status] : native.items()) {
+                base[config_id] = std::move(status);
+            }
+            return {base.dump(), StatusSourceError::none};
+        } catch (const std::bad_alloc&) {
+            return {{}, StatusSourceError::capacity};
+        } catch (...) {
+            return {{}, StatusSourceError::unavailable};
+        }
+    }
     if (stop.stop_requested()) return {{}, StatusSourceError::cancelled};
     if (result.error == channels::ProviderBackendError::capacity) {
         return {{}, StatusSourceError::capacity};
@@ -296,9 +326,22 @@ ServiceApplicationOpenResult ServiceApplication::open(
             std::move(remote_dependencies));
 #endif
 
+        if (dependencies.runtime_task_composition_factory) {
+            auto runtime_tasks =
+                dependencies.runtime_task_composition_factory->compose(
+                    impl->runtime_repository_read_bundle);
+            if (!runtime_tasks) {
+                return {nullptr, ServiceApplicationError::composition_failed, {}};
+            }
+            impl->runtime_task_owner = std::move(runtime_tasks.owner);
+            impl->runtime_task_control = std::move(runtime_tasks.control);
+        }
+
         auto registration = make_status_trigger_registration(
-            StatusSourceCallback{[provider = impl->provider](const std::stop_token stop) {
-                return provider_status(provider, stop);
+            StatusSourceCallback{[provider = impl->provider,
+                                  runtime_owner = impl->runtime_task_owner](
+                                     const std::stop_token stop) {
+                return provider_status(provider, runtime_owner, stop);
             }});
         if (!registration) {
             return {nullptr, ServiceApplicationError::trigger_registration_failed, {}};
@@ -320,19 +363,7 @@ ServiceApplicationOpenResult ServiceApplication::open(
         for (auto& item : configuration.registrations) {
             registrations.push_back(std::move(item));
         }
-        if (dependencies.production_runtime_script_provider) {
-            auto factory = service_runtime::
-                make_production_runtime_script_task_factory(
-                    std::move(
-                        dependencies.production_runtime_script_provider));
-            auto backend = service_runtime::make_runtime_script_task_backend(
-                std::move(factory), dependencies.runtime_script_backend);
-            impl->runtime_task_owner =
-                std::make_shared<service_runtime::RuntimeTaskOwner>(
-                    std::move(backend), dependencies.runtime_task_owner);
-            impl->runtime_task_control =
-                make_production_runtime_task_control(
-                    impl->runtime_task_owner);
+        if (impl->runtime_task_control) {
             auto runtime_tasks = make_runtime_task_trigger_registrations(
                 impl->runtime_task_control);
             if (!runtime_tasks) {

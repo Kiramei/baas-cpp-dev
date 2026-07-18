@@ -50,6 +50,19 @@ class ServiceApplicationContractTests(unittest.TestCase):
         ):
             self.assertIn(anchor, self.source)
 
+    def test_default_application_keeps_production_runtime_heavy_closure_opt_in(self) -> None:
+        application_target = self.cmake[: self.cmake.index(
+            "if(TARGET BAAS_service_production_runtime_task_control)"
+        )]
+        self.assertNotIn(
+            "BAAS_service_production_runtime_script_task_factory", application_target
+        )
+        self.assertNotIn(
+            "BAAS_service_production_runtime_task_control", application_target
+        )
+        self.assertIn("runtime_task_composition_factory", self.header)
+        self.assertIn("runtime_task_composition_factory->compose", self.source)
+
     def test_executable_contract_and_pipe_boundary_are_owned(self) -> None:
         self.assertIn("int wmain", self.main)
         self.assertIn("int main", self.main)

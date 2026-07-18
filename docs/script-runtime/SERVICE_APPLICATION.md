@@ -47,15 +47,17 @@ setup `4`, composition `5`, HTTP start `6`, readiness `7`, and internal `8`.
 - real `status`, `add_config*`, `copy_config`, `remove_config*`, `export_config`,
   and `import_config` registrations,
   `TriggerDispatcher`, `TriggerExecutor`, and `TriggerHandlerFactory`;
-- when and only when an embedding owner supplies
-  `ServiceApplicationDependencies::production_runtime_script_provider`,
-  `ProductionRuntimeScriptTaskFactory`, `RuntimeScriptTaskBackend`,
-  `RuntimeTaskOwner`, `ProductionRuntimeTaskControl`, and all five runtime
-  task Trigger descriptor groups;
+- when and only when an embedding owner supplies the lightweight
+  `ServiceApplicationDependencies::runtime_task_composition_factory`, its
+  `RuntimeTaskOwner`, `RuntimeTaskControl`, and all five runtime task Trigger
+  descriptor groups;
 - file auth storage, system clock, system random, and sodium password deriver;
 - `ProductionHttpHost` on the exact CLI port.
 
-The status source reads the thread-safe production provider snapshot.
+The status source reads the thread-safe production provider snapshot and, for
+an opted-in native runtime, overlays `RuntimeTaskOwner` snapshots encoded by
+`BAAS_service_runtime_task_status_json`. Running/current-task state and exact
+terminal exit codes therefore appear on the canonical `status` wire.
 Configuration triggers use the same durable `FileResourceStore` supplied to
 the sync and remote channels. Archive export returns a JSON filename plus an
 adjacent binary ZIP response; archive import consumes the ingress-declared
@@ -76,8 +78,12 @@ The native script composition is explicitly opt-in. The ordinary
 `BAAS_service` CLI, including the process launched by the existing Tauri
 integration, calls the dependency-free overload and registers no runtime task
 commands. It does not invent a config snapshot, repository, device, or
-provider. An embedding WebUI owner may pass the complete production provider;
-that provider must pin the user-owned config and immutable runtime-repository
+provider. An embedding WebUI owner may link the separate production runtime
+composition target and construct it from the complete provider. The factory
+receives the exact read bundle admitted by `ServiceApplication`; every prepared
+runtime identity must match its generation, scripts commit, and resources
+commit before success can be claimed. The provider must pin the user-owned
+config and immutable runtime-repository
 capabilities at task execution time. Resource files, scripts, and user config
 therefore remain external dynamic data and are never compiled into the
 executable.

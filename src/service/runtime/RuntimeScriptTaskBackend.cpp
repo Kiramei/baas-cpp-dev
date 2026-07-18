@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <chrono>
 #include <optional>
+#include <new>
 #include <stdexcept>
 #include <string_view>
 #include <utility>
@@ -135,6 +136,121 @@ RuntimeTaskTerminal controlled_failure(
     return failure_terminal(runtime_script_task_failure_exit_code);
 }
 
+class PreparedRuntimeScriptTaskBackend final
+    : public RuntimeTaskPreparedBackend {
+public:
+    PreparedRuntimeScriptTaskBackend(
+        std::shared_ptr<const RuntimeScriptTaskRuntimeFactory> factory,
+        RuntimeTaskRequest request,
+        RuntimeScriptTaskRepositoryBinding repository,
+        const RuntimeScriptTaskBackendOptions options,
+        const std::stop_token preparation_stop,
+        std::shared_ptr<std::atomic<RuntimeScriptTaskPrepareError>> status)
+        : factory_(std::move(factory)), request_(std::move(request)),
+          repository_(std::move(repository)), options_(options),
+          preparation_stop_(preparation_stop), status_(std::move(status)),
+          deadline_(Clock::now() + options.task_deadline)
+    {}
+
+    bool prepare(const std::stop_token owner_stop_token) noexcept override
+    {
+        const std::stop_callback preparation_stop{
+            preparation_stop_, [this]() noexcept {
+                (void)lifetime_stop_.request_stop();
+            }};
+        const std::stop_callback owner_stop{
+            owner_stop_token, [this]() noexcept {
+                (void)lifetime_stop_.request_stop();
+            }};
+        const RuntimeScriptTaskExecutionControl control{
+            lifetime_stop_.get_token(), deadline_};
+        try {
+            if (control.stop_requested()) return fail(
+                RuntimeScriptTaskPrepareError::cancelled);
+            if (control.deadline_exceeded()) return fail(
+                RuntimeScriptTaskPrepareError::deadline);
+            task_plan_ = requested_task_plan(request_);
+            runtime_ = factory_->create(request_, task_plan_, control);
+            if (control.stop_requested()) return fail(
+                RuntimeScriptTaskPrepareError::cancelled);
+            if (control.deadline_exceeded()) return fail(
+                RuntimeScriptTaskPrepareError::deadline);
+            if (!runtime_) return fail(
+                RuntimeScriptTaskPrepareError::unavailable);
+            identity_ = runtime_->identity();
+            if (!identity_matches(
+                    identity_, request_, task_plan_, options_.max_identity_bytes)) {
+                return fail(RuntimeScriptTaskPrepareError::invalid_identity);
+            }
+            if (identity_.runtime_generation != repository_.generation
+                || identity_.scripts_commit != repository_.scripts_commit
+                || identity_.resources_commit != repository_.resources_commit) {
+                return fail(RuntimeScriptTaskPrepareError::repository_mismatch);
+            }
+            status_->store(
+                RuntimeScriptTaskPrepareError::none,
+                std::memory_order_release);
+            return true;
+        } catch (const std::bad_alloc&) {
+            return fail(RuntimeScriptTaskPrepareError::capacity);
+        } catch (...) {
+            if (control.stop_requested()) return fail(
+                RuntimeScriptTaskPrepareError::cancelled);
+            if (control.deadline_exceeded()) return fail(
+                RuntimeScriptTaskPrepareError::deadline);
+            return fail(RuntimeScriptTaskPrepareError::internal_error);
+        }
+    }
+
+    RuntimeTaskTerminal execute(
+        const RuntimeTaskRequest&,
+        const std::stop_token stop_token,
+        const RuntimeTaskProgressReporter& report_progress) noexcept override
+    {
+        const std::stop_callback owner_stop{stop_token, [this]() noexcept {
+            (void)lifetime_stop_.request_stop();
+        }};
+        const RuntimeScriptTaskExecutionControl control{
+            lifetime_stop_.get_token(), deadline_};
+        try {
+            if (const auto boundary = control_terminal(control)) return *boundary;
+            const RuntimeTaskProgressReporter controlled_report =
+                [&control, &report_progress](RuntimeTaskProgress progress) {
+                    if (control_terminal(control)) return false;
+                    const auto accepted = report_progress(std::move(progress));
+                    return !control_terminal(control) && accepted;
+                };
+            (void)controlled_report(initial_progress(task_plan_));
+            if (const auto boundary = control_terminal(control)) return *boundary;
+            auto terminal = runtime_->execute(control, controlled_report);
+            if (const auto boundary = control_terminal(control)) return *boundary;
+            return terminal;
+        } catch (...) {
+            return controlled_failure(control);
+        }
+    }
+
+private:
+    bool fail(const RuntimeScriptTaskPrepareError error) noexcept
+    {
+        status_->store(error, std::memory_order_release);
+        runtime_.reset();
+        return false;
+    }
+
+    std::shared_ptr<const RuntimeScriptTaskRuntimeFactory> factory_;
+    RuntimeTaskRequest request_;
+    RuntimeScriptTaskRepositoryBinding repository_;
+    RuntimeScriptTaskBackendOptions options_;
+    std::stop_token preparation_stop_;
+    std::shared_ptr<std::atomic<RuntimeScriptTaskPrepareError>> status_;
+    RuntimeScriptTaskIdentity identity_;
+    std::unique_ptr<RuntimeScriptTaskRuntime> runtime_;
+    std::vector<std::string> task_plan_;
+    std::stop_source lifetime_stop_;
+    Clock::time_point deadline_;
+};
+
 } // namespace
 
 RuntimeScriptTaskExecutionControl::RuntimeScriptTaskExecutionControl(
@@ -161,6 +277,55 @@ bool RuntimeScriptTaskExecutionControl::stop_requested() const noexcept
 bool RuntimeScriptTaskExecutionControl::deadline_exceeded() const noexcept
 {
     return Clock::now() >= deadline_;
+}
+
+RuntimeScriptTaskPrepareResult prepare_runtime_script_task_backend(
+    std::shared_ptr<const RuntimeScriptTaskRuntimeFactory> factory,
+    const RuntimeTaskRequest& request,
+    RuntimeScriptTaskRepositoryBinding repository,
+    const RuntimeScriptTaskBackendOptions options,
+    const std::stop_token stop_token) noexcept
+{
+    RuntimeScriptTaskPrepareResult result;
+    if (!factory || options.task_deadline <= std::chrono::milliseconds::zero()
+        || options.task_deadline > max_task_deadline
+        || options.max_identity_bytes == 0) {
+        result.error = RuntimeScriptTaskPrepareError::invalid_request;
+        return result;
+    }
+    try {
+        if (stop_token.stop_requested()) {
+            result.error = RuntimeScriptTaskPrepareError::cancelled;
+            return result;
+        }
+        if (!bounded_nonempty_text(request.config_id, options.max_identity_bytes)
+            || !bounded_nonempty_text(request.run_mode, options.max_identity_bytes)) {
+            result.error = RuntimeScriptTaskPrepareError::invalid_request;
+            return result;
+        }
+        auto task_plan = requested_task_plan(request);
+        if (!valid_task_plan(task_plan, options.max_identity_bytes)) {
+            result.error = RuntimeScriptTaskPrepareError::invalid_request;
+            return result;
+        }
+        result.preparation_status =
+            std::make_shared<std::atomic<RuntimeScriptTaskPrepareError>>(
+                RuntimeScriptTaskPrepareError::none);
+        result.backend = std::make_shared<PreparedRuntimeScriptTaskBackend>(
+            std::move(factory), request, std::move(repository), options,
+            stop_token, result.preparation_status);
+        result.error = RuntimeScriptTaskPrepareError::none;
+        return result;
+    } catch (const std::bad_alloc&) {
+        result.error = RuntimeScriptTaskPrepareError::capacity;
+    } catch (...) {
+        if (stop_token.stop_requested()) {
+            result.error = RuntimeScriptTaskPrepareError::cancelled;
+        } else {
+            result.error = RuntimeScriptTaskPrepareError::internal_error;
+        }
+    }
+    return result;
 }
 
 RuntimeTaskBackend make_runtime_script_task_backend(

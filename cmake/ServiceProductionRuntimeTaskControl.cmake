@@ -2,7 +2,10 @@ include_guard(GLOBAL)
 
 foreach(required_target
         BAAS_service_runtime_task_owner
-        BAAS_service_runtime_task_triggers)
+        BAAS_service_runtime_task_triggers
+        BAAS_service_runtime_script_task_backend
+        BAAS_service_production_runtime_script_task_factory
+        BAAS_runtime_repository)
     if(NOT TARGET ${required_target})
         message(FATAL_ERROR
             "ServiceProductionRuntimeTaskControl requires ${required_target}")
@@ -26,6 +29,9 @@ target_link_libraries(
         PUBLIC
         BAAS_service_runtime_task_owner
         BAAS_service_runtime_task_triggers
+        BAAS_service_runtime_script_task_backend
+        BAAS_service_production_runtime_script_task_factory
+        BAAS_runtime_repository
         PRIVATE BAAS::nlohmann_json
 )
 if(MSVC)

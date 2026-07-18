@@ -264,8 +264,8 @@ if(BUILD_SERVICE_APP)
     set(BUILD_SERVICE_ADB_DISCOVERY_TRIGGER ON CACHE BOOL "Build the production detect_adb trigger registration" FORCE)
     set(BUILD_SERVICE_CONFIGURATION_TRIGGERS ON CACHE BOOL "Build production configuration trigger registrations" FORCE)
     set(BUILD_SERVICE_RUNTIME_TASK_TRIGGERS ON CACHE BOOL "Build scheduler/task trigger registrations" FORCE)
-    set(BUILD_SERVICE_PRODUCTION_RUNTIME_SCRIPT_TASK_FACTORY ON CACHE BOOL "Build the pinned production BAAS Script task factory" FORCE)
-    set(BUILD_SERVICE_PRODUCTION_RUNTIME_TASK_CONTROL ON CACHE BOOL "Build the production RuntimeTaskOwner Trigger control" FORCE)
+    set(BUILD_SERVICE_RUNTIME_TASK_OWNER ON CACHE BOOL "Build the service-owned runtime task lifecycle" FORCE)
+    set(BUILD_SERVICE_RUNTIME_TASK_STATUS_JSON ON CACHE BOOL "Build native runtime task status encoding" FORCE)
 endif()
 
 if(BUILD_SERVICE_RUNTIME_CONFIGURATION_DEFAULTS AND NOT BUILD_RUNTIME_REPOSITORY)
@@ -774,6 +774,8 @@ if(BUILD_SERVICE_PRODUCTION_RUNTIME_TASK_CONTROL)
         "Build scheduler/task trigger registrations" FORCE)
     set(BUILD_SERVICE_RUNTIME_TASK_OWNER ON CACHE BOOL
         "Build the service-owned runtime task lifecycle" FORCE)
+    set(BUILD_SERVICE_PRODUCTION_RUNTIME_SCRIPT_TASK_FACTORY ON CACHE BOOL
+        "Build the pinned production BAAS Script task factory" FORCE)
 endif()
 
 if(BUILD_SERVICE_RUNTIME_TASK_TRIGGER_TESTS AND NOT BUILD_SERVICE_TRIGGER_EXECUTOR)

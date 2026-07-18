@@ -45,8 +45,9 @@ Cancellation before claim destroys/aborts the reservation and never calls
 `commit()`. Cancellation after claim cannot replace the terminal or cancel the
 committed service-owned job. There is intentionally no error-correction branch
 after claim: an implementation that can still fail has not completed prepare
-and does not satisfy this interface. The control interface receives no Trigger
-`stop_token`.
+and does not satisfy this interface. Start-task prepare receives the Trigger
+`stop_token`; cancellation and the absolute deadline are observed while the
+owner's gated worker performs provider/catalog/resource/task preparation.
 
 The `start_*` registration deliberately passes the original command to the
 control owner. `ProductionRuntimeTaskControl` normalizes the Python aliases
@@ -77,14 +78,21 @@ prepare and map to stable wire strings:
 | `conflict` | `runtime_task_conflict` |
 | `capacity` | `runtime_task_control_capacity` |
 | `unavailable` | `runtime_task_control_unavailable` |
+| `cancelled` | cancelled terminal |
+| `deadline` | `runtime_task_prepare_deadline` |
+| `repository_mismatch` | `runtime_task_repository_mismatch` |
 | `internal_error` | `runtime_task_internal_error` |
 
 Exceptions are redacted to `runtime_task_control_exception`. This slice adds
 no request ID, durable result store, replay behavior, or placeholder runtime.
 `ServiceApplication` installs the concrete production control only when its
-embedding owner explicitly supplies a
-`ProductionRuntimeScriptTaskProvider`; the default CLI/Tauri composition
-keeps these commands unregistered.
+embedding owner explicitly supplies a lightweight
+`ServiceRuntimeTaskCompositionFactory`. The separate production target builds
+that factory from `ProductionRuntimeScriptTaskProvider`; the default CLI/Tauri
+composition keeps these commands unregistered and does not link the production
+script factory or OpenCV closure. A start observed while the current generation
+is stopping fails as `runtime_task_conflict`, never successful
+`already-running` data.
 
 ## Build and test
 

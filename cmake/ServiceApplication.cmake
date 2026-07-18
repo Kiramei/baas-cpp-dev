@@ -29,9 +29,11 @@ target_link_libraries(
         BAAS_service_status_trigger
         BAAS_service_adb_discovery_trigger
         BAAS_service_configuration_triggers
-        BAAS_service_production_runtime_script_task_factory
-        BAAS_service_production_runtime_task_control
+        BAAS_service_runtime_task_owner
+        BAAS_service_runtime_task_triggers
+        BAAS_service_runtime_task_status_json
         BAAS_service_trigger_handler
+        PRIVATE BAAS::nlohmann_json
 )
 
 add_executable(
@@ -80,36 +82,39 @@ if(BUILD_SERVICE_APP_TESTS)
             PROPERTIES TIMEOUT 90
     )
 
-    add_executable(
+    if(TARGET BAAS_service_production_runtime_task_control)
+        add_executable(
             BAAS_service_production_runtime_path_tests
             "${BAAS_PROJECT_PATH}/tests/service/ServiceProductionRuntimePathTests.cpp"
-    )
-    target_compile_features(
+        )
+        target_compile_features(
             BAAS_service_production_runtime_path_tests PRIVATE cxx_std_20
-    )
-    target_link_libraries(
+        )
+        target_link_libraries(
             BAAS_service_production_runtime_path_tests
             PRIVATE BAAS_service_application
-    )
-    if(MSVC)
-        target_compile_options(
+                    BAAS_service_production_runtime_task_control
+        )
+        if(MSVC)
+            target_compile_options(
                 BAAS_service_production_runtime_path_tests
                 PRIVATE /W4 /permissive- /EHsc /utf-8
-        )
-    else()
-        target_compile_options(
+            )
+        else()
+            target_compile_options(
                 BAAS_service_production_runtime_path_tests
                 PRIVATE -Wall -Wextra -Wpedantic
-        )
-    endif()
-    add_test(
+            )
+        endif()
+        add_test(
             NAME BAAS_service_production_runtime_path_tests
             COMMAND BAAS_service_production_runtime_path_tests
-    )
-    set_tests_properties(
+        )
+        set_tests_properties(
             BAAS_service_production_runtime_path_tests
             PROPERTIES TIMEOUT 90
-    )
+        )
+    endif()
 
     add_test(NAME BAAS_service_version_cli COMMAND BAAS_service --version)
     set_tests_properties(
