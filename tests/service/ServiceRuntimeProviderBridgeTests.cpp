@@ -16,6 +16,10 @@
 #include <vector>
 
 #if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <Windows.h>
 #include <process.h>
 #else
 #include <unistd.h>
@@ -64,6 +68,35 @@ void write_bytes(const std::filesystem::path& path, const std::string& bytes)
     output << bytes;
     output.close();
     if (!output) throw std::runtime_error("fixture write failed");
+}
+
+void replace_bytes_atomically(
+    const std::filesystem::path& path, const std::string& bytes)
+{
+    auto temporary = path;
+    temporary += ".scan-barrier.tmp";
+    try {
+        write_bytes(temporary, bytes);
+#if defined(_WIN32)
+        if (MoveFileExW(
+                temporary.c_str(), path.c_str(),
+                MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)
+            != FALSE) {
+            return;
+        }
+#else
+        std::error_code error;
+        std::filesystem::rename(temporary, path, error);
+        if (!error) return;
+#endif
+    } catch (...) {
+        std::error_code ignored;
+        std::filesystem::remove(temporary, ignored);
+        throw;
+    }
+    std::error_code ignored;
+    std::filesystem::remove(temporary, ignored);
+    throw std::runtime_error("atomic fixture replacement failed");
 }
 
 struct TempProject {
@@ -185,17 +218,18 @@ void test_real_initialization_and_external_refresh()
     check(eventually([&] {
         auto gui = store->pull({SyncResource::gui, std::nullopt}, {});
         return gui_remove_published.load(std::memory_order_acquire)
-            && !gui && gui.error == ResourceStoreError::not_found
+            && !gui && gui.error == ResourceStoreError::not_found;
+    }), "optional gui deletion publishes its cache invalidation");
+
+    replace_bytes_atomically(
+        project.root / "config" / "static.json", R"({"version":2})");
+    check(eventually([&] {
+        auto snapshot = provider->static_snapshot({});
+        return snapshot && Json::parse(snapshot->data_json)["version"] == 2
             && initialized(provider) == true;
     }) && status_publications.load(std::memory_order_relaxed)
               == publications_after_start,
-          "optional gui deletion invalidates cache without failing readiness");
-
-    write_bytes(project.root / "config" / "static.json", R"({"version":2})");
-    check(eventually([&] {
-        auto snapshot = provider->static_snapshot({});
-        return snapshot && Json::parse(snapshot->data_json)["version"] == 2;
-    }), "watcher refreshes changed static data into provider");
+          "optional gui deletion completes a ready scan without status churn");
 
     std::filesystem::remove(project.root / "config" / "static.json");
     check(eventually([&] { return initialized(provider) == false; }),
@@ -339,20 +373,54 @@ void test_config_pair_replacement_advances_at_capacity()
         }
         return removed_config && removed_event;
     };
+    const auto replacement_pair_published = [&] {
+        bool replaced_config{};
+        bool replaced_event{};
+        std::lock_guard lock(updates_mutex);
+        for (const auto& update : updates) {
+            const auto operations = Json::parse(update.operations_json);
+            if (!update.key.resource_id || *update.key.resource_id != "beta"
+                || operations.empty() || operations[0]["op"] != "replace") {
+                continue;
+            }
+            replaced_config = replaced_config
+                || update.key.resource == SyncResource::config;
+            replaced_event = replaced_event
+                || update.key.resource == SyncResource::event;
+        }
+        return replaced_config && replaced_event;
+    };
 
     // Keep alpha/config.json physically present while breaking its pair, then
     // add beta. Both retired keys must be invalidated before beta admission.
     std::filesystem::remove(project.root / "config" / "alpha" / "event.json");
     project.add_config("beta");
     check(eventually([&] {
-        auto beta = store->pull({SyncResource::config, std::string{"beta"}}, {});
-        return beta && initialized(provider) == true
-            && removed_pair_published();
-    }), "A-to-B config replacement advances at exact cache capacity");
+        return removed_pair_published() && replacement_pair_published();
+    }), "A-to-B scan publishes both retirement and admission pairs");
+
+    // The update callbacks run before scan_completed(). Advance a distinct
+    // provider-owned value only after all four pair updates were observed, so
+    // the static snapshot is a deterministic completion barrier for this scan
+    // (or the immediately following scan), not stale readiness from the prior
+    // generation.
+    replace_bytes_atomically(
+        project.root / "config" / "static.json", R"({"version":2})");
+    check(eventually([&] {
+        const auto snapshot = provider->static_snapshot({});
+        return initialized(provider) == true && snapshot
+            && Json::parse(snapshot->data_json)["version"] == 2;
+    }), "A-to-B config replacement completes a ready provider generation");
+
+    auto beta_config = store->pull(
+        {SyncResource::config, std::string{"beta"}}, {});
+    auto beta_event = store->pull(
+        {SyncResource::event, std::string{"beta"}}, {});
 
     auto stale_alpha = store->pull(
         {SyncResource::config, std::string{"alpha"}}, {});
-    check(removed_pair_published() && !stale_alpha
+    check(beta_config && beta_event && removed_pair_published()
+              && replacement_pair_published() && !stale_alpha
               && stale_alpha.error == ResourceStoreError::capacity,
           "removed id publishes both root removes even when one sibling remains");
     bridge.stop();
