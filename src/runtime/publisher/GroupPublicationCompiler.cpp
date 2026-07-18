@@ -1587,19 +1587,63 @@ private:
     int value_{-1};
 };
 
+struct DirectoryStreamDeleter final {
+    void operator()(DIR* stream) const noexcept
+    {
+        if (stream) static_cast<void>(::closedir(stream));
+    }
+};
+
+using DirectoryStream = std::unique_ptr<DIR, DirectoryStreamDeleter>;
+
 class AnchoredDirectory final {
 public:
     AnchoredDirectory(const std::filesystem::path& root, const bool create, bool)
     {
         std::error_code error;
-        const auto absolute = std::filesystem::absolute(root, error).lexically_normal();
+        auto absolute = std::filesystem::absolute(root, error).lexically_normal();
         if (error || !absolute.is_absolute())
             fail(PublicationErrorCode::output_io_failed, "publication root path is invalid");
-        NativeHandle current{::open("/", O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW)};
-        if (!current)
+
+        while (absolute != absolute.root_path() && absolute.filename().empty())
+            absolute = absolute.parent_path();
+        if (absolute == absolute.root_path()) {
+            root_ = NativeHandle{::open(
+                absolute.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW)};
+            if (!root_)
+                fail(PublicationErrorCode::output_io_failed,
+                     "publication filesystem root cannot be anchored");
+            return;
+        }
+
+        // Resolve the caller-trusted, already-existing ancestor namespace once. This
+        // intentionally honors operating-system aliases such as macOS /var ->
+        // /private/var. The returned descriptor is the trust boundary: every absent
+        // suffix component, the final publication root, and every descendant is then
+        // opened handle-relative with O_NOFOLLOW.
+        auto existing_prefix = absolute.parent_path();
+        std::vector<std::filesystem::path> missing_prefix_components;
+        NativeHandle current;
+        for (;;) {
+            current = NativeHandle{::open(
+                existing_prefix.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC)};
+            if (current) break;
+            if (!create || errno != ENOENT || existing_prefix == existing_prefix.root_path())
+                fail(PublicationErrorCode::output_io_failed,
+                     "trusted publication prefix cannot be anchored");
+            const auto name = existing_prefix.filename();
+            if (name.empty() || name == "." || name == "..")
+                fail(PublicationErrorCode::output_io_failed,
+                     "publication root component is invalid");
+            missing_prefix_components.push_back(name);
+            existing_prefix = existing_prefix.parent_path();
+        }
+        struct stat prefix_status {};
+        if (::fstat(current.get(), &prefix_status) != 0 || !S_ISDIR(prefix_status.st_mode))
             fail(PublicationErrorCode::output_io_failed,
-                 "publication filesystem root cannot be anchored");
-        for (const auto& component : absolute.relative_path()) {
+                 "trusted publication prefix is not a directory");
+
+        const auto open_or_create_component = [&](const std::filesystem::path& component) {
             const auto name = component.native();
             if (name.empty() || name == "." || name == "..")
                 fail(PublicationErrorCode::output_io_failed,
@@ -1630,7 +1674,12 @@ public:
                 fail(PublicationErrorCode::output_io_failed,
                      "publication root component is not a directory");
             current = std::move(next);
-        }
+        };
+
+        for (auto component = missing_prefix_components.rbegin();
+             component != missing_prefix_components.rend(); ++component)
+            open_or_create_component(*component);
+        open_or_create_component(absolute.filename());
         root_ = std::move(current);
     }
 
@@ -1724,7 +1773,7 @@ private:
         if (scan_fd < 0)
             fail(PublicationErrorCode::publication_mismatch,
                  "publication directory duplication failed");
-        std::unique_ptr<DIR, decltype(&::closedir)> scan{::fdopendir(scan_fd), &::closedir};
+        DirectoryStream scan{::fdopendir(scan_fd)};
         if (!scan) {
             static_cast<void>(::close(scan_fd));
             fail(PublicationErrorCode::publication_mismatch,

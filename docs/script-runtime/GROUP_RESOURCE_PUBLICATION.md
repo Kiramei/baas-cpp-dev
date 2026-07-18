@@ -112,14 +112,20 @@ Each support bundle is a deterministic ZIP32 STORE stream:
 The publisher emits all declared bundle paths followed by canonical
 `baas.resources.json`. Individual files use exclusive sibling temporary files,
 durable flush, and atomic replacement. The manifest is replaced last and is the
-publication commit point. Publication roots and every relative parent component
-are opened from a fixed filesystem-root handle without following links. Reads
-derive size and bytes from the same anchored file handle; writes create and
-rename through the fixed parent handle (`openat`/`renameat` on POSIX and
+publication commit point. On POSIX, the caller-trusted existing ancestor prefix
+is resolved once into a stable directory handle, which preserves system
+namespace aliases such as macOS `/var` -> `/private/var`. Starting at that
+handle, every missing suffix component, the final publication root, and every
+relative parent component are opened or created with no-follow semantics. On
+Windows the same no-reparse boundary is anchored from the filesystem root.
+Reads derive size and bytes from the same anchored file handle; writes create
+and rename through the fixed parent handle (`openat`/`renameat` on POSIX and
 root-relative `NtCreateFile`/rename on Windows), then durably flush the file and
-directory. A post-write anchored read verifies the committed bytes. `--check`
-performs no writes and rejects missing, different, symlinked, or undeclared
-files.
+directory. No path is canonicalized and then reused for I/O: after the one-time
+trusted-prefix open, all publication access remains handle-relative, closing
+the publication-root/descendant substitution window. A post-write anchored
+read verifies the committed bytes. `--check` performs no writes and rejects
+missing, different, symlinked, or undeclared files.
 
 ## CLI
 

@@ -624,6 +624,29 @@ void test_compile_reproducible_and_activate()
         publisher::PublicationErrorCode::publication_mismatch,
         "writer must reject a symlink before mutation");
     std::filesystem::remove(publication.path() / "linked.bundle");
+
+    TemporaryDirectory trusted_prefix_fixture;
+    const auto real_prefix = trusted_prefix_fixture.path() / "real-prefix";
+    const auto prefix_alias = trusted_prefix_fixture.path() / "trusted-prefix-alias";
+    std::filesystem::create_directories(real_prefix);
+    std::filesystem::create_directory_symlink(real_prefix, prefix_alias);
+    const auto aliased_publication_root = prefix_alias / "publication";
+    publisher::write_group_publication(first, aliased_publication_root, false);
+    publisher::verify_group_publication(lock, git.path(), aliased_publication_root);
+    check(std::filesystem::is_regular_file(
+              real_prefix / "publication" / "baas.resources.json"),
+          "trusted POSIX prefix alias must resolve before publication-root anchoring");
+
+    const auto final_root_target = real_prefix / "final-root-target";
+    const auto final_root_alias = real_prefix / "final-root-alias";
+    std::filesystem::create_directories(final_root_target);
+    std::filesystem::create_directory_symlink(final_root_target, final_root_alias);
+    expect_error([&] { publisher::write_group_publication(
+        first, final_root_alias, false); },
+        publisher::PublicationErrorCode::output_io_failed,
+        "writer must reject a symlink at the final publication root");
+    check(std::filesystem::is_empty(final_root_target),
+          "rejected final publication-root symlink must not mutate its target");
 #endif
     write_file(publication.path() / "undeclared.bin", "extra");
     expect_error([&] { publisher::write_group_publication(

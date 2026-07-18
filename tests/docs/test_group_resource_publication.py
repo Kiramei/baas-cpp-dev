@@ -136,8 +136,11 @@ class GroupResourcePublicationContractTests(unittest.TestCase):
             "FileIdBothDirectoryInfo",
             "before-read-open",
             "before-write-create",
+            "DirectoryStreamDeleter",
+            "trusted publication prefix cannot be anchored",
         ):
             self.assertIn(token, source)
+        self.assertNotIn("decltype(&::closedir)", source)
         self.assertIn("cumulative decoded PNG work over 128 MiB", tests)
         self.assertIn("stored PNG over the fixed 4 MiB limit", tests)
         self.assertIn("rgba-boundary", tests)
@@ -146,6 +149,14 @@ class GroupResourcePublicationContractTests(unittest.TestCase):
         self.assertIn("4096 total PNG chunks", tests)
         self.assertIn("4097 total PNG chunks", tests)
         self.assertIn("deterministic final-component replacement race", tests)
+        self.assertIn("trusted POSIX prefix alias", tests)
+        self.assertIn("symlink at the final publication root", tests)
+
+        contract = (
+            ROOT / "docs" / "script-runtime" / "GROUP_RESOURCE_PUBLICATION.md"
+        ).read_text(encoding="utf-8")
+        self.assertIn("macOS `/var` -> `/private/var`", contract)
+        self.assertIn("all publication access remains handle-relative", contract)
 
 
 if __name__ == "__main__":
