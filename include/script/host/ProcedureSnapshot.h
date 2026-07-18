@@ -65,6 +65,10 @@ struct ProcedureDescriptorInput {
     // These are sets. Publication sorts them into a canonical order.
     std::vector<ProcedureEffect> declared_effects;
     std::vector<std::string> resource_ids;
+    // SHA-256 over the executable implementation contract. Runtime loaders bind
+    // the engine, definition-file digest, and ordered source-to-terminal mapping
+    // into this value before descriptor publication.
+    std::string implementation_sha256;
     // SHA-256 over the descriptor's canonical logical fields, excluding this field.
     std::string sha256;
 };
@@ -85,6 +89,7 @@ public:
     [[nodiscard]] std::span<const std::string> terminal_ids() const noexcept;
     [[nodiscard]] std::span<const ProcedureEffect> declared_effects() const noexcept;
     [[nodiscard]] std::span<const std::string> resource_ids() const noexcept;
+    [[nodiscard]] const std::string& implementation_sha256() const noexcept;
     [[nodiscard]] const std::string& sha256() const noexcept;
     [[nodiscard]] bool accepts_terminal(std::string_view terminal_id) const noexcept;
     [[nodiscard]] bool declares_effect(ProcedureEffect effect) const noexcept;

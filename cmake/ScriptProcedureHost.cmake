@@ -1,7 +1,7 @@
 include_guard(GLOBAL)
 
-if(NOT TARGET BAAS_script_runtime OR NOT TARGET BAAS_resource_core)
-    message(FATAL_ERROR "BAAS script Procedure Host requires script runtime and resource core")
+if(NOT TARGET BAAS_script_runtime OR NOT TARGET BAAS_script_procedure_snapshot)
+    message(FATAL_ERROR "BAAS script Procedure Host requires script runtime and procedure snapshot")
 endif()
 
 find_package(Threads REQUIRED)
@@ -9,7 +9,6 @@ find_package(Threads REQUIRED)
 add_library(
         BAAS_script_procedure_host
         STATIC
-        "${BAAS_PROJECT_PATH}/src/script/host/ProcedureSnapshot.cpp"
         "${BAAS_PROJECT_PATH}/src/script/host/ProcedureHost.cpp"
 )
 target_compile_features(BAAS_script_procedure_host PUBLIC cxx_std_20)
@@ -19,7 +18,7 @@ target_include_directories(
 )
 target_link_libraries(
         BAAS_script_procedure_host
-        PUBLIC BAAS_script_runtime BAAS_resource_core Threads::Threads
+        PUBLIC BAAS_script_runtime BAAS_script_procedure_snapshot Threads::Threads
 )
 if(MSVC)
     target_compile_options(BAAS_script_procedure_host PUBLIC /utf-8 PRIVATE /W4 /permissive-)
