@@ -244,6 +244,18 @@ bool wait_until(const std::function<bool()>& predicate, const std::chrono::milli
 
 void test_snapshot_validation_identity_and_ownership()
 {
+    const host::ProcedureSnapshotLimits legacy_snapshot_limits{
+        11, 12, 13, 14, 15, 16, 17};
+    const host::ProcedureHostLimits legacy_host_limits{21, 22, 23, 24, 25, 26};
+    check(legacy_snapshot_limits.max_string_bytes == 15 &&
+              legacy_snapshot_limits.max_total_string_bytes == 16 &&
+              legacy_snapshot_limits.max_validation_work == 17 &&
+              legacy_snapshot_limits.max_result_schema_nodes_per_procedure == 16'384 &&
+              legacy_snapshot_limits.max_result_schema_depth == 32 &&
+              legacy_host_limits.max_calls == 26 &&
+              legacy_host_limits.max_result_depth == 32 &&
+              legacy_host_limits.max_result_nodes == 16'384,
+          "pre-structured-result positional limit initialization must retain its field mapping");
     check(host::valid_procedure_id("activity/group") &&
               !host::valid_procedure_id("Activity/group") &&
               !host::valid_procedure_id("../group") &&
@@ -344,6 +356,18 @@ void test_snapshot_validation_identity_and_ownership()
     expect_snapshot_error(host::ProcedureSnapshotErrorCode::ResultSchemaLimitExceeded, [&] {
         (void)host::procedure_descriptor_sha256(schema_descriptor, schema_limits);
     }, "result schema publication must have an independent node limit");
+    auto common_prefix_schema = schema_descriptor;
+    common_prefix_schema.result_schema = {
+        {std::string(1'023, 'a') + 'b', true,
+         host::ProcedureResultJsonType::String, {}},
+        {std::string(1'023, 'a') + 'c', true,
+         host::ProcedureResultJsonType::String, {}},
+    };
+    schema_limits = {};
+    schema_limits.max_validation_work = 512;
+    expect_snapshot_error(host::ProcedureSnapshotErrorCode::WorkLimitExceeded, [&] {
+        (void)host::procedure_descriptor_sha256(common_prefix_schema, schema_limits);
+    }, "common-prefix result names must charge their bounded comparison work");
     auto missing_resource = descriptor();
     missing_resource.resource_ids = {"image/group/missing"};
     missing_resource.sha256 = host::procedure_descriptor_sha256(missing_resource);

@@ -73,13 +73,13 @@ struct RuntimeProcedureActivationLimits final {
     std::size_t max_terminals_per_procedure{256};
     std::size_t max_effects_per_procedure{5};
     std::size_t max_resources_per_procedure{4'096};
-    std::size_t max_result_schema_nodes_per_procedure{16'384};
-    std::size_t max_result_schema_depth{32};
     std::size_t max_string_bytes{1'024};
     std::size_t max_total_string_bytes{16U * 1024U * 1024U};
     std::size_t max_json_depth{32};
     std::size_t max_json_nodes{200'000};
     std::size_t max_work{512U * 1024U * 1024U};
+    std::size_t max_result_schema_nodes_per_procedure{16'384};
+    std::size_t max_result_schema_depth{32};
 };
 
 struct RuntimeProcedureActivationLoadResult;

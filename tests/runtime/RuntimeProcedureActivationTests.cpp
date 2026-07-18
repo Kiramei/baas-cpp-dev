@@ -392,6 +392,16 @@ void test_identity_binds_definition_and_terminal_mapping() {
 }
 
 void test_ordered_result_schema_activation_and_identity() {
+    const procedure::RuntimeProcedureActivationLimits legacy_limits{
+        11, 12, 13, 14, 15, 5, 17, 18, 19, 20, 21, 22};
+    check(legacy_limits.max_string_bytes == 18 &&
+              legacy_limits.max_total_string_bytes == 19 &&
+              legacy_limits.max_json_depth == 20 &&
+              legacy_limits.max_json_nodes == 21 &&
+              legacy_limits.max_work == 22 &&
+              legacy_limits.max_result_schema_nodes_per_procedure == 16'384 &&
+              legacy_limits.max_result_schema_depth == 32,
+          "pre-structured-result positional activation limits must retain their field mapping");
     constexpr std::string_view shop_schema =
         R"([{"name":"plan","required":true,"type":"array","items":{"type":"object","fields":[{"name":"item_id","required":true,"type":"string"},{"name":"quantity","required":true,"type":"integer"}]}},{"name":"balance","required":true,"type":"object","fields":[{"name":"credits","required":true,"type":"integer"},{"name":"gems","required":false,"type":"integer"}]},{"name":"formatted_text","required":false,"type":"string"}])";
     auto specs = valid_specs();

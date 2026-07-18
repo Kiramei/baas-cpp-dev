@@ -253,19 +253,51 @@ void charge_string(const std::string_view value,
     if (!fields.is_array())
         fail(RuntimeProcedureActivationError::invalid_manifest,
              std::string{procedure_id});
+    if (nodes > limits.max_result_schema_nodes_per_procedure ||
+        fields.size() > limits.max_result_schema_nodes_per_procedure - nodes)
+        fail(RuntimeProcedureActivationError::result_schema_limit_exceeded,
+             std::string{procedure_id});
     std::vector<host::ProcedureResultFieldSchema> result;
     result.reserve(fields.size());
     for (const auto& field : fields) {
         auto parsed = parse_result_value_schema(
             field, true, limits, procedure_id, depth,
             nodes, total_strings, work);
-        for (const auto& prior : result) {
-            work.charge(1);
-            if (prior.name == parsed.name)
-                fail(RuntimeProcedureActivationError::invalid_manifest,
-                     std::string{procedure_id});
-        }
         result.push_back(std::move(parsed));
+    }
+
+    // Duplicate detection must not turn a large, attacker-controlled sibling
+    // list with common string prefixes into quadratic validation work. Use a
+    // deterministic bottom-up merge sort and charge an upper bound for every
+    // lexicographic comparison (the shared prefix plus its discriminator).
+    std::vector<std::string_view> names;
+    names.reserve(result.size());
+    for (const auto& field : result) names.emplace_back(field.name);
+    std::vector<std::string_view> scratch(names.size());
+    for (std::size_t width = 1; width < names.size();) {
+        const auto run = width > names.size() - width
+            ? names.size() : width * 2;
+        for (std::size_t begin = 0; begin < names.size(); begin += run) {
+            const auto middle = std::min(names.size(), begin + width);
+            const auto end = std::min(names.size(), begin + run);
+            auto left = begin;
+            auto right = middle;
+            auto output = begin;
+            while (left < middle && right < end) {
+                work.charge(std::min(names[left].size(), names[right].size()) + 1);
+                const auto comparison = names[left].compare(names[right]);
+                if (comparison == 0)
+                    fail(RuntimeProcedureActivationError::invalid_manifest,
+                         std::string{procedure_id});
+                scratch[output++] = comparison < 0
+                    ? names[left++] : names[right++];
+            }
+            while (left < middle) scratch[output++] = names[left++];
+            while (right < end) scratch[output++] = names[right++];
+        }
+        names.swap(scratch);
+        if (width > names.size() / 2) break;
+        width *= 2;
     }
     return result;
 }

@@ -203,12 +203,12 @@ struct ProcedureHostLimits {
     std::size_t max_option_nodes{16'384};
     std::size_t max_option_bytes{1U * 1024U * 1024U};
     std::size_t max_option_work{65'536};
+    std::size_t max_calls{1'000'000};
     std::size_t max_result_depth{32};
     std::size_t max_result_nodes{16'384};
     std::size_t max_result_string_bytes{1U * 1024U * 1024U};
     std::size_t max_result_total_bytes{4U * 1024U * 1024U};
     std::size_t max_result_validation_work{65'536};
-    std::size_t max_calls{1'000'000};
 };
 
 struct ProcedureHostStats {

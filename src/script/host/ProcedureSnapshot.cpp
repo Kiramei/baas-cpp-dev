@@ -108,6 +108,13 @@ void preflight_result_fields(
         throw ProcedureSnapshotError(
             ProcedureSnapshotErrorCode::ResultSchemaLimitExceeded,
             "procedure result schema depth exceeded");
+    if (nodes > limits.max_result_schema_nodes_per_procedure ||
+        fields.size() > limits.max_result_schema_nodes_per_procedure - nodes)
+        throw ProcedureSnapshotError(
+            ProcedureSnapshotErrorCode::ResultSchemaLimitExceeded,
+            "procedure result schema node limit exceeded");
+    std::vector<std::string_view> names;
+    if (!array_item) names.reserve(fields.size());
     for (std::size_t field_index{}; field_index < fields.size(); ++field_index) {
         const auto& field = fields[field_index];
         if (++nodes > limits.max_result_schema_nodes_per_procedure)
@@ -139,16 +146,7 @@ void preflight_result_fields(
                 throw ProcedureSnapshotError(
                     ProcedureSnapshotErrorCode::ReservedResultField,
                     "procedure result field uses reserved name end");
-            for (std::size_t previous{}; previous < field_index; ++previous) {
-                if (++work > limits.max_validation_work)
-                    throw ProcedureSnapshotError(
-                        ProcedureSnapshotErrorCode::WorkLimitExceeded,
-                        "procedure descriptor validation work exceeded");
-                if (fields[previous].name == field.name)
-                    throw ProcedureSnapshotError(
-                        ProcedureSnapshotErrorCode::DuplicateResultField,
-                        "duplicate procedure result field");
-            }
+            names.emplace_back(field.name);
         }
         if (!valid_result_type(field.type))
             throw ProcedureSnapshotError(
@@ -176,6 +174,45 @@ void preflight_result_fields(
                         "primitive result schema cannot have children");
                 break;
         }
+    }
+
+    // Keep duplicate validation bounded by the explicit work budget even when
+    // all sibling names share a long prefix. A deterministic merge sort gives
+    // O(n log n) comparisons, and each comparison charges the maximum bytes it
+    // can inspect before ordering the two names.
+    std::vector<std::string_view> scratch(names.size());
+    for (std::size_t width = 1; width < names.size();) {
+        const auto run = width > names.size() - width
+            ? names.size() : width * 2;
+        for (std::size_t begin = 0; begin < names.size(); begin += run) {
+            const auto middle = std::min(names.size(), begin + width);
+            const auto end = std::min(names.size(), begin + run);
+            auto left = begin;
+            auto right = middle;
+            auto output = begin;
+            while (left < middle && right < end) {
+                const auto comparison_work =
+                    std::min(names[left].size(), names[right].size()) + 1;
+                if (comparison_work > limits.max_validation_work -
+                        std::min(work, limits.max_validation_work))
+                    throw ProcedureSnapshotError(
+                        ProcedureSnapshotErrorCode::WorkLimitExceeded,
+                        "procedure descriptor validation work exceeded");
+                work += comparison_work;
+                const auto comparison = names[left].compare(names[right]);
+                if (comparison == 0)
+                    throw ProcedureSnapshotError(
+                        ProcedureSnapshotErrorCode::DuplicateResultField,
+                        "duplicate procedure result field");
+                scratch[output++] = comparison < 0
+                    ? names[left++] : names[right++];
+            }
+            while (left < middle) scratch[output++] = names[left++];
+            while (right < end) scratch[output++] = names[right++];
+        }
+        names.swap(scratch);
+        if (width > names.size() / 2) break;
+        width *= 2;
     }
 }
 
