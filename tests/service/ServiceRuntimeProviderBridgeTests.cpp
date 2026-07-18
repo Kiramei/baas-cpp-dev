@@ -16,6 +16,10 @@
 #include <vector>
 
 #if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <Windows.h>
 #include <process.h>
 #else
 #include <unistd.h>
@@ -64,6 +68,35 @@ void write_bytes(const std::filesystem::path& path, const std::string& bytes)
     output << bytes;
     output.close();
     if (!output) throw std::runtime_error("fixture write failed");
+}
+
+void replace_bytes_atomically(
+    const std::filesystem::path& path, const std::string& bytes)
+{
+    auto temporary = path;
+    temporary += ".scan-barrier.tmp";
+    try {
+        write_bytes(temporary, bytes);
+#if defined(_WIN32)
+        if (MoveFileExW(
+                temporary.c_str(), path.c_str(),
+                MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)
+            != FALSE) {
+            return;
+        }
+#else
+        std::error_code error;
+        std::filesystem::rename(temporary, path, error);
+        if (!error) return;
+#endif
+    } catch (...) {
+        std::error_code ignored;
+        std::filesystem::remove(temporary, ignored);
+        throw;
+    }
+    std::error_code ignored;
+    std::filesystem::remove(temporary, ignored);
+    throw std::runtime_error("atomic fixture replacement failed");
 }
 
 struct TempProject {
@@ -188,7 +221,8 @@ void test_real_initialization_and_external_refresh()
             && !gui && gui.error == ResourceStoreError::not_found;
     }), "optional gui deletion publishes its cache invalidation");
 
-    write_bytes(project.root / "config" / "static.json", R"({"version":2})");
+    replace_bytes_atomically(
+        project.root / "config" / "static.json", R"({"version":2})");
     check(eventually([&] {
         auto snapshot = provider->static_snapshot({});
         return snapshot && Json::parse(snapshot->data_json)["version"] == 2
@@ -370,7 +404,8 @@ void test_config_pair_replacement_advances_at_capacity()
     // the static snapshot is a deterministic completion barrier for this scan
     // (or the immediately following scan), not stale readiness from the prior
     // generation.
-    write_bytes(project.root / "config" / "static.json", R"({"version":2})");
+    replace_bytes_atomically(
+        project.root / "config" / "static.json", R"({"version":2})");
     check(eventually([&] {
         const auto snapshot = provider->static_snapshot({});
         return initialized(provider) == true && snapshot
