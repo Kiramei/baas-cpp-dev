@@ -238,7 +238,11 @@ pending.
   the fixed-key structured JSON bridge into `BAAS_APP`. Live package activation,
   real execution-context identity propagation, service log streaming, Python
   parity, and Tauri end-to-end display remain pending; see `LOG_HOST.md`.
-- [ ] Bind configuration, schema validation, and persistence.
+- [~] Bind configuration, schema validation, and persistence. The request-local
+  `ConfigHost` foundation now pins immutable reads, exposes typed JSON-safe
+  lookup, and delegates expected-revision atomic transactions to a narrow
+  application port. Production persistence/Tauri wiring and Python parity remain
+  pending; see `CONFIG_HOST.md`.
 - [ ] Bind resource lookup, image loading, and versioned manifests.
 - [ ] Bind screenshot acquisition and image processing.
 - [ ] Bind OCR lifecycle and inference operations.

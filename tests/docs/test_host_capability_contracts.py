@@ -31,6 +31,7 @@ CORE_BOUNDARY_ADR_PATH = ROOT / "docs" / "script-runtime" / "ADR-0004-core-runti
 ASYNC_PATH = ROOT / "docs" / "script-runtime" / "ASYNC_TASKS.md"
 ERRORS_PATH = ROOT / "docs" / "script-runtime" / "ERRORS_AND_CLEANUP.md"
 WORKFLOW_PATH = ROOT / ".github" / "workflows" / "foundation-runtime.yml"
+CONFIG_HOST_PATH = ROOT / "docs" / "script-runtime" / "CONFIG_HOST.md"
 SYNCHRONOUS_HOST_SOURCE_PATH = (
     ROOT / "src" / "script" / "runtime" / "SynchronousHost.cpp"
 )
@@ -156,6 +157,7 @@ class HostCapabilityContractTests(unittest.TestCase):
         cls.async_spec = read(ASYNC_PATH)
         cls.errors_spec = read(ERRORS_PATH)
         cls.workflow = read(WORKFLOW_PATH)
+        cls.config_host = read(CONFIG_HOST_PATH)
         cls.synchronous_host_source = read(SYNCHRONOUS_HOST_SOURCE_PATH)
 
     def test_complete_normative_clause_inventory_and_terms(self) -> None:
@@ -898,6 +900,53 @@ class HostCapabilityContractTests(unittest.TestCase):
             ROOT / "cmake" / "ScriptProcedureHost.cmake",
         ):
             self.assertTrue(path.exists(), f"ProcedureHost foundation evidence is missing: {path}")
+
+    def test_config_host_request_local_abi_and_foundation_evidence(self) -> None:
+        config = next(
+            module for module in self.catalog["modules"]
+            if module["id"] == "baas/config"
+        )
+        bindings = {binding["export"]: binding for binding in config["bindings"]}
+        self.assertEqual(bindings["snapshot"]["parameters"], [])
+        self.assertEqual(
+            bindings["get"]["parameters"],
+            [
+                {"name": "path", "required": True, "type": "string"},
+                {"name": "default", "required": False, "type": "json"},
+            ],
+        )
+        self.assertEqual(
+            bindings["transact"]["parameters"],
+            [
+                {"name": "expected_revision", "required": True, "type": "int"},
+                {"name": "patch", "required": True, "type": "ordered-map<string,json>"},
+            ],
+        )
+        for name in ("snapshot", "transact"):
+            self.assertEqual(
+                bindings[name]["result_schema"]["field_order"],
+                ["revision", "snapshot_id"],
+            )
+        for term in (
+            "Request-local",
+            "immutable",
+            "ConfigHostPort",
+            "expected-revision",
+            "ProductionRuntimeScriptExtensions::make_host_contributions",
+            "No repository path",
+        ):
+            self.assertIn(term, self.config_host)
+        for path in (
+            ROOT / "include" / "script" / "host" / "ConfigHost.h",
+            ROOT / "src" / "script" / "host" / "ConfigHost.cpp",
+            ROOT / "tests" / "script" / "ConfigHostTests.cpp",
+            ROOT / "cmake" / "ScriptConfigHost.cmake",
+        ):
+            self.assertTrue(path.exists(), f"ConfigHost foundation evidence is missing: {path}")
+        self.assertIn("BUILD_SCRIPT_CONFIG_HOST_TESTS=ON", self.workflow)
+        self.assertIn("BAAS_script_config_host_tests", self.workflow)
+        self.assertIn("BUILD_SCRIPT_CONFIG_HOST=ON", self.workflow)
+        self.assertIn("BAAS_script_config_host", self.workflow)
 
 
 if __name__ == "__main__":
