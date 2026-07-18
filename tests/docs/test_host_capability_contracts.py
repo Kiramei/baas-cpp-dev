@@ -934,6 +934,10 @@ class HostCapabilityContractTests(unittest.TestCase):
             "expected-revision",
             "ProductionRuntimeScriptExtensions::make_host_contributions",
             "No repository path",
+            "complete\nordered patch",
+            "failed reservation performs no copy",
+            "config_id + snapshot_id",
+            "effect_state = not_started",
         ):
             self.assertIn(term, self.config_host)
         for path in (

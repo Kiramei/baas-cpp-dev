@@ -58,6 +58,8 @@ class ServiceProductionRuntimeScriptTaskFactoryTests(unittest.TestCase):
             "log_host->shutdown",
             "exact_device_identity",
             "descriptor->resource_ids()",
+            "extension.config_id != config.config_id",
+            "extension.config_snapshot_id != config.snapshot_id",
         ):
             self.assertIn(anchor, self.source)
 
@@ -68,6 +70,7 @@ class ServiceProductionRuntimeScriptTaskFactoryTests(unittest.TestCase):
         self.assertIn("unsupported_engine", self.activation_tests)
         self.assertIn("not an arbitrary engine registry", self.doc)
         self.assertIn("Internal dispatcher\ninvariant corruption remains fail-fast", self.doc)
+        self.assertIn("matching snapshot labels from different configs", self.doc)
 
     def test_dependency_complete_ci_covers_host_and_android(self) -> None:
         self.assertGreaterEqual(

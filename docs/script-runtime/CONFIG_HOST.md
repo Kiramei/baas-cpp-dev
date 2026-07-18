@@ -25,6 +25,10 @@ Paths are strict, non-root RFC 6901 pointers. Empty segments and invalid `~`
 escapes are rejected. Traversal is through JSON objects only. Patch values are
 replacements; JSON `null` is stored as `null`, not treated as deletion. One patch
 cannot contain equal or ancestor/descendant-overlapping decoded paths.
+Node, string-byte, logical-byte, and work limits apply once to the complete
+ordered patch, not independently to each entry. Read/write aggregate bytes are
+atomically reserved from the measured source value before deep copy; a copy
+failure rolls back that reservation, and a failed reservation performs no copy.
 
 ## Production ownership
 
@@ -36,10 +40,19 @@ port must not retain references into the request. Conflicts return
 commits, invalid JSON/UTF-8, non-finite floats, duplicate object keys, exhausted
 budgets, cancellation, and deadlines fail closed.
 
+An adapter may report `Conflict` or `InvalidPatch` only with
+`effect_state = not_started`. Any other effect state is an adapter contract
+violation and becomes a redacted `HOST014_INTERNAL` while preserving the
+committed/unknown effect state. A commit validates the combined
+`config_id + snapshot_id` identity budget and is treated as committed if its
+envelope is malformed.
+
 `ProductionRuntimeScriptExtensions::make_host_contributions` is the production
 injection seam: an application extension constructs a fresh ConfigHost from the
 exact pinned config publication, contributes its metadata/bindings/owner, and is
-already checked against the task's `config_snapshot_id`. No repository path or
+already checked against the task's complete `config_id + config_snapshot_id`
+identity. Reusing one snapshot label across config A/B cannot authorize an
+extension for the other config. No repository path or
 ambient current-config lookup crosses that seam. Tauri may remain responsible
 for publishing and updating user configuration while the C++ WebUI path supplies
 an equivalent port.

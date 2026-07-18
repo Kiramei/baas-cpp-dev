@@ -38,7 +38,8 @@ declared resource ids. An immutable extension may provide request-local Host
 contributions and the already activation-supported
 `legacy.appear_then_click/v1` executor. It is not an arbitrary engine registry:
 unknown or future engines fail closed during activation. Extension identity
-must cover the exact config snapshot and repository commits.
+must cover the exact `config_id`, config snapshot id, and repository commits;
+matching snapshot labels from different configs are not interchangeable.
 
 ## Execution and cleanup
 
