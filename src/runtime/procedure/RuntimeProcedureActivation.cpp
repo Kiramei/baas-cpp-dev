@@ -1,5 +1,7 @@
 #include "runtime/procedure/RuntimeProcedureActivation.h"
 
+#include "runtime/procedure/CoDetectPythonCompatDefinition.h"
+
 #include "resources/ResourceSnapshot.h"
 #include "runtime/json/StrictJson.h"
 
@@ -570,7 +572,8 @@ RuntimeProcedureActivationLoadResult load_runtime_procedure_activation(
                 fail(RuntimeProcedureActivationError::invalid_definition, entry.id);
             auto engine = definition_document.at("engine").get<std::string>();
             charge_string(engine, limits, total_strings, work, entry.id);
-            if (engine != runtime_procedure_legacy_engine)
+            if (engine != runtime_procedure_legacy_engine
+                && engine != co_detect_python_compat_engine)
                 fail(RuntimeProcedureActivationError::unsupported_engine, entry.id);
             for (const auto& resource_id : entry.resources)
                 if (!impl->resources->snapshot()->resolve(resource_id))

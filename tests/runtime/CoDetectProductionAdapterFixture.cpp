@@ -212,21 +212,27 @@ struct ZipItem final {
     return result;
 }
 
-[[nodiscard]] std::vector<std::byte> support_archive()
+[[nodiscard]] std::vector<std::byte> support_archive(
+    const std::string_view bundle_id)
 {
     const auto graph = bytes(
-        R"({"schema":"baas.co-detect-feature-graph/v1","features":[{"name":"rgb-hit","type":"rgb","member":"rgb/hit"},{"name":"image-hit","type":"image","member":"image/hit","crop":[0,0,4,4],"threshold_milli":800,"mean_rgb_tolerance":20}]})");
+        R"({"schema":"baas.co-detect-feature-graph/v1","features":[{"name":"rgb-hit","type":"rgb","member":"rgb/hit"},{"name":"rgb-miss","type":"rgb","member":"rgb/miss"},{"name":"image-hit","type":"image","member":"image/hit","crop":[0,0,4,4],"threshold_milli":800,"mean_rgb_tolerance":20}]})");
     const auto rgb = bytes(
         R"({"schema":"baas.co-detect-rgb-ranges/v1","samples":[{"x":0,"y":0,"r":[30,30],"g":[20,20],"b":[10,10]}]})");
+    const auto rgb_miss = bytes(
+        R"({"schema":"baas.co-detect-rgb-ranges/v1","samples":[{"x":0,"y":0,"r":[255,255],"g":[255,255],"b":[255,255]}]})");
     const auto png = png_fixture();
-    const auto payload_size = graph.size() + rgb.size() + png.size();
+    const auto payload_size = graph.size() + rgb.size() + rgb_miss.size() + png.size();
     const std::string manifest =
-        R"({"schema":"baas.co-detect-support-bundle/v1","format_version":1,"bundle_id":"procedure-support/navigation.to-main-page/v1","locale":"JP","profile":"JP","member_count":3,"payload_size":)" +
+        R"({"schema":"baas.co-detect-support-bundle/v1","format_version":1,"bundle_id":")" +
+        std::string{bundle_id} + R"(","locale":"JP","profile":"JP","member_count":4,"payload_size":)" +
         std::to_string(payload_size) +
         R"(,"members":[{"id":"feature/navigation.to-main-page","kind":"feature-graph","media_type":"application/vnd.baas.co-detect-feature-graph.v1+json","size":)" +
         std::to_string(graph.size()) + R"(,"sha256":")" + sha256(graph) +
         R"("},{"id":"rgb/hit","kind":"rgb-range-set","media_type":"application/vnd.baas.co-detect-rgb-ranges.v1+json","size":)" +
         std::to_string(rgb.size()) + R"(,"sha256":")" + sha256(rgb) +
+        R"("},{"id":"rgb/miss","kind":"rgb-range-set","media_type":"application/vnd.baas.co-detect-rgb-ranges.v1+json","size":)" +
+        std::to_string(rgb_miss.size()) + R"(,"sha256":")" + sha256(rgb_miss) +
         R"("},{"id":"image/hit","kind":"png-template","media_type":"image/png","size":)" +
         std::to_string(png.size()) + R"(,"sha256":")" + sha256(png) + R"("}]})";
     return canonical_store_zip({
@@ -235,17 +241,24 @@ struct ZipItem final {
         {"manifest.json", bytes(manifest)},
         {"m00000000", graph},
         {"m00000001", rgb},
-        {"m00000002", png},
+        {"m00000002", rgb_miss},
+        {"m00000003", png},
     });
 }
 
 }  // namespace
 
+std::vector<std::byte> make_co_detect_production_test_archive(
+    const std::string_view bundle_id)
+{
+    return support_archive(bundle_id);
+}
+
 std::shared_ptr<const baas::runtime::procedure::CoDetectSupportBundle>
 make_co_detect_production_test_bundle()
 {
     TemporaryDirectory temporary;
-    auto archive = support_archive();
+    auto archive = make_co_detect_production_test_archive();
     const std::string archive_path = "payload/support.bundle";
     const std::string resource_manifest =
         R"({"schema":"baas.resources/v1","entries":[{"id":"procedure-support/navigation.to-main-page/v1","path":")" +

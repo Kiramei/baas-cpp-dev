@@ -1,4 +1,5 @@
 #include "resources/ResourceSnapshot.h"
+#include "runtime/procedure/CoDetectPythonCompatDefinition.h"
 #include "runtime/procedure/RuntimeProcedureActivation.h"
 #include "runtime/repository/RuntimeRepositorySnapshot.h"
 #include "runtime/resources/RuntimeResourceSnapshotLoader.h"
@@ -353,6 +354,22 @@ void test_success_closure_and_owned_lifetime() {
           "activation and exact definition bytes must outlive repository views");
 }
 
+void test_co_detect_engine_is_an_activated_production_engine() {
+    auto specs = valid_specs();
+    for (auto& spec : specs) {
+        const auto marker = spec.definition.find("legacy.appear_then_click/v1");
+        spec.definition.replace(
+            marker, std::string_view{"legacy.appear_then_click/v1"}.size(),
+            std::string{procedure::co_detect_python_compat_engine});
+    }
+    RepositoryFixture fixture{procedure_files(specs)};
+    const auto result = load(fixture);
+    check(result && result.activation->resolve_definition("group/menu")
+              && result.activation->resolve_definition("group/menu")->engine()
+                  == procedure::co_detect_python_compat_engine,
+          "implemented co-detect definitions must cross the activation boundary");
+}
+
 void test_identity_binds_definition_and_terminal_mapping() {
     RepositoryFixture first{procedure_files(valid_specs("menu-v1"))};
     RepositoryFixture changed_bytes{procedure_files(valid_specs("menu-v2"))};
@@ -581,6 +598,7 @@ static_assert(!std::is_copy_constructible_v<procedure::RuntimeProcedureDefinitio
 int main() {
   try {
     test_success_closure_and_owned_lifetime();
+    test_co_detect_engine_is_an_activated_production_engine();
     test_identity_binds_definition_and_terminal_mapping();
     test_provenance_and_closure_fail_closed();
     test_strict_manifests_definitions_and_paths();
