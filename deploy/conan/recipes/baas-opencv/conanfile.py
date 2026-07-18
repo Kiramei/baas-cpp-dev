@@ -3,13 +3,14 @@ from pathlib import Path
 from conan import ConanFile
 from conan.errors import ConanException
 from conan.tools.cmake import CMake, CMakeToolchain, cmake_layout
-from conan.tools.files import collect_libs, get
+from conan.tools.files import copy, get, replace_in_file
 
 
 class BAASOpenCVConan(ConanFile):
     name = "baas-opencv"
     version = "4.13.0"
     license = "Apache-2.0"
+    exports = "baas-opencv-link-interface.cmake"
     package_type = "library"
     settings = "os", "arch", "compiler", "build_type"
     options = {"shared": [True, False], "with_dnn": [True, False]}
@@ -36,17 +37,39 @@ class BAASOpenCVConan(ConanFile):
     def package(self):
         cmake = CMake(self)
         cmake.install()
+        link_interface_dir = Path(self.package_folder) / "lib" / "cmake" / "baas-opencv"
+        copy(
+            self,
+            "baas-opencv-link-interface.cmake",
+            src=self.recipe_folder,
+            dst=link_interface_dir,
+        )
+        replace_in_file(
+            self,
+            link_interface_dir / "baas-opencv-link-interface.cmake",
+            "@BAAS_OPENCV_STATIC@",
+            "OFF" if self.options.shared else "ON",
+        )
+        replace_in_file(
+            self,
+            link_interface_dir / "baas-opencv-link-interface.cmake",
+            "@BAAS_OPENCV_BUILD_TYPE@",
+            str(self.settings.build_type),
+        )
         self._check_minimum_package()
 
     def package_info(self):
         self.cpp_info.set_property("cmake_file_name", "baas-opencv")
         self.cpp_info.set_property("cmake_target_name", "BAAS::OpenCV")
-        self.cpp_info.libs = collect_libs(self)
+        self.cpp_info.set_property(
+            "cmake_build_modules",
+            ["lib/cmake/baas-opencv/baas-opencv-link-interface.cmake"],
+        )
+        self.cpp_info.builddirs = ["lib/cmake/baas-opencv"]
         self.cpp_info.bindirs = ["bin"] if self.options.shared else []
         if self.options.with_dnn:
             dnn = self.cpp_info.components["dnn"]
             dnn.set_property("cmake_target_name", "BAAS::OpenCVDnn")
-            dnn.libs = self.cpp_info.libs
             dnn.includedirs = ["include"]
 
     def _cmake_options(self):

@@ -123,9 +123,22 @@ class ServiceApplicationContractTests(unittest.TestCase):
             "'deploy/conan/recipes/baas-libsodium/**'",
             "'deploy/conan/recipes/baas-cpp-httplib/**'",
             "'deploy/conan/recipes/baas-nlohmann-json/**'",
+            "'tests/conan/baas-opencv-sibling-scope/**'",
         ):
             self.assertEqual(self.workflow.count(path), 2)
         self.assertNotIn("'cmake/Service*.cmake'", self.workflow)
+
+    def test_opencv_sibling_scope_smoke_is_a_host_matrix_gate(self) -> None:
+        smoke = self.workflow[
+            self.workflow.index(
+                "- name: Configure OpenCV sibling-scope package smoke"
+            ) : self.workflow.index("- name: Configure hook-free production application")
+        ]
+        self.assertIn("tests/conan/baas-opencv-sibling-scope", smoke)
+        self.assertIn("build/conan/service-application/conan_toolchain.cmake", smoke)
+        self.assertIn("matrix.build_type", smoke)
+        self.assertIn("cmake --build build/baas-opencv-sibling-scope", smoke)
+        self.assertIn("ctest --test-dir build/baas-opencv-sibling-scope", smoke)
 
     def test_android_ci_explicitly_enables_every_built_production_runtime_target(self) -> None:
         configure = self.workflow[

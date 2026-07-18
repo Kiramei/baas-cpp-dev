@@ -23,6 +23,7 @@ on:
       - 'tests/scheduler/**'
       - 'tests/docs/test_scheduler_policy.py'
       - 'tests/service/**'
+      - 'tests/conan/baas-opencv-sibling-scope/**'
       - 'src/service/adapters/ConfigArchiveCodec.h'
       - 'src/service/adapters/ConfigArchiveCodec.cpp'
       - 'tests/service/ServiceApplicationTests.cpp'
@@ -71,6 +72,7 @@ on:
       - 'tests/scheduler/**'
       - 'tests/docs/test_scheduler_policy.py'
       - 'tests/service/**'
+      - 'tests/conan/baas-opencv-sibling-scope/**'
       - 'src/service/adapters/ConfigArchiveCodec.h'
       - 'src/service/adapters/ConfigArchiveCodec.cpp'
       - 'tests/service/ServiceApplicationTests.cpp'
@@ -224,6 +226,25 @@ jobs:
           -s:h build_type=${{ matrix.build_type }} -s:b build_type=Release
           ${{ matrix.conan_settings }}
           -g CMakeDeps -g CMakeToolchain --build=missing --no-remote
+
+      - name: Configure OpenCV sibling-scope package smoke
+        run: >-
+          cmake -S tests/conan/baas-opencv-sibling-scope -B build/baas-opencv-sibling-scope
+          "-DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}/build/conan/service-application/conan_toolchain.cmake"
+          -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
+          -DBUILD_APP_BAAS=OFF -DBUILD_APP_ISA=OFF -DBUILD_BAAS_OCR=OFF
+          -DBUILD_BAAS_AW_CHECKER=OFF -DBUILD_BAAS_NMS_BENCHMARK=OFF
+          -DBAAS_FETCH_RESOURCES=OFF
+
+      - name: Build OpenCV sibling-scope package smoke
+        run: >-
+          cmake --build build/baas-opencv-sibling-scope
+          --config ${{ matrix.build_type }} --parallel 2
+
+      - name: Run OpenCV sibling-scope package smoke
+        run: >-
+          ctest --test-dir build/baas-opencv-sibling-scope
+          --build-config ${{ matrix.build_type }} --output-on-failure
 
       - name: Configure hook-free production application
         run: >-
