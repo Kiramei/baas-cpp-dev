@@ -160,24 +160,30 @@ void png_chunk(
 }
 
 [[nodiscard]] std::vector<std::byte> png(
-    const std::uint32_t width, const std::uint32_t height, const bool varied = true)
+    const std::uint32_t width, const std::uint32_t height, const bool varied = true,
+    const bool alpha = false)
 {
     std::vector<std::byte> output{
         std::byte{0x89}, std::byte{'P'}, std::byte{'N'}, std::byte{'G'},
         std::byte{0x0d}, std::byte{0x0a}, std::byte{0x1a}, std::byte{0x0a}};
     std::vector<std::byte> ihdr;
     append_be32(ihdr, width); append_be32(ihdr, height);
-    ihdr.insert(ihdr.end(), {std::byte{8}, std::byte{2}, std::byte{0},
+    ihdr.insert(ihdr.end(), {std::byte{8}, alpha ? std::byte{6} : std::byte{2}, std::byte{0},
                              std::byte{0}, std::byte{0}});
     png_chunk(output, "IHDR", ihdr);
-    std::vector<unsigned char> raw(static_cast<std::size_t>(height) * (width * 3U + 1U));
+    const auto channels = alpha ? 4U : 3U;
+    std::vector<unsigned char> raw(
+        static_cast<std::size_t>(height) * (width * channels + 1U));
     for (std::uint32_t row = 0; row < height; ++row) {
-        const auto offset = static_cast<std::size_t>(row) * (width * 3U + 1U);
+        const auto offset = static_cast<std::size_t>(row) * (width * channels + 1U);
         raw[offset] = 0;
         for (std::uint32_t column = 0; column < width; ++column) {
-            raw[offset + 1U + column * 3U] = varied ? static_cast<unsigned char>(10U + row) : 42U;
-            raw[offset + 2U + column * 3U] = varied ? static_cast<unsigned char>(20U + column) : 42U;
-            raw[offset + 3U + column * 3U] = varied ? 30U : 42U;
+            raw[offset + 1U + column * channels] =
+                varied ? static_cast<unsigned char>(10U + row) : 42U;
+            raw[offset + 2U + column * channels] =
+                varied ? static_cast<unsigned char>(20U + column) : 42U;
+            raw[offset + 3U + column * channels] = varied ? 30U : 42U;
+            if (alpha) raw[offset + 4U + column * channels] = 255U;
         }
     }
     mz_ulong compressed_size = mz_compressBound(static_cast<mz_ulong>(raw.size()));
@@ -235,9 +241,12 @@ public:
             "    'news': (0, 0, 3, 3),\n"
             "    'placeholder': (0, 0, 2, 2),\n"
             "    'blank': (0, 0, 2, 2),\n"
+            "    'rgb-boundary': (0, 0, 2, 2),\n"
+            "    'rgba-boundary': (0, 0, 2, 2),\n"
+            "    'stored-oversized': (0, 0, 2, 2),\n"
             "    'oversized': (0, 0, 2, 2),\n"
             "    # 'missing': (0, 0, 2, 2),\n";
-        for (std::size_t index = 0; index < 33; ++index)
+        for (std::size_t index = 0; index < 49; ++index)
             crop_metadata += "    'budget-" + std::to_string(index) +
                 "': (0, 0, 2, 2),\n";
         crop_metadata += "}\n";
@@ -247,6 +256,10 @@ public:
             {"src/images/JP/main_page/news.png", png(2, 2), {}},
             {"src/images/JP/main_page/placeholder.png", png(1, 1), {}},
             {"src/images/JP/main_page/blank.png", png(2, 2, false), {}},
+            {"src/images/JP/main_page/rgb-boundary.png", png(1280, 720), {}},
+            {"src/images/JP/main_page/rgba-boundary.png", png(1280, 720, true, true), {}},
+            {"src/images/JP/main_page/stored-oversized.png",
+             std::vector<std::byte>(4U * 1024U * 1024U + 1U), {}},
             {"src/images/JP/main_page/oversized.png", png(1400, 1000), {}},
             {"src/images/JP/dead/news.png", png(2, 2), {}},
             {"src/images/JP/main_page/missing.png", png(2, 2), {}},
@@ -255,9 +268,9 @@ public:
                 "if False:\n    prefix = \"dead\"\n    path = \"dead\"\n"
                 "    x_y_range = {\n        'news': (0, 0, 2, 2),\n    }\n"), {}},
         };
-        for (std::size_t index = 0; index < 33; ++index)
+        for (std::size_t index = 0; index < 49; ++index)
             sources_.push_back({"src/images/JP/main_page/budget-" +
-                std::to_string(index) + ".png", png(1365, 1000), {}});
+                std::to_string(index) + ".png", png(1280, 720), {}});
         git_repository* raw_repository{};
         const auto root = path_.path().string();
         if (git_repository_init(&raw_repository, root.c_str(), 0) < 0)
@@ -692,7 +705,30 @@ void test_lock_and_source_negatives()
     auto oversized_png_lock = parse(oversized_png);
     expect_error([&] { publisher::verify_group_publication_sources(
         oversized_png_lock, git.path()); }, publisher::PublicationErrorCode::resource_exhausted,
-        "decoded PNG over the consumer 4 MiB limit must fail before allocation");
+        "PNG dimensions or decoded pixels over the consumer limit must fail before allocation");
+
+    auto stored_oversized_png = lock_json(
+        git, "src/images/JP/main_page/stored-oversized.png",
+        "main_page_stored-oversized", "src/images/JP/x_y_range/main_page.py",
+        Json::array({0, 0, 2, 2}));
+    auto stored_oversized_png_lock = parse(stored_oversized_png);
+    expect_error([&] { publisher::verify_group_publication_sources(
+        stored_oversized_png_lock, git.path()); },
+        publisher::PublicationErrorCode::resource_exhausted,
+        "stored PNG over the fixed 4 MiB limit must fail closed");
+
+    for (const auto& [path, feature] : std::array{
+             std::pair{"src/images/JP/main_page/rgb-boundary.png",
+                       "main_page_rgb-boundary"},
+             std::pair{"src/images/JP/main_page/rgba-boundary.png",
+                       "main_page_rgba-boundary"},
+         }) {
+        auto boundary = lock_json(
+            git, path, feature, "src/images/JP/x_y_range/main_page.py",
+            Json::array({0, 0, 2, 2}));
+        auto boundary_lock = parse(boundary);
+        publisher::verify_group_publication_sources(boundary_lock, git.path());
+    }
 
     auto cumulative = valid;
     Json cumulative_members = Json::array({
@@ -700,7 +736,7 @@ void test_lock_and_source_negatives()
     std::vector<Json> cumulative_images;
     const auto crop_source = source_json(
         git.source("src/images/JP/x_y_range/main_page.py"));
-    for (std::size_t index = 0; index < 33; ++index) {
+    for (std::size_t index = 0; index < 49; ++index) {
         const auto name = "budget-" + std::to_string(index);
         const auto feature = "main_page_" + name;
         cumulative_images.push_back(Json{

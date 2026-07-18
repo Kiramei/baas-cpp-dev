@@ -122,7 +122,11 @@ class GroupResourcePublicationContractTests(unittest.TestCase):
         for token in (
             "max_png_source_bytes = 4U * 1024U * 1024U",
             "max_decoded_png_bytes = 4U * 1024U * 1024U",
+            "max_png_width = 1'280",
+            "max_png_height = 720",
             "max_total_decoded_png_bytes = 128U * 1024U * 1024U",
+            "consumer_decoded_size",
+            "inflated_scanline_size",
             "openat(",
             "renameat(",
             "fstatat(",
@@ -134,6 +138,8 @@ class GroupResourcePublicationContractTests(unittest.TestCase):
         ):
             self.assertIn(token, source)
         self.assertIn("cumulative decoded PNG work over 128 MiB", tests)
+        self.assertIn("stored PNG over the fixed 4 MiB limit", tests)
+        self.assertIn("rgba-boundary", tests)
         self.assertIn("deterministic final-component replacement race", tests)
 
 

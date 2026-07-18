@@ -66,6 +66,8 @@ constexpr std::size_t max_member_bytes = 16U * 1024U * 1024U;
 constexpr std::size_t max_png_source_bytes = 4U * 1024U * 1024U;
 constexpr std::size_t max_decoded_png_bytes = 4U * 1024U * 1024U;
 constexpr std::size_t max_total_decoded_png_bytes = 128U * 1024U * 1024U;
+constexpr std::uint32_t max_png_width = 1'280;
+constexpr std::uint32_t max_png_height = 720;
 constexpr std::size_t max_archive_bytes = 64U * 1024U * 1024U;
 constexpr std::size_t max_total_bytes = 128U * 1024U * 1024U;
 constexpr std::size_t max_work = 1024U * 1024U * 1024U;
@@ -915,6 +917,9 @@ void verify_png_source(
             width = be32(bytes, data); height = be32(bytes, data + 4);
             const auto depth = std::to_integer<unsigned char>(bytes[data + 8]);
             color = std::to_integer<unsigned char>(bytes[data + 9]);
+            if (width > max_png_width || height > max_png_height)
+                fail(PublicationErrorCode::resource_exhausted,
+                     "PNG dimensions exceed the consumer limit");
             if (width == 0 || height == 0 || depth != 8 || (color != 2 && color != 6) ||
                 bytes[data + 10] != std::byte{0} || bytes[data + 11] != std::byte{0} ||
                 bytes[data + 12] != std::byte{0})
@@ -952,14 +957,23 @@ void verify_png_source(
     if (!ihdr || !idat || !iend)
         fail(PublicationErrorCode::placeholder_forbidden, "PNG payload is incomplete");
     const auto channels = color == 2 ? 3U : 4U;
-    const auto decoded_size = static_cast<std::uint64_t>(height) *
-        (static_cast<std::uint64_t>(width) * channels + 1U);
-    if (decoded_size > max_decoded_png_bytes ||
-        decoded_size > std::numeric_limits<mz_ulong>::max())
+    // The consumer decodes every accepted source through OpenCV IMREAD_COLOR,
+    // so its budget and allocation are always three bytes per pixel even when
+    // the stored PNG contains alpha.  The zlib scanline buffer is a separate
+    // validation allocation and includes the source channel count plus one
+    // filter byte per row.
+    const auto consumer_decoded_size = static_cast<std::uint64_t>(width) * height * 3U;
+    if (consumer_decoded_size > max_decoded_png_bytes)
         fail(PublicationErrorCode::resource_exhausted,
              "PNG decoded size exceeds the consumer limit");
-    budget.decoded_png(static_cast<std::size_t>(decoded_size));
-    std::vector<unsigned char> decoded(static_cast<std::size_t>(decoded_size));
+    const auto inflated_scanline_size = static_cast<std::uint64_t>(height) *
+        (static_cast<std::uint64_t>(width) * channels + 1U);
+    if (inflated_scanline_size > std::numeric_limits<std::size_t>::max() ||
+        inflated_scanline_size > std::numeric_limits<mz_ulong>::max())
+        fail(PublicationErrorCode::resource_exhausted,
+             "PNG inflated scanline size is outside the validation limit");
+    budget.decoded_png(static_cast<std::size_t>(consumer_decoded_size));
+    std::vector<unsigned char> decoded(static_cast<std::size_t>(inflated_scanline_size));
     auto actual_size = static_cast<mz_ulong>(decoded.size());
     if (mz_uncompress(decoded.data(), &actual_size, compressed.data(),
                       static_cast<mz_ulong>(compressed.size())) != MZ_OK ||
