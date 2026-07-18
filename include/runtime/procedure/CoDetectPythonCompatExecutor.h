@@ -57,6 +57,8 @@ public:
     [[nodiscard]] virtual const std::string& device_id() const noexcept = 0;
     [[nodiscard]] virtual CoDetectProfile profile() const noexcept = 0;
     [[nodiscard]] virtual std::uint64_t session_epoch() const noexcept = 0;
+    // False once the injected owner no longer publishes this exact immutable pin.
+    [[nodiscard]] virtual bool identity_valid() const noexcept = 0;
     [[nodiscard]] virtual bool is_android() const noexcept = 0;
     [[nodiscard]] virtual std::uint64_t monotonic_ms() const noexcept = 0;
     [[nodiscard]] virtual std::uint64_t screenshot_interval_ms() const noexcept = 0;
@@ -79,6 +81,7 @@ public:
     virtual ~CoDetectPinnedFeatureView() = default;
     [[nodiscard]] virtual std::string_view generation() const noexcept = 0;
     [[nodiscard]] virtual CoDetectProfile profile() const noexcept = 0;
+    [[nodiscard]] virtual bool identity_valid() const noexcept = 0;
     [[nodiscard]] virtual CoDetectResult<bool> match_rgb(
         const CoDetectFrame& frame, std::string_view feature,
         const CoDetectControl& control) = 0;

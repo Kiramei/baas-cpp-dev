@@ -2,7 +2,8 @@
 
 Status: strict immutable definition parsing/model implemented; the pure C++
 execution state machine and bounded generation-bound support-bundle loader are
-also implemented. The production device/feature engine adapter, externally published real
+also implemented. The immutable production device-session/feature adapter is implemented
+behind a narrow injected device port. A concrete application engine adapter, externally published real
 locale bundles, real resource digests, and production procedure definitions do not exist yet.
 Nothing in this document authorizes a placeholder `baas.procedures.json` entry.
 
@@ -173,8 +174,8 @@ consults a global feature registry, or embeds resource/configuration data.
 The executor enforces the ordered loop below, shared-frame fail-closed behavior,
 deadline-before-cancellation precedence, synchronous effect boundaries, typed
 device/resource failures, and exception/allocation fail-closed behavior.
-Production activation still additionally requires the support-bundle loader and
-activation adapter; this execution target does not manufacture either one.
+`BAAS_runtime_co_detect_production_adapter` composes this executor with the verified
+support-bundle loader; the pure execution target does not manufacture either dependency.
 
 ## Deterministic execution order
 
@@ -247,6 +248,30 @@ the same identity and is checked before vision. The feature view is bound to the
 same profile and exact activation generation. Identity drift, a cross-device
 frame, a cross-profile view, or a descriptor not owned by the exact activation
 snapshot fails closed before further device work.
+
+### Immutable production session and feature view
+
+`CoDetectProductionDevicePort` is the only embedding seam. Its owner publishes an
+immutable identity token containing device ID, frozen profile, session epoch, and
+platform. Reconnect, device switch, or profile change creates a new token and a new
+adapter object; it cannot retarget an existing pin. The executor polls both the
+session-owner pin and bundle generation/profile before and after every vision,
+capture, input, wait, and foreground operation.
+
+The port supplies only owned BGR capture/cache buffers, input, bounded wait,
+foreground, monotonic clock, and screenshot interval operations. The adapter copies
+captured/cache rows into packed immutable storage before publication and rejects
+wrong identity, epoch, profile, dimensions, stride, or byte count. It contains no
+resource/config path, script definition, test hook, or ambient feature registry.
+
+The feature view reads RGB samples and decoded PNG templates only from its retained
+`CoDetectSupportBundle`. RGB samples are conjunctive and use exact BGR pixels at the
+canonical coordinates. Image matching validates the frozen crop, applies per-channel
+mean RGB tolerance, resizes the whole crop to the template with OpenCV `INTER_AREA`,
+then reads the single `TM_CCOEFF_NORMED` result and requires it to be strictly greater
+than the threshold; definition call threshold/RGB values override the bundle defaults. Missing features return `false`.
+OpenCV work is not mid-call interruptible, but both sides are identity/control-polled
+and frame/crop/template dimensions are hard bounded.
 
 ## Deadline, cancellation, and effect semantics
 
@@ -546,8 +571,8 @@ with copied, empty, or mismatched assets:
 The following are all mandatory before generating production definition files
 or adding these procedures to a real `baas.procedures.json`:
 
-1. Implement and review the `co_detect.python-compat/v1` adapter, including
-   bounded archive parsing and ResourceSnapshot-only feature loading.
+1. Implement and review the concrete application `CoDetectProductionDevicePort`
+   binding to the live device owner without ambient resources or mutable retargeting.
 2. Publish real locale support bundles from the external resources repository.
 3. Compute and verify every real bundle/member size and SHA-256 digest.
 4. Run Python-versus-C++ golden traces for success terminals, popup priority,

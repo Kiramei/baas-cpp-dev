@@ -353,6 +353,7 @@ jobs:
           "-DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}/build/conan/co-detect-support-bundle/conan_toolchain.cmake"
           -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
           -DBUILD_TESTING=ON -DBUILD_RUNTIME_CO_DETECT_SUPPORT_BUNDLE_TESTS=ON
+          -DBUILD_RUNTIME_CO_DETECT_PRODUCTION_ADAPTER_TESTS=ON
           -DBUILD_APP_BAAS=OFF -DBUILD_APP_ISA=OFF -DBUILD_BAAS_OCR=OFF
           -DBUILD_BAAS_AW_CHECKER=OFF -DBUILD_BAAS_NMS_BENCHMARK=OFF
           -DBAAS_FETCH_RESOURCES=OFF
@@ -362,6 +363,7 @@ jobs:
           cmake --build build/co-detect-support-bundle
           --config ${{ matrix.build_type }} --parallel 4
           --target BAAS_runtime_co_detect_support_bundle_tests
+          BAAS_runtime_co_detect_production_adapter_tests
 
       - name: Run support-bundle tests
         shell: cmd
@@ -418,6 +420,7 @@ jobs:
           "-DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}/build/conan/co-detect-support-bundle/conan_toolchain.cmake"
           -DCMAKE_BUILD_TYPE=Release
           -DBUILD_TESTING=ON -DBUILD_RUNTIME_CO_DETECT_SUPPORT_BUNDLE_TESTS=ON
+          -DBUILD_RUNTIME_CO_DETECT_PRODUCTION_ADAPTER_TESTS=ON
           -DBUILD_APP_BAAS=OFF -DBUILD_APP_ISA=OFF -DBUILD_BAAS_OCR=OFF
           -DBUILD_BAAS_AW_CHECKER=OFF -DBUILD_BAAS_NMS_BENCHMARK=OFF
           -DBAAS_FETCH_RESOURCES=OFF
@@ -427,6 +430,7 @@ jobs:
           cmake --build build/co-detect-support-bundle
           --config Release --parallel 4
           --target BAAS_runtime_co_detect_support_bundle_tests
+          BAAS_runtime_co_detect_production_adapter_tests
 
       - name: Run support-bundle tests with the Conan runtime environment
         run: |
@@ -540,6 +544,7 @@ jobs:
           -DBUILD_RUNTIME_CO_DETECT_DEFINITION_MODEL=ON
           -DBUILD_RUNTIME_CO_DETECT_EXECUTOR=ON
           -DBUILD_RUNTIME_CO_DETECT_SUPPORT_BUNDLE=ON
+          -DBUILD_RUNTIME_CO_DETECT_PRODUCTION_ADAPTER=ON
           -DBUILD_LEGACY_PROCEDURE_EXECUTION=ON
           -DBUILD_SCRIPT_PROCEDURE_HOST=ON
           -DBUILD_SCRIPT_HOST_RUNTIME_COMPOSITION=ON
@@ -567,6 +572,7 @@ jobs:
           BAAS_runtime_co_detect_definition_model
           BAAS_runtime_co_detect_executor
           BAAS_runtime_co_detect_support_bundle
+          BAAS_runtime_co_detect_production_adapter
           BAAS_legacy_procedure_execution
           BAAS_script_procedure_host
           BAAS_script_host_runtime_composition

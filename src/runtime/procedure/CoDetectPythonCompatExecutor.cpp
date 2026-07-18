@@ -88,7 +88,8 @@ public:
         const auto now = session_.monotonic_ms();
         if (now < start_ || now - start_ >= timeout_)
             return CoDetectControlState::CallDeadlineExceeded;
-        if (session_.device_id() != device_id_ || session_.profile() != profile_ ||
+        if (!session_.identity_valid() || !features_.identity_valid() ||
+            session_.device_id() != device_id_ || session_.profile() != profile_ ||
             session_.session_epoch() != session_epoch_ ||
             features_.profile() != profile_ || features_.generation() != generation_)
             return CoDetectControlState::SessionChanged;
@@ -191,6 +192,7 @@ private:
     {
         if (!request.snapshot() || !request.procedure() ||
             request.device_id() != device_id_ ||
+            !session_->identity_valid() || !features_->identity_valid() ||
             session_->device_id() != device_id_ || session_->profile() != profile_ ||
             session_->session_epoch() != session_epoch_ ||
             features_->profile() != profile_ ||
@@ -529,6 +531,7 @@ std::shared_ptr<::baas::script::host::ProcedureExecutor> make_co_detect_python_c
         throw std::invalid_argument("co-detect executor dependency is absent");
     if (expected_snapshot->resolve(expected_descriptor->procedure_id()).get() !=
             expected_descriptor.get() ||
+        !session->identity_valid() || !features->identity_valid() ||
         session->profile() != features->profile() ||
         features->generation() != expected_generation)
         throw std::invalid_argument("co-detect executor binding identity is invalid");
@@ -560,7 +563,8 @@ make_activated_co_detect_python_compat_executor(
         terminals.push_back({terminal.source, terminal.id});
     validate_terminal_bindings(*loaded.definition, terminals);
     auto descriptor = activation->snapshot()->resolve(activated->procedure_id());
-    if (!descriptor || features->generation() != activation->generation() ||
+    if (!descriptor || !session->identity_valid() || !features->identity_valid() ||
+        features->generation() != activation->generation() ||
         features->profile() != session->profile())
         throw std::invalid_argument("co-detect activated binding identity is invalid");
     return std::make_shared<Executor>(

@@ -145,6 +145,7 @@ public:
         return current_profile;
     }
     std::uint64_t session_epoch() const noexcept override { return epoch; }
+    bool identity_valid() const noexcept override { return identity_is_valid; }
     bool is_android() const noexcept override { return android; }
     std::uint64_t monotonic_ms() const noexcept override { return now; }
     std::uint64_t screenshot_interval_ms() const noexcept override { return interval; }
@@ -196,6 +197,7 @@ public:
     std::string id{"device"};
     procedure::CoDetectProfile current_profile{procedure::CoDetectProfile::cn};
     std::uint64_t epoch{1};
+    bool identity_is_valid{true};
     mutable std::size_t profile_reads{};
     bool android{true};
     bool foreground{true};
@@ -220,6 +222,7 @@ class Features final : public procedure::CoDetectPinnedFeatureView {
 public:
     std::string_view generation() const noexcept override { return generation_id; }
     procedure::CoDetectProfile profile() const noexcept override { return view_profile; }
+    bool identity_valid() const noexcept override { return identity_is_valid; }
     procedure::CoDetectResult<bool> match_rgb(
         const procedure::CoDetectFrame& base, const std::string_view feature,
         const procedure::CoDetectControl&) override
@@ -235,6 +238,8 @@ public:
                     procedure::CoDetectProfile::jp;
             if (switch_view_generation && react_calls == switch_view_on_react_call)
                 generation_id = "drifted-generation";
+            if (invalidate_view_identity && react_calls == invalidate_on_react_call)
+                identity_is_valid = false;
         }
         return matches[{id, std::string(feature)}];
     }
@@ -251,6 +256,7 @@ public:
     std::map<std::pair<int, std::string>, bool> matches;
     std::string generation_id{"test-generation"};
     procedure::CoDetectProfile view_profile{procedure::CoDetectProfile::cn};
+    bool identity_is_valid{true};
     std::vector<std::string> calls;
     std::vector<procedure::CoDetectImageMatch> image_matches;
     Session* advance_session{};
@@ -260,6 +266,8 @@ public:
     std::size_t switch_on_react_call{};
     bool switch_view_generation{};
     std::size_t switch_view_on_react_call{};
+    bool invalidate_view_identity{};
+    std::size_t invalidate_on_react_call{};
     std::size_t react_calls{};
 };
 
@@ -477,6 +485,19 @@ void test_frozen_identity_and_exact_descriptor()
               host::ProcedureExecutorErrorCode::Unavailable &&
               features->react_calls == 1 && session->clicks.empty(),
           "feature generation drift is detected before input or another match");
+
+    session = std::make_shared<Session>();
+    features = std::make_shared<Features>();
+    features->matches[{1, "react"}] = true;
+    features->invalidate_view_identity = true;
+    features->invalidate_on_react_call = 1;
+    Reporter owner_reporter;
+    outcome = run(definition(), session, features, std::make_shared<Probe>(),
+                  owner_reporter);
+    check(!outcome.ok() && outcome.error().code ==
+              host::ProcedureExecutorErrorCode::Unavailable &&
+              features->react_calls == 1 && session->clicks.empty(),
+          "feature owner pin invalidation is polled after vision before input");
 
     auto expected_snapshot = snapshot();
     auto foreign_snapshot = snapshot();
