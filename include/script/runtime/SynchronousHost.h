@@ -393,6 +393,9 @@ public:
         SynchronousHostLimits limits = {});
 
     [[nodiscard]] const SynchronousNativeBinding* find(std::string_view binding_id) const noexcept;
+    // Callbacks are copied with their shared ownership captures. The returned
+    // snapshot can therefore be validated again as part of a composed set.
+    [[nodiscard]] std::vector<SynchronousNativeBinding> bindings() const;
     [[nodiscard]] const SynchronousHostLimits& limits() const noexcept { return limits_; }
     [[nodiscard]] std::size_t size() const noexcept { return bindings_.size(); }
 

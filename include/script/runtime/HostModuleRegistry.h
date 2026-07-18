@@ -157,6 +157,10 @@ public:
     // reads immutable registry state and owns all per-resolution scratch data.
     [[nodiscard]] HostResolution resolve(const HostResolutionRequest& request) const;
 
+    // Returns an owning, deterministic descriptor snapshot suitable for
+    // composing independently constructed Host adapters. No native callback
+    // or adapter address is exposed by these identity-only descriptors.
+    [[nodiscard]] std::vector<HostModuleDescriptor> descriptors() const;
     [[nodiscard]] std::vector<std::string> canonical_module_ids() const;
     [[nodiscard]] std::size_t module_version_count() const noexcept
     {

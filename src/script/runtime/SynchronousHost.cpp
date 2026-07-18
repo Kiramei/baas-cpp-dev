@@ -1505,6 +1505,11 @@ const SynchronousNativeBinding* SynchronousNativeBindingSet::find(
     return found != bindings_.end() && found->binding_id == binding_id ? &*found : nullptr;
 }
 
+std::vector<SynchronousNativeBinding> SynchronousNativeBindingSet::bindings() const
+{
+    return bindings_;
+}
+
 HostErrorTranslation translate_host_error(const HostError& error) noexcept
 {
     if (!valid_enum(error.code) || !valid_effect(error.effect_state)) return {};
