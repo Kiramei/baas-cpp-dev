@@ -7,6 +7,7 @@
 
 #include <set>
 #include <string>
+#include <functional>
 
 #include "device/screenshot/BaseScreenshot.h"
 
@@ -28,9 +29,15 @@ public:
 
     void screenshot(cv::Mat& img);
 
+    void screenshot_controlled(
+        cv::Mat& img, const std::function<void()>& checkpoint);
+
     void immediate_screenshot(cv::Mat& img);
 
     void ensure_interval() const;
+
+    void ensure_interval_controlled(
+        const std::function<void()>& checkpoint) const;
 
     void exit();
 

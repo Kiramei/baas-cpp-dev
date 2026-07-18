@@ -11,6 +11,7 @@
 #include "utils/BAASImageUtil.h"
 #include "utils/BAASChronoUtil.h"
 #include "procedure/AppearThenClickProcedure.h"
+#include "procedure/LegacyProcedureDefinitionValidation.h"
 
 using namespace std;
 using namespace cv;
@@ -37,6 +38,12 @@ bool BAAS::feature_appear(const string& feature_name)
 }
 
 BAAS::BAAS(std::string& config_name)
+    : BAAS(config_name, ProcedureCatalogMode::LoadAmbientLegacyCatalog)
+{
+}
+
+BAAS::BAAS(
+    std::string& config_name, const ProcedureCatalogMode procedure_catalog_mode)
 {
     logger = BAASLogger::get(config_name);
     logger->hr("BAAS Instance [ " + config_name + " ]");
@@ -44,7 +51,8 @@ BAAS::BAAS(std::string& config_name)
     std::filesystem::path temp = config_name;
     temp =  temp / "config.json";
 
-    config = new BAASUserConfig(temp);
+    auto owned_config = std::make_unique<BAASUserConfig>(temp);
+    config = owned_config.get();
     config->update_name();
     config->config_update();
     config->save();
@@ -55,13 +63,18 @@ BAAS::BAAS(std::string& config_name)
 
     logger->BAASInfo("Show compare image log: " + to_string(script_show_image_compare_log));
 
-    connection = new BAASConnection(config);
+    auto owned_connection = std::make_unique<BAASConnection>(config);
+    connection = owned_connection.get();
 
-    screenshot = new BAASScreenshot(config->screenshot_method(), connection, config->screenshot_interval());
+    auto owned_screenshot = std::make_unique<BAASScreenshot>(
+        config->screenshot_method(), connection, config->screenshot_interval());
+    screenshot = owned_screenshot.get();
     logger->BAASInfo("Screenshot method: " + config->screenshot_method());
     screen_ratio = screenshot->get_screen_ratio();
     
-    control = new BAASControl(config->control_method(), screen_ratio, connection);
+    auto owned_control = std::make_unique<BAASControl>(
+        config->control_method(), screen_ratio, connection);
+    control = owned_control.get();
 
     server = connection->get_server();
 
@@ -71,9 +84,15 @@ BAAS::BAAS(std::string& config_name)
 
     rgb_feature_key = server + "_" + language;
 
-    _init_procedures();
+    if (procedure_catalog_mode == ProcedureCatalogMode::LoadAmbientLegacyCatalog)
+        _init_procedures();
 
     _init_feature_state_map();
+
+    static_cast<void>(owned_config.release());
+    static_cast<void>(owned_connection.release());
+    static_cast<void>(owned_screenshot.release());
+    static_cast<void>(owned_control.release());
 }
 
 void BAAS::update_screenshot_array()
@@ -350,22 +369,66 @@ void BAAS::solve_procedure(
     auto baas_config = BAASConfig(it->second->get_config().get_config(), logger);
     baas_config.update(&patch);
 
-    BaseProcedure* p = _create_procedure("", baas_config, false);
-    if (p == nullptr) {
+    std::unique_ptr<BaseProcedure> p;
+    try {
+        p = _make_procedure(baas_config);
+    } catch (const ValueError&) {
         BAASGlobalLogger->BAASError("Failed to create procedure.");
         return;
     }
-    try {
-        p->implement(output, skip_first_screenshot);
-    }
-    catch (exception &e) {
-        p->clear_resource();
-        delete p;
-        throw e;
-    }
-
+    p->implement(output, skip_first_screenshot);
     p->clear_resource();
-    delete p;
+}
+
+void BAAS::update_screenshot_array_controlled(
+    const std::function<void()>& checkpoint)
+{
+    checkpoint();
+    screenshot->screenshot_controlled(latest_screenshot, checkpoint);
+    checkpoint();
+}
+
+LegacyProcedureRunResult BAAS::run_procedure_definition(
+    const std::string_view procedure_id,
+    const BAASConfig& definition,
+    BAASConfig& output,
+    const LegacyProcedureRunOptions& options) noexcept
+{
+    LegacyProcedureExecutionControl local_control;
+    const auto* execution_control = options.control == nullptr
+        ? &local_control : options.control;
+    try {
+        if (procedure_id.empty())
+            return {LegacyProcedureRunCode::MissingProcedure, false, {}};
+        if (!valid_legacy_procedure_id(procedure_id))
+            return {LegacyProcedureRunCode::InvalidDefinition, false, {}};
+        if (options.mode == LegacyProcedureRunMode::Production &&
+            !legacy_procedure_production_ready())
+            return {LegacyProcedureRunCode::Unavailable, false, {}};
+
+        const auto& raw = definition.get_config();
+        if (!valid_legacy_procedure_definition(raw))
+            return {LegacyProcedureRunCode::InvalidDefinition, false, {}};
+        if (!legacy_procedure_definition_features_available(
+                raw, [this](const std::string_view name) {
+                    return feature_state_map.find(std::string(name)) != feature_state_map.end();
+                }))
+            return {LegacyProcedureRunCode::ResourceNotFound, true, {}};
+
+        execution_control->throw_if_stopped(is_running());
+        auto procedure = _make_procedure(
+            definition, execution_control, options.effects);
+        procedure->implement(output, false);
+        execution_control->throw_if_stopped(is_running());
+        const auto terminal = output.getString("end", "");
+        if (terminal.empty())
+            return {LegacyProcedureRunCode::Internal, false, {}};
+        procedure->clear_resource();
+        return {LegacyProcedureRunCode::Success, false, terminal};
+    } catch (...) {
+        return map_legacy_procedure_exception(
+            std::current_exception(), *execution_control, is_running());
+    }
 }
 bool BAAS::solve(const string &module_name)
 {
@@ -432,7 +495,8 @@ int BAAS::_load_procedure_from_json(const filesystem::path &j_path)
     return loaded;
 }
 
-BaseProcedure* BAAS::_create_procedure(const string& procedure_name, const BAASConfig& cfg, bool insert)
+BaseProcedure* BAAS::_create_procedure(
+    const string& procedure_name, const BAASConfig& cfg)
 {
     if (!procedure_name.empty()) {
         auto it = procedures.find(procedure_name);
@@ -442,33 +506,41 @@ BaseProcedure* BAAS::_create_procedure(const string& procedure_name, const BAASC
         }
     }
 
-    int tp = config->getInt("procedure_type", 0);
-    BaseProcedure* p = nullptr;
-    switch (tp) {
-        case -1:
-            p = new BaseProcedure(this, cfg);
-            break;
-        case 0:
-            p = new AppearThenClickProcedure(this, cfg);
-            break;
-        default:
-            BAASGlobalLogger->BAASError("Procedure Type [ " + to_string(tp) + " ] not found");
-            break;
+    std::unique_ptr<BaseProcedure> owned;
+    try {
+        owned = _make_procedure(cfg);
+    } catch (const ValueError&) {
+        BAASGlobalLogger->BAASError("Procedure Type not found");
+        return nullptr;
     }
-
-    if (p != nullptr) {
-        if (insert)
-        procedures[procedure_name] = std::unique_ptr<BaseProcedure> (p);
-    }
-
+    auto* p = owned.get();
+    procedures[procedure_name] = std::move(owned);
     return p;
 }
 
+std::unique_ptr<BaseProcedure> BAAS::_make_procedure(
+    const BAASConfig& cfg,
+    const LegacyProcedureExecutionControl* execution_control,
+    LegacyProcedureEffectObserver* effect_observer)
+{
+    const int tp = cfg.getInt("procedure_type", 0);
+    switch (tp) {
+        case -1:
+            return std::make_unique<BaseProcedure>(
+                this, cfg, execution_control, effect_observer);
+        case 0:
+            return std::make_unique<AppearThenClickProcedure>(
+                this, cfg, execution_control, effect_observer);
+        default:
+            throw ValueError("Unsupported legacy procedure type");
+    }
+}
+
 BAAS::~BAAS() {
-    delete screenshot;
     delete control;
-    delete config;
+    delete screenshot;
     delete connection;
+    delete config;
 }
 
 BAAS_NAMESPACE_END

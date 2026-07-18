@@ -7,8 +7,12 @@
 
 #include "ocr/OcrStruct.h"
 #include "procedure/BaseProcedure.h"
+#include "procedure/LegacyProcedureExecution.h"
 #include "device/control/BAASControl.h"
 #include "device/screenshot/BAASScreenshot.h"
+
+#include <atomic>
+#include <string_view>
 
 #define PROCEDURE_BEGIN
 #define PROCEDURE_END
@@ -32,9 +36,19 @@ public:
 
     static void write_all_default_config(const std::filesystem::path& dir);
 
+    enum class ProcedureCatalogMode : std::uint8_t {
+        LoadAmbientLegacyCatalog,
+        DirectDefinitionsOnly,
+    };
+
     explicit BAAS(std::string& config_name);
 
+    BAAS(std::string& config_name, ProcedureCatalogMode procedure_catalog_mode);
+
     void update_screenshot_array();
+
+    void update_screenshot_array_controlled(
+        const std::function<void()>& checkpoint);
 
     void i_update_screenshot_array();
 
@@ -70,7 +84,12 @@ public:
 
     [[nodiscard]] inline bool is_running() const
     {
-        return flag_run;
+        return flag_run.load(std::memory_order_acquire);
+    }
+
+    void request_stop() noexcept
+    {
+        flag_run.store(false, std::memory_order_release);
     }
 
     inline BAASConnection* get_connection() const
@@ -251,6 +270,12 @@ public:
             bool skip_first_screenshot = false
     );
 
+    [[nodiscard]] LegacyProcedureRunResult run_procedure_definition(
+        std::string_view procedure_id,
+        const BAASConfig& definition,
+        BAASConfig& output,
+        const LegacyProcedureRunOptions& options = {}) noexcept;
+
     void solve_procedure(
             const std::string& procedure_name,
             const BAASConfig& patch,
@@ -276,7 +301,13 @@ private:
 
     int _load_procedure_from_json(const std::filesystem::path& j_path);
 
-    BaseProcedure* _create_procedure(const std::string& procedure_name, const BAASConfig& cfg, bool insert = true);
+    BaseProcedure* _create_procedure(
+        const std::string& procedure_name, const BAASConfig& cfg);
+
+    std::unique_ptr<BaseProcedure> _make_procedure(
+        const BAASConfig& cfg,
+        const LegacyProcedureExecutionControl* execution_control = nullptr,
+        LegacyProcedureEffectObserver* effect_observer = nullptr);
 
     std::map<std::string, std::unique_ptr<BaseProcedure>> procedures;
 
@@ -294,21 +325,21 @@ PROCEDURE_END
 
     bool script_show_image_compare_log;
 
-    bool flag_run;
+    std::atomic_bool flag_run{true};
 
     cv::Mat latest_screenshot;
 
     double screen_ratio;
 
-    BAASConnection* connection;
+    BAASConnection* connection{};
 
-    BAASUserConfig* config;
+    BAASUserConfig* config{};
 
-    BAASLogger* logger;
+    BAASLogger* logger{};
 
-    BAASScreenshot* screenshot;
+    BAASScreenshot* screenshot{};
 
-    BAASControl* control;
+    BAASControl* control{};
 
     struct feature_state {
         // record if a feature is check in screenshot, when screenshot update ,state should be reset.

@@ -3,6 +3,7 @@
 //
 
 #include "device/screenshot/BAASScreenshot.h"
+#include "device/screenshot/ScreenshotInterval.h"
 
 #include "config/BAASStaticConfig.h"
 #include "device/screenshot/AdbScreenshot.h"
@@ -58,6 +59,16 @@ void BAASScreenshot::screenshot(cv::Mat& img)
     last_screenshot_time = BAASChronoUtil::getCurrentTimeMS();
 }
 
+void BAASScreenshot::screenshot_controlled(
+    cv::Mat& img, const std::function<void()>& checkpoint)
+{
+    ensure_interval_controlled(checkpoint);
+    checkpoint();
+    screenshot_instance->screenshot(img);
+    last_screenshot_time = BAASChronoUtil::getCurrentTimeMS();
+    checkpoint();
+}
+
 void BAASScreenshot::immediate_screenshot(cv::Mat& img)
 {
     screenshot_instance->screenshot(img);
@@ -65,20 +76,31 @@ void BAASScreenshot::immediate_screenshot(cv::Mat& img)
 
 void BAASScreenshot::ensure_interval() const
 {
-    long long current_time = BAASChronoUtil::getCurrentTimeMS();
-    int difference = interval - int(current_time - last_screenshot_time);
+    const auto current_time = BAASChronoUtil::getCurrentTimeMS();
+    const auto elapsed = current_time - last_screenshot_time;
+    const auto difference = screenshot_interval_remaining_ms(interval, elapsed);
     if (difference > 0) {
         BAASChronoUtil::sleepMS(difference);
     }
 }
 
+void BAASScreenshot::ensure_interval_controlled(
+    const std::function<void()>& checkpoint) const
+{
+    const auto current_time = BAASChronoUtil::getCurrentTimeMS();
+    const auto elapsed = current_time - last_screenshot_time;
+    const auto difference = screenshot_interval_remaining_ms(interval, elapsed);
+    wait_screenshot_interval_slices(
+        difference,
+        [](const int slice) { BAASChronoUtil::sleepMS(slice); },
+        checkpoint);
+}
+
 void BAASScreenshot::set_interval(const double value) noexcept
 {
-    interval = int(value * 1000);
-    if (interval < 0) {
-        logger->BAASWarn("Interval should be positive, set to default value 0.3");
-        interval = 300;
-    }
+    if (!valid_screenshot_interval_seconds(value))
+        logger->BAASWarn("Interval must be finite, non-negative, and fit milliseconds; using 0.3");
+    interval = normalize_screenshot_interval_ms(value);
     logger->BAASInfo("Screenshot interval set to " + std::to_string(interval) + "ms");
 }
 
