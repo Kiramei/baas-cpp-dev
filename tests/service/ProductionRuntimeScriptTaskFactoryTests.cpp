@@ -706,7 +706,8 @@ service_runtime::ProductionRuntimeScriptExtensionIdentity extension_identity(
     const Harness& harness)
 {
     return {
-        "primary@snapshot-7", harness.repositories.bundle()->generation(),
+        "primary", "primary@snapshot-7",
+        harness.repositories.bundle()->generation(),
         harness.repositories.bundle()->scripts().commit(),
         harness.repositories.bundle()->resources().commit()};
 }
@@ -916,6 +917,19 @@ void test_extension_identity_composition_and_lifetime()
     check(!mismatch.factory->create(request(), requested, control)
               && mismatch_counters->calls == 0,
           "extension publications not covering the exact pin must fail before use");
+
+    Harness same_snapshot_other_config;
+    auto cross_config_counters = std::make_shared<ExtensionCounters>();
+    auto cross_config_identity = extension_identity(same_snapshot_other_config);
+    cross_config_identity.config_id = "secondary";
+    same_snapshot_other_config.provider->set_extensions(
+        std::make_shared<TestExtensions>(
+            std::move(cross_config_identity), ExtensionMode::Valid,
+            cross_config_counters));
+    check(!same_snapshot_other_config.factory->create(
+              request(), requested, control) &&
+              cross_config_counters->calls == 0,
+          "config A/B sharing one snapshot id must reject cross-config extensions");
 
     Harness duplicate;
     auto duplicate_counters = std::make_shared<ExtensionCounters>();

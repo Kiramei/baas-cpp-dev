@@ -1,7 +1,8 @@
 # Capability-scoped Host API Contract (Draft 0.1)
 
-Status: Host contracts specified; the bounded LogHost production foundation is
-implemented, while live activation and the remaining real adapters are not.
+Status: Host contracts specified; the bounded LogHost, ProcedureHost,
+ResourceHost, and request-local ConfigHost foundations are implemented, while
+live activation and the remaining real adapters are not.
 This document fixes the Phase 1 contract surface. A metadata-only registry,
 synchronous `baas/log.emit` bridge, queued LogHost, and BAASLogger sink exist;
 no package activation or parity completion is claimed. Most catalog Host APIs
@@ -345,10 +346,18 @@ translating `HOST006_UNAVAILABLE` to `HostUnavailable`.
 
 ### HST-010 — Configuration, logging, and notification contracts
 
-`baas/config.snapshot` MUST return an immutable revisioned snapshot;
-`baas/config.get` reads only that snapshot; `baas/config.transact` MUST use an
-expected revision, preserve unknown fields, validate atomically, and return
-`HOST009_CONFIG_CONFLICT` without a partial write. `baas/log.emit` MUST attach
+`baas/config.snapshot()` MUST return the request-local immutable `revision` and
+`snapshot_id`; `baas/config.get(path, default?)` reads only that pinned snapshot
+and returns a JSON-safe deep copy. Paths MUST be non-root canonical RFC 6901
+pointers, traverse objects only, and reject empty segments or non-canonical
+escapes. `baas/config.transact(expected_revision, patch)` MUST use the expected
+revision and an ordered map of non-root pointer replacements, reject overlapping
+ancestor/descendant paths, preserve unknown fields, validate atomically, and return
+`HOST009_CONFIG_CONFLICT` with `effect_state = not_started` without a partial
+write. `null` is a stored JSON value, not deletion. The narrow persistence port
+MUST own serialization/CAS for `config_id`; neither the Host nor scripts may
+receive a path, mutable singleton, or native config handle. A successful write
+MUST NOT change reads within the already-running task. `baas/log.emit` MUST attach
 task/session/config metadata supplied by the host, accept bounded structured
 fields, redact configured secrets, and enqueue to a bounded thread-safe sink.
 Scripts MUST NOT choose filesystem log destinations or forge host identity.
@@ -564,7 +573,7 @@ normative in `host-capabilities.v1.json`.
 | `baas/ocr` | `host.ocr.load_model.v1(resource_id, options) -> OcrModel`; `host.ocr.recognize.v1(model, image, region, options) -> list<OcrLine>` |
 | `baas/device` | `host.device.capture.v1`; `host.device.click.v1`; `host.device.swipe.v1`; `host.device.app_control.v1`; `host.device.lifecycle.v1` |
 | `baas/clock` | `host.clock.now.v1() -> ordered-map<ClockReading>` |
-| `baas/config` | `host.config.snapshot.v1`; `host.config.get.v1`; `host.config.transact.v1` |
+| `baas/config` | `host.config.snapshot.v1() -> ordered-map<ConfigSnapshot>`; `host.config.get.v1(path, default?) -> json`; `host.config.transact.v1(expected_revision, patch) -> ordered-map<ConfigCommit>` |
 | `baas/log` | `host.log.emit.v1(level, message, fields) -> null` |
 | `baas/notify` | `host.notify.show.v1(title, body, options) -> null`; `host.notify.prompt.v1(title, body, actions, options) -> NotificationAction?` |
 | `baas/scheduler` | `host.scheduler.register.v1`; `host.scheduler.dispatch.v1`; `host.scheduler.sleep.v1`; `host.scheduler.schedule.v1`; `host.scheduler.cancel.v1` |
@@ -580,9 +589,9 @@ normative in `host-capabilities.v1.json`.
 
 The production adapter set and metadata registry still do not define or invoke
 `ClockHost`, `ProcessHost`, `HttpHost`, `SocketHost`, `ServiceHost`, or the other
-pending real named adapters. `ProcedureHost`, `QueuedLogHost`, and
-`BAASLoggerLogSink` are implemented foundations, but live package/task
-composition is not. The legacy global procedure adapter and real integrations for
+pending real named adapters. `ConfigHost`, `ProcedureHost`, `ResourceHost`,
+`QueuedLogHost`, and `BAASLoggerLogSink` are implemented foundations, but live
+package/task composition is not. The legacy global procedure adapter and real integrations for
 the checked `host<T>` foundation, async completion, bounded pools, keyed
 strands, production VM registration, full manifest
 activation, ERR-003 unwinding, and Python-versus-C++ parity remain pending until

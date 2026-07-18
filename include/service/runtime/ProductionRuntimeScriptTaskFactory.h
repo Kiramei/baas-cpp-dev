@@ -49,6 +49,9 @@ struct ProductionRuntimeScriptConfigSnapshot final {
 };
 
 struct ProductionRuntimeScriptExtensionIdentity final {
+    // Both fields are required: snapshot labels are not globally unique across
+    // user configs, and an extension must cover the exact pinned pair.
+    std::string config_id;
     std::string config_snapshot_id;
     std::string generation;
     std::string scripts_commit;
