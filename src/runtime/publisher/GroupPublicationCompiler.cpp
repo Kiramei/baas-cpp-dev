@@ -12,6 +12,7 @@
 #include <array>
 #include <atomic>
 #include <charconv>
+#include <cstddef>
 #include <cstring>
 #include <cstdlib>
 #include <fstream>
@@ -28,10 +29,13 @@
 #ifdef _WIN32
 #define NOMINMAX
 #include <Windows.h>
+#include <winternl.h>
 #else
 #include <cerrno>
 #include <cstdio>
+#include <dirent.h>
 #include <fcntl.h>
+#include <sys/stat.h>
 #include <unistd.h>
 #endif
 
@@ -44,10 +48,24 @@ namespace resources = ::baas::resources;
 namespace strict_json = ::baas::runtime::json;
 namespace procedure = ::baas::runtime::procedure;
 
+#if defined(BAAS_GROUP_PUBLICATION_TEST_HOOKS)
+std::atomic<GroupPublicationIoTestHook> io_test_hook{};
+
+void invoke_io_test_hook(const std::string_view phase)
+{
+    if (const auto hook = io_test_hook.load(std::memory_order_acquire); hook) hook(phase);
+}
+#else
+void invoke_io_test_hook(std::string_view) noexcept {}
+#endif
+
 constexpr std::size_t max_lock_bytes = 4U * 1024U * 1024U;
 constexpr std::size_t max_bundles = 32;
 constexpr std::size_t max_members = 256;
 constexpr std::size_t max_member_bytes = 16U * 1024U * 1024U;
+constexpr std::size_t max_png_source_bytes = 4U * 1024U * 1024U;
+constexpr std::size_t max_decoded_png_bytes = 4U * 1024U * 1024U;
+constexpr std::size_t max_total_decoded_png_bytes = 128U * 1024U * 1024U;
 constexpr std::size_t max_archive_bytes = 64U * 1024U * 1024U;
 constexpr std::size_t max_total_bytes = 128U * 1024U * 1024U;
 constexpr std::size_t max_work = 1024U * 1024U * 1024U;
@@ -58,6 +76,37 @@ constexpr std::size_t max_path_bytes = 1'024;
 {
     throw PublicationError{code, std::move(message)};
 }
+
+struct PublicationBudget final {
+    std::size_t sources{};
+    std::size_t outputs{};
+    std::size_t decoded_pngs{};
+    std::size_t work{};
+
+    void charge(std::size_t& value, const std::size_t amount, const std::size_t limit,
+                const std::string_view label)
+    {
+        if (amount > limit - std::min(value, limit))
+            fail(PublicationErrorCode::resource_exhausted,
+                 std::string{label} + " budget exceeded");
+        value += amount;
+    }
+    void source(const std::size_t amount)
+    {
+        charge(sources, amount, max_total_bytes, "source");
+        charge(work, amount, max_work, "work");
+    }
+    void decoded_png(const std::size_t amount)
+    {
+        charge(decoded_pngs, amount, max_total_decoded_png_bytes, "decoded PNG");
+        charge(work, amount, max_work, "work");
+    }
+    void output(const std::size_t amount)
+    {
+        charge(outputs, amount, max_total_bytes, "publication output");
+        charge(work, amount, max_work, "work");
+    }
+};
 
 [[nodiscard]] bool exact_fields(
     const Json& value, const std::initializer_list<std::string_view> fields)
@@ -814,12 +863,17 @@ void verify_crop_source(
         std::to_integer<std::uint32_t>(bytes[offset + 3]);
 }
 
-void verify_png_source(const std::span<const std::byte> bytes)
+void verify_png_source(
+    const std::span<const std::byte> bytes, PublicationBudget& budget)
 {
     constexpr std::array<std::byte, 8> signature{
         std::byte{0x89}, std::byte{'P'}, std::byte{'N'}, std::byte{'G'},
         std::byte{0x0d}, std::byte{0x0a}, std::byte{0x1a}, std::byte{0x0a}};
-    if (bytes.size() < 57 || !std::ranges::equal(signature, bytes.first(signature.size())))
+    if (bytes.size() > max_png_source_bytes)
+        fail(PublicationErrorCode::resource_exhausted,
+             "PNG source exceeds the consumer member limit");
+    if (bytes.size() < 57 ||
+        !std::ranges::equal(signature, bytes.first(signature.size())))
         fail(PublicationErrorCode::placeholder_forbidden, "PNG source is empty or not PNG");
     std::size_t cursor = signature.size();
     bool ihdr{};
@@ -900,8 +954,11 @@ void verify_png_source(const std::span<const std::byte> bytes)
     const auto channels = color == 2 ? 3U : 4U;
     const auto decoded_size = static_cast<std::uint64_t>(height) *
         (static_cast<std::uint64_t>(width) * channels + 1U);
-    if (decoded_size > max_source_bytes || decoded_size > std::numeric_limits<mz_ulong>::max())
-        fail(PublicationErrorCode::source_content_invalid, "PNG decoded size is invalid");
+    if (decoded_size > max_decoded_png_bytes ||
+        decoded_size > std::numeric_limits<mz_ulong>::max())
+        fail(PublicationErrorCode::resource_exhausted,
+             "PNG decoded size exceeds the consumer limit");
+    budget.decoded_png(static_cast<std::size_t>(decoded_size));
     std::vector<unsigned char> decoded(static_cast<std::size_t>(decoded_size));
     auto actual_size = static_cast<mz_ulong>(decoded.size());
     if (mz_uncompress(decoded.data(), &actual_size, compressed.data(),
@@ -1051,31 +1108,6 @@ struct CompiledMember final {
     std::string media_type;
 };
 
-struct PublicationBudget final {
-    std::size_t sources{};
-    std::size_t outputs{};
-    std::size_t work{};
-
-    void charge(std::size_t& value, const std::size_t amount, const std::size_t limit,
-                const std::string_view label)
-    {
-        if (amount > limit - std::min(value, limit))
-            fail(PublicationErrorCode::resource_exhausted,
-                 std::string{label} + " budget exceeded");
-        value += amount;
-    }
-    void source(const std::size_t amount)
-    {
-        charge(sources, amount, max_total_bytes, "source");
-        charge(work, amount, max_work, "work");
-    }
-    void output(const std::size_t amount)
-    {
-        charge(outputs, amount, max_total_bytes, "publication output");
-        charge(work, amount, max_work, "work");
-    }
-};
-
 [[nodiscard]] std::vector<std::byte> compile_bundle(
     const Bundle& bundle, const PinnedRepository& repository, PublicationBudget& budget)
 {
@@ -1113,7 +1145,7 @@ struct PublicationBudget final {
             const auto& png = read(*member.source).bytes;
             const auto& crop = read(*member.crop_source).bytes;
             verify_crop_source(member, crop);
-            verify_png_source(png);
+            verify_png_source(png, budget);
             feature["type"] = "image"; feature["member"] = member.id;
             feature["crop"] = OrderedJson::array(
                 {member.crop[0], member.crop[1], member.crop[2], member.crop[3]});
@@ -1165,92 +1197,600 @@ struct PublicationBudget final {
     return result;
 }
 
-[[nodiscard]] bool link_like(
-    const std::filesystem::path&, std::filesystem::file_status) noexcept;
-
-[[nodiscard]] std::vector<std::byte> read_exact_file(
-    const std::filesystem::path& path, const std::size_t expected_size)
-{
-    std::error_code error;
-    const auto status = std::filesystem::symlink_status(path, error);
-    if (error || !std::filesystem::is_regular_file(status) || link_like(path, status))
-        fail(PublicationErrorCode::publication_mismatch,
-             "publication output is missing or not a regular file: " + native_utf8(path));
-    const auto size = std::filesystem::file_size(path, error);
-    if (error || size != expected_size)
-        fail(PublicationErrorCode::publication_mismatch,
-             "publication output size mismatch: " + native_utf8(path));
-    std::ifstream input(path, std::ios::binary);
-    std::vector<std::byte> bytes(expected_size);
-    if (!input || (expected_size != 0 && !input.read(
-            reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(expected_size))))
-        fail(PublicationErrorCode::output_io_failed, "publication read failed");
-    if (input.peek() != std::char_traits<char>::eof())
-        fail(PublicationErrorCode::publication_mismatch, "publication has trailing bytes");
-    return bytes;
-}
-
-[[nodiscard]] bool link_like(const std::filesystem::path& path,
-                             const std::filesystem::file_status status) noexcept
-{
 #ifdef _WIN32
-    static_cast<void>(status);
-    const auto attributes = GetFileAttributesW(path.c_str());
-    return attributes != INVALID_FILE_ATTRIBUTES &&
-        (attributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0;
-#else
-    static_cast<void>(path);
-    return std::filesystem::is_symlink(status);
-#endif
+class NativeHandle final {
+public:
+    NativeHandle() = default;
+    explicit NativeHandle(const HANDLE value) noexcept : value_(value) {}
+    ~NativeHandle() { if (*this) static_cast<void>(CloseHandle(value_)); }
+    NativeHandle(const NativeHandle&) = delete;
+    NativeHandle& operator=(const NativeHandle&) = delete;
+    NativeHandle(NativeHandle&& other) noexcept
+        : value_(std::exchange(other.value_, INVALID_HANDLE_VALUE)) {}
+    NativeHandle& operator=(NativeHandle&& other) noexcept
+    {
+        if (this != &other) {
+            if (*this) static_cast<void>(CloseHandle(value_));
+            value_ = std::exchange(other.value_, INVALID_HANDLE_VALUE);
+        }
+        return *this;
+    }
+    [[nodiscard]] HANDLE get() const noexcept { return value_; }
+    [[nodiscard]] bool close() noexcept
+    {
+        const auto value = std::exchange(value_, INVALID_HANDLE_VALUE);
+        return value == INVALID_HANDLE_VALUE || value == nullptr || CloseHandle(value) != FALSE;
+    }
+    [[nodiscard]] explicit operator bool() const noexcept
+    {
+        return value_ != INVALID_HANDLE_VALUE && value_ != nullptr;
+    }
+private:
+    HANDLE value_{INVALID_HANDLE_VALUE};
+};
+
+using NtCreateFileFunction = NTSTATUS(NTAPI*)(
+    PHANDLE, ACCESS_MASK, POBJECT_ATTRIBUTES, PIO_STATUS_BLOCK, PLARGE_INTEGER,
+    ULONG, ULONG, ULONG, ULONG, PVOID, ULONG);
+using NtSetInformationFileFunction = NTSTATUS(NTAPI*)(
+    HANDLE, PIO_STATUS_BLOCK, PVOID, ULONG, FILE_INFORMATION_CLASS);
+using NtFlushBuffersFileExFunction = NTSTATUS(NTAPI*)(
+    HANDLE, ULONG, PVOID, ULONG, PIO_STATUS_BLOCK);
+using NtFlushBuffersFileFunction = NTSTATUS(NTAPI*)(HANDLE, PIO_STATUS_BLOCK);
+
+[[nodiscard]] NtCreateFileFunction nt_create_file() noexcept
+{
+    static const auto function = reinterpret_cast<NtCreateFileFunction>(
+        GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtCreateFile"));
+    return function;
 }
 
-void reject_undeclared_outputs(
-    const std::filesystem::path& publication_root,
-    const std::set<std::string, std::less<>>& expected_paths)
+[[nodiscard]] NtSetInformationFileFunction nt_set_information_file() noexcept
 {
-    std::error_code error;
-    if (!std::filesystem::is_directory(publication_root, error) || error)
-        fail(PublicationErrorCode::publication_mismatch, "publication root is absent");
-    for (std::filesystem::recursive_directory_iterator iterator(
-             publication_root, std::filesystem::directory_options::none, error), end;
-         !error && iterator != end; iterator.increment(error)) {
-        const auto status = iterator->symlink_status(error);
-        if (error || link_like(iterator->path(), status))
+    static const auto function = reinterpret_cast<NtSetInformationFileFunction>(
+        GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtSetInformationFile"));
+    return function;
+}
+
+[[nodiscard]] bool flush_windows_metadata(const HANDLE handle) noexcept
+{
+    static const auto flush_ex = reinterpret_cast<NtFlushBuffersFileExFunction>(
+        GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtFlushBuffersFileEx"));
+    static const auto flush = reinterpret_cast<NtFlushBuffersFileFunction>(
+        GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtFlushBuffersFile"));
+    IO_STATUS_BLOCK status{};
+    if (flush_ex && flush_ex(handle, 0, nullptr, 0, &status) >= 0 && status.Status >= 0)
+        return true;
+    status = {};
+    return flush && flush(handle, &status) >= 0 && status.Status >= 0;
+}
+
+[[nodiscard]] NativeHandle open_relative_windows(
+    const HANDLE parent, const std::wstring_view name, const ACCESS_MASK access,
+    const ULONG disposition, const bool directory, const ULONG share,
+    bool* const created = nullptr) noexcept
+{
+    if (name.empty() || name.size() > USHRT_MAX / sizeof(wchar_t)) return {};
+    const auto create = nt_create_file();
+    if (!create) return {};
+    UNICODE_STRING unicode{};
+    unicode.Buffer = const_cast<PWSTR>(name.data());
+    unicode.Length = static_cast<USHORT>(name.size() * sizeof(wchar_t));
+    unicode.MaximumLength = unicode.Length;
+    OBJECT_ATTRIBUTES attributes{};
+    InitializeObjectAttributes(&attributes, &unicode, 0, parent, nullptr);
+    IO_STATUS_BLOCK status{};
+    HANDLE result = INVALID_HANDLE_VALUE;
+    const auto options = FILE_SYNCHRONOUS_IO_NONALERT | FILE_OPEN_REPARSE_POINT |
+        (directory ? FILE_DIRECTORY_FILE : FILE_NON_DIRECTORY_FILE) |
+        (disposition == FILE_CREATE ? FILE_WRITE_THROUGH : 0U);
+    if (create(&result, access | SYNCHRONIZE, &attributes, &status, nullptr,
+               FILE_ATTRIBUTE_NORMAL, share, disposition, options, nullptr, 0) < 0)
+        return {};
+    if (created) *created = status.Information == FILE_CREATED;
+    FILE_ATTRIBUTE_TAG_INFO tag{};
+    if (!GetFileInformationByHandleEx(result, FileAttributeTagInfo, &tag, sizeof(tag)) ||
+        (tag.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0 ||
+        directory != ((tag.FileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0)) {
+        if (disposition == FILE_CREATE) {
+            FILE_DISPOSITION_INFO remove{TRUE};
+            static_cast<void>(SetFileInformationByHandle(
+                result, FileDispositionInfo, &remove, sizeof(remove)));
+        }
+        static_cast<void>(CloseHandle(result));
+        return {};
+    }
+    return NativeHandle{result};
+}
+
+[[nodiscard]] NativeHandle duplicate_handle(const HANDLE source) noexcept
+{
+    HANDLE result{INVALID_HANDLE_VALUE};
+    if (!DuplicateHandle(GetCurrentProcess(), source, GetCurrentProcess(), &result,
+                         0, FALSE, DUPLICATE_SAME_ACCESS))
+        return {};
+    return NativeHandle{result};
+}
+
+class AnchoredDirectory final {
+public:
+    AnchoredDirectory(const std::filesystem::path& root, const bool create, const bool writable)
+    {
+        std::error_code error;
+        const auto absolute = std::filesystem::absolute(root, error).lexically_normal();
+        if (error || absolute.root_path().empty())
+            fail(PublicationErrorCode::output_io_failed, "publication root path is invalid");
+        const auto access = FILE_LIST_DIRECTORY | FILE_TRAVERSE | FILE_READ_ATTRIBUTES |
+            (writable ? FILE_ADD_FILE | FILE_ADD_SUBDIRECTORY : 0U);
+        NativeHandle current{CreateFileW(
+            absolute.root_path().c_str(), access | SYNCHRONIZE,
+            FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
+            FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr)};
+        if (!directory_handle(current))
+            fail(PublicationErrorCode::output_io_failed,
+                 "publication filesystem root cannot be anchored");
+        for (const auto& component : absolute.relative_path()) {
+            const auto name = component.native();
+            if (name.empty() || name == L"." || name == L"..")
+                fail(PublicationErrorCode::output_io_failed,
+                     "publication root component is invalid");
+            bool component_created{};
+            auto next = open_relative_windows(
+                current.get(), name, access, create ? FILE_OPEN_IF : FILE_OPEN, true,
+                FILE_SHARE_READ | FILE_SHARE_WRITE, &component_created);
+            if (!next)
+                fail(PublicationErrorCode::output_io_failed,
+                     "publication root component cannot be anchored without reparse");
+            if (component_created && !flush_windows_metadata(current.get()))
+                fail(PublicationErrorCode::output_io_failed,
+                     "publication root component durability flush failed");
+            current = std::move(next);
+        }
+        root_ = std::move(current);
+    }
+
+    [[nodiscard]] std::vector<std::byte> read(
+        const std::filesystem::path& relative, const std::size_t expected_size) const
+    {
+        auto parent = open_parent(relative, false);
+        invoke_io_test_hook("before-read-open");
+        auto file = open_relative_windows(
+            parent.get(), relative.filename().native(),
+            FILE_READ_DATA | FILE_READ_ATTRIBUTES, FILE_OPEN, false, FILE_SHARE_READ);
+        if (!file)
             fail(PublicationErrorCode::publication_mismatch,
-                 "publication contains a symlink or unreadable entry");
-        if (std::filesystem::is_regular_file(status)) {
-            const auto relative = std::filesystem::relative(iterator->path(), publication_root, error);
-            if (error) fail(PublicationErrorCode::publication_mismatch,
-                            "publication relative path failed");
-            const auto value = relative.generic_string();
-            if (!expected_paths.contains(value))
+                 "publication output is not an anchored regular file");
+        LARGE_INTEGER size{};
+        if (!GetFileSizeEx(file.get(), &size) || size.QuadPart < 0 ||
+            static_cast<std::uint64_t>(size.QuadPart) != expected_size)
+            fail(PublicationErrorCode::publication_mismatch,
+                 "publication output size mismatch");
+        std::vector<std::byte> bytes(expected_size);
+        std::size_t offset{};
+        while (offset < bytes.size()) {
+            const auto chunk = static_cast<DWORD>(std::min<std::size_t>(
+                bytes.size() - offset, std::numeric_limits<DWORD>::max()));
+            DWORD completed{};
+            if (!ReadFile(file.get(), bytes.data() + offset, chunk, &completed, nullptr) ||
+                completed == 0)
+                fail(PublicationErrorCode::output_io_failed, "anchored publication read failed");
+            offset += completed;
+        }
+        LARGE_INTEGER after{};
+        if (!GetFileSizeEx(file.get(), &after) || after.QuadPart != size.QuadPart)
+            fail(PublicationErrorCode::publication_mismatch,
+                 "publication output changed while reading");
+        return bytes;
+    }
+
+    void replace(const std::filesystem::path& relative,
+                 const std::span<const std::byte> bytes) const
+    {
+        static std::atomic<std::uint64_t> serial{};
+        auto parent = open_parent(relative, true);
+        invoke_io_test_hook("before-write-create");
+        const auto destination = relative.filename().native();
+        const auto destination_bytes = destination.size() * sizeof(wchar_t);
+        const auto rename_size = sizeof(FILE_RENAME_INFO) + destination_bytes;
+        const auto rename_units =
+            (rename_size + sizeof(std::max_align_t) - 1U) / sizeof(std::max_align_t);
+        std::vector<std::max_align_t> rename_storage(rename_units);
+        auto* const rename = reinterpret_cast<FILE_RENAME_INFO*>(rename_storage.data());
+        rename->ReplaceIfExists = TRUE;
+        rename->RootDirectory = parent.get();
+        rename->FileNameLength = static_cast<DWORD>(destination_bytes);
+        std::memcpy(rename->FileName, destination.data(), destination_bytes);
+        for (std::size_t attempt = 0; attempt < 32; ++attempt) {
+            const auto temporary = destination + L".tmp-" +
+                std::to_wstring(GetCurrentProcessId()) + L"-" +
+                std::to_wstring(serial.fetch_add(1, std::memory_order_relaxed));
+            auto file = open_relative_windows(
+                parent.get(), temporary, GENERIC_WRITE | DELETE | FILE_READ_ATTRIBUTES,
+                FILE_CREATE, false, 0);
+            if (!file) continue;
+            bool success = true;
+            std::size_t offset{};
+            while (offset < bytes.size()) {
+                const auto chunk = static_cast<DWORD>(std::min<std::size_t>(
+                    bytes.size() - offset, std::numeric_limits<DWORD>::max()));
+                DWORD completed{};
+                if (!WriteFile(file.get(), bytes.data() + offset, chunk, &completed, nullptr) ||
+                    completed != chunk) { success = false; break; }
+                offset += completed;
+            }
+            success = success && FlushFileBuffers(file.get()) != FALSE;
+            IO_STATUS_BLOCK status{};
+            const auto set_information = nt_set_information_file();
+            success = success && set_information && set_information(
+                file.get(), &status, rename, static_cast<ULONG>(rename_size),
+                static_cast<FILE_INFORMATION_CLASS>(10)) >= 0;
+            if (!success) {
+                FILE_DISPOSITION_INFO remove{TRUE};
+                static_cast<void>(SetFileInformationByHandle(
+                    file.get(), FileDispositionInfo, &remove, sizeof(remove)));
+                fail(PublicationErrorCode::output_io_failed,
+                     "anchored atomic publication replace failed");
+            }
+            if (!file.close())
+                fail(PublicationErrorCode::output_io_failed,
+                     "committed publication handle close failed");
+            if (!flush_windows_metadata(parent.get()))
+                fail(PublicationErrorCode::output_io_failed,
+                     "publication directory durability flush failed");
+            return;
+        }
+        fail(PublicationErrorCode::output_io_failed,
+             "exclusive temporary publication name exhausted");
+    }
+
+    void validate_tree(const std::set<std::string, std::less<>>& expected) const
+    {
+        validate_tree_at(root_.get(), {}, expected);
+    }
+
+private:
+    static void validate_tree_at(
+        const HANDLE directory, const std::filesystem::path& prefix,
+        const std::set<std::string, std::less<>>& expected)
+    {
+        std::vector<std::byte> buffer(64U * 1024U);
+        bool restart = true;
+        for (;;) {
+            const auto info_class = restart ? FileIdBothDirectoryRestartInfo
+                                            : FileIdBothDirectoryInfo;
+            if (!GetFileInformationByHandleEx(
+                    directory, info_class, buffer.data(),
+                    static_cast<DWORD>(buffer.size()))) {
+                if (GetLastError() == ERROR_NO_MORE_FILES) return;
                 fail(PublicationErrorCode::publication_mismatch,
-                     "publication contains undeclared output: " + value);
-        } else if (!std::filesystem::is_directory(status)) {
-            fail(PublicationErrorCode::publication_mismatch,
-                 "publication contains a non-regular entry");
+                     "anchored publication enumeration failed");
+            }
+            restart = false;
+            auto* entry = reinterpret_cast<FILE_ID_BOTH_DIR_INFO*>(buffer.data());
+            for (;;) {
+                const std::wstring name{
+                    entry->FileName, entry->FileNameLength / sizeof(wchar_t)};
+                if (name != L"." && name != L"..") {
+                    if ((entry->FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0)
+                        fail(PublicationErrorCode::publication_mismatch,
+                             "publication contains a reparse point");
+                    const auto relative = prefix / name;
+                    if ((entry->FileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0) {
+                        auto child = open_relative_windows(
+                            directory, name,
+                            FILE_LIST_DIRECTORY | FILE_TRAVERSE | FILE_READ_ATTRIBUTES,
+                            FILE_OPEN, true, FILE_SHARE_READ | FILE_SHARE_WRITE);
+                        if (!child)
+                            fail(PublicationErrorCode::publication_mismatch,
+                                 "publication directory changed during enumeration");
+                        validate_tree_at(child.get(), relative, expected);
+                    } else {
+                        auto file = open_relative_windows(
+                            directory, name, FILE_READ_ATTRIBUTES, FILE_OPEN, false,
+                            FILE_SHARE_READ);
+                        if (!file || !expected.contains(relative.generic_string()))
+                            fail(PublicationErrorCode::publication_mismatch,
+                                 "publication contains an undeclared or unstable output");
+                    }
+                }
+                if (entry->NextEntryOffset == 0) break;
+                entry = reinterpret_cast<FILE_ID_BOTH_DIR_INFO*>(
+                    reinterpret_cast<std::byte*>(entry) + entry->NextEntryOffset);
+            }
         }
     }
-    if (error) fail(PublicationErrorCode::publication_mismatch,
-                    "publication enumeration failed");
-}
 
-void reject_symlink_ancestors(
-    const std::filesystem::path& root, const std::filesystem::path& relative)
-{
-    std::error_code error;
-    const auto root_status = std::filesystem::symlink_status(root, error);
-    if (error || link_like(root, root_status))
-        fail(PublicationErrorCode::output_io_failed, "publication root must not be a symlink");
-    auto current = root;
-    for (const auto& part : relative.parent_path()) {
-        current /= part;
-        error.clear();
-        const auto status = std::filesystem::symlink_status(current, error);
-        if (!error && link_like(current, status))
-            fail(PublicationErrorCode::output_io_failed, "publication parent must not be a symlink");
+    [[nodiscard]] static bool directory_handle(const NativeHandle& handle) noexcept
+    {
+        FILE_ATTRIBUTE_TAG_INFO tag{};
+        return handle && GetFileInformationByHandleEx(
+            handle.get(), FileAttributeTagInfo, &tag, sizeof(tag)) &&
+            (tag.FileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0 &&
+            (tag.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) == 0;
     }
-}
+
+    [[nodiscard]] NativeHandle open_parent(
+        const std::filesystem::path& relative, const bool create) const
+    {
+        if (!safe_relative_path(relative.generic_string()))
+            fail(PublicationErrorCode::publication_invalid, "unsafe publication path");
+        auto current = duplicate_handle(root_.get());
+        if (!current)
+            fail(PublicationErrorCode::output_io_failed,
+                 "publication root handle duplication failed");
+        for (const auto& component : relative.parent_path()) {
+            const auto name = component.native();
+            bool component_created{};
+            auto next = open_relative_windows(
+                current.get(), name,
+                FILE_LIST_DIRECTORY | FILE_TRAVERSE | FILE_READ_ATTRIBUTES |
+                    (create ? FILE_ADD_FILE | FILE_ADD_SUBDIRECTORY : 0U),
+                create ? FILE_OPEN_IF : FILE_OPEN, true,
+                FILE_SHARE_READ | FILE_SHARE_WRITE, &component_created);
+            if (!next)
+                fail(PublicationErrorCode::output_io_failed,
+                     "publication parent cannot be anchored without reparse");
+            if (component_created && !flush_windows_metadata(current.get()))
+                fail(PublicationErrorCode::output_io_failed,
+                     "publication parent durability flush failed");
+            current = std::move(next);
+        }
+        return current;
+    }
+
+    NativeHandle root_;
+};
+#else
+class NativeHandle final {
+public:
+    NativeHandle() = default;
+    explicit NativeHandle(const int value) noexcept : value_(value) {}
+    ~NativeHandle() { if (*this) static_cast<void>(::close(value_)); }
+    NativeHandle(const NativeHandle&) = delete;
+    NativeHandle& operator=(const NativeHandle&) = delete;
+    NativeHandle(NativeHandle&& other) noexcept : value_(std::exchange(other.value_, -1)) {}
+    NativeHandle& operator=(NativeHandle&& other) noexcept
+    {
+        if (this != &other) {
+            if (*this) static_cast<void>(::close(value_));
+            value_ = std::exchange(other.value_, -1);
+        }
+        return *this;
+    }
+    [[nodiscard]] int get() const noexcept { return value_; }
+    [[nodiscard]] bool close() noexcept
+    {
+        const auto value = std::exchange(value_, -1);
+        return value < 0 || ::close(value) == 0;
+    }
+    [[nodiscard]] explicit operator bool() const noexcept { return value_ >= 0; }
+private:
+    int value_{-1};
+};
+
+class AnchoredDirectory final {
+public:
+    AnchoredDirectory(const std::filesystem::path& root, const bool create, bool)
+    {
+        std::error_code error;
+        const auto absolute = std::filesystem::absolute(root, error).lexically_normal();
+        if (error || !absolute.is_absolute())
+            fail(PublicationErrorCode::output_io_failed, "publication root path is invalid");
+        NativeHandle current{::open("/", O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW)};
+        if (!current)
+            fail(PublicationErrorCode::output_io_failed,
+                 "publication filesystem root cannot be anchored");
+        for (const auto& component : absolute.relative_path()) {
+            const auto name = component.native();
+            if (name.empty() || name == "." || name == "..")
+                fail(PublicationErrorCode::output_io_failed,
+                     "publication root component is invalid");
+            auto next = NativeHandle{::openat(
+                current.get(), name.c_str(),
+                O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW)};
+            bool component_created{};
+            if (!next && create && errno == ENOENT) {
+                if (::mkdirat(current.get(), name.c_str(), 0700) == 0) {
+                    component_created = true;
+                } else if (errno != EEXIST) {
+                    fail(PublicationErrorCode::output_io_failed,
+                         "publication root component creation failed");
+                }
+                next = NativeHandle{::openat(
+                    current.get(), name.c_str(),
+                    O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW)};
+            }
+            if (!next)
+                fail(PublicationErrorCode::output_io_failed,
+                     "publication root component cannot be anchored without symlink");
+            if (component_created && ::fsync(current.get()) != 0)
+                fail(PublicationErrorCode::output_io_failed,
+                     "publication root component durability flush failed");
+            struct stat status {};
+            if (::fstat(next.get(), &status) != 0 || !S_ISDIR(status.st_mode))
+                fail(PublicationErrorCode::output_io_failed,
+                     "publication root component is not a directory");
+            current = std::move(next);
+        }
+        root_ = std::move(current);
+    }
+
+    [[nodiscard]] std::vector<std::byte> read(
+        const std::filesystem::path& relative, const std::size_t expected_size) const
+    {
+        auto parent = open_parent(relative, false);
+        invoke_io_test_hook("before-read-open");
+        NativeHandle file{::openat(parent.get(), relative.filename().c_str(),
+                                   O_RDONLY | O_CLOEXEC | O_NOFOLLOW)};
+        struct stat before {};
+        if (!file || ::fstat(file.get(), &before) != 0 || !S_ISREG(before.st_mode) ||
+            before.st_size < 0 || static_cast<std::uint64_t>(before.st_size) != expected_size)
+            fail(PublicationErrorCode::publication_mismatch,
+                 "publication output is not an anchored regular file of exact size");
+        std::vector<std::byte> bytes(expected_size);
+        std::size_t offset{};
+        while (offset < bytes.size()) {
+            const auto completed = ::read(file.get(), bytes.data() + offset, bytes.size() - offset);
+            if (completed < 0 && errno == EINTR) continue;
+            if (completed <= 0)
+                fail(PublicationErrorCode::output_io_failed, "anchored publication read failed");
+            offset += static_cast<std::size_t>(completed);
+        }
+        struct stat after {};
+        if (::fstat(file.get(), &after) != 0 || after.st_size != before.st_size ||
+            after.st_dev != before.st_dev || after.st_ino != before.st_ino)
+            fail(PublicationErrorCode::publication_mismatch,
+                 "publication output changed while reading");
+        return bytes;
+    }
+
+    void replace(const std::filesystem::path& relative,
+                 const std::span<const std::byte> bytes) const
+    {
+        static std::atomic<std::uint64_t> serial{};
+        auto parent = open_parent(relative, true);
+        invoke_io_test_hook("before-write-create");
+        const auto destination = relative.filename().native();
+        for (std::size_t attempt = 0; attempt < 32; ++attempt) {
+            const auto temporary = destination + ".tmp-" + std::to_string(getpid()) + "-" +
+                std::to_string(serial.fetch_add(1, std::memory_order_relaxed));
+            NativeHandle file{::openat(parent.get(), temporary.c_str(),
+                O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0600)};
+            if (!file) {
+                if (errno == EEXIST) continue;
+                fail(PublicationErrorCode::output_io_failed,
+                     "exclusive anchored publication create failed");
+            }
+            bool success = true;
+            std::size_t offset{};
+            while (offset < bytes.size()) {
+                const auto completed = ::write(
+                    file.get(), bytes.data() + offset, bytes.size() - offset);
+                if (completed < 0 && errno == EINTR) continue;
+                if (completed <= 0) { success = false; break; }
+                offset += static_cast<std::size_t>(completed);
+            }
+            success = success && ::fsync(file.get()) == 0;
+            success = file.close() && success;
+            if (!success) {
+                static_cast<void>(::unlinkat(parent.get(), temporary.c_str(), 0));
+                fail(PublicationErrorCode::output_io_failed,
+                     "temporary publication write failed");
+            }
+            if (::renameat(parent.get(), temporary.c_str(), parent.get(), destination.c_str()) != 0) {
+                static_cast<void>(::unlinkat(parent.get(), temporary.c_str(), 0));
+                fail(PublicationErrorCode::output_io_failed,
+                     "anchored atomic publication replace failed");
+            }
+            if (::fsync(parent.get()) != 0)
+                fail(PublicationErrorCode::output_io_failed,
+                     "publication directory durability flush failed");
+            return;
+        }
+        fail(PublicationErrorCode::output_io_failed,
+             "exclusive temporary publication name exhausted");
+    }
+
+    void validate_tree(const std::set<std::string, std::less<>>& expected) const
+    {
+        validate_tree_at(root_.get(), {}, expected);
+    }
+
+private:
+    static void validate_tree_at(
+        const int directory, const std::filesystem::path& prefix,
+        const std::set<std::string, std::less<>>& expected)
+    {
+        const auto scan_fd = ::fcntl(directory, F_DUPFD_CLOEXEC, 0);
+        if (scan_fd < 0)
+            fail(PublicationErrorCode::publication_mismatch,
+                 "publication directory duplication failed");
+        std::unique_ptr<DIR, decltype(&::closedir)> scan{::fdopendir(scan_fd), &::closedir};
+        if (!scan) {
+            static_cast<void>(::close(scan_fd));
+            fail(PublicationErrorCode::publication_mismatch,
+                 "anchored publication enumeration failed");
+        }
+        for (;;) {
+            errno = 0;
+            const auto* entry = ::readdir(scan.get());
+            if (!entry) {
+                if (errno != 0)
+                    fail(PublicationErrorCode::publication_mismatch,
+                         "anchored publication enumeration failed");
+                return;
+            }
+            const std::string name{entry->d_name};
+            if (name == "." || name == "..") continue;
+            struct stat status {};
+            if (::fstatat(directory, name.c_str(), &status, AT_SYMLINK_NOFOLLOW) != 0 ||
+                S_ISLNK(status.st_mode))
+                fail(PublicationErrorCode::publication_mismatch,
+                     "publication contains a symlink or unstable entry");
+            const auto relative = prefix / name;
+            if (S_ISDIR(status.st_mode)) {
+                NativeHandle child{::openat(
+                    directory, name.c_str(),
+                    O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW)};
+                if (!child)
+                    fail(PublicationErrorCode::publication_mismatch,
+                         "publication directory changed during enumeration");
+                validate_tree_at(child.get(), relative, expected);
+            } else if (S_ISREG(status.st_mode)) {
+                NativeHandle file{::openat(
+                    directory, name.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW)};
+                struct stat opened {};
+                if (!file || ::fstat(file.get(), &opened) != 0 || !S_ISREG(opened.st_mode) ||
+                    !expected.contains(relative.generic_string()))
+                    fail(PublicationErrorCode::publication_mismatch,
+                         "publication contains an undeclared or unstable output");
+            } else {
+                fail(PublicationErrorCode::publication_mismatch,
+                     "publication contains a non-regular entry");
+            }
+        }
+    }
+
+    [[nodiscard]] NativeHandle open_parent(
+        const std::filesystem::path& relative, const bool create) const
+    {
+        if (!safe_relative_path(relative.generic_string()))
+            fail(PublicationErrorCode::publication_invalid, "unsafe publication path");
+        NativeHandle current{::fcntl(root_.get(), F_DUPFD_CLOEXEC, 0)};
+        if (!current)
+            fail(PublicationErrorCode::output_io_failed,
+                 "publication root descriptor duplication failed");
+        for (const auto& component : relative.parent_path()) {
+            const auto name = component.native();
+            auto next = NativeHandle{::openat(
+                current.get(), name.c_str(),
+                O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW)};
+            bool component_created{};
+            if (!next && create && errno == ENOENT) {
+                if (::mkdirat(current.get(), name.c_str(), 0700) == 0) {
+                    component_created = true;
+                } else if (errno != EEXIST) {
+                    fail(PublicationErrorCode::output_io_failed,
+                         "publication parent creation failed");
+                }
+                next = NativeHandle{::openat(
+                    current.get(), name.c_str(),
+                    O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW)};
+            }
+            if (!next)
+                fail(PublicationErrorCode::output_io_failed,
+                     "publication parent cannot be anchored without symlink");
+            if (component_created && ::fsync(current.get()) != 0)
+                fail(PublicationErrorCode::output_io_failed,
+                     "publication parent durability flush failed");
+            current = std::move(next);
+        }
+        return current;
+    }
+
+    NativeHandle root_;
+};
+#endif
 
 void validate_outputs(const std::span<const PublicationOutput> outputs)
 {
@@ -1324,116 +1864,19 @@ void validate_outputs(const std::span<const PublicationOutput> outputs)
              "publication resource manifest is not canonical");
 }
 
-void atomic_replace(const std::filesystem::path& destination, const std::span<const std::byte> bytes)
-{
-    static std::atomic<std::uint64_t> serial{};
-#ifndef _WIN32
-    struct Descriptor final {
-        int value{-1};
-        ~Descriptor() { if (value >= 0) static_cast<void>(::close(value)); }
-    } directory{::open(destination.parent_path().c_str(),
-                       O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW)};
-    if (directory.value < 0)
-        fail(PublicationErrorCode::output_io_failed,
-             "publication parent open without symlink following failed");
-#endif
-    std::filesystem::path temporary;
-    bool written{};
-    for (std::size_t attempt = 0; attempt < 32 && !written; ++attempt) {
-#ifdef _WIN32
-        const auto process = static_cast<unsigned long long>(GetCurrentProcessId());
-#else
-        const auto process = static_cast<unsigned long long>(getpid());
-#endif
-        const auto suffix = ".tmp-" + std::to_string(process) + "-" +
-            std::to_string(serial.fetch_add(1, std::memory_order_relaxed));
-        temporary = destination.parent_path() /
-            (destination.filename().native() + std::filesystem::path{suffix}.native());
-#ifdef _WIN32
-        const HANDLE handle = CreateFileW(
-            temporary.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW,
-            FILE_ATTRIBUTE_NORMAL, nullptr);
-        if (handle == INVALID_HANDLE_VALUE) {
-            if (GetLastError() == ERROR_FILE_EXISTS || GetLastError() == ERROR_ALREADY_EXISTS)
-                continue;
-            fail(PublicationErrorCode::output_io_failed,
-                 "exclusive temporary publication create failed");
-        }
-        bool success = true;
-        std::size_t offset{};
-        while (offset < bytes.size()) {
-            const auto chunk = static_cast<DWORD>(std::min<std::size_t>(
-                bytes.size() - offset, std::numeric_limits<DWORD>::max()));
-            DWORD completed{};
-            if (!WriteFile(handle, bytes.data() + offset, chunk, &completed, nullptr) ||
-                completed != chunk) {
-                success = false;
-                break;
-            }
-            offset += completed;
-        }
-        success = success && FlushFileBuffers(handle) != FALSE;
-        success = CloseHandle(handle) != FALSE && success;
-        if (!success) {
-            std::error_code ignored; std::filesystem::remove(temporary, ignored);
-            fail(PublicationErrorCode::output_io_failed,
-                 "temporary publication write failed");
-        }
-#else
-        const auto temporary_name = temporary.filename();
-        const int descriptor = ::openat(directory.value, temporary_name.c_str(),
-                                        O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW,
-                                        0600);
-        if (descriptor < 0) {
-            if (errno == EEXIST) continue;
-            fail(PublicationErrorCode::output_io_failed,
-                 "exclusive temporary publication create failed");
-        }
-        bool success = true;
-        std::size_t offset{};
-        while (offset < bytes.size()) {
-            const auto completed = ::write(descriptor, bytes.data() + offset, bytes.size() - offset);
-            if (completed < 0 && errno == EINTR) continue;
-            if (completed <= 0) { success = false; break; }
-            offset += static_cast<std::size_t>(completed);
-        }
-        success = success && ::fsync(descriptor) == 0;
-        success = ::close(descriptor) == 0 && success;
-        if (!success) {
-            static_cast<void>(::unlinkat(directory.value, temporary_name.c_str(), 0));
-            fail(PublicationErrorCode::output_io_failed,
-                 "temporary publication write failed");
-        }
-#endif
-        written = true;
-    }
-    if (!written)
-        fail(PublicationErrorCode::output_io_failed,
-             "exclusive temporary publication name exhausted");
-#ifdef _WIN32
-    if (!MoveFileExW(temporary.c_str(), destination.c_str(),
-                     MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
-        std::error_code ignored; std::filesystem::remove(temporary, ignored);
-        fail(PublicationErrorCode::output_io_failed, "atomic publication replace failed");
-    }
-#else
-    const auto temporary_name = temporary.filename();
-    const auto destination_name = destination.filename();
-    if (::renameat(directory.value, temporary_name.c_str(),
-                   directory.value, destination_name.c_str()) != 0 ||
-        ::fsync(directory.value) != 0) {
-        static_cast<void>(::unlinkat(directory.value, temporary_name.c_str(), 0));
-        fail(PublicationErrorCode::output_io_failed, "atomic publication replace failed");
-    }
-#endif
-}
-
 }  // namespace
 
 struct GroupPublicationLock::Impl final {
     std::string source_commit;
     std::vector<Bundle> bundles;
 };
+
+#if defined(BAAS_GROUP_PUBLICATION_TEST_HOOKS)
+void set_group_publication_io_test_hook(const GroupPublicationIoTestHook hook) noexcept
+{
+    io_test_hook.store(hook, std::memory_order_release);
+}
+#endif
 
 std::string_view publication_error_name(const PublicationErrorCode code) noexcept
 {
@@ -1677,16 +2120,16 @@ void verify_group_publication(
     const std::filesystem::path& publication_root)
 {
     const auto expected = compile_group_publication(lock, repository_path);
+    const AnchoredDirectory directory{publication_root, false, false};
     std::set<std::string, std::less<>> expected_paths;
     for (const auto& output : expected) {
         expected_paths.insert(output.relative_path);
-        const auto actual = read_exact_file(publication_root / output.relative_path,
-                                            output.bytes.size());
+        const auto actual = directory.read(output.relative_path, output.bytes.size());
         if (actual != output.bytes)
             fail(PublicationErrorCode::publication_mismatch,
                  "publication bytes are not canonical: " + output.relative_path);
     }
-    reject_undeclared_outputs(publication_root, expected_paths);
+    directory.validate_tree(expected_paths);
 }
 
 void write_group_publication(
@@ -1695,36 +2138,31 @@ void write_group_publication(
 {
     validate_outputs(outputs);
     if (check_only) {
+        const AnchoredDirectory directory{publication_root, false, false};
         std::set<std::string, std::less<>> expected;
         for (const auto& output : outputs) {
             expected.insert(output.relative_path);
-            if (read_exact_file(publication_root / output.relative_path, output.bytes.size()) !=
-                output.bytes)
+            if (directory.read(output.relative_path, output.bytes.size()) != output.bytes)
                 fail(PublicationErrorCode::publication_mismatch,
                      "--check output differs: " + output.relative_path);
         }
-        reject_undeclared_outputs(publication_root, expected);
+        directory.validate_tree(expected);
         return;
     }
-    std::error_code error;
-    std::filesystem::create_directories(publication_root, error);
-    if (error) fail(PublicationErrorCode::output_io_failed,
-                    "publication root creation failed");
+    const AnchoredDirectory directory{publication_root, true, true};
     std::set<std::string, std::less<>> expected;
     for (const auto& output : outputs) expected.insert(output.relative_path);
-    reject_undeclared_outputs(publication_root, expected);
+    directory.validate_tree(expected);
     for (const auto& output : outputs) {
         if (!safe_relative_path(output.relative_path))
             fail(PublicationErrorCode::publication_invalid, "unsafe output path");
-        const auto relative = std::filesystem::path{output.relative_path};
-        reject_symlink_ancestors(publication_root, relative);
-        const auto destination = publication_root / relative;
-        std::filesystem::create_directories(destination.parent_path(), error);
-        if (error) fail(PublicationErrorCode::output_io_failed,
-                        "publication parent creation failed");
-        atomic_replace(destination, output.bytes);
+        directory.replace(std::filesystem::path{output.relative_path}, output.bytes);
     }
-    reject_undeclared_outputs(publication_root, expected);
+    for (const auto& output : outputs)
+        if (directory.read(output.relative_path, output.bytes.size()) != output.bytes)
+            fail(PublicationErrorCode::publication_mismatch,
+                 "anchored post-write publication verification failed");
+    directory.validate_tree(expected);
 }
 
 }  // namespace baas::runtime::publisher

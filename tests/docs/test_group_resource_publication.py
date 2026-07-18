@@ -112,6 +112,30 @@ class GroupResourcePublicationContractTests(unittest.TestCase):
         self.assertIn("b8cc64705feb0067aba349892031a450d1bf8083", header)
         self.assertIn("integration-test inventory tool", generator.lower())
 
+    def test_publication_io_is_anchored_and_png_budgets_match_consumer(self) -> None:
+        source = (
+            ROOT / "src" / "runtime" / "publisher" / "GroupPublicationCompiler.cpp"
+        ).read_text(encoding="utf-8")
+        tests = (
+            ROOT / "tests" / "runtime" / "GroupPublicationCompilerTests.cpp"
+        ).read_text(encoding="utf-8")
+        for token in (
+            "max_png_source_bytes = 4U * 1024U * 1024U",
+            "max_decoded_png_bytes = 4U * 1024U * 1024U",
+            "max_total_decoded_png_bytes = 128U * 1024U * 1024U",
+            "openat(",
+            "renameat(",
+            "fstatat(",
+            "NtCreateFile",
+            "FILE_RENAME_INFO",
+            "FileIdBothDirectoryInfo",
+            "before-read-open",
+            "before-write-create",
+        ):
+            self.assertIn(token, source)
+        self.assertIn("cumulative decoded PNG work over 128 MiB", tests)
+        self.assertIn("deterministic final-component replacement race", tests)
+
 
 if __name__ == "__main__":
     unittest.main()

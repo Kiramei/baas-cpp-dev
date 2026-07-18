@@ -83,6 +83,10 @@ IHDR, zlib stream, filter bytes, and non-placeholder pixels) and copied directly
 from the ODB blob into the archive. They are never decoded and re-encoded. The
 template dimensions need not equal the screenshot crop because both the Python
 implementation and C++ production adapter resize the crop to the template.
+The compiler enforces the consumer's exact PNG budgets before allocation:
+4 MiB for one stored PNG, 4 MiB for one decoded pixel stream, and 128 MiB for
+all decoded PNG streams in one publication. Decoded bytes also consume the
+1 GiB compilation work budget.
 RGB samples are strictly extracted from the exact profile JSON and converted to
 the frozen RGB-range schema; repeated coordinates retain their original order,
 matching Python list semantics. The feature graph is derived only from reviewed
@@ -104,8 +108,14 @@ Each support bundle is a deterministic ZIP32 STORE stream:
 The publisher emits all declared bundle paths followed by canonical
 `baas.resources.json`. Individual files use exclusive sibling temporary files,
 durable flush, and atomic replacement. The manifest is replaced last and is the
-publication commit point. `--check` performs no writes and rejects missing,
-different, symlinked, or undeclared files.
+publication commit point. Publication roots and every relative parent component
+are opened from a fixed filesystem-root handle without following links. Reads
+derive size and bytes from the same anchored file handle; writes create and
+rename through the fixed parent handle (`openat`/`renameat` on POSIX and
+root-relative `NtCreateFile`/rename on Windows), then durably flush the file and
+directory. A post-write anchored read verifies the committed bytes. `--check`
+performs no writes and rejects missing, different, symlinked, or undeclared
+files.
 
 ## CLI
 
@@ -159,8 +169,10 @@ schema and algorithms; it is explicitly not a production inventory or bundle.
 `BAAS_runtime_group_publication_compiler_tests` creates a pinned temporary Git
 repository, records real blob identities, dirties its checkout, compiles twice,
 checks a fixed archive SHA-256, exercises source and schema negatives, checks
-atomic/`--check` behavior, and activates the generated archive through the
-existing `RuntimeResourceSnapshotLoader` and `CoDetectSupportBundle` loader.
+atomic/`--check` behavior, deterministically replaces final and parent path
+components at I/O hook boundaries to exercise race closure, and activates the
+generated archive through the existing `RuntimeResourceSnapshotLoader` and
+`CoDetectSupportBundle` loader.
 The existing strict bundle suite remains the authoritative ZIP/manifest/PNG
 negative corpus and runs in the same CI job. Ubuntu CI additionally checks out
 the external Python repository at the exact reviewed commit, generates its lock

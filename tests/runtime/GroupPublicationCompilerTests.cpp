@@ -36,6 +36,44 @@ using Json = nlohmann::ordered_json;
 
 std::atomic<int> failures{};
 
+#if defined(BAAS_GROUP_PUBLICATION_TEST_HOOKS)
+enum class IoRaceAction {
+    none,
+    replace_read_file_with_directory,
+    replace_write_file_with_directory,
+    replace_parent_directory,
+};
+IoRaceAction io_race_action{};
+std::filesystem::path io_race_target;
+std::filesystem::path io_race_backup;
+bool io_race_invoked{};
+
+void publication_io_race_hook(const std::string_view phase)
+{
+    const bool selected =
+        (io_race_action == IoRaceAction::replace_read_file_with_directory &&
+         phase == "before-read-open") ||
+        (io_race_action == IoRaceAction::replace_write_file_with_directory &&
+         phase == "before-write-create") ||
+        (io_race_action == IoRaceAction::replace_parent_directory &&
+         phase == "before-write-create");
+    if (!selected) return;
+    publisher::set_group_publication_io_test_hook(nullptr);
+    io_race_invoked = true;
+    std::filesystem::rename(io_race_target, io_race_backup);
+    std::filesystem::create_directory(io_race_target);
+}
+
+void restore_io_race_target()
+{
+    publisher::set_group_publication_io_test_hook(nullptr);
+    std::error_code ignored;
+    std::filesystem::remove_all(io_race_target, ignored);
+    std::filesystem::rename(io_race_backup, io_race_target);
+    io_race_action = IoRaceAction::none;
+}
+#endif
+
 void check(const bool condition, const std::string_view message)
 {
     if (condition) return;
@@ -192,24 +230,34 @@ public:
     GitFixture()
     {
         if (git_libgit2_init() < 0) throw std::runtime_error("git init failed");
+        std::string crop_metadata =
+            "prefix = \"main_page\"\npath = \"main_page\"\nx_y_range = {\n"
+            "    'news': (0, 0, 3, 3),\n"
+            "    'placeholder': (0, 0, 2, 2),\n"
+            "    'blank': (0, 0, 2, 2),\n"
+            "    'oversized': (0, 0, 2, 2),\n"
+            "    # 'missing': (0, 0, 2, 2),\n";
+        for (std::size_t index = 0; index < 33; ++index)
+            crop_metadata += "    'budget-" + std::to_string(index) +
+                "': (0, 0, 2, 2),\n";
+        crop_metadata += "}\n";
         sources_ = {
             {"src/rgb_feature/JP.json", bytes(
                 R"({"rgb_feature":{"main_page":[[[1,1],[1,1]],[[1,2,3,4,5,6],[1,2,3,4,5,6]]]}})"), {}},
             {"src/images/JP/main_page/news.png", png(2, 2), {}},
             {"src/images/JP/main_page/placeholder.png", png(1, 1), {}},
             {"src/images/JP/main_page/blank.png", png(2, 2, false), {}},
+            {"src/images/JP/main_page/oversized.png", png(1400, 1000), {}},
             {"src/images/JP/dead/news.png", png(2, 2), {}},
             {"src/images/JP/main_page/missing.png", png(2, 2), {}},
-            {"src/images/JP/x_y_range/main_page.py", bytes(
-                "prefix = \"main_page\"\npath = \"main_page\"\nx_y_range = {\n"
-                "    'news': (0, 0, 3, 3),\n"
-                "    'placeholder': (0, 0, 2, 2),\n"
-                "    'blank': (0, 0, 2, 2),\n"
-                "    # 'missing': (0, 0, 2, 2),\n}\n"), {}},
+            {"src/images/JP/x_y_range/main_page.py", bytes(crop_metadata), {}},
             {"src/images/JP/x_y_range/dead.py", bytes(
                 "if False:\n    prefix = \"dead\"\n    path = \"dead\"\n"
                 "    x_y_range = {\n        'news': (0, 0, 2, 2),\n    }\n"), {}},
         };
+        for (std::size_t index = 0; index < 33; ++index)
+            sources_.push_back({"src/images/JP/main_page/budget-" +
+                std::to_string(index) + ".png", png(1365, 1000), {}});
         git_repository* raw_repository{};
         const auto root = path_.path().string();
         if (git_repository_init(&raw_repository, root.c_str(), 0) < 0)
@@ -490,6 +538,43 @@ void test_compile_reproducible_and_activate()
     publisher::write_group_publication(first, publication.path(), false);
     publisher::write_group_publication(first, publication.path(), true);
     publisher::verify_group_publication(lock, git.path(), publication.path());
+#if defined(BAAS_GROUP_PUBLICATION_TEST_HOOKS)
+    io_race_action = IoRaceAction::replace_read_file_with_directory;
+    io_race_target = publication.path() / first[0].relative_path;
+    io_race_backup = publication.path() / "read-race-backup.bundle";
+    io_race_invoked = false;
+    publisher::set_group_publication_io_test_hook(&publication_io_race_hook);
+    expect_error([&] { publisher::write_group_publication(
+        first, publication.path(), true); },
+        publisher::PublicationErrorCode::publication_mismatch,
+        "anchored read must reject a deterministic final-component replacement race");
+    restore_io_race_target();
+    check(io_race_invoked, "anchored read race hook must run");
+    io_race_action = IoRaceAction::replace_write_file_with_directory;
+    io_race_target = publication.path() / first[0].relative_path;
+    io_race_backup = publication.path() / "write-race-backup.bundle";
+    io_race_invoked = false;
+    publisher::set_group_publication_io_test_hook(&publication_io_race_hook);
+    expect_error([&] { publisher::write_group_publication(
+        first, publication.path(), false); },
+        publisher::PublicationErrorCode::output_io_failed,
+        "anchored writer must reject a deterministic destination replacement race");
+    restore_io_race_target();
+    check(io_race_invoked, "anchored write destination race hook must run");
+#ifndef _WIN32
+    io_race_action = IoRaceAction::replace_parent_directory;
+    io_race_target = publication.path() / "payload";
+    io_race_backup = publication.path() / "payload-race-backup";
+    io_race_invoked = false;
+    publisher::set_group_publication_io_test_hook(&publication_io_race_hook);
+    expect_error([&] { publisher::write_group_publication(
+        first, publication.path(), false); },
+        publisher::PublicationErrorCode::publication_mismatch,
+        "anchored writer must not escape through a replaced parent directory");
+    restore_io_race_target();
+    check(io_race_invoked, "anchored write race hook must run");
+#endif
+#endif
 #ifndef _WIN32
     std::filesystem::create_symlink(
         publication.path() / first[0].relative_path, publication.path() / "linked.bundle");
@@ -600,6 +685,43 @@ void test_lock_and_source_negatives()
     expect_error([&] { publisher::verify_group_publication_sources(
         blank_lock, git.path()); }, publisher::PublicationErrorCode::placeholder_forbidden,
         "same-size blank placeholder must fail");
+
+    auto oversized_png = lock_json(
+        git, "src/images/JP/main_page/oversized.png", "main_page_oversized",
+        "src/images/JP/x_y_range/main_page.py", Json::array({0, 0, 2, 2}));
+    auto oversized_png_lock = parse(oversized_png);
+    expect_error([&] { publisher::verify_group_publication_sources(
+        oversized_png_lock, git.path()); }, publisher::PublicationErrorCode::resource_exhausted,
+        "decoded PNG over the consumer 4 MiB limit must fail before allocation");
+
+    auto cumulative = valid;
+    Json cumulative_members = Json::array({
+        valid["bundles"][0]["members"][0], valid["bundles"][0]["members"][1]});
+    std::vector<Json> cumulative_images;
+    const auto crop_source = source_json(
+        git.source("src/images/JP/x_y_range/main_page.py"));
+    for (std::size_t index = 0; index < 33; ++index) {
+        const auto name = "budget-" + std::to_string(index);
+        const auto feature = "main_page_" + name;
+        cumulative_images.push_back(Json{
+            {"id", "image/" + feature}, {"kind", "png-template"},
+            {"feature", feature},
+            {"source", source_json(git.source(
+                "src/images/JP/main_page/" + name + ".png"))},
+            {"crop_source", crop_source}, {"crop", Json::array({0, 0, 2, 2})},
+            {"threshold_milli", 800}, {"mean_rgb_tolerance", 20}});
+    }
+    std::ranges::sort(cumulative_images, {}, [](const Json& member) {
+        return member.at("id").get<std::string>();
+    });
+    for (auto& member : cumulative_images)
+        cumulative_members.push_back(std::move(member));
+    cumulative["bundles"][0]["member_count"] = cumulative_members.size();
+    cumulative["bundles"][0]["members"] = std::move(cumulative_members);
+    auto cumulative_lock = parse(cumulative);
+    expect_error([&] { publisher::verify_group_publication_sources(
+        cumulative_lock, git.path()); }, publisher::PublicationErrorCode::resource_exhausted,
+        "cumulative decoded PNG work over 128 MiB must fail closed");
 
     auto dead = lock_json(git, "src/images/JP/dead/news.png", "dead_news",
                           "src/images/JP/x_y_range/dead.py", Json::array({0, 0, 2, 2}));

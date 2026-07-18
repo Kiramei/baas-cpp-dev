@@ -98,12 +98,20 @@ if(BUILD_RUNTIME_GROUP_PUBLICATION_COMPILER_TESTS)
         endif()
     endforeach()
     include(CTest)
+    target_compile_definitions(
+        BAAS_runtime_group_publication_compiler
+        PRIVATE BAAS_GROUP_PUBLICATION_TEST_HOOKS=1
+    )
     add_executable(
         BAAS_runtime_group_publication_compiler_tests
         "${BAAS_PROJECT_PATH}/tests/runtime/GroupPublicationCompilerTests.cpp"
     )
     target_compile_features(
         BAAS_runtime_group_publication_compiler_tests PRIVATE cxx_std_20
+    )
+    target_compile_definitions(
+        BAAS_runtime_group_publication_compiler_tests
+        PRIVATE BAAS_GROUP_PUBLICATION_TEST_HOOKS=1
     )
     target_link_libraries(
         BAAS_runtime_group_publication_compiler_tests

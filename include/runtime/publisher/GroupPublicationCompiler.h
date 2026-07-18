@@ -113,4 +113,9 @@ void write_group_publication(
     const std::filesystem::path& publication_root,
     bool check_only);
 
+#if defined(BAAS_GROUP_PUBLICATION_TEST_HOOKS)
+using GroupPublicationIoTestHook = void (*)(std::string_view phase);
+void set_group_publication_io_test_hook(GroupPublicationIoTestHook hook) noexcept;
+#endif
+
 }  // namespace baas::runtime::publisher
