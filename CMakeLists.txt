@@ -145,6 +145,8 @@ option(BUILD_SERVICE_TRIGGER_EXECUTOR "Build the bounded trigger execution owner
 option(BUILD_SERVICE_TRIGGER_EXECUTOR_TESTS "Build native tests for trigger execution ownership" OFF)
 option(BUILD_SERVICE_RUNTIME_TASK_OWNER "Build the service-owned runtime task lifecycle" OFF)
 option(BUILD_SERVICE_RUNTIME_TASK_OWNER_TESTS "Build runtime task lifecycle tests" OFF)
+option(BUILD_SERVICE_RUNTIME_SCRIPT_TASK_BACKEND "Build the explicit native script RuntimeTaskBackend" OFF)
+option(BUILD_SERVICE_RUNTIME_SCRIPT_TASK_BACKEND_TESTS "Build native script RuntimeTaskBackend tests" OFF)
 option(BUILD_SERVICE_RUNTIME_TASK_STATUS_JSON "Build runtime task status JSON serialization" OFF)
 option(BUILD_SERVICE_RUNTIME_TASK_STATUS_JSON_TESTS "Build runtime task status JSON tests" OFF)
 option(BUILD_SERVICE_ROUTER     "Build the transport-independent BAAS service router" OFF)
@@ -821,6 +823,18 @@ if(BUILD_SERVICE_RUNTIME_TASK_OWNER_TESTS
         "Build the service-owned runtime task lifecycle" FORCE)
 endif()
 
+if(BUILD_SERVICE_RUNTIME_SCRIPT_TASK_BACKEND_TESTS
+   AND NOT BUILD_SERVICE_RUNTIME_SCRIPT_TASK_BACKEND)
+    set(BUILD_SERVICE_RUNTIME_SCRIPT_TASK_BACKEND ON CACHE BOOL
+        "Build the explicit native script RuntimeTaskBackend" FORCE)
+endif()
+
+if(BUILD_SERVICE_RUNTIME_SCRIPT_TASK_BACKEND
+   AND NOT BUILD_SERVICE_RUNTIME_TASK_OWNER)
+    set(BUILD_SERVICE_RUNTIME_TASK_OWNER ON CACHE BOOL
+        "Build the service-owned runtime task lifecycle" FORCE)
+endif()
+
 if(BUILD_SERVICE_RUNTIME_TASK_STATUS_JSON_TESTS
    AND NOT BUILD_SERVICE_RUNTIME_TASK_STATUS_JSON)
     set(BUILD_SERVICE_RUNTIME_TASK_STATUS_JSON ON CACHE BOOL
@@ -1133,6 +1147,10 @@ endif()
 
 if(BUILD_SERVICE_RUNTIME_TASK_OWNER)
     include("${CMAKE_CURRENT_LIST_DIR}/cmake/ServiceRuntimeTaskOwner.cmake")
+endif()
+
+if(BUILD_SERVICE_RUNTIME_SCRIPT_TASK_BACKEND)
+    include("${CMAKE_CURRENT_LIST_DIR}/cmake/ServiceRuntimeScriptTaskBackend.cmake")
 endif()
 
 if(BUILD_SERVICE_RUNTIME_TASK_STATUS_JSON)
