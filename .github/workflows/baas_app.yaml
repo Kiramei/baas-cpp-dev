@@ -150,7 +150,7 @@ jobs:
           cmake --build "build/conan-windows-msvc-release-baas${{ matrix.BUILD_SUFFIX }}" --config Release --parallel 4 --target BAAS_APP BAAS_legacy_procedure_execution_tests BAAS_legacy_procedure_definition_tests
           ctest --test-dir "build/conan-windows-msvc-release-baas${{ matrix.BUILD_SUFFIX }}" --build-config Release -R "BAAS_legacy_procedure_(execution|definition)_tests" --output-on-failure
           Write-Output "::group::Build resource-free BAAS connection co-detect final-link closure"
-          cmake -S . -B "build/baas-connection-codetect-link${{ matrix.BUILD_SUFFIX }}" "-DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}/baas/build/conan/windows-msvc-release-baas${{ matrix.BUILD_SUFFIX }}/generators/conan_toolchain.cmake" -DBUILD_APP_BAAS=OFF -DBUILD_RUNTIME_BAAS_CONNECTION_CO_DETECT_LINK_CLOSURE=ON -DBAAS_FETCH_RESOURCES=OFF -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} -G Ninja
+          cmake -S . -B "build/baas-connection-codetect-link${{ matrix.BUILD_SUFFIX }}" "-DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}/baas/build/conan/windows-msvc-release-baas${{ matrix.BUILD_SUFFIX }}/generators/conan_toolchain.cmake" -DBUILD_APP_BAAS=OFF -DBUILD_APP_ISA=OFF -DBUILD_BAAS_OCR=OFF -DBUILD_BAAS_AW_CHECKER=OFF -DBUILD_BAAS_NMS_BENCHMARK=OFF -DBUILD_RUNTIME_BAAS_CONNECTION_CO_DETECT_LINK_CLOSURE=ON -DBAAS_FETCH_RESOURCES=OFF -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} -G Ninja
           cmake --build "build/baas-connection-codetect-link${{ matrix.BUILD_SUFFIX }}" --config Release --parallel 4 --target BAAS_runtime_baas_connection_co_detect_link_closure
           Write-Output "::endgroup::"
           Write-Output "::endgroup::"
