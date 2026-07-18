@@ -359,10 +359,10 @@ struct BundleOptions final {
         {"bundle.magic", std::move(magic), MZ_NO_COMPRESSION,
          options.zip_comment ? "comment" : "", options.zip_extra ? "xx" : "",
          options.zip_extra ? "yy" : ""},
-        {"manifest.json", bytes(manifest)},
-        {options.payload_names[0], std::move(graph), options.graph_compression},
-        {options.payload_names[1], std::move(rgb)},
-        {options.payload_names[2], options.png},
+        {"manifest.json", bytes(manifest), MZ_NO_COMPRESSION, {}, {}, {}},
+        {options.payload_names[0], std::move(graph), options.graph_compression, {}, {}, {}},
+        {options.payload_names[1], std::move(rgb), MZ_NO_COMPRESSION, {}, {}, {}},
+        {options.payload_names[2], options.png, MZ_NO_COMPRESSION, {}, {}, {}},
     });
 }
 
