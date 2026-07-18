@@ -463,6 +463,13 @@ runtime::JsonValue wide_object_with_late_invalid_key()
     return runtime::JsonValue(std::move(entries));
 }
 
+std::string large_string_with_late_invalid_utf8()
+{
+    std::string result(1U << 20U, 'x');
+    result.back() = static_cast<char>(0xFF);
+    return result;
+}
+
 void test_limits_cancellation_and_adapter_failures()
 {
     Fixture fixture;
@@ -517,6 +524,102 @@ void test_limits_cancellation_and_adapter_failures()
               deadline_case
                   ? "deadline flipping inside wide-object expansion must win before a late invalid key"
                   : "cancellation flipping inside wide-object expansion must win before a late invalid key");
+    }
+
+    for (const bool deadline_case : {false, true}) {
+        Fixture value_fixture;
+        auto probe = std::make_shared<FlippingProbe>();
+        if (deadline_case) probe->deadline_on = 4;
+        else probe->cancel_on = 4;
+        host::ConfigHostLimits limits;
+        limits.cooperative_check_interval = 256;
+        auto owner = host::make_config_host_runtime(
+            value_fixture.pinned, value_fixture.port, limits);
+        const auto result = invoke(
+            owner, "host.config.transact.v1",
+            {runtime::HostValue(std::int64_t{7}),
+             runtime::HostValue(json_object({
+                 {"/large", runtime::JsonValue(
+                     large_string_with_late_invalid_utf8())}}))},
+            probe);
+        const auto expected = deadline_case
+            ? runtime::HostErrorCode::DeadlineExceeded
+            : runtime::HostErrorCode::Cancelled;
+        const auto relevant_polls = deadline_case
+            ? probe->deadline_polls.load(std::memory_order_relaxed)
+            : probe->cancel_polls.load(std::memory_order_relaxed);
+        check(result.has_error() && result.error().code == expected &&
+                  relevant_polls >= 4 && value_fixture.port->calls() == 0 &&
+                  owner.host->stats().write_bytes == 0,
+              deadline_case
+                  ? "deadline flipping during large-value UTF-8 validation must win before a late invalid byte"
+                  : "cancellation flipping during large-value UTF-8 validation must win before a late invalid byte");
+    }
+
+    for (const bool deadline_case : {false, true}) {
+        Fixture key_fixture;
+        auto probe = std::make_shared<FlippingProbe>();
+        if (deadline_case) probe->deadline_on = 4;
+        else probe->cancel_on = 4;
+        host::ConfigHostLimits limits;
+        limits.cooperative_check_interval = 256;
+        auto owner = host::make_config_host_runtime(
+            key_fixture.pinned, key_fixture.port, limits);
+        runtime::JsonObject nested;
+        nested.emplace_back(
+            large_string_with_late_invalid_utf8(),
+            runtime::JsonValue(std::int64_t{1}));
+        const auto result = invoke(
+            owner, "host.config.transact.v1",
+            {runtime::HostValue(std::int64_t{7}),
+             runtime::HostValue(json_object({
+                 {"/large-key", runtime::JsonValue(std::move(nested))}}))},
+            probe);
+        const auto expected = deadline_case
+            ? runtime::HostErrorCode::DeadlineExceeded
+            : runtime::HostErrorCode::Cancelled;
+        const auto relevant_polls = deadline_case
+            ? probe->deadline_polls.load(std::memory_order_relaxed)
+            : probe->cancel_polls.load(std::memory_order_relaxed);
+        check(result.has_error() && result.error().code == expected &&
+                  relevant_polls >= 4 && key_fixture.port->calls() == 0 &&
+                  owner.host->stats().write_bytes == 0,
+              deadline_case
+                  ? "deadline flipping during large-key UTF-8 validation must win before a late invalid byte"
+                  : "cancellation flipping during large-key UTF-8 validation must win before a late invalid byte");
+    }
+
+    for (const bool deadline_case : {false, true}) {
+        Fixture duplicate_fixture;
+        auto probe = std::make_shared<FlippingProbe>();
+        if (deadline_case) probe->deadline_on = 3;
+        else probe->cancel_on = 3;
+        host::ConfigHostLimits limits;
+        limits.cooperative_check_interval = 9'000;
+        auto owner = host::make_config_host_runtime(
+            duplicate_fixture.pinned, duplicate_fixture.port, limits);
+        const std::string common_prefix(4'096, 'p');
+        runtime::JsonObject nested{
+            {common_prefix, runtime::JsonValue(std::int64_t{1})},
+            {common_prefix, runtime::JsonValue(std::int64_t{2})}};
+        const auto result = invoke(
+            owner, "host.config.transact.v1",
+            {runtime::HostValue(std::int64_t{7}),
+             runtime::HostValue(json_object({
+                 {"/duplicate", runtime::JsonValue(std::move(nested))}}))},
+            probe);
+        const auto expected = deadline_case
+            ? runtime::HostErrorCode::DeadlineExceeded
+            : runtime::HostErrorCode::Cancelled;
+        const auto relevant_polls = deadline_case
+            ? probe->deadline_polls.load(std::memory_order_relaxed)
+            : probe->cancel_polls.load(std::memory_order_relaxed);
+        check(result.has_error() && result.error().code == expected &&
+                  relevant_polls == 3 && duplicate_fixture.port->calls() == 0 &&
+                  owner.host->stats().write_bytes == 0,
+              deadline_case
+                  ? "deadline must interrupt exact duplicate-key comparison after fingerprinting"
+                  : "cancellation must interrupt exact duplicate-key comparison after fingerprinting");
     }
 
     for (const bool deadline_case : {false, true}) {
@@ -697,6 +800,24 @@ void test_whole_patch_aggregate_json_limits()
         {"/a", runtime::JsonValue(std::string(8, 'a'))},
         {"/b", runtime::JsonValue(std::string(8, 'b'))}}),
         "patch string limits must aggregate keys and values across entries");
+
+    limits = {};
+    limits.json.max_string_bytes = 8;
+    std::string oversized_invalid_value(32, 'v');
+    oversized_invalid_value.front() = static_cast<char>(0xFF);
+    rejected(limits, json_object({
+        {"/a", runtime::JsonValue(std::move(oversized_invalid_value))}}),
+        "oversized values must fail their aggregate budget before UTF-8 scanning");
+
+    limits = {};
+    limits.json.max_string_bytes = 8;
+    std::string oversized_invalid_key(32, 'k');
+    oversized_invalid_key.front() = static_cast<char>(0xFF);
+    runtime::JsonObject oversized_key_object{{
+        std::move(oversized_invalid_key), runtime::JsonValue(std::int64_t{1})}};
+    rejected(limits, json_object({
+        {"/a", runtime::JsonValue(std::move(oversized_key_object))}}),
+        "oversized keys must fail their aggregate budget before UTF-8 scanning");
 
     limits = {};
     limits.json.max_total_bytes = 40;

@@ -3,12 +3,14 @@
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <cstring>
 #include <limits>
+#include <map>
 #include <mutex>
 #include <optional>
-#include <set>
 #include <stdexcept>
 #include <string_view>
+#include <tuple>
 #include <utility>
 
 namespace baas::script::host {
@@ -145,6 +147,89 @@ private:
     std::size_t remaining_{};
 };
 
+struct StringFingerprint final {
+    std::uint64_t first{UINT64_C(14695981039346656037)};
+    std::uint64_t second{UINT64_C(0x9e3779b97f4a7c15)};
+};
+
+[[nodiscard]] JsonValidationError validate_utf8_cooperatively(
+    const std::string_view value, CooperativePoller& poller,
+    StringFingerprint* const fingerprint = nullptr) noexcept
+{
+    for (std::size_t offset{}; offset < value.size();) {
+        const auto first = static_cast<unsigned char>(value[offset]);
+        std::size_t width{};
+        std::uint32_t scalar{};
+        if (first <= 0x7FU) { width = 1; scalar = first; }
+        else if (first >= 0xC2U && first <= 0xDFU) {
+            width = 2;
+            scalar = first & 0x1FU;
+        } else if (first >= 0xE0U && first <= 0xEFU) {
+            width = 3;
+            scalar = first & 0x0FU;
+        } else if (first >= 0xF0U && first <= 0xF4U) {
+            width = 4;
+            scalar = first & 0x07U;
+        } else {
+            return JsonValidationError::InvalidUtf8;
+        }
+        if (width > value.size() - offset)
+            return JsonValidationError::InvalidUtf8;
+        for (std::size_t index = 1; index < width; ++index) {
+            const auto next = static_cast<unsigned char>(value[offset + index]);
+            if ((next & 0xC0U) != 0x80U)
+                return JsonValidationError::InvalidUtf8;
+            scalar = (scalar << 6U) | (next & 0x3FU);
+        }
+        if ((width == 2 && scalar < 0x80U) ||
+            (width == 3 && scalar < 0x800U) ||
+            (width == 4 && scalar < 0x10000U) || scalar > 0x10FFFFU ||
+            (scalar >= 0xD800U && scalar <= 0xDFFFU))
+            return JsonValidationError::InvalidUtf8;
+        if (fingerprint) {
+            for (std::size_t index{}; index < width; ++index) {
+                const auto byte =
+                    static_cast<unsigned char>(value[offset + index]);
+                fingerprint->first ^= byte;
+                fingerprint->first *= UINT64_C(1099511628211);
+                fingerprint->second ^= static_cast<std::uint64_t>(byte) +
+                    UINT64_C(0x9e3779b97f4a7c15) +
+                    (fingerprint->second << 6U) +
+                    (fingerprint->second >> 2U);
+            }
+        }
+        offset += width;
+        if (const auto error = poller.completed(width);
+            error != JsonValidationError::None) return error;
+    }
+    return JsonValidationError::None;
+}
+
+[[nodiscard]] JsonValidationError equal_strings_cooperatively(
+    const std::string_view left, const std::string_view right,
+    CooperativePoller& poller, bool& equal) noexcept
+{
+    if (left.size() != right.size()) {
+        equal = false;
+        return JsonValidationError::None;
+    }
+    std::size_t offset{};
+    while (offset != left.size()) {
+        const auto chunk = poller.next_chunk(left.size() - offset);
+        const auto matches = std::memcmp(
+            left.data() + offset, right.data() + offset, chunk) == 0;
+        offset += chunk;
+        if (const auto error = poller.completed(chunk);
+            error != JsonValidationError::None) return error;
+        if (!matches) {
+            equal = false;
+            return JsonValidationError::None;
+        }
+    }
+    equal = true;
+    return JsonValidationError::None;
+}
+
 [[nodiscard]] JsonValidationError checked_add(
     std::size_t& target, const std::size_t amount, const std::size_t maximum,
     const JsonValidationError error) noexcept
@@ -215,15 +300,19 @@ private:
                     break;
                 case JsonKind::String: {
                     const auto& string = std::get<std::string>(current.value->value());
-                    if (!valid_utf8(string)) return JsonValidationError::InvalidUtf8;
                     if (const auto error = checked_add(
                             metrics.string_bytes, string.size(), limits.max_string_bytes,
-                            JsonValidationError::Strings); error != JsonValidationError::None)
+                            JsonValidationError::Strings);
+                        error != JsonValidationError::None)
                         return error;
                     if (const auto error = checked_add(
                             metrics.total_bytes, string.size(), limits.max_total_bytes,
-                            JsonValidationError::Bytes); error != JsonValidationError::None)
+                            JsonValidationError::Bytes);
+                        error != JsonValidationError::None)
                         return error;
+                    if (const auto error = validate_utf8_cooperatively(
+                            string, poller);
+                        error != JsonValidationError::None) return error;
                     break;
                 }
                 case JsonKind::Array: {
@@ -245,7 +334,9 @@ private:
                 }
                 case JsonKind::Object: {
                     const auto& entries = std::get<JsonObject>(current.value->value());
-                    std::set<std::string_view> keys;
+                    std::map<
+                        std::tuple<std::size_t, std::uint64_t, std::uint64_t>,
+                        std::vector<std::string_view>> keys;
                     if (const auto error = checked_add(
                             metrics.work, entries.size(), limits.max_work,
                             JsonValidationError::Work); error != JsonValidationError::None)
@@ -255,10 +346,6 @@ private:
                             limits.max_total_bytes, JsonValidationError::Bytes);
                         error != JsonValidationError::None) return error;
                     for (auto iterator = entries.rbegin(); iterator != entries.rend(); ++iterator) {
-                        if (!valid_utf8(iterator->first))
-                            return JsonValidationError::InvalidUtf8;
-                        if (!keys.insert(iterator->first).second)
-                            return JsonValidationError::DuplicateKey;
                         if (const auto error = checked_add(
                                 metrics.string_bytes, iterator->first.size(),
                                 limits.max_string_bytes, JsonValidationError::Strings);
@@ -267,6 +354,21 @@ private:
                                 metrics.total_bytes, iterator->first.size(),
                                 limits.max_total_bytes, JsonValidationError::Bytes);
                             error != JsonValidationError::None) return error;
+                        StringFingerprint fingerprint;
+                        if (const auto error = validate_utf8_cooperatively(
+                                iterator->first, poller, &fingerprint);
+                            error != JsonValidationError::None) return error;
+                        auto& candidates = keys[{
+                            iterator->first.size(), fingerprint.first,
+                            fingerprint.second}];
+                        for (const auto candidate : candidates) {
+                            bool equal{};
+                            if (const auto error = equal_strings_cooperatively(
+                                    candidate, iterator->first, poller, equal);
+                                error != JsonValidationError::None) return error;
+                            if (equal) return JsonValidationError::DuplicateKey;
+                        }
+                        candidates.push_back(iterator->first);
                         pending.push_back({&iterator->second, current.depth + 1});
                         if (const auto error = poller.completed();
                             error != JsonValidationError::None) return error;
