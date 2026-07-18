@@ -161,7 +161,8 @@ void png_chunk(
 
 [[nodiscard]] std::vector<std::byte> png(
     const std::uint32_t width, const std::uint32_t height, const bool varied = true,
-    const bool alpha = false, const bool alpha_varied = false)
+    const bool alpha = false, const bool alpha_varied = false,
+    const std::size_t idat_chunks = 1)
 {
     std::vector<std::byte> output{
         std::byte{0x89}, std::byte{'P'}, std::byte{'N'}, std::byte{'G'},
@@ -190,10 +191,21 @@ void png_chunk(
     mz_ulong compressed_size = mz_compressBound(static_cast<mz_ulong>(raw.size()));
     std::vector<std::byte> compressed(compressed_size);
     if (mz_compress2(reinterpret_cast<unsigned char*>(compressed.data()), &compressed_size,
-                     raw.data(), static_cast<mz_ulong>(raw.size()), MZ_BEST_COMPRESSION) != MZ_OK)
+                     raw.data(), static_cast<mz_ulong>(raw.size()),
+                     idat_chunks == 1 ? MZ_BEST_COMPRESSION : MZ_NO_COMPRESSION) != MZ_OK)
         throw std::runtime_error("fixture PNG compression failed");
     compressed.resize(compressed_size);
-    png_chunk(output, "IDAT", compressed);
+    if (idat_chunks == 0 || compressed.size() < idat_chunks)
+        throw std::runtime_error("fixture PNG IDAT split is invalid");
+    std::size_t compressed_offset{};
+    for (std::size_t index = 0; index < idat_chunks; ++index) {
+        const auto remaining = compressed.size() - compressed_offset;
+        const auto remaining_chunks = idat_chunks - index;
+        const auto chunk_size = remaining / remaining_chunks;
+        png_chunk(output, "IDAT", std::span{compressed}.subspan(
+            compressed_offset, chunk_size));
+        compressed_offset += chunk_size;
+    }
     png_chunk(output, "IEND", {});
     return output;
 }
@@ -245,6 +257,8 @@ public:
             "    'rgb-boundary': (0, 0, 2, 2),\n"
             "    'rgba-boundary': (0, 0, 2, 2),\n"
             "    'alpha-only-variation': (0, 0, 2, 2),\n"
+            "    'chunk-limit': (0, 0, 2, 2),\n"
+            "    'chunk-over-limit': (0, 0, 2, 2),\n"
             "    'stored-oversized': (0, 0, 2, 2),\n"
             "    'oversized': (0, 0, 2, 2),\n"
             "    # 'missing': (0, 0, 2, 2),\n";
@@ -265,6 +279,10 @@ public:
             {"src/images/JP/main_page/rgba-boundary.png", png(1280, 720, true, true), {}},
             {"src/images/JP/main_page/alpha-only-variation.png",
              png(2, 2, false, true, true), {}},
+            {"src/images/JP/main_page/chunk-limit.png",
+             png(1280, 720, true, false, false, 4'094), {}},
+            {"src/images/JP/main_page/chunk-over-limit.png",
+             png(1280, 720, true, false, false, 4'095), {}},
             {"src/images/JP/main_page/stored-oversized.png",
              std::vector<std::byte>(4U * 1024U * 1024U + 1U), {}},
             {"src/images/JP/main_page/oversized.png", png(1400, 1000), {}},
@@ -717,6 +735,24 @@ void test_lock_and_source_negatives()
     expect_error([&] { publisher::verify_group_publication_sources(
         alpha_only_lock, git.path()); }, publisher::PublicationErrorCode::placeholder_forbidden,
         "alpha-only variation must not make constant visible RGB a real template");
+
+    auto chunk_limit = lock_json(
+        git, "src/images/JP/main_page/chunk-limit.png", "main_page_chunk-limit",
+        "src/images/JP/x_y_range/main_page.py", Json::array({0, 0, 2, 2}));
+    auto chunk_limit_lock = parse(chunk_limit);
+    const auto chunk_limit_outputs = publisher::compile_group_publication(
+        chunk_limit_lock, git.path());
+    check(activate_bundle(chunk_limit_outputs)->find_image("main_page_chunk-limit") != nullptr,
+          "4096 total PNG chunks must compile and activate through the consumer");
+
+    auto chunk_over_limit = lock_json(
+        git, "src/images/JP/main_page/chunk-over-limit.png",
+        "main_page_chunk-over-limit", "src/images/JP/x_y_range/main_page.py",
+        Json::array({0, 0, 2, 2}));
+    auto chunk_over_limit_lock = parse(chunk_over_limit);
+    expect_error([&] { publisher::verify_group_publication_sources(
+        chunk_over_limit_lock, git.path()); }, publisher::PublicationErrorCode::resource_exhausted,
+        "4097 total PNG chunks must fail before the next IDAT append");
 
     auto oversized_png = lock_json(
         git, "src/images/JP/main_page/oversized.png", "main_page_oversized",

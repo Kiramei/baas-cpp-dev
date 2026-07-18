@@ -124,6 +124,7 @@ class GroupResourcePublicationContractTests(unittest.TestCase):
             "max_decoded_png_bytes = 4U * 1024U * 1024U",
             "max_png_width = 1'280",
             "max_png_height = 720",
+            "max_png_chunks = 4'096",
             "max_total_decoded_png_bytes = 128U * 1024U * 1024U",
             "consumer_decoded_size",
             "inflated_scanline_size",
@@ -142,6 +143,8 @@ class GroupResourcePublicationContractTests(unittest.TestCase):
         self.assertIn("rgba-boundary", tests)
         self.assertIn("alpha-only variation", tests)
         self.assertIn("rgba_cumulative", tests)
+        self.assertIn("4096 total PNG chunks", tests)
+        self.assertIn("4097 total PNG chunks", tests)
         self.assertIn("deterministic final-component replacement race", tests)
 
 

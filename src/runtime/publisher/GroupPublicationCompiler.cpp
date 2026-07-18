@@ -68,6 +68,7 @@ constexpr std::size_t max_decoded_png_bytes = 4U * 1024U * 1024U;
 constexpr std::size_t max_total_decoded_png_bytes = 128U * 1024U * 1024U;
 constexpr std::uint32_t max_png_width = 1'280;
 constexpr std::uint32_t max_png_height = 720;
+constexpr std::size_t max_png_chunks = 4'096;
 constexpr std::size_t max_archive_bytes = 64U * 1024U * 1024U;
 constexpr std::size_t max_total_bytes = 128U * 1024U * 1024U;
 constexpr std::size_t max_work = 1024U * 1024U * 1024U;
@@ -873,7 +874,7 @@ void verify_png_source(
         std::byte{0x0d}, std::byte{0x0a}, std::byte{0x1a}, std::byte{0x0a}};
     if (bytes.size() > max_png_source_bytes)
         fail(PublicationErrorCode::resource_exhausted,
-             "PNG source exceeds the consumer member limit");
+             "PNG source exceeds the publisher stored-PNG policy limit");
     if (bytes.size() < 57 ||
         !std::ranges::equal(signature, bytes.first(signature.size())))
         fail(PublicationErrorCode::placeholder_forbidden, "PNG source is empty or not PNG");
@@ -887,7 +888,11 @@ void verify_png_source(
     std::uint8_t color{};
     std::vector<unsigned char> compressed;
     std::set<std::string, std::less<>> ancillary;
+    std::size_t chunk_count{};
     while (cursor < bytes.size()) {
+        if (++chunk_count > max_png_chunks)
+            fail(PublicationErrorCode::resource_exhausted,
+                 "PNG chunk count exceeds the consumer limit");
         if (bytes.size() - cursor < 12)
             fail(PublicationErrorCode::source_content_invalid, "PNG chunk is truncated");
         const auto size = be32(bytes, cursor);

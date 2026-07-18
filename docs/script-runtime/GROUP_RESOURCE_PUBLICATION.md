@@ -83,12 +83,14 @@ IHDR, zlib stream, filter bytes, and non-placeholder pixels) and copied directly
 from the ODB blob into the archive. They are never decoded and re-encoded. The
 template dimensions need not equal the screenshot crop because both the Python
 implementation and C++ production adapter resize the crop to the template.
-The compiler enforces the consumer's exact PNG limits before allocation:
-1280x720 dimensions, 4 MiB for one stored PNG, 4 MiB for one decoded
-`IMREAD_COLOR` three-channel pixel stream, and 128 MiB for all decoded PNG
-streams in one publication. Source-channel scanline inflation is validated
-separately; alpha and filter bytes do not consume the consumer pixel budget.
-Consumer-decoded bytes also consume the 1 GiB compilation work budget.
+The publisher deliberately tightens a stored PNG to 4 MiB even though the
+consumer's general support-bundle member ceiling is 16 MiB. The remaining PNG
+limits match the consumer defaults exactly: 1280x720 dimensions, 4096 total
+chunks, 4 MiB for one decoded `IMREAD_COLOR` three-channel pixel stream, and
+128 MiB for all decoded PNG streams in one publication. Source-channel scanline
+inflation is validated separately; alpha and filter bytes do not consume the
+consumer pixel budget. Consumer-decoded bytes also consume the 1 GiB
+compilation work budget.
 RGB samples are strictly extracted from the exact profile JSON and converted to
 the frozen RGB-range schema; repeated coordinates retain their original order,
 matching Python list semantics. The feature graph is derived only from reviewed
