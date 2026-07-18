@@ -57,6 +57,7 @@ public:
     [[nodiscard]] bool identity_valid() const noexcept override
     {
         ++identity_checks;
+        identity_probe_condition.notify_all();
         return valid.load(std::memory_order_acquire);
     }
 
@@ -117,6 +118,15 @@ public:
             foreground_checks.load();
     }
 
+    [[nodiscard]] bool wait_for_identity_checks(
+        const std::size_t expected, const std::chrono::milliseconds timeout) const
+    {
+        std::unique_lock lock(identity_probe_mutex);
+        return identity_probe_condition.wait_for(lock, timeout, [this, expected] {
+            return identity_checks.load(std::memory_order_acquire) >= expected;
+        });
+    }
+
     std::string device{"emulator-5556"};
     std::string profile{"JP"};
     std::atomic_bool valid{true};
@@ -133,6 +143,8 @@ public:
     mutable std::atomic<std::size_t> device_reads{};
     mutable std::atomic<std::size_t> profile_reads{};
     mutable std::atomic<std::size_t> identity_checks{};
+    mutable std::mutex identity_probe_mutex;
+    mutable std::condition_variable identity_probe_condition;
     mutable std::atomic<std::size_t> interval_reads{};
     procedure::CoDetectClick last_click{};
     std::mutex click_mutex;
@@ -345,22 +357,32 @@ void test_replacement_linearizes_effects_and_wakes_waits()
     static_cast<void>(first.port->current_identity());
     static_cast<void>(first.port->latest_frame());
     static_cast<void>(first.port->screenshot_interval_ms());
-    static_cast<void>(first.port->publish_latest_frame({}));
+    auto stale_pixels = std::make_shared<const std::vector<std::byte>>(
+        procedure::baas_connection_co_detect_frame_bytes, std::byte{0x31});
+    auto stale_frame = std::make_shared<const procedure::CoDetectProductionBgrFrame>(
+        procedure::CoDetectProductionBgrFrame{
+            first.identity, procedure::baas_connection_co_detect_width,
+            procedure::baas_connection_co_detect_height,
+            procedure::baas_connection_co_detect_row_stride,
+            std::move(stale_pixels)});
+    const auto stale_publish = first.port->publish_latest_frame(std::move(stale_frame));
     static_cast<void>(first.port->capture(control));
     static_cast<void>(first.port->foreground_matches(control));
     static_cast<void>(first.port->wait(0, control));
-    check(first_backend->total_accesses() == retired_accesses,
-          "every retired port entry point rejects before touching its backend");
+    check(!stale_publish && first_backend->total_accesses() == retired_accesses,
+          "every retired port entry point, including valid-frame publication, rejects before touching its backend");
 
+    const auto replacement_probe_target =
+        second_backend->identity_checks.load(std::memory_order_acquire) + 1U;
     auto wait_future = std::async(std::launch::async, [&] {
         return second.port->wait(5'000, control);
     });
-    std::this_thread::sleep_for(20ms);
+    check(second_backend->wait_for_identity_checks(replacement_probe_target, 1s),
+          "replacement wait test handshakes after a real backend probe");
     const auto third = owner.activate(
         std::make_shared<Backend>(), procedure::CoDetectProfile::jp, 3);
     const auto replaced_wait_accesses = second_backend->total_accesses();
     const auto wait_result = wait_future.get();
-    std::this_thread::sleep_for(70ms);
     check(error_is(wait_result, procedure::CoDetectOperationError::SessionChanged) &&
               third.port->current_identity().get() == third.identity.get(),
           "replacement wakes bounded waits and makes them fail closed");
@@ -440,14 +462,16 @@ void test_operation_and_wait_handoff_barriers()
     auto replacement_backend = std::make_shared<Backend>();
     const auto replacement = owner.activate(
         replacement_backend, procedure::CoDetectProfile::jp, 22);
+    const auto invalidation_probe_target =
+        replacement_backend->identity_checks.load(std::memory_order_acquire) + 1U;
     auto wait_future = std::async(std::launch::async, [&] {
         return replacement.port->wait(5'000, control);
     });
-    std::this_thread::sleep_for(70ms);
+    check(replacement_backend->wait_for_identity_checks(invalidation_probe_target, 1s),
+          "invalidation wait test handshakes after a real backend probe");
     owner.invalidate();
     const auto wait_barrier_accesses = replacement_backend->total_accesses();
     const auto wait_result = wait_future.get();
-    std::this_thread::sleep_for(70ms);
     check(error_is(wait_result, procedure::CoDetectOperationError::SessionChanged),
           "wait observes invalidation through operation-mutex probes");
     check(replacement_backend->total_accesses() == wait_barrier_accesses,

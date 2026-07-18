@@ -429,19 +429,15 @@ class CoDetectPythonCompatEngineContractTests(unittest.TestCase):
         for token in workflow_tokens:
             self.assertIn(token, workflow)
         closure_paths = {
-            "deploy/conan/recipes/baas-spdlog/**",
-            "deploy/conan/recipes/baas-simdutf/**",
+            ".github/workflows/foundation-runtime.yml",
+            "CMakeLists.txt",
+            "cmake/**",
             "deploy/conan/profiles/dependency-versions-default",
-            "include/BAAS.h",
-            "src/BAAS.cpp",
-            "include/device/BAASConnection.h",
-            "include/device/BAASConnectionAttr.h",
-            "include/device/control/BAASControl.h",
-            "src/device/BAASConnection.cpp",
-            "src/device/BAASConnectionAttr.cpp",
-            "src/device/control/BAASControl.cpp",
-            "include/device/screenshot/BAASScreenshot.h",
-            "src/device/screenshot/BAASScreenshot.cpp",
+            "include/**",
+            "src/device/**",
+            "src/runtime/**",
+            "tests/runtime/**",
+            "tests/docs/**",
         }
         self.assertEqual(
             self.workflow_event_paths["push"],
