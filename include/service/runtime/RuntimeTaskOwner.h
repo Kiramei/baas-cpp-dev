@@ -23,11 +23,18 @@ struct RuntimeTaskLimits {
     std::size_t max_waiting_task_bytes{512};
 };
 
+class RuntimeTaskPreparedBackend;
+
 struct RuntimeTaskRequest {
     std::string config_id;
     std::string run_mode;
     std::optional<std::string> current_task;
     std::vector<std::string> waiting_tasks;
+    // Optional request-local backend prepared by the protocol composition
+    // before its irreversible success claim. RuntimeTaskOwner retains this
+    // exact object with the gated worker and never performs provider/catalog
+    // discovery after commit.
+    std::shared_ptr<RuntimeTaskPreparedBackend> prepared_backend;
 };
 
 struct RuntimeTaskProgress {
@@ -70,6 +77,19 @@ struct RuntimeTaskTerminal {
 using RuntimeTaskBackend = std::function<RuntimeTaskTerminal(
     const RuntimeTaskRequest& request, std::stop_token stop_token,
     const RuntimeTaskProgressReporter& report_progress)>;
+
+class RuntimeTaskPreparedBackend {
+public:
+    virtual ~RuntimeTaskPreparedBackend() = default;
+    // Runs on the gated worker thread. RuntimeTaskOwner waits for completion
+    // before returning a successful reservation, so the protocol still has
+    // not claimed success. This preserves thread-affine evaluator ownership.
+    [[nodiscard]] virtual bool prepare(std::stop_token) noexcept { return true; }
+    [[nodiscard]] virtual RuntimeTaskTerminal execute(
+        const RuntimeTaskRequest& request,
+        std::stop_token stop_token,
+        const RuntimeTaskProgressReporter& report_progress) noexcept = 0;
+};
 
 struct RuntimeTaskSnapshot {
     std::string config_id;
@@ -132,6 +152,7 @@ enum class RuntimeTaskStartDecision : std::uint8_t {
     invalid_request = 5,
     thread_start_failed = 6,
     reservation_conflict = 7,
+    preparation_failed = 8,
 };
 
 [[nodiscard]] std::string_view runtime_task_start_decision_name(
@@ -323,8 +344,10 @@ public:
     RuntimeTaskOwner& operator=(RuntimeTaskOwner&&) = delete;
 
     // Validates and copies the request, reserves the keyed/capacity slot, and
-    // creates a worker blocked before backend entry. A successful result must
-    // be committed or destroyed before external shutdown can finish draining.
+    // creates a worker blocked before execution. When prepared_backend is
+    // present, its fallible prepare() runs on that worker and completes before
+    // this call returns. A successful result must be committed or destroyed
+    // before external shutdown can finish draining.
     [[nodiscard]] RuntimeTaskPrepareStartResult prepare_start(
         RuntimeTaskRequest request);
 

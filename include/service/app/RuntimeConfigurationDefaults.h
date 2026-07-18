@@ -16,7 +16,7 @@ namespace baas::service::app {
 // invalid documents fail closed by throwing.
 [[nodiscard]] std::shared_ptr<const adapters::ConfigurationDefaults>
 load_runtime_configuration_defaults(
-    const runtime::repository::RuntimeRepositoryReadView& resources,
+    const ::baas::runtime::repository::RuntimeRepositoryReadView& resources,
     const channels::ResourceStoreLimits& consumer_limits);
 
 }  // namespace baas::service::app

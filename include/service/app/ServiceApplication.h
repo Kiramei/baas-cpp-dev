@@ -5,6 +5,8 @@
 #include "service/auth/AuthOwner.h"
 #include "service/http/HttpHost.h"
 #include "service/router/Router.h"
+#include "service/runtime/RuntimeTaskOwner.h"
+#include "service/app/RuntimeTaskTriggerRegistration.h"
 #include "service/trigger/TriggerExecutor.h"
 
 #include <chrono>
@@ -20,6 +22,8 @@ class RuntimeRepositoryReadBundle;
 }
 
 namespace baas::service::app {
+
+namespace service_runtime = ::baas::service::runtime;
 
 // Process/package identity is deliberately distinct from the protocol identity.
 // baas-tauri launches BAAS_service(.exe), while its strict readiness probe
@@ -80,13 +84,41 @@ struct ServiceApplicationOpenResult {
     }
 };
 
+struct ServiceRuntimeTaskComposition {
+    std::shared_ptr<service_runtime::RuntimeTaskOwner> owner;
+    std::shared_ptr<RuntimeTaskControl> control;
+
+    [[nodiscard]] explicit operator bool() const noexcept
+    {
+        return owner != nullptr && control != nullptr;
+    }
+};
+
+// Lightweight application seam. The default CLI/Tauri executable carries no
+// production script factory, OpenCV, resources or scripts. An explicit
+// embedding target supplies a factory and receives the exact admitted bundle.
+class ServiceRuntimeTaskCompositionFactory {
+public:
+    virtual ~ServiceRuntimeTaskCompositionFactory() = default;
+    [[nodiscard]] virtual ServiceRuntimeTaskComposition compose(
+        std::shared_ptr<const
+            ::baas::runtime::repository::RuntimeRepositoryReadBundle>
+            admitted_bundle) = 0;
+};
+
+struct ServiceApplicationDependencies {
+    std::shared_ptr<ServiceRuntimeTaskCompositionFactory>
+        runtime_task_composition_factory;
+};
+
 // Production composition owner. Opening performs no socket bind, but does
 // acquire the persistent auth installation lock and starts the bounded trigger
 // executor and signal owner. Pipe is rejected before any of those effects.
 class ServiceApplication final {
 public:
     [[nodiscard]] static ServiceApplicationOpenResult open(
-        ServiceRunOptions options) noexcept;
+        ServiceRunOptions options,
+        ServiceApplicationDependencies dependencies = {}) noexcept;
     ~ServiceApplication();
 
     ServiceApplication(const ServiceApplication&) = delete;
@@ -103,8 +135,8 @@ public:
     [[nodiscard]] std::optional<ServiceShutdownReason> wait_for_shutdown(
         std::chrono::milliseconds timeout);
 
-    // Idempotent reverse-order teardown: failed readiness, HTTP host, trigger
-    // executor, then platform signal owner.
+    // Idempotent teardown: failed readiness, HTTP host, trigger executor,
+    // opted-in runtime tasks, remote/resource owners, then signal owner.
     void stop() noexcept;
 
     [[nodiscard]] std::uint16_t port() const noexcept;
@@ -118,8 +150,14 @@ public:
     // Immutable, generation-bound resources and scripts selected during
     // startup admission. Consumers receive only the pathless read capability.
     [[nodiscard]] std::shared_ptr<
-        const runtime::repository::RuntimeRepositoryReadBundle>
+        const ::baas::runtime::repository::RuntimeRepositoryReadBundle>
         runtime_repository_read_bundle() const noexcept;
+
+    // Embedding diagnostic for the explicitly opted-in native runtime. It is
+    // not a transport and returns nullopt when the provider was absent or the
+    // config has no admitted generation.
+    [[nodiscard]] std::optional<service_runtime::RuntimeTaskSnapshot>
+        runtime_task_snapshot(std::string_view config_id) const;
 
 private:
     class Impl;

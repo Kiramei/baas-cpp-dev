@@ -215,6 +215,7 @@ option(BUILD_SERVICE_ADB_DISCOVERY_TRIGGER_TESTS "Build deterministic detect_adb
 option(BUILD_SERVICE_CONFIGURATION_TRIGGERS "Build production configuration trigger registrations" OFF)
 option(BUILD_SERVICE_CONFIGURATION_TRIGGER_TESTS "Build configuration trigger production tests" OFF)
 option(BUILD_SERVICE_RUNTIME_TASK_TRIGGERS "Build scheduler/task trigger registrations" OFF)
+option(BUILD_SERVICE_PRODUCTION_RUNTIME_TASK_CONTROL "Build the production RuntimeTaskOwner Trigger control" OFF)
 option(BUILD_SERVICE_RUNTIME_TASK_TRIGGER_TESTS "Build scheduler/task trigger registration tests" OFF)
 option(BUILD_SERVICE_COMMAND_LINE "Build the bounded service command-line contract" OFF)
 option(BUILD_SERVICE_COMMAND_LINE_TESTS "Build deterministic service command-line tests" OFF)
@@ -264,6 +265,9 @@ if(BUILD_SERVICE_APP)
     set(BUILD_SERVICE_STATUS_TRIGGER ON CACHE BOOL "Build the production status trigger registration" FORCE)
     set(BUILD_SERVICE_ADB_DISCOVERY_TRIGGER ON CACHE BOOL "Build the production detect_adb trigger registration" FORCE)
     set(BUILD_SERVICE_CONFIGURATION_TRIGGERS ON CACHE BOOL "Build production configuration trigger registrations" FORCE)
+    set(BUILD_SERVICE_RUNTIME_TASK_TRIGGERS ON CACHE BOOL "Build scheduler/task trigger registrations" FORCE)
+    set(BUILD_SERVICE_RUNTIME_TASK_OWNER ON CACHE BOOL "Build the service-owned runtime task lifecycle" FORCE)
+    set(BUILD_SERVICE_RUNTIME_TASK_STATUS_JSON ON CACHE BOOL "Build native runtime task status encoding" FORCE)
 endif()
 
 if(BUILD_SERVICE_RUNTIME_CONFIGURATION_DEFAULTS AND NOT BUILD_RUNTIME_REPOSITORY)
@@ -782,6 +786,15 @@ if(BUILD_SERVICE_RUNTIME_TASK_TRIGGERS AND NOT BUILD_SERVICE_TRIGGER_DISPATCH)
     set(BUILD_SERVICE_TRIGGER_DISPATCH ON CACHE BOOL "Build the transport-independent trigger dispatcher" FORCE)
 endif()
 
+if(BUILD_SERVICE_PRODUCTION_RUNTIME_TASK_CONTROL)
+    set(BUILD_SERVICE_RUNTIME_TASK_TRIGGERS ON CACHE BOOL
+        "Build scheduler/task trigger registrations" FORCE)
+    set(BUILD_SERVICE_RUNTIME_TASK_OWNER ON CACHE BOOL
+        "Build the service-owned runtime task lifecycle" FORCE)
+    set(BUILD_SERVICE_PRODUCTION_RUNTIME_SCRIPT_TASK_FACTORY ON CACHE BOOL
+        "Build the pinned production BAAS Script task factory" FORCE)
+endif()
+
 if(BUILD_SERVICE_RUNTIME_TASK_TRIGGER_TESTS AND NOT BUILD_SERVICE_TRIGGER_EXECUTOR)
     set(BUILD_SERVICE_TRIGGER_EXECUTOR ON CACHE BOOL "Build the bounded trigger execution owner" FORCE)
 endif()
@@ -1287,6 +1300,10 @@ endif()
 
 if(BUILD_SERVICE_RUNTIME_TASK_TRIGGERS)
     include("${CMAKE_CURRENT_LIST_DIR}/cmake/ServiceRuntimeTaskTriggers.cmake")
+endif()
+
+if(BUILD_SERVICE_PRODUCTION_RUNTIME_TASK_CONTROL)
+    include("${CMAKE_CURRENT_LIST_DIR}/cmake/ServiceProductionRuntimeTaskControl.cmake")
 endif()
 
 if(BUILD_SERVICE_ROUTER)

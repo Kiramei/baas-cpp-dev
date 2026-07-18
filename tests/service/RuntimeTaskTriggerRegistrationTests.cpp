@@ -116,7 +116,8 @@ public:
 
     app::RuntimeTaskPrepareResult prepare_start_task(
         const std::string_view config_id,
-        const std::string_view requested_task) override
+        const std::string_view requested_task,
+        std::stop_token) override
     {
         ++start_task_calls;
         last_config.assign(config_id);
@@ -394,12 +395,15 @@ void test_stable_control_errors_and_exception_redaction()
         app::RuntimeTaskControlError::conflict,
         app::RuntimeTaskControlError::capacity,
         app::RuntimeTaskControlError::unavailable,
+        app::RuntimeTaskControlError::deadline,
+        app::RuntimeTaskControlError::repository_mismatch,
         app::RuntimeTaskControlError::internal_error,
     };
-    constexpr std::array<std::string_view, 6> wire_names{
+    constexpr std::array<std::string_view, 8> wire_names{
         "runtime_task_invalid_config_id", "runtime_task_invalid_task",
         "runtime_task_conflict", "runtime_task_control_capacity",
-        "runtime_task_control_unavailable", "runtime_task_internal_error"};
+        "runtime_task_control_unavailable", "runtime_task_prepare_deadline",
+        "runtime_task_repository_mismatch", "runtime_task_internal_error"};
     for (std::size_t index = 0; index < errors.size(); ++index) {
         auto control = std::make_shared<RecordingControl>();
         control->stop_all_prepare = [error = errors[index]] {

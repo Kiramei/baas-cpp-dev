@@ -38,6 +38,7 @@ on:
       - 'deploy/conan/recipes/baas-cpp-httplib/**'
       - 'deploy/conan/recipes/baas-nlohmann-json/**'
       - 'deploy/conan/recipes/baas-miniz/**'
+      - 'deploy/conan/recipes/baas-opencv/**'
       - 'docs/script-runtime/SERVICE_APPLICATION.md'
       - 'docs/script-runtime/SERVICE_FILE_RESOURCE_STORE.md'
       - 'docs/script-runtime/SERVICE_COMMAND_LINE.md'
@@ -85,6 +86,7 @@ on:
       - 'deploy/conan/recipes/baas-cpp-httplib/**'
       - 'deploy/conan/recipes/baas-nlohmann-json/**'
       - 'deploy/conan/recipes/baas-miniz/**'
+      - 'deploy/conan/recipes/baas-opencv/**'
       - 'docs/script-runtime/SERVICE_APPLICATION.md'
       - 'docs/script-runtime/SERVICE_FILE_RESOURCE_STORE.md'
       - 'docs/script-runtime/SERVICE_COMMAND_LINE.md'
@@ -174,12 +176,50 @@ jobs:
           -s:h build_type=${{ matrix.build_type }} -s:b build_type=Release
           ${{ matrix.conan_settings }} --build=missing --no-remote
 
+      - name: Generate default lightweight application dependencies
+        run: >-
+          conan install --requires=baas-libsodium/1.0.22
+          --requires=baas-cpp-httplib/0.50.1
+          --requires=baas-nlohmann-json/3.11.3
+          --requires=baas-miniz/3.1.2
+          -of build/conan/service-application-lightweight
+          -s:h build_type=${{ matrix.build_type }} -s:b build_type=Release
+          ${{ matrix.conan_settings }}
+          -g CMakeDeps -g CMakeToolchain --build=missing --no-remote
+
+      - name: Configure default lightweight application without OpenCV
+        run: >-
+          cmake -S . -B build/service-application-lightweight
+          "-DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}/build/conan/service-application-lightweight/conan_toolchain.cmake"
+          -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
+          -DBUILD_SERVICE_APP=ON
+          -DBUILD_SERVICE_PRODUCTION_RUNTIME_SCRIPT_TASK_FACTORY=OFF
+          -DBUILD_SERVICE_PRODUCTION_RUNTIME_TASK_CONTROL=OFF
+          -DBUILD_APP_BAAS=OFF -DBUILD_APP_ISA=OFF -DBUILD_BAAS_OCR=OFF
+          -DBUILD_BAAS_AW_CHECKER=OFF -DBUILD_BAAS_NMS_BENCHMARK=OFF
+          -DBAAS_FETCH_RESOURCES=OFF
+
+      - name: Build default lightweight application
+        run: >-
+          cmake --build build/service-application-lightweight
+          --config ${{ matrix.build_type }} --parallel 4
+          --target BAAS_service BAAS_service_application
+
+      - name: Build pinned OpenCV recipe
+        run: >-
+          conan create deploy/conan/recipes/baas-opencv
+          -s:h build_type=${{ matrix.build_type }} -s:b build_type=Release
+          -o:h "baas-opencv/*:shared=False"
+          ${{ matrix.conan_settings }} --build=missing --no-remote
+
       - name: Generate application CMake dependencies
         run: >-
           conan install --requires=baas-libsodium/1.0.22
           --requires=baas-cpp-httplib/0.50.1
           --requires=baas-nlohmann-json/3.11.3
           --requires=baas-miniz/3.1.2
+          --requires=baas-opencv/4.13.0
+          -o:h "baas-opencv/*:shared=False"
           -of build/conan/service-application
           -s:h build_type=${{ matrix.build_type }} -s:b build_type=Release
           ${{ matrix.conan_settings }}
@@ -191,6 +231,8 @@ jobs:
           "-DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}/build/conan/service-application/conan_toolchain.cmake"
           -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
           -DBUILD_TESTING=ON -DBUILD_SERVICE_APP_TESTS=ON
+          -DBUILD_SERVICE_PRODUCTION_RUNTIME_SCRIPT_TASK_FACTORY=ON
+          -DBUILD_SERVICE_PRODUCTION_RUNTIME_TASK_CONTROL=ON
           -DBUILD_SERVICE_FILE_RESOURCE_STORE_TESTS=ON
           -DBUILD_SERVICE_CONFIGURATION_TRIGGER_TESTS=ON
           -DBUILD_SERVICE_RUNTIME_TASK_TRIGGER_TESTS=ON
@@ -208,6 +250,7 @@ jobs:
           cmake --build build/service-application
           --config ${{ matrix.build_type }} --parallel 4
           --target BAAS_service BAAS_service_application_tests
+          BAAS_service_production_runtime_path_tests
           BAAS_service_file_resource_store_tests
           BAAS_service_config_archive_codec_tests
           BAAS_service_configuration_trigger_tests BAAS_service_auth_owner_tests
@@ -222,15 +265,15 @@ jobs:
         run: >-
           ctest --test-dir build/service-application
           --build-config ${{ matrix.build_type }} --output-on-failure --timeout 90
-          -R "^(BAAS_service_(application_tests|file_resource_store_tests|config_archive_codec_tests|configuration_trigger_tests|runtime_task_trigger_tests|adb_discovery_trigger_tests|auth_owner_tests|runtime_provider_bridge_tests|runtime_repository_owner_tests|runtime_repository_plan_tests|version_cli|help_cli|no_embedded_configuration_defaults)|BAAS_scheduler_policy_tests)$"
+          -R "^(BAAS_service_(application_tests|production_runtime_path_tests|file_resource_store_tests|config_archive_codec_tests|configuration_trigger_tests|runtime_task_trigger_tests|adb_discovery_trigger_tests|auth_owner_tests|runtime_provider_bridge_tests|runtime_repository_owner_tests|runtime_repository_plan_tests|version_cli|help_cli|no_embedded_configuration_defaults)|BAAS_scheduler_policy_tests)$"
 
       - name: Verify scheduler CI contract
         run: python -m unittest discover -s tests/docs -p test_scheduler_policy.py
 
   android-scheduler-policy:
-    name: Android scheduler ${{ matrix.abi }} / Release compile
+    name: Android service composition ${{ matrix.abi }} / Release compile
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       max-parallel: 2
@@ -287,11 +330,56 @@ jobs:
           --build=missing
           --no-remote
 
-      - name: Generate Android scheduler dependency
+      - name: Cross-build pinned libsodium recipe
+        shell: bash
+        run: >-
+          conan create deploy/conan/recipes/baas-libsodium
+          -pr:h=deploy/conan/profiles/${{ matrix.profile }}
+          -pr:b=default
+          -c:h "tools.android:ndk_path=${ANDROID_NDK_HOME}"
+          --build=missing
+          --no-remote
+
+      - name: Cross-build pinned cpp-httplib recipe
+        shell: bash
+        run: >-
+          conan create deploy/conan/recipes/baas-cpp-httplib
+          -pr:h=deploy/conan/profiles/${{ matrix.profile }}
+          -pr:b=default
+          -c:h "tools.android:ndk_path=${ANDROID_NDK_HOME}"
+          --build=missing
+
+      - name: Cross-build pinned miniz recipe
+        shell: bash
+        run: >-
+          conan create deploy/conan/recipes/baas-miniz
+          -pr:h=deploy/conan/profiles/${{ matrix.profile }}
+          -pr:b=default
+          -c:h "tools.android:ndk_path=${ANDROID_NDK_HOME}"
+          --build=missing
+          --no-remote
+
+      - name: Cross-build pinned OpenCV recipe
+        shell: bash
+        run: >-
+          conan create deploy/conan/recipes/baas-opencv
+          -pr:h=deploy/conan/profiles/${{ matrix.profile }}
+          -pr:b=default
+          -c:h "tools.android:ndk_path=${ANDROID_NDK_HOME}"
+          -o:h "baas-opencv/*:shared=False"
+          --build=missing
+          --no-remote
+
+      - name: Generate Android service dependencies
         shell: bash
         run: >-
           conan install --requires=baas-nlohmann-json/3.11.3
-          -of build/conan/scheduler-android-${{ matrix.abi }}
+          --requires=baas-libsodium/1.0.22
+          --requires=baas-cpp-httplib/0.50.1
+          --requires=baas-miniz/3.1.2
+          --requires=baas-opencv/4.13.0
+          -o:h "baas-opencv/*:shared=False"
+          -of build/conan/service-android-${{ matrix.abi }}
           -pr:h=deploy/conan/profiles/${{ matrix.profile }}
           -pr:b=default
           -c:h "tools.android:ndk_path=${ANDROID_NDK_HOME}"
@@ -300,14 +388,17 @@ jobs:
           --build=missing
           --no-remote
 
-      - name: Configure Android scheduler policy
+      - name: Configure Android service composition
         shell: bash
         run: >-
-          cmake -S . -B build/scheduler-android-${{ matrix.abi }}
+          cmake -S . -B build/service-android-${{ matrix.abi }}
           -G Ninja
-          "-DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}/build/conan/scheduler-android-${{ matrix.abi }}/conan_toolchain.cmake"
+          "-DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}/build/conan/service-android-${{ matrix.abi }}/conan_toolchain.cmake"
           -DCMAKE_BUILD_TYPE=Release
           -DBUILD_SCHEDULER_POLICY=ON
+          -DBUILD_SERVICE_APP=ON
+          -DBUILD_SERVICE_PRODUCTION_RUNTIME_SCRIPT_TASK_FACTORY=ON
+          -DBUILD_SERVICE_PRODUCTION_RUNTIME_TASK_CONTROL=ON
           -DBUILD_APP_BAAS=OFF
           -DBUILD_APP_ISA=OFF
           -DBUILD_BAAS_OCR=OFF
@@ -315,10 +406,13 @@ jobs:
           -DBUILD_BAAS_NMS_BENCHMARK=OFF
           -DBAAS_FETCH_RESOURCES=OFF
 
-      - name: Cross-build Android scheduler policy
+      - name: Cross-build Android service composition
         shell: bash
         run: >-
-          cmake --build build/scheduler-android-${{ matrix.abi }}
+          cmake --build build/service-android-${{ matrix.abi }}
           --config Release
           --parallel 4
           --target BAAS_scheduler_policy
+          BAAS_service_application
+          BAAS_service_production_runtime_task_control
+          BAAS_service_production_runtime_script_task_factory

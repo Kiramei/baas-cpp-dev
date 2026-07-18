@@ -256,6 +256,8 @@ std::string_view runtime_task_start_decision_name(
             return "invalid-request";
         case RuntimeTaskStartDecision::thread_start_failed:
             return "thread-start-failed";
+        case RuntimeTaskStartDecision::preparation_failed:
+            return "preparation-failed";
     }
     return "invalid-request";
 }
@@ -310,6 +312,8 @@ private:
         std::mutex gate_mutex;
         std::condition_variable gate_condition;
         StartGate gate{StartGate::pending};
+        bool preparation_complete{};
+        bool preparation_succeeded{};
         std::thread worker;
     };
 
@@ -459,6 +463,7 @@ public:
             create_thread = false;
         }
 #endif
+        const bool has_prepared_backend = request.prepared_backend != nullptr;
         try {
             if (!create_thread) {
                 throw std::system_error{
@@ -495,6 +500,32 @@ public:
             }
             condition_.notify_all();
             return result;
+        }
+        if (has_prepared_backend) {
+            lock.unlock();
+            {
+                std::unique_lock gate_lock{job->gate_mutex};
+                job->gate_condition.wait(gate_lock, [&job] {
+                    return job->preparation_complete;
+                });
+            }
+            lock.lock();
+            if (!job->preparation_succeeded) {
+                const auto key = job->snapshot.config_id;
+                auto failed = jobs_.find(key);
+                if (failed != jobs_.end()
+                    && failed->second.reserved.get() == job.get()) {
+                    failed->second.reserved.reset();
+                    --active_reservations_;
+                    if (!failed->second.current) jobs_.erase(failed);
+                }
+                lock.unlock();
+                if (job->worker.joinable()) job->worker.join();
+                condition_.notify_all();
+                result.decision = RuntimeTaskStartDecision::preparation_failed;
+                result.snapshot.reset();
+                return result;
+            }
         }
         result.reservation = RuntimeTaskStartReservationAccess::create(
             std::move(reservation_state), &commit_reservation_action,
@@ -1301,8 +1332,20 @@ private:
         const std::shared_ptr<Job>& job,
         const RuntimeTaskRequest& request) noexcept
     {
+        // Preparation is part of the owned worker lifetime. A prepared
+        // backend may synchronously reenter shutdown(), including through a
+        // stop callback, and must therefore receive the same initiation-only
+        // self-shutdown semantics as execute().
+        WorkerGuard worker_context{this};
+        const bool prepared = !request.prepared_backend
+            || request.prepared_backend->prepare(
+                job->stop_source.get_token());
         {
             std::unique_lock gate_lock{job->gate_mutex};
+            job->preparation_succeeded = prepared;
+            job->preparation_complete = true;
+            job->gate_condition.notify_all();
+            if (!prepared) return;
             job->gate_condition.wait(gate_lock, [&job] {
                 return job->gate != StartGate::pending;
             });
@@ -1327,7 +1370,6 @@ private:
         const std::shared_ptr<Job>& job,
         const RuntimeTaskRequest& request) noexcept
     {
-        WorkerGuard worker_context{this};
         RuntimeTaskTerminal terminal{false, 1};
         try {
             const RuntimeTaskProgressReporter reporter =
@@ -1337,8 +1379,13 @@ private:
                     return report(
                         weak_owner, weak_job, std::move(progress));
                 };
-            terminal = backend_(
-                request, job->stop_source.get_token(), reporter);
+            if (request.prepared_backend) {
+                terminal = request.prepared_backend->execute(
+                    request, job->stop_source.get_token(), reporter);
+            } else {
+                terminal = backend_(
+                    request, job->stop_source.get_token(), reporter);
+            }
         } catch (...) {
             terminal = {false, 1};
         }
@@ -1387,8 +1434,7 @@ private:
                 for (auto& [config_id, slot] : jobs_) {
                     static_cast<void>(config_id);
                     auto& job = slot.current;
-                    if (!job) continue;
-                    if (job->phase == JobPhase::running) {
+                    if (job && job->phase == JobPhase::running) {
                         discard_pending_progress(*job);
                         job->phase = JobPhase::stopping;
                         job->snapshot.stopping = true;
@@ -1399,10 +1445,16 @@ private:
                         found_source = true;
                         break;
                     }
-                    if (job->phase == JobPhase::stopping
+                    if (job && job->phase == JobPhase::stopping
                         && !job->stop_source.stop_requested()) {
                         discard_pending_progress(*job);
                         source = job->stop_source;
+                        found_source = true;
+                        break;
+                    }
+                    if (slot.reserved
+                        && !slot.reserved->stop_source.stop_requested()) {
+                        source = slot.reserved->stop_source;
                         found_source = true;
                         break;
                     }

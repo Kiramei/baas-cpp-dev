@@ -3,6 +3,7 @@
 #include "service/runtime/RuntimeTaskOwner.h"
 
 #include <chrono>
+#include <atomic>
 #include <cstddef>
 #include <memory>
 #include <span>
@@ -100,6 +101,48 @@ struct RuntimeScriptTaskBackendOptions {
 inline constexpr int runtime_script_task_failure_exit_code = 1;
 inline constexpr int runtime_script_task_deadline_exit_code = 124;
 inline constexpr int runtime_script_task_cancelled_exit_code = 130;
+
+enum class RuntimeScriptTaskPrepareError : std::uint8_t {
+    none,
+    cancelled,
+    deadline,
+    invalid_request,
+    unavailable,
+    invalid_identity,
+    repository_mismatch,
+    capacity,
+    internal_error,
+};
+
+struct RuntimeScriptTaskRepositoryBinding {
+    std::string generation;
+    std::string scripts_commit;
+    std::string resources_commit;
+};
+
+struct RuntimeScriptTaskPrepareResult {
+    std::shared_ptr<RuntimeTaskPreparedBackend> backend;
+    RuntimeScriptTaskPrepareError error{RuntimeScriptTaskPrepareError::none};
+    std::shared_ptr<std::atomic<RuntimeScriptTaskPrepareError>>
+        preparation_status;
+
+    [[nodiscard]] explicit operator bool() const noexcept
+    {
+        return error == RuntimeScriptTaskPrepareError::none && backend != nullptr;
+    }
+};
+
+// Performs provider pinning, catalog/resource/procedure resolution, identity
+// validation and repository binding before a Trigger response is claimed.
+// The returned backend performs those steps from RuntimeTaskOwner::prepare_start
+// on its gated worker, preserving evaluator thread affinity, and executes only
+// after the reversible reservation is committed.
+[[nodiscard]] RuntimeScriptTaskPrepareResult prepare_runtime_script_task_backend(
+    std::shared_ptr<const RuntimeScriptTaskRuntimeFactory> factory,
+    const RuntimeTaskRequest& request,
+    RuntimeScriptTaskRepositoryBinding repository,
+    RuntimeScriptTaskBackendOptions options = {},
+    std::stop_token stop_token = {}) noexcept;
 
 // Explicit opt-in composition seam. Constructing this backend does not install
 // it in the service or replace the Tauri/Python default runtime path.

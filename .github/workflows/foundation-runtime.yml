@@ -421,6 +421,7 @@ jobs:
           -DBUILD_TESTING=ON -DBUILD_RUNTIME_CO_DETECT_SUPPORT_BUNDLE_TESTS=ON
           -DBUILD_RUNTIME_CO_DETECT_PRODUCTION_ADAPTER_TESTS=ON
           -DBUILD_SERVICE_PRODUCTION_RUNTIME_SCRIPT_TASK_FACTORY_TESTS=ON
+          -DBUILD_SERVICE_PRODUCTION_RUNTIME_TASK_CONTROL=ON
           -DBUILD_RUNTIME_BAAS_CONNECTION_CO_DETECT_PORT_TESTS=ON
           -DBUILD_APP_BAAS=OFF -DBUILD_APP_ISA=OFF -DBUILD_BAAS_OCR=OFF
           -DBUILD_BAAS_AW_CHECKER=OFF -DBUILD_BAAS_NMS_BENCHMARK=OFF
@@ -433,6 +434,7 @@ jobs:
           --target BAAS_runtime_co_detect_support_bundle_tests
           BAAS_runtime_co_detect_production_adapter_tests
           BAAS_service_production_runtime_script_task_factory_tests
+          BAAS_service_production_runtime_task_control
           BAAS_runtime_baas_connection_co_detect_port_tests
 
       - name: Run support-bundle tests
@@ -496,6 +498,7 @@ jobs:
           -DBUILD_TESTING=ON -DBUILD_RUNTIME_CO_DETECT_SUPPORT_BUNDLE_TESTS=ON
           -DBUILD_RUNTIME_CO_DETECT_PRODUCTION_ADAPTER_TESTS=ON
           -DBUILD_SERVICE_PRODUCTION_RUNTIME_SCRIPT_TASK_FACTORY_TESTS=ON
+          -DBUILD_SERVICE_PRODUCTION_RUNTIME_TASK_CONTROL=ON
           -DBUILD_RUNTIME_BAAS_CONNECTION_CO_DETECT_PORT_TESTS=ON
           -DBUILD_APP_BAAS=OFF -DBUILD_APP_ISA=OFF -DBUILD_BAAS_OCR=OFF
           -DBUILD_BAAS_AW_CHECKER=OFF -DBUILD_BAAS_NMS_BENCHMARK=OFF
@@ -508,6 +511,7 @@ jobs:
           --target BAAS_runtime_co_detect_support_bundle_tests
           BAAS_runtime_co_detect_production_adapter_tests
           BAAS_service_production_runtime_script_task_factory_tests
+          BAAS_service_production_runtime_task_control
           BAAS_runtime_baas_connection_co_detect_port_tests
 
       - name: Run support-bundle tests with the Conan runtime environment
@@ -646,6 +650,7 @@ jobs:
           -DBUILD_RUNTIME_CO_DETECT_SUPPORT_BUNDLE=ON
           -DBUILD_RUNTIME_CO_DETECT_PRODUCTION_ADAPTER=ON
           -DBUILD_SERVICE_PRODUCTION_RUNTIME_SCRIPT_TASK_FACTORY=ON
+          -DBUILD_SERVICE_PRODUCTION_RUNTIME_TASK_CONTROL=ON
           -DBUILD_RUNTIME_BAAS_CONNECTION_CO_DETECT_PORT=ON
           -DBUILD_LEGACY_PROCEDURE_EXECUTION=ON
           -DBUILD_SCRIPT_PROCEDURE_HOST=ON
@@ -677,6 +682,7 @@ jobs:
           BAAS_runtime_co_detect_support_bundle
           BAAS_runtime_co_detect_production_adapter
           BAAS_service_production_runtime_script_task_factory
+          BAAS_service_production_runtime_task_control
           BAAS_runtime_baas_connection_co_detect_port
           BAAS_legacy_procedure_execution
           BAAS_script_procedure_host

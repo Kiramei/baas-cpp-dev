@@ -15,6 +15,16 @@ activation, and construct Procedure/Log/Resource Hosts. It returns a fresh
 request-plan-local runtime
 which retains all of those immutable owners until `execute()` returns.
 
+The production Trigger path uses `prepare_runtime_script_task_backend()`. The
+owner starts a gated worker and runs factory creation on that same worker (the
+evaluator is thread-affine), then waits for preparation to finish before it
+returns a reversible reservation. Provider pinning, catalog/resource loading,
+task resolution, identity validation, repository binding, evaluator creation,
+and thread allocation therefore all finish before the response claim. A null
+provider publication, missing task, allocation failure, invalid identity, or
+stale repository bundle returns a stable wire failure and publishes no fake
+successful task generation.
+
 ## Identity and ownership contract
 
 Before execution, the backend derives the complete ordered requested task plan
