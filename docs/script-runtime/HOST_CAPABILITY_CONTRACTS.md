@@ -74,10 +74,13 @@ missing or non-boolean values are invalid.
 unknown-field policy for named ordered-map results.
 Parameter objects accept only `name`, `required`, `type`, and optional
 `default`; a default is valid only for an optional ordered-map parameter in v1.
-A result schema accepts only `field_order`, `fields`, and `unknown_fields`; each
-field descriptor accepts only `required`, `type`, `semantics`, and optional
-`unit`. Every current named result field is required, and `field_order` MUST
-contain every field exactly once.
+A result schema normally accepts only `field_order`, `fields`, and
+`unknown_fields`; each field descriptor accepts only `required`, `type`,
+`semantics`, and optional `unit`. `host.procedure.run.v1` additionally requires
+the exact `descriptor_fields` contract because its immutable per-procedure
+descriptor supplies ordered fields after the Host-owned `end`; no other binding
+may use that extension. Every statically named result field is required, and
+`field_order` MUST contain every static field exactly once.
 
 ### HST-003 — Stable HostError envelope
 

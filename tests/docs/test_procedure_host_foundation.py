@@ -183,6 +183,28 @@ class ProcedureHostFoundationTests(unittest.TestCase):
         ):
             self.assertIn(anchor, self.spec)
 
+    def test_structured_result_contract_is_schema_bound_and_bounded(self) -> None:
+        for anchor in (
+            "ProcedureExecutorOutcome::success",
+            "result_schema",
+            "max_result_depth",
+            "max_result_nodes",
+            "max_result_string_bytes",
+            "max_result_total_bytes",
+            "max_result_validation_work",
+            "fail_result_processing_at_allocation",
+            'key == "end"',
+            "validate_result_payload",
+        ):
+            self.assertIn(anchor, self.header + self.source)
+        for anchor in (
+            "baas.procedure.descriptor/v3",
+            "non-finite",
+            "deadline then cancellation",
+            "shop plan",
+        ):
+            self.assertIn(anchor, self.spec)
+
 
 if __name__ == "__main__":
     unittest.main()

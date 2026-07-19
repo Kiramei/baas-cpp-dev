@@ -59,6 +59,7 @@ enum class RuntimeProcedureActivationError : std::uint8_t {
     cancelled,
     resource_exhausted,
     internal_failure,
+    result_schema_limit_exceeded,
 };
 
 [[nodiscard]] std::string_view runtime_procedure_activation_error_name(
@@ -77,6 +78,8 @@ struct RuntimeProcedureActivationLimits final {
     std::size_t max_json_depth{32};
     std::size_t max_json_nodes{200'000};
     std::size_t max_work{512U * 1024U * 1024U};
+    std::size_t max_result_schema_nodes_per_procedure{16'384};
+    std::size_t max_result_schema_depth{32};
 };
 
 struct RuntimeProcedureActivationLoadResult;
@@ -98,6 +101,8 @@ public:
     [[nodiscard]] const std::string& sha256() const noexcept;
     [[nodiscard]] const std::string& implementation_sha256() const noexcept;
     [[nodiscard]] std::span<const RuntimeProcedureTerminalBinding> terminals() const noexcept;
+    [[nodiscard]] std::span<const ::baas::script::host::ProcedureResultFieldSchema>
+        result_schema() const noexcept;
     // Exact verified wrapper bytes. A later engine adapter may parse payload
     // without consulting a native path or the mutable repository checkout.
     [[nodiscard]] std::span<const std::byte> bytes() const noexcept;
@@ -109,6 +114,7 @@ private:
         std::string sha256,
         std::string implementation_sha256,
         std::vector<RuntimeProcedureTerminalBinding> terminals,
+        std::vector<::baas::script::host::ProcedureResultFieldSchema> result_schema,
         std::shared_ptr<const std::vector<std::byte>> bytes) noexcept;
 
     std::string procedure_id_;
@@ -116,6 +122,7 @@ private:
     std::string sha256_;
     std::string implementation_sha256_;
     std::vector<RuntimeProcedureTerminalBinding> terminals_;
+    std::vector<::baas::script::host::ProcedureResultFieldSchema> result_schema_;
     std::shared_ptr<const std::vector<std::byte>> bytes_;
 
     friend class RuntimeProcedureActivation;

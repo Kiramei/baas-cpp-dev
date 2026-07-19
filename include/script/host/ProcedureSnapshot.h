@@ -21,6 +21,35 @@ enum class ProcedureEffect : std::uint8_t {
     ForegroundCheck,
 };
 
+// Result payloads are JSON-only. Object field and array item schemas use the
+// same recursive representation: Object children are ordered named fields;
+// Array children contain exactly one unnamed, required item schema; primitive
+// schemas have no children. The top-level descriptor schema is an ordered list
+// of fields for the payload object that ProcedureHost merges with its own
+// immutable `end` field.
+enum class ProcedureResultJsonType : std::uint8_t {
+    Null,
+    Boolean,
+    Integer,
+    Float,
+    String,
+    Array,
+    Object,
+};
+
+struct ProcedureResultFieldSchema {
+    std::string name;
+    bool required{};
+    ProcedureResultJsonType type{ProcedureResultJsonType::Null};
+    std::vector<ProcedureResultFieldSchema> children;
+    friend bool operator==(
+        const ProcedureResultFieldSchema&,
+        const ProcedureResultFieldSchema&) = default;
+};
+
+[[nodiscard]] std::string_view procedure_result_json_type_name(
+    ProcedureResultJsonType type) noexcept;
+
 [[nodiscard]] std::string_view procedure_effect_name(ProcedureEffect effect) noexcept;
 
 enum class ProcedureSnapshotErrorCode : std::uint8_t {
@@ -44,6 +73,10 @@ enum class ProcedureSnapshotErrorCode : std::uint8_t {
     DuplicateResource,
     ResourceNotFound,
     ResourceSnapshotAbsent,
+    ResultSchemaLimitExceeded,
+    InvalidResultSchema,
+    DuplicateResultField,
+    ReservedResultField,
 };
 
 [[nodiscard]] std::string_view procedure_snapshot_error_code_name(
@@ -66,11 +99,14 @@ struct ProcedureDescriptorInput {
     std::vector<ProcedureEffect> declared_effects;
     std::vector<std::string> resource_ids;
     // SHA-256 over the executable implementation contract. Runtime loaders bind
-    // the engine, definition-file digest, and ordered source-to-terminal mapping
-    // into this value before descriptor publication.
+    // the engine, definition-file digest, ordered source-to-terminal mapping,
+    // and complete ordered result schema into this value before publication.
     std::string implementation_sha256;
     // SHA-256 over the descriptor's canonical logical fields, excluding this field.
     std::string sha256;
+    // Ordered, strict schema for the executor-supplied result payload. Empty
+    // preserves the historical terminal-only `{ "end": ... }` contract.
+    std::vector<ProcedureResultFieldSchema> result_schema;
 };
 
 struct ProcedureSnapshotLimits {
@@ -81,6 +117,8 @@ struct ProcedureSnapshotLimits {
     std::size_t max_string_bytes{1'024};
     std::size_t max_total_string_bytes{16U * 1024U * 1024U};
     std::size_t max_validation_work{1'000'000};
+    std::size_t max_result_schema_nodes_per_procedure{16'384};
+    std::size_t max_result_schema_depth{32};
 };
 
 class ProcedureDescriptor final {
@@ -89,6 +127,8 @@ public:
     [[nodiscard]] std::span<const std::string> terminal_ids() const noexcept;
     [[nodiscard]] std::span<const ProcedureEffect> declared_effects() const noexcept;
     [[nodiscard]] std::span<const std::string> resource_ids() const noexcept;
+    [[nodiscard]] std::span<const ProcedureResultFieldSchema>
+        result_schema() const noexcept;
     [[nodiscard]] const std::string& implementation_sha256() const noexcept;
     [[nodiscard]] const std::string& sha256() const noexcept;
     [[nodiscard]] bool accepts_terminal(std::string_view terminal_id) const noexcept;

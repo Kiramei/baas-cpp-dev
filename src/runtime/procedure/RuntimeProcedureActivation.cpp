@@ -58,6 +58,9 @@ private:
            limits.max_terminals_per_procedure != 0 &&
            limits.max_effects_per_procedure != 0 && limits.max_effects_per_procedure <= 5 &&
            limits.max_resources_per_procedure != 0 && limits.max_string_bytes != 0 &&
+           limits.max_result_schema_nodes_per_procedure != 0 &&
+           limits.max_result_schema_depth != 0 &&
+           limits.max_result_schema_depth <= 256 &&
            limits.max_total_string_bytes != 0 && limits.max_json_depth != 0 &&
            limits.max_json_nodes != 0 && limits.max_work != 0;
 }
@@ -198,6 +201,7 @@ struct ParsedEntry final {
     std::vector<RuntimeProcedureTerminalBinding> terminals;
     std::vector<host::ProcedureEffect> effects;
     std::vector<std::string> resources;
+    std::vector<host::ProcedureResultFieldSchema> result_schema;
 };
 
 void charge_string(const std::string_view value,
@@ -213,10 +217,166 @@ void charge_string(const std::string_view value,
     work.charge(value.size());
 }
 
+[[nodiscard]] host::ProcedureResultJsonType parse_result_type(
+    const std::string_view value, const std::string_view procedure_id) {
+    if (value == "null") return host::ProcedureResultJsonType::Null;
+    if (value == "boolean") return host::ProcedureResultJsonType::Boolean;
+    if (value == "integer") return host::ProcedureResultJsonType::Integer;
+    if (value == "float") return host::ProcedureResultJsonType::Float;
+    if (value == "string") return host::ProcedureResultJsonType::String;
+    if (value == "array") return host::ProcedureResultJsonType::Array;
+    if (value == "object") return host::ProcedureResultJsonType::Object;
+    fail(RuntimeProcedureActivationError::invalid_manifest,
+         std::string{procedure_id});
+}
+
+[[nodiscard]] bool canonical_result_name(
+    const std::string_view value, const std::size_t maximum) noexcept {
+    if (value.empty() || value.size() > maximum || value == "end" ||
+        !(value.front() >= 'a' && value.front() <= 'z')) return false;
+    return std::ranges::all_of(value, [](const char character) {
+        return (character >= 'a' && character <= 'z') ||
+            (character >= '0' && character <= '9') || character == '_';
+    });
+}
+
+[[nodiscard]] host::ProcedureResultFieldSchema parse_result_value_schema(
+    const Json& value, const bool named,
+    const RuntimeProcedureActivationLimits& limits,
+    const std::string_view procedure_id, const std::size_t depth,
+    std::size_t& nodes, std::size_t& total_strings, WorkBudget& work);
+
+[[nodiscard]] std::vector<host::ProcedureResultFieldSchema> parse_result_fields(
+    const Json& fields, const RuntimeProcedureActivationLimits& limits,
+    const std::string_view procedure_id, const std::size_t depth,
+    std::size_t& nodes, std::size_t& total_strings, WorkBudget& work) {
+    if (!fields.is_array())
+        fail(RuntimeProcedureActivationError::invalid_manifest,
+             std::string{procedure_id});
+    if (nodes > limits.max_result_schema_nodes_per_procedure ||
+        fields.size() > limits.max_result_schema_nodes_per_procedure - nodes)
+        fail(RuntimeProcedureActivationError::result_schema_limit_exceeded,
+             std::string{procedure_id});
+    std::vector<host::ProcedureResultFieldSchema> result;
+    result.reserve(fields.size());
+    for (const auto& field : fields) {
+        auto parsed = parse_result_value_schema(
+            field, true, limits, procedure_id, depth,
+            nodes, total_strings, work);
+        result.push_back(std::move(parsed));
+    }
+
+    // Duplicate detection must not turn a large, attacker-controlled sibling
+    // list with common string prefixes into quadratic validation work. Use a
+    // deterministic bottom-up merge sort and charge an upper bound for every
+    // lexicographic comparison (the shared prefix plus its discriminator).
+    std::vector<std::string_view> names;
+    names.reserve(result.size());
+    for (const auto& field : result) names.emplace_back(field.name);
+    std::vector<std::string_view> scratch(names.size());
+    for (std::size_t width = 1; width < names.size();) {
+        const auto run = width > names.size() - width
+            ? names.size() : width * 2;
+        for (std::size_t begin = 0; begin < names.size(); begin += run) {
+            const auto middle = std::min(names.size(), begin + width);
+            const auto end = std::min(names.size(), begin + run);
+            auto left = begin;
+            auto right = middle;
+            auto output = begin;
+            while (left < middle && right < end) {
+                work.charge(std::min(names[left].size(), names[right].size()) + 1);
+                const auto comparison = names[left].compare(names[right]);
+                if (comparison == 0)
+                    fail(RuntimeProcedureActivationError::invalid_manifest,
+                         std::string{procedure_id});
+                scratch[output++] = comparison < 0
+                    ? names[left++] : names[right++];
+            }
+            while (left < middle) scratch[output++] = names[left++];
+            while (right < end) scratch[output++] = names[right++];
+        }
+        names.swap(scratch);
+        if (width > names.size() / 2) break;
+        width *= 2;
+    }
+    return result;
+}
+
+[[nodiscard]] host::ProcedureResultFieldSchema parse_result_value_schema(
+    const Json& value, const bool named,
+    const RuntimeProcedureActivationLimits& limits,
+    const std::string_view procedure_id, const std::size_t depth,
+    std::size_t& nodes, std::size_t& total_strings, WorkBudget& work) {
+    if (depth > limits.max_result_schema_depth ||
+        ++nodes > limits.max_result_schema_nodes_per_procedure)
+        fail(RuntimeProcedureActivationError::result_schema_limit_exceeded,
+             std::string{procedure_id});
+    work.charge(1);
+    if (!value.is_object() || !value.contains("type") ||
+        !value.at("type").is_string())
+        fail(RuntimeProcedureActivationError::invalid_manifest,
+             std::string{procedure_id});
+    const auto type_text = value.at("type").get<std::string>();
+    charge_string(type_text, limits, total_strings, work, procedure_id);
+    host::ProcedureResultFieldSchema result;
+    result.type = parse_result_type(type_text, procedure_id);
+    if (named) {
+        if (!value.contains("name") || !value.at("name").is_string() ||
+            !value.contains("required") || !value.at("required").is_boolean())
+            fail(RuntimeProcedureActivationError::invalid_manifest,
+                 std::string{procedure_id});
+        result.name = value.at("name").get<std::string>();
+        result.required = value.at("required").get<bool>();
+        charge_string(result.name, limits, total_strings, work, procedure_id);
+        if (!canonical_result_name(result.name, limits.max_string_bytes))
+            fail(RuntimeProcedureActivationError::invalid_manifest,
+                 std::string{procedure_id});
+    } else {
+        result.required = true;
+    }
+    switch (result.type) {
+        case host::ProcedureResultJsonType::Object: {
+            if (!(named
+                    ? exact_fields(value, {"name", "required", "type", "fields"})
+                    : exact_fields(value, {"type", "fields"})))
+                fail(RuntimeProcedureActivationError::invalid_manifest,
+                     std::string{procedure_id});
+            result.children = parse_result_fields(
+                value.at("fields"), limits, procedure_id, depth + 1,
+                nodes, total_strings, work);
+            break;
+        }
+        case host::ProcedureResultJsonType::Array: {
+            if (!(named
+                    ? exact_fields(value, {"name", "required", "type", "items"})
+                    : exact_fields(value, {"type", "items"})))
+                fail(RuntimeProcedureActivationError::invalid_manifest,
+                     std::string{procedure_id});
+            result.children.push_back(parse_result_value_schema(
+                value.at("items"), false, limits, procedure_id, depth + 1,
+                nodes, total_strings, work));
+            break;
+        }
+        default:
+            if (!(named
+                    ? exact_fields(value, {"name", "required", "type"})
+                    : exact_fields(value, {"type"})))
+                fail(RuntimeProcedureActivationError::invalid_manifest,
+                     std::string{procedure_id});
+            break;
+    }
+    return result;
+}
+
 [[nodiscard]] ParsedEntry parse_entry(
     const Json& value, const RuntimeProcedureActivationLimits& limits,
     std::size_t& total_strings, WorkBudget& work) {
-    if (!exact_fields(value, {"id", "definition", "terminals", "effects", "resources"}) ||
+    const bool has_result = value.is_object() && value.contains("result");
+    if (!(has_result
+              ? exact_fields(value, {"id", "definition", "terminals", "effects",
+                                     "resources", "result"})
+              : exact_fields(value, {"id", "definition", "terminals", "effects",
+                                     "resources"})) ||
         !value.at("id").is_string() || !value.at("definition").is_object() ||
         !value.at("terminals").is_array() || !value.at("effects").is_array() ||
         !value.at("resources").is_array())
@@ -300,13 +460,19 @@ void charge_string(const std::string_view value,
             fail(RuntimeProcedureActivationError::invalid_manifest, result.id);
         result.resources.push_back(std::move(resource_id));
     }
+    if (has_result) {
+        std::size_t result_nodes{};
+        result.result_schema = parse_result_fields(
+            value.at("result"), limits, result.id, 1,
+            result_nodes, total_strings, work);
+    }
     return result;
 }
 
 [[nodiscard]] std::string implementation_sha256(const ParsedEntry& entry,
                                                  const std::string_view engine) {
     std::string material;
-    add_length_prefixed(material, "baas.procedure.implementation/v1");
+    add_length_prefixed(material, "baas.procedure.implementation/v2");
     add_length_prefixed(material, engine);
     add_length_prefixed(material, entry.sha256);
     add_length_prefixed(material, std::to_string(entry.terminals.size()));
@@ -314,6 +480,16 @@ void charge_string(const std::string_view value,
         add_length_prefixed(material, terminal.source);
         add_length_prefixed(material, terminal.id);
     }
+    const auto add_schema = [&](const auto& self,
+                                const host::ProcedureResultFieldSchema& field) -> void {
+        add_length_prefixed(material, field.name);
+        add_length_prefixed(material, field.required ? "required" : "optional");
+        add_length_prefixed(material, host::procedure_result_json_type_name(field.type));
+        add_length_prefixed(material, std::to_string(field.children.size()));
+        for (const auto& child : field.children) self(self, child);
+    };
+    add_length_prefixed(material, std::to_string(entry.result_schema.size()));
+    for (const auto& field : entry.result_schema) add_schema(add_schema, field);
     return snapshot_resources::sha256_hex(std::as_bytes(std::span(material)));
 }
 
@@ -343,10 +519,12 @@ RuntimeProcedureDefinition::RuntimeProcedureDefinition(
     std::string procedure_id, std::string engine, std::string sha256,
     std::string implementation_sha256,
     std::vector<RuntimeProcedureTerminalBinding> terminals,
+    std::vector<host::ProcedureResultFieldSchema> result_schema,
     std::shared_ptr<const std::vector<std::byte>> bytes) noexcept
     : procedure_id_(std::move(procedure_id)), engine_(std::move(engine)),
       sha256_(std::move(sha256)), implementation_sha256_(std::move(implementation_sha256)),
-      terminals_(std::move(terminals)), bytes_(std::move(bytes)) {}
+      terminals_(std::move(terminals)), result_schema_(std::move(result_schema)),
+      bytes_(std::move(bytes)) {}
 
 const std::string& RuntimeProcedureDefinition::procedure_id() const noexcept {
     return procedure_id_;
@@ -358,6 +536,8 @@ const std::string& RuntimeProcedureDefinition::implementation_sha256() const noe
 }
 std::span<const RuntimeProcedureTerminalBinding>
 RuntimeProcedureDefinition::terminals() const noexcept { return terminals_; }
+std::span<const host::ProcedureResultFieldSchema>
+RuntimeProcedureDefinition::result_schema() const noexcept { return result_schema_; }
 std::span<const std::byte> RuntimeProcedureDefinition::bytes() const noexcept {
     return *bytes_;
 }
@@ -429,6 +609,7 @@ std::string_view runtime_procedure_activation_error_name(
     case cancelled: return "RPA032_CANCELLED";
     case resource_exhausted: return "RPA033_RESOURCE_EXHAUSTED";
     case internal_failure: return "RPA034_INTERNAL_FAILURE";
+    case result_schema_limit_exceeded: return "RPA035_RESULT_SCHEMA_LIMIT_EXCEEDED";
     }
     return "RPA999_UNKNOWN";
 }
@@ -584,6 +765,7 @@ RuntimeProcedureActivationLoadResult load_runtime_procedure_activation(
             descriptor.procedure_id = entry.id;
             descriptor.declared_effects = entry.effects;
             descriptor.resource_ids = entry.resources;
+            descriptor.result_schema = entry.result_schema;
             descriptor.implementation_sha256 = implementation;
             descriptor.terminal_ids.reserve(entry.terminals.size());
             for (const auto& terminal : entry.terminals)
@@ -593,6 +775,9 @@ RuntimeProcedureActivationLoadResult load_runtime_procedure_activation(
             snapshot_limits.max_terminals_per_procedure = limits.max_terminals_per_procedure;
             snapshot_limits.max_effects_per_procedure = limits.max_effects_per_procedure;
             snapshot_limits.max_resources_per_procedure = limits.max_resources_per_procedure;
+            snapshot_limits.max_result_schema_nodes_per_procedure =
+                limits.max_result_schema_nodes_per_procedure;
+            snapshot_limits.max_result_schema_depth = limits.max_result_schema_depth;
             snapshot_limits.max_string_bytes = limits.max_string_bytes;
             snapshot_limits.max_total_string_bytes = limits.max_total_string_bytes;
             snapshot_limits.max_validation_work = limits.max_work;
@@ -604,7 +789,7 @@ RuntimeProcedureActivationLoadResult load_runtime_procedure_activation(
             auto definition = std::shared_ptr<const RuntimeProcedureDefinition>(
                 new RuntimeProcedureDefinition{
                     entry.id, std::move(engine), entry.sha256, implementation,
-                    entry.terminals, std::move(owned_bytes)});
+                    entry.terminals, entry.result_schema, std::move(owned_bytes)});
             impl->definitions.emplace(entry.id, std::move(definition));
         }
         check_cancelled(stop_token);
@@ -614,6 +799,9 @@ RuntimeProcedureActivationLoadResult load_runtime_procedure_activation(
         snapshot_limits.max_terminals_per_procedure = limits.max_terminals_per_procedure;
         snapshot_limits.max_effects_per_procedure = limits.max_effects_per_procedure;
         snapshot_limits.max_resources_per_procedure = limits.max_resources_per_procedure;
+        snapshot_limits.max_result_schema_nodes_per_procedure =
+            limits.max_result_schema_nodes_per_procedure;
+        snapshot_limits.max_result_schema_depth = limits.max_result_schema_depth;
         snapshot_limits.max_string_bytes = limits.max_string_bytes;
         snapshot_limits.max_total_string_bytes = limits.max_total_string_bytes;
         snapshot_limits.max_validation_work = limits.max_work;

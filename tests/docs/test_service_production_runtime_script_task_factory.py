@@ -19,6 +19,9 @@ class ServiceProductionRuntimeScriptTaskFactoryTests(unittest.TestCase):
         cls.activation_tests = (
             ROOT / "tests/runtime/RuntimeProcedureActivationTests.cpp"
         ).read_text(encoding="utf-8")
+        cls.factory_tests = (
+            ROOT / "tests/service/ProductionRuntimeScriptTaskFactoryTests.cpp"
+        ).read_text(encoding="utf-8")
         cls.cmake = (ROOT / "CMakeLists.txt").read_text(encoding="utf-8")
         cls.workflow = (
             ROOT / ".github/workflows/foundation-runtime.yml"
@@ -87,6 +90,24 @@ class ServiceProductionRuntimeScriptTaskFactoryTests(unittest.TestCase):
         )
         for abi in ("arm64-v8a", "x86_64"):
             self.assertIn(abi, self.workflow)
+
+    def test_real_extension_payload_crosses_activation_dispatch_and_evaluator(self) -> None:
+        for anchor in (
+            "ProcedureExecutorOutcome::success",
+            '"plan"',
+            '"balance"',
+            '"formatted_text"',
+            "result.plan[0].item_id",
+            "request.procedure()->result_schema()",
+        ):
+            self.assertIn(anchor, self.factory_tests)
+        for anchor in (
+            "activation-owned result schema",
+            "dispatcher",
+            "real evaluator",
+            "not a test-only Host\nhook",
+        ):
+            self.assertIn(anchor, self.doc)
 
 
 if __name__ == "__main__":

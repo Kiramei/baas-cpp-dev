@@ -214,18 +214,19 @@ void test_real_initialization_and_external_refresh()
     check(setup && Json::parse(setup->data_json)["channel"] == "stable",
           "initial scan loads and validates the real setup projection");
 
+    // Stage the whole external filesystem generation before waiting for its
+    // asynchronous publications. Waiting inside the generation (after the GUI
+    // remove callback but before replacing static.json) races the remainder of
+    // that same watcher scan and can manufacture a transient mixed generation.
     std::filesystem::remove(project.root / "config" / "gui.json");
-    check(eventually([&] {
-        auto gui = store->pull({SyncResource::gui, std::nullopt}, {});
-        return gui_remove_published.load(std::memory_order_acquire)
-            && !gui && gui.error == ResourceStoreError::not_found;
-    }), "optional gui deletion publishes its cache invalidation");
-
     replace_bytes_atomically(
         project.root / "config" / "static.json", R"({"version":2})");
     check(eventually([&] {
+        auto gui = store->pull({SyncResource::gui, std::nullopt}, {});
         auto snapshot = provider->static_snapshot({});
-        return snapshot && Json::parse(snapshot->data_json)["version"] == 2
+        return gui_remove_published.load(std::memory_order_acquire)
+            && !gui && gui.error == ResourceStoreError::not_found
+            && snapshot && Json::parse(snapshot->data_json)["version"] == 2
             && initialized(provider) == true;
     }) && status_publications.load(std::memory_order_relaxed)
               == publications_after_start,

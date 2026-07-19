@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <condition_variable>
+#include <cmath>
 #include <deque>
 #include <map>
 #include <mutex>
@@ -46,6 +47,7 @@ public:
 
 #ifdef BAAS_SCRIPT_PROCEDURE_HOST_TEST_HOOKS
 std::atomic<std::size_t> queued_acquisition_failure_checkpoint{};
+std::atomic<std::size_t> result_processing_failure_checkpoint{};
 #endif
 
 void queued_acquisition_allocation_checkpoint(
@@ -59,6 +61,18 @@ void queued_acquisition_allocation_checkpoint(
         throw std::bad_alloc();
 #else
     (void)queued;
+    (void)checkpoint;
+#endif
+}
+
+void result_processing_allocation_checkpoint(const std::size_t checkpoint)
+{
+#ifdef BAAS_SCRIPT_PROCEDURE_HOST_TEST_HOOKS
+    auto expected = checkpoint;
+    if (result_processing_failure_checkpoint.compare_exchange_strong(
+            expected, 0, std::memory_order_acq_rel))
+        throw std::bad_alloc();
+#else
     (void)checkpoint;
 #endif
 }
@@ -97,7 +111,164 @@ void queued_acquisition_allocation_checkpoint(
 {
     return limits.max_device_id_bytes != 0 && limits.max_option_depth != 0 &&
         limits.max_option_nodes != 0 && limits.max_option_bytes != 0 &&
-        limits.max_option_work != 0 && limits.max_calls != 0;
+        limits.max_option_work != 0 && limits.max_result_depth != 0 &&
+        limits.max_result_depth <= 256 && limits.max_result_nodes != 0 &&
+        limits.max_result_string_bytes != 0 &&
+        limits.max_result_total_bytes != 0 &&
+        limits.max_result_validation_work != 0 && limits.max_calls != 0;
+}
+
+[[nodiscard]] bool add_bounded(
+    std::size_t& target, std::size_t amount, std::size_t limit) noexcept;
+
+enum class ResultValidationCode : std::uint8_t {
+    Valid,
+    SchemaMismatch,
+    LimitExceeded,
+};
+
+struct ResultMetrics {
+    std::size_t nodes{};
+    std::size_t string_bytes{};
+    std::size_t total_bytes{};
+    std::size_t work{};
+};
+
+[[nodiscard]] ResultValidationCode validate_result_value(
+    const JsonValue& value, const ProcedureResultFieldSchema& schema,
+    const ProcedureHostLimits& limits, std::size_t depth,
+    ResultMetrics& metrics) noexcept;
+
+[[nodiscard]] ResultValidationCode validate_result_object(
+    const JsonObject& object,
+    const std::span<const ProcedureResultFieldSchema> schemas,
+    const ProcedureHostLimits& limits, const std::size_t depth,
+    ResultMetrics& metrics) noexcept
+{
+    if (depth > limits.max_result_depth) return ResultValidationCode::LimitExceeded;
+    std::size_t schema_index{};
+    for (std::size_t object_index{}; object_index < object.size(); ++object_index) {
+        if (!add_bounded(metrics.work, 1, limits.max_result_validation_work))
+            return ResultValidationCode::LimitExceeded;
+        const auto& [key, child] = object[object_index];
+        if (key.empty() || key == "end" ||
+            !add_bounded(metrics.string_bytes, key.size(),
+                         limits.max_result_string_bytes) ||
+            !add_bounded(metrics.total_bytes, key.size(),
+                         limits.max_result_total_bytes) ||
+            !add_bounded(metrics.total_bytes, sizeof(std::size_t),
+                         limits.max_result_total_bytes))
+            return key.empty() || key == "end"
+                ? ResultValidationCode::SchemaMismatch
+                : ResultValidationCode::LimitExceeded;
+        // schema_index advances monotonically through a descriptor whose field
+        // names are unique. A repeated payload key therefore cannot match the
+        // next schema position and is rejected below without rescanning every
+        // prior attacker-controlled key.
+        while (schema_index < schemas.size() && schemas[schema_index].name != key) {
+            if (schemas[schema_index].required)
+                return ResultValidationCode::SchemaMismatch;
+            if (!add_bounded(metrics.work, 1, limits.max_result_validation_work))
+                return ResultValidationCode::LimitExceeded;
+            ++schema_index;
+        }
+        if (schema_index == schemas.size())
+            return ResultValidationCode::SchemaMismatch;
+        const auto status = validate_result_value(
+            child, schemas[schema_index], limits, depth, metrics);
+        if (status != ResultValidationCode::Valid) return status;
+        ++schema_index;
+    }
+    while (schema_index < schemas.size()) {
+        if (schemas[schema_index].required)
+            return ResultValidationCode::SchemaMismatch;
+        if (!add_bounded(metrics.work, 1, limits.max_result_validation_work))
+            return ResultValidationCode::LimitExceeded;
+        ++schema_index;
+    }
+    return ResultValidationCode::Valid;
+}
+
+[[nodiscard]] ResultValidationCode validate_result_value(
+    const JsonValue& value, const ProcedureResultFieldSchema& schema,
+    const ProcedureHostLimits& limits, const std::size_t depth,
+    ResultMetrics& metrics) noexcept
+{
+    if (depth > limits.max_result_depth ||
+        !add_bounded(metrics.nodes, 1, limits.max_result_nodes) ||
+        !add_bounded(metrics.total_bytes, 1, limits.max_result_total_bytes) ||
+        !add_bounded(metrics.work, 1, limits.max_result_validation_work))
+        return ResultValidationCode::LimitExceeded;
+    const auto expected = [&]() noexcept {
+        switch (schema.type) {
+            case ProcedureResultJsonType::Null: return JsonKind::Null;
+            case ProcedureResultJsonType::Boolean: return JsonKind::Boolean;
+            case ProcedureResultJsonType::Integer: return JsonKind::Integer;
+            case ProcedureResultJsonType::Float: return JsonKind::Float;
+            case ProcedureResultJsonType::String: return JsonKind::String;
+            case ProcedureResultJsonType::Array: return JsonKind::Array;
+            case ProcedureResultJsonType::Object: return JsonKind::Object;
+        }
+        return JsonKind::Null;
+    }();
+    if (value.kind() != expected) return ResultValidationCode::SchemaMismatch;
+    switch (value.kind()) {
+        case JsonKind::Null: return ResultValidationCode::Valid;
+        case JsonKind::Boolean:
+            return add_bounded(metrics.total_bytes, 1, limits.max_result_total_bytes)
+                ? ResultValidationCode::Valid : ResultValidationCode::LimitExceeded;
+        case JsonKind::Integer:
+            return add_bounded(metrics.total_bytes, sizeof(std::int64_t),
+                               limits.max_result_total_bytes)
+                ? ResultValidationCode::Valid : ResultValidationCode::LimitExceeded;
+        case JsonKind::Float:
+            if (!std::isfinite(std::get<double>(value.value())))
+                return ResultValidationCode::SchemaMismatch;
+            return add_bounded(metrics.total_bytes, sizeof(double),
+                               limits.max_result_total_bytes)
+                ? ResultValidationCode::Valid : ResultValidationCode::LimitExceeded;
+        case JsonKind::String: {
+            const auto bytes = std::get<std::string>(value.value()).size();
+            return add_bounded(metrics.string_bytes, bytes,
+                               limits.max_result_string_bytes) &&
+                    add_bounded(metrics.total_bytes, bytes,
+                                limits.max_result_total_bytes)
+                ? ResultValidationCode::Valid : ResultValidationCode::LimitExceeded;
+        }
+        case JsonKind::Array: {
+            if (schema.children.size() != 1)
+                return ResultValidationCode::SchemaMismatch;
+            const auto& array = std::get<JsonArray>(value.value());
+            for (const auto& child : array) {
+                if (!add_bounded(metrics.total_bytes, sizeof(std::size_t),
+                                 limits.max_result_total_bytes) ||
+                    !add_bounded(metrics.work, 1, limits.max_result_validation_work))
+                    return ResultValidationCode::LimitExceeded;
+                const auto status = validate_result_value(
+                    child, schema.children.front(), limits, depth + 1, metrics);
+                if (status != ResultValidationCode::Valid) return status;
+            }
+            return ResultValidationCode::Valid;
+        }
+        case JsonKind::Object:
+            return validate_result_object(
+                std::get<JsonObject>(value.value()), schema.children,
+                limits, depth + 1, metrics);
+    }
+    return ResultValidationCode::SchemaMismatch;
+}
+
+[[nodiscard]] ResultValidationCode validate_result_payload(
+    const JsonObject& payload, const ProcedureDescriptor& descriptor,
+    const ProcedureHostLimits& limits) noexcept
+{
+    ResultMetrics metrics;
+    if (!add_bounded(metrics.nodes, 1, limits.max_result_nodes) ||
+        !add_bounded(metrics.total_bytes, 1, limits.max_result_total_bytes) ||
+        !add_bounded(metrics.work, 1, limits.max_result_validation_work))
+        return ResultValidationCode::LimitExceeded;
+    return validate_result_object(
+        payload, descriptor.result_schema(), limits, 1, metrics);
 }
 
 struct OptionMetrics {
@@ -320,11 +491,18 @@ void fail_queued_acquisition_at_allocation(
         checkpoint, std::memory_order_release);
 }
 
+void fail_result_processing_at_allocation(
+    const std::size_t checkpoint) noexcept
+{
+    result_processing_failure_checkpoint.store(
+        checkpoint, std::memory_order_release);
+}
+
 }  // namespace testing
 #endif
 
 ProcedureExecutorOutcome::ProcedureExecutorOutcome(
-    std::variant<std::string, ProcedureExecutorError> value)
+    std::variant<Success, ProcedureExecutorError> value)
     : value_(std::move(value))
 {
 }
@@ -332,21 +510,34 @@ ProcedureExecutorOutcome::ProcedureExecutorOutcome(
 ProcedureExecutorOutcome ProcedureExecutorOutcome::success(std::string terminal_id)
 {
     return ProcedureExecutorOutcome(
-        std::variant<std::string, ProcedureExecutorError>(
-            std::in_place_index<0>, std::move(terminal_id)));
+        std::variant<Success, ProcedureExecutorError>(
+            std::in_place_index<0>, Success{std::move(terminal_id), {}}));
+}
+
+ProcedureExecutorOutcome ProcedureExecutorOutcome::success(
+    std::string terminal_id, JsonObject payload)
+{
+    return ProcedureExecutorOutcome(
+        std::variant<Success, ProcedureExecutorError>(
+            std::in_place_index<0>,
+            Success{std::move(terminal_id), std::move(payload)}));
 }
 
 ProcedureExecutorOutcome ProcedureExecutorOutcome::failure(ProcedureExecutorError error)
 {
     return ProcedureExecutorOutcome(
-        std::variant<std::string, ProcedureExecutorError>(
+        std::variant<Success, ProcedureExecutorError>(
             std::in_place_index<1>, std::move(error)));
 }
 
 bool ProcedureExecutorOutcome::ok() const noexcept { return value_.index() == 0; }
 const std::string& ProcedureExecutorOutcome::terminal_id() const
 {
-    return std::get<std::string>(value_);
+    return std::get<Success>(value_).terminal_id;
+}
+const JsonObject& ProcedureExecutorOutcome::payload() const
+{
+    return std::get<Success>(value_).payload;
 }
 const ProcedureExecutorError& ProcedureExecutorOutcome::error() const
 {
@@ -803,19 +994,68 @@ struct ProcedureHost::Impl {
                          "procedure executor returned an undeclared terminal", false,
                          trace.effect_state());
         }
+        const auto payload_status = validate_result_payload(
+            outcome.payload(), *procedure, limits);
+        std::optional<HostResult> prepared;
+        bool allocation_failed{};
+        bool processing_failed{};
         try {
-            auto value = HostValue(JsonValue(JsonObject{
-                {"end", JsonValue(outcome.terminal_id())}}));
-            auto result = HostResult::success(std::move(value));
-            ++completed;
-            return result;
+            if (payload_status == ResultValidationCode::Valid) {
+                result_processing_allocation_checkpoint(1);
+                JsonObject object;
+                object.reserve(outcome.payload().size() + 1);
+                result_processing_allocation_checkpoint(2);
+                object.emplace_back("end", JsonValue(outcome.terminal_id()));
+                object.insert(
+                    object.end(), outcome.payload().begin(), outcome.payload().end());
+                result_processing_allocation_checkpoint(3);
+                prepared.emplace(HostResult::success(
+                    HostValue(JsonValue(std::move(object)))));
+            }
         } catch (const std::bad_alloc&) {
+            allocation_failed = true;
+        } catch (...) {
+            processing_failed = true;
+        }
+        // Result validation/canonical publication is bounded Host work. Repeat
+        // postflight after it so a deadline still wins over cancellation and
+        // either malformed adapter output or allocation failure.
+        if (context.deadline_exceeded()) {
+            ++failed;
+            return deadline(trace.effect_state());
+        }
+        if (context.cancelled()) {
+            ++failed;
+            return cancelled(trace.effect_state());
+        }
+        if (allocation_failed) {
             ++failed;
             return error(HostErrorCode::BudgetExceeded,
-                         "procedure result allocation failed", true,
+                         "procedure result allocation failed", false,
                          trace.effect_state(),
                          detail("budget_scope", "external_memory"));
         }
+        if (processing_failed) {
+            ++failed;
+            return error(HostErrorCode::Internal,
+                         "procedure result processing failed", false,
+                         trace.effect_state());
+        }
+        if (payload_status == ResultValidationCode::LimitExceeded) {
+            ++failed;
+            return error(HostErrorCode::BudgetExceeded,
+                         "procedure result exceeds bounded validation limits", false,
+                         trace.effect_state(),
+                         detail("budget_scope", "host_operation"));
+        }
+        if (payload_status != ResultValidationCode::Valid || !prepared) {
+            ++failed;
+            return error(HostErrorCode::Internal,
+                         "procedure executor returned an invalid result payload", false,
+                         trace.effect_state());
+        }
+        ++completed;
+        return std::move(*prepared);
     }
 
     std::shared_ptr<const ProcedureSnapshot> snapshot;

@@ -252,8 +252,22 @@ class HostCapabilityContractTests(unittest.TestCase):
                         self.assertEqual(parameter["default"], {})
                 if "result_schema" in binding:
                     schema = binding["result_schema"]
-                    self.assertEqual(set(schema), {"field_order", "fields", "unknown_fields"})
-                    self.assertEqual(schema["unknown_fields"], "forbidden")
+                    expected_schema_keys = {"field_order", "fields", "unknown_fields"}
+                    if binding["id"] == "host.procedure.run.v1":
+                        expected_schema_keys.add("descriptor_fields")
+                        self.assertEqual(
+                            schema["unknown_fields"], "descriptor_declared_only"
+                        )
+                        self.assertEqual(
+                            set(schema["descriptor_fields"]),
+                            {"field_order", "requiredness", "schema", "unknown_fields"},
+                        )
+                        self.assertEqual(
+                            schema["descriptor_fields"]["unknown_fields"], "forbidden"
+                        )
+                    else:
+                        self.assertEqual(schema["unknown_fields"], "forbidden")
+                    self.assertEqual(set(schema), expected_schema_keys)
                     self.assertEqual(set(schema["field_order"]), set(schema["fields"]))
                     self.assertEqual(len(schema["field_order"]), len(schema["fields"]))
                     for field in schema["fields"].values():
@@ -445,18 +459,24 @@ class HostCapabilityContractTests(unittest.TestCase):
         self.assertEqual(
             binding["result_schema"],
             {
+                "descriptor_fields": {
+                    "field_order": "immutable descriptor order after end",
+                    "requiredness": "descriptor required/optional flags",
+                    "schema": "recursive JSON null/boolean/integer/float/string/array/object",
+                    "unknown_fields": "forbidden",
+                },
                 "field_order": ["end"],
                 "fields": {
                     "end": {
                         "required": True,
                         "semantics": (
-                            "logical terminal match identifier selected by the registered "
+                            "non-overridable logical terminal match identifier selected by the registered "
                             "procedure's deterministic ordered-match rules"
                         ),
                         "type": "string",
                     }
                 },
-                "unknown_fields": "forbidden",
+                "unknown_fields": "descriptor_declared_only",
             },
         )
         self.assertEqual(
